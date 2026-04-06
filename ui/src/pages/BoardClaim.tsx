@@ -51,7 +51,7 @@ export function BoardClaimPage() {
   if (statusQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <div className="rounded-[2px] border border-border bg-card p-6 hud-panel hud-shimmer">
           <h1 className="text-lg font-semibold">Claim challenge unavailable</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {statusQuery.error instanceof Error ? statusQuery.error.message : "Challenge is invalid or expired."}
@@ -69,7 +69,7 @@ export function BoardClaimPage() {
   if (status.status === "claimed") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <div className="rounded-[2px] border border-border bg-card p-6 hud-panel hud-shimmer">
           <h1 className="text-lg font-semibold">Board ownership claimed</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
@@ -85,7 +85,7 @@ export function BoardClaimPage() {
   if (!sessionQuery.data) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <div className="rounded-[2px] border border-border bg-card p-6 hud-panel hud-shimmer">
           <h1 className="text-lg font-semibold">Sign in required</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to claim Board ownership.
@@ -100,7 +100,7 @@ export function BoardClaimPage() {
 
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <div className="rounded-[2px] border border-border bg-card p-6 hud-panel hud-shimmer">
         <h1 className="text-xl font-semibold">Claim Board ownership</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This will promote your user to instance admin and migrate company ownership access from local trusted mode.

@@ -400,7 +400,7 @@ export function IssuesList({
           {/* Filter */}
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
+              <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-[var(--primary)]" : ""}`}>
                 <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                 <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
                 {activeFilterCount > 0 && (
@@ -734,12 +734,12 @@ export function IssuesList({
                         {issue.identifier ?? issue.id.slice(0, 8)}
                       </span>
                       {liveIssueIds?.has(issue.id) && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
+                        <span className="inline-flex items-center gap-1 rounded-[2px] bg-[var(--primary)]/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
                           <span className="relative flex h-2 w-2">
-                            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-[var(--primary)] opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--primary)]" />
                           </span>
-                          <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
+                          <span className="hidden text-[11px] font-[var(--font-mono)] font-medium text-[var(--primary)] sm:inline">
                             Live
                           </span>
                         </span>

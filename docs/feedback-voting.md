@@ -1,6 +1,6 @@
 # Feedback Voting — Local Data Guide
 
-When you rate an agent's response with **Helpful** (thumbs up) or **Needs work** (thumbs down), Paperclip saves your vote locally alongside your running instance. This guide covers what gets stored, how to access it, and how to export it.
+When you rate an agent's response with **Helpful** (thumbs up) or **Needs work** (thumbs down), OhMyCompany saves your vote locally alongside your running instance. This guide covers what gets stored, how to access it, and how to export it.
 
 ## How voting works
 
@@ -17,9 +17,9 @@ Each vote creates two local records:
 | **Vote** | Your vote (up/down), optional reason text, sharing preference, consent version, timestamp |
 | **Trace bundle** | Full context snapshot: the voted-on comment/revision text, issue title, agent info, your vote, and reason — everything needed to understand the feedback in isolation |
 
-All data lives in your local Paperclip database. Nothing leaves your machine unless you explicitly choose to share.
+All data lives in your local OhMyCompany database. Nothing leaves your machine unless you explicitly choose to share.
 
-When a vote is marked for sharing, Paperclip also queues the trace bundle for background export through the Telemetry Backend. The app server never uploads raw feedback trace bundles directly to object storage.
+When a vote is marked for sharing, OhMyCompany also queues the trace bundle for background export through the Telemetry Backend. The app server never uploads raw feedback trace bundles directly to object storage.
 
 ## Viewing your votes
 
@@ -100,7 +100,7 @@ feedback-export-20260331T120000Z/
   votes/
     PAP-123-a1b2c3d4.json      # vote metadata (one per vote)
   traces/
-    PAP-123-e5f6g7h8.json      # Paperclip feedback envelope (one per trace)
+    PAP-123-e5f6g7h8.json      # OhMyCompany feedback envelope (one per trace)
   full-traces/
     PAP-123-e5f6g7h8/
       bundle.json              # full export manifest for the trace
@@ -108,7 +108,7 @@ feedback-export-20260331T120000Z/
 feedback-export-20260331T120000Z.zip
 ```
 
-Exports are full by default. `traces/` keeps the Paperclip envelope, while `full-traces/` contains the richer per-trace bundle plus any recoverable adapter-native files.
+Exports are full by default. `traces/` keeps the OhMyCompany envelope, while `full-traces/` contains the richer per-trace bundle plus any recoverable adapter-native files.
 
 ```bash
 # Custom server and output directory

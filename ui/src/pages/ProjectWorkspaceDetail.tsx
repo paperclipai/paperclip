@@ -32,7 +32,7 @@ type ProjectWorkspaceSourceType = ProjectWorkspace["sourceType"];
 type ProjectWorkspaceVisibility = ProjectWorkspace["visibility"];
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
-  { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
+  { value: "local_path", label: "Local git checkout", description: "A local path OH MY Company can use directly." },
   { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
   { value: "git_repo", label: "Remote git repo", description: "A repo URL with optional refs and local checkout." },
   { value: "remote_managed", label: "Remote-managed workspace", description: "A hosted workspace tracked by external reference." },
@@ -356,22 +356,22 @@ export function ProjectWorkspaceDetail() {
             Back to workspaces
           </Link>
         </Button>
-        <div className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+        <div className="inline-flex items-center rounded-[2px] border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground font-[var(--font-mono)] uppercase">
           {workspace.isPrimary ? "Primary workspace" : "Secondary workspace"}
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
             <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
               <div className="space-y-2">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
                   Project workspace
                 </div>
-                <h1 className="text-2xl font-semibold">{workspace.name}</h1>
+                <h1 className="text-2xl font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">{workspace.name}</h1>
                 <p className="max-w-2xl text-sm text-muted-foreground">
-                  Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
+                  Configure the concrete workspace OH MY Company attaches to this project. These values drive per-workspace
                   checkout behavior, default runtime services for child execution workspaces, and let you override setup
                   or cleanup commands when one workspace needs special handling.
                 </p>
@@ -389,7 +389,7 @@ export function ProjectWorkspaceDetail() {
                   Make primary
                 </Button>
               ) : (
-                <div className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 sm:max-w-sm">
+                <div className="inline-flex items-center gap-2 rounded-[2px] border border-[var(--status-active)]/25 bg-[var(--status-active)]/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 sm:max-w-sm">
                   <Sparkles className="h-4 w-4" />
                   This is the project’s primary codebase workspace.
                 </div>
@@ -401,7 +401,7 @@ export function ProjectWorkspaceDetail() {
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Workspace name">
                 <input
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                  className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.name}
                   onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
                   placeholder="Workspace name"
@@ -410,7 +410,7 @@ export function ProjectWorkspaceDetail() {
 
               <Field label="Visibility">
                 <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                  className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.visibility}
                   onChange={(event) =>
                     setForm((current) => current ? { ...current, visibility: event.target.value as ProjectWorkspaceVisibility } : current)
@@ -426,7 +426,7 @@ export function ProjectWorkspaceDetail() {
             <div className="mt-4 grid gap-4">
               <Field label="Source type" hint={sourceTypeDescription ?? undefined}>
                 <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                  className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.sourceType}
                   onChange={(event) =>
                     setForm((current) => current ? { ...current, sourceType: event.target.value as ProjectWorkspaceSourceType } : current)
@@ -441,7 +441,7 @@ export function ProjectWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
                 <Field label="Local path">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.cwd}
                     onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
                     placeholder="/absolute/path/to/workspace"
@@ -455,7 +455,7 @@ export function ProjectWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Repo URL">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.repoUrl}
                     onChange={(event) => setForm((current) => current ? { ...current, repoUrl: event.target.value } : current)}
                     placeholder="https://github.com/org/repo"
@@ -463,7 +463,7 @@ export function ProjectWorkspaceDetail() {
                 </Field>
                 <Field label="Repo ref">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.repoRef}
                     onChange={(event) => setForm((current) => current ? { ...current, repoRef: event.target.value } : current)}
                     placeholder="origin/main"
@@ -474,7 +474,7 @@ export function ProjectWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Default ref">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.defaultRef}
                     onChange={(event) => setForm((current) => current ? { ...current, defaultRef: event.target.value } : current)}
                     placeholder="origin/main"
@@ -482,7 +482,7 @@ export function ProjectWorkspaceDetail() {
                 </Field>
                 <Field label="Shared workspace key">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.sharedWorkspaceKey}
                     onChange={(event) => setForm((current) => current ? { ...current, sharedWorkspaceKey: event.target.value } : current)}
                     placeholder="frontend"
@@ -493,7 +493,7 @@ export function ProjectWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Remote provider">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.remoteProvider}
                     onChange={(event) => setForm((current) => current ? { ...current, remoteProvider: event.target.value } : current)}
                     placeholder="codespaces"
@@ -501,7 +501,7 @@ export function ProjectWorkspaceDetail() {
                 </Field>
                 <Field label="Remote workspace ref">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.remoteWorkspaceRef}
                     onChange={(event) => setForm((current) => current ? { ...current, remoteWorkspaceRef: event.target.value } : current)}
                     placeholder="workspace-123"
@@ -512,7 +512,7 @@ export function ProjectWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Setup command" hint="Runs when this workspace needs custom bootstrap">
                   <textarea
-                    className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="min-h-28 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.setupCommand}
                     onChange={(event) => setForm((current) => current ? { ...current, setupCommand: event.target.value } : current)}
                     placeholder="pnpm install && pnpm dev"
@@ -520,7 +520,7 @@ export function ProjectWorkspaceDetail() {
                 </Field>
                 <Field label="Cleanup command" hint="Runs before project-level execution workspace teardown">
                   <textarea
-                    className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="min-h-28 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.cleanupCommand}
                     onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
                     placeholder="pkill -f vite || true"
@@ -530,7 +530,7 @@ export function ProjectWorkspaceDetail() {
 
               <Field label="Runtime services JSON" hint="Default runtime services for this workspace. Execution workspaces inherit this config unless they set an override. If you do not know the commands yet, ask your CEO to configure them for you.">
                 <textarea
-                  className="min-h-36 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                  className="min-h-36 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                   value={form.runtimeConfig}
                   onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
                   placeholder={"{\n  \"services\": [\n    {\n      \"name\": \"web\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    }\n  ]\n}"}
@@ -562,7 +562,7 @@ export function ProjectWorkspaceDetail() {
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
             <div className="space-y-1">
               <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace facts</div>
               <h2 className="text-lg font-semibold">Current state</h2>
@@ -591,7 +591,7 @@ export function ProjectWorkspaceDetail() {
             <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
           </div>
 
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime services</div>
@@ -635,7 +635,7 @@ export function ProjectWorkspaceDetail() {
             {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
               <div className="space-y-3">
                 {workspace.runtimeServices.map((service) => (
-                  <div key={service.id} className="rounded-xl border border-border/80 bg-background px-3 py-2">
+                  <div key={service.id} className="rounded-[2px] border border-border/80 bg-background px-3 py-2">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
                         <div className="text-sm font-medium">{service.serviceName}</div>

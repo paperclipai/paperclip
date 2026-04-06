@@ -103,11 +103,11 @@ type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
 const selectedInboxAccentClass = "!text-muted-foreground !border-muted-foreground";
 
 function getSelectedUnreadButtonClass(selected: boolean): string {
-  return selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20";
+  return selected ? "hover:bg-muted/80" : "hover:bg-[var(--status-info)]/20";
 }
 
 function getSelectedUnreadDotClass(selected: boolean): string {
-  return selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400";
+  return selected ? "bg-muted-foreground/70" : "bg-[var(--status-info)]";
 }
 
 export function InboxIssueMetaLeading({
@@ -133,25 +133,25 @@ export function InboxIssueMetaLeading({
       {isLive && (
         <span
           className={cn(
-            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            selected ? "bg-muted" : "bg-blue-500/10",
+            "inline-flex items-center gap-1 rounded-[2px] px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+            selected ? "bg-muted" : "bg-[var(--status-info)]/10",
           )}
         >
           <span className="relative flex h-2 w-2">
             {!selected ? (
-              <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+              <span className="hud-glow absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] opacity-75" />
             ) : null}
             <span
               className={cn(
                 "relative inline-flex h-2 w-2 rounded-full",
-                selected ? "bg-muted-foreground/70" : "bg-blue-500",
+                selected ? "bg-muted-foreground/70" : "bg-[var(--status-info)]",
               )}
             />
           </span>
           <span
             className={cn(
               "hidden text-[11px] font-medium sm:inline",
-              selected ? "text-muted-foreground" : "text-blue-600 dark:text-blue-400",
+              selected ? "text-muted-foreground" : "text-[var(--status-info)]",
             )}
           >
             Live
@@ -226,7 +226,7 @@ export function FailedRunInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-[2px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -240,13 +240,13 @@ export function FailedRunInboxRow({
           to={`/agents/${run.agentId}/runs/${run.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
-            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+            selected ? "hover:bg-transparent" : "hover:bg-[var(--sidebar-accent)]",
           )}
         >
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
-          <span className="mt-0.5 shrink-0 rounded-md bg-red-500/20 p-1.5 sm:mt-0">
-            <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+          <span className="mt-0.5 shrink-0 rounded-[2px] bg-[var(--status-error)]/20 p-1.5 sm:mt-0">
+            <XCircle className="h-4 w-4 text-[var(--status-error)]" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
@@ -285,7 +285,7 @@ export function FailedRunInboxRow({
             <button
               type="button"
               onClick={onDismiss}
-              className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+              className="rounded-[2px] p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-[var(--sidebar-accent)] hover:text-foreground group-hover:opacity-100"
               aria-label="Dismiss"
             >
               <X className="h-4 w-4" />
@@ -309,7 +309,7 @@ export function FailedRunInboxRow({
           <button
             type="button"
             onClick={onDismiss}
-            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="rounded-[2px] p-1 text-muted-foreground hover:bg-[var(--sidebar-accent)] hover:text-foreground"
             aria-label="Dismiss"
           >
             <X className="h-4 w-4" />
@@ -382,7 +382,7 @@ function ApprovalInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-[2px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -396,12 +396,12 @@ function ApprovalInboxRow({
           to={`/approvals/${approval.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
-            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+            selected ? "hover:bg-transparent" : "hover:bg-[var(--sidebar-accent)]",
           )}
         >
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
-          <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
+          <span className="mt-0.5 shrink-0 rounded-[2px] bg-muted p-1.5 sm:mt-0">
             <Icon className="h-4 w-4 text-muted-foreground" />
           </span>
           <span className="min-w-0 flex-1">
@@ -419,7 +419,7 @@ function ApprovalInboxRow({
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             <Button
               size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+              className="h-8 bg-[var(--status-active)] px-3 text-white hover:bg-[var(--status-active)]/80 rounded-[2px]"
               onClick={onApprove}
               disabled={isPending}
             >
@@ -441,7 +441,7 @@ function ApprovalInboxRow({
         <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-[var(--status-active)] px-3 text-white hover:bg-[var(--status-active)]/80 rounded-[2px]"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -521,7 +521,7 @@ function JoinRequestInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-[2px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -534,7 +534,7 @@ function JoinRequestInboxRow({
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
-          <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
+          <span className="mt-0.5 shrink-0 rounded-[2px] bg-muted p-1.5 sm:mt-0">
             <UserPlus className="h-4 w-4 text-muted-foreground" />
           </span>
           <span className="min-w-0 flex-1">
@@ -550,7 +550,7 @@ function JoinRequestInboxRow({
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-[var(--status-active)] px-3 text-white hover:bg-[var(--status-active)]/80 rounded-[2px]"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -570,7 +570,7 @@ function JoinRequestInboxRow({
       <div className="mt-3 flex gap-2 sm:hidden">
         <Button
           size="sm"
-          className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+          className="h-8 bg-[var(--status-active)] px-3 text-white hover:bg-[var(--status-active)]/80 rounded-[2px]"
           onClick={onApprove}
           disabled={isPending}
         >
@@ -1314,7 +1314,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={listRef} className="overflow-hidden rounded-[2px] border border-border bg-card">
               {workItemsToRender.flatMap((item, index) => {
                 const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
                   <div
@@ -1520,17 +1520,17 @@ export function Inbox() {
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <h3 className="mb-3 text-sm font-semibold font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground hud-section-header">
               Alerts
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--sidebar-accent)]">
                   <Link
                     to="/agents"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
                   >
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--status-error)]" />
                     <span className="text-sm">
                       <span className="font-medium">{dashboard!.agents.error}</span>{" "}
                       {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
@@ -1539,7 +1539,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:agent-errors")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-[2px] p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-[var(--sidebar-accent)] hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -1547,12 +1547,12 @@ export function Inbox() {
                 </div>
               )}
               {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--sidebar-accent)]">
                   <Link
                     to="/costs"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
                   >
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--status-warning)]" />
                     <span className="text-sm">
                       Budget at{" "}
                       <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
@@ -1562,7 +1562,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:budget")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-[2px] p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-[var(--sidebar-accent)] hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />

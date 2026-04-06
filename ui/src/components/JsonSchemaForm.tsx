@@ -494,7 +494,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        "This secret is stored securely via the OhMyCompany secret provider."
       }
       required={isRequired}
       error={error}
@@ -702,7 +702,7 @@ const ArrayField = React.memo(({
         {items.map((item, index) => (
           <div
             key={index}
-            className="group relative flex items-start space-x-2 rounded-lg border p-3"
+            className="group relative flex items-start space-x-2 rounded-[2px] border p-3"
           >
             <div className="flex-1">
               <div className="mb-2 text-xs font-medium text-muted-foreground">
@@ -744,7 +744,7 @@ const ArrayField = React.memo(({
           </div>
         ))}
         {items.length === 0 && (
-          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+          <div className="rounded-[2px] border border-dashed p-4 text-center text-xs text-muted-foreground">
             No items added yet.
           </div>
         )}
@@ -784,7 +784,7 @@ const ObjectField = React.memo(({
   };
 
   return (
-    <div className="space-y-3 rounded-lg border p-4">
+    <div className="space-y-3 rounded-[2px] border p-4">
       <button
         type="button"
         className="flex w-full items-center justify-between"

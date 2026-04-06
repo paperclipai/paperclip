@@ -46,8 +46,8 @@ function orderedWindows(windows: QuotaWindow[]): QuotaWindow[] {
 
 function fillClass(usedPercent: number | null): string {
   if (usedPercent == null) return "bg-zinc-700";
-  if (usedPercent >= 90) return "bg-red-400";
-  if (usedPercent >= 70) return "bg-amber-400";
+  if (usedPercent >= 90) return "bg-[var(--status-error)]";
+  if (usedPercent >= 70) return "bg-[var(--status-warning)]";
   return "bg-primary/70";
 }
 

@@ -37,19 +37,19 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
     </span>
   );
 
-  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
+  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm font-[var(--font-mono)]">{statusLabel(status)}</span></span> : circle;
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-[var(--sidebar-accent)] rounded-[2px] px-1 -mx-1 py-0.5 transition-colors">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm font-[var(--font-mono)]">{statusLabel(status)}</span>
     </button>
   ) : circle;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      <PopoverContent className="w-40 p-1 rounded-[2px]" align="start">
         {allStatuses.map((s) => (
           <Button
             key={s}

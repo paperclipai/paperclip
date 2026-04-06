@@ -656,7 +656,7 @@ export function IssueDocumentsSection({
 
       {draft?.isNew && (
         <div
-          className="space-y-3 rounded-lg border border-border bg-accent/10 p-3"
+          className="space-y-3 rounded-[2px] border border-border bg-accent/10 p-3"
           onBlurCapture={handleDraftBlur}
           onKeyDown={handleDraftKeyDown}
         >
@@ -713,13 +713,13 @@ export function IssueDocumentsSection({
         <div
           id="document-plan"
           className={cn(
-            "rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 transition-colors duration-1000",
+            "rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 p-3 transition-colors duration-1000",
             highlightDocumentKey === "plan" && "border-primary/50 bg-primary/5",
           )}
         >
           <div className="mb-2 flex items-center gap-2">
-            <FileText className="h-4 w-4 text-amber-600" />
-            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+            <FileText className="h-4 w-4 text-[var(--status-warning)]" />
+            <span className="rounded-[2px] border border-[var(--status-warning)]/30 px-2 py-0.5 font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--status-warning)]">
               PLAN
             </span>
           </div>
@@ -754,7 +754,7 @@ export function IssueDocumentsSection({
               key={doc.id}
               id={`document-${doc.key}`}
               className={cn(
-                "rounded-lg border border-border p-3 transition-colors duration-1000",
+                "rounded-[2px] border border-border p-3 transition-colors duration-1000",
                 highlightDocumentKey === doc.key && "border-primary/50 bg-primary/5",
               )}
             >
@@ -770,7 +770,7 @@ export function IssueDocumentsSection({
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
-                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    <span className="shrink-0 rounded-[2px] border border-border px-2 py-0.5 font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
                     <DropdownMenu
@@ -783,7 +783,7 @@ export function IssueDocumentsSection({
                           size="sm"
                           className={cn(
                             "h-auto px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
-                            isHistoricalPreview && "text-amber-300 hover:text-amber-200",
+                            isHistoricalPreview && "text-[var(--status-warning)] hover:text-[var(--status-warning)]/80",
                           )}
                         >
                           rev {displayedRevisionNumber}
@@ -809,7 +809,7 @@ export function IssueDocumentsSection({
                                     <div className="flex items-center gap-2">
                                       <span className="font-medium">rev {revision.revisionNumber}</span>
                                       {isCurrentRevision ? (
-                                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                        <span className="rounded-[2px] border border-border px-1.5 py-0.5 font-[var(--font-mono)] text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                                           Current
                                         </span>
                                       ) : null}
@@ -912,10 +912,10 @@ export function IssueDocumentsSection({
                     : undefined}
                 >
                   {isHistoricalPreview && selectedHistoricalRevision && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                    <div className="rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">
+                          <p className="text-sm font-medium text-[var(--status-warning)]">
                             Viewing revision {selectedHistoricalRevision.revisionNumber}
                           </p>
                           <p className="text-xs text-muted-foreground">
@@ -947,10 +947,10 @@ export function IssueDocumentsSection({
                     </div>
                   )}
                   {activeConflict && !isHistoricalPreview && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                    <div className="rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-[var(--status-warning)]">Out of date</p>
                           <p className="text-xs text-muted-foreground">
                             This document changed while you were editing. Your local draft is preserved and autosave is paused.
                           </p>
@@ -1023,7 +1023,7 @@ export function IssueDocumentsSection({
                     }`}
                   >
                     {isHistoricalPreview ? (
-                      <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
+                      <div className="rounded-[2px] border border-[var(--status-warning)]/20 bg-background/50 p-3">
                         {renderBody(displayedBody, documentBodyContentClassName)}
                       </div>
                     ) : (
@@ -1058,9 +1058,9 @@ export function IssueDocumentsSection({
                     <span
                       className={`text-[11px] transition-opacity duration-150 ${
                         isHistoricalPreview
-                          ? "text-amber-300"
+                          ? "text-[var(--status-warning)]"
                           : activeConflict
-                          ? "text-amber-300"
+                          ? "text-[var(--status-warning)]"
                           : autosaveState === "error"
                             ? "text-destructive"
                             : "text-muted-foreground"

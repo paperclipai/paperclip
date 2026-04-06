@@ -1,5 +1,5 @@
 /**
- * @fileoverview Frontend API client for the Paperclip plugin system.
+ * @fileoverview Frontend API client for the OhMyCompany plugin system.
  *
  * All functions in `pluginsApi` map 1:1 to REST endpoints on
  * `server/src/routes/plugins.ts`. Call sites should consume these functions

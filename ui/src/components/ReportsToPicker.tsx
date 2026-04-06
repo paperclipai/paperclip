@@ -42,8 +42,8 @@ export function ReportsToPicker({
         <button
           type="button"
           className={cn(
-            "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-            terminatedManager && "border-amber-600/45 bg-amber-500/5",
+            "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-[2px] border border-border px-2 py-1 text-xs hover:bg-[var(--sidebar-accent)] transition-colors",
+            terminatedManager && "border-[var(--status-warning)]/45 bg-[var(--status-warning)]/5",
             disabled && "opacity-60 cursor-not-allowed",
           )}
           disabled={disabled}
@@ -59,7 +59,7 @@ export function ReportsToPicker({
               <span
                 className={cn(
                   "min-w-0 truncate",
-                  terminatedManager && "text-amber-900 dark:text-amber-200",
+                  terminatedManager && "text-[var(--status-warning)]",
                 )}
               >
                 {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}
@@ -79,7 +79,7 @@ export function ReportsToPicker({
         <button
           type="button"
           className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-[2px] hover:bg-[var(--sidebar-accent)]",
             value === null && "bg-accent",
           )}
           onClick={() => {
@@ -107,7 +107,7 @@ export function ReportsToPicker({
             type="button"
             key={a.id}
             className={cn(
-              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
+              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded-[2px] hover:bg-[var(--sidebar-accent)] overflow-hidden",
               a.id === value && "bg-accent",
             )}
             onClick={() => {

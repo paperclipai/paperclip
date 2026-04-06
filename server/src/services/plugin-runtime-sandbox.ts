@@ -39,12 +39,58 @@ interface LoadedModule {
 
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MODULE_PATH_SUFFIXES = ["", ".js", ".mjs", ".cjs", "/index.js", "/index.mjs", "/index.cjs"];
-const DEFAULT_GLOBALS: Record<string, unknown> = {
+/**
+ * Create sandboxed timer globals that track IDs for cleanup after execution.
+ */
+function createTrackedTimerGlobals() {
+  const timeoutIds = new Set<ReturnType<typeof setTimeout>>();
+  const intervalIds = new Set<ReturnType<typeof setInterval>>();
+
+  const trackedSetTimeout = (cb: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    const id = setTimeout((...a: unknown[]) => {
+      timeoutIds.delete(id);
+      cb(...a);
+    }, ms, ...args);
+    timeoutIds.add(id);
+    return id;
+  };
+
+  const trackedClearTimeout = (id: ReturnType<typeof setTimeout>) => {
+    timeoutIds.delete(id);
+    clearTimeout(id);
+  };
+
+  const trackedSetInterval = (cb: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    const id = setInterval(cb, ms, ...args);
+    intervalIds.add(id);
+    return id;
+  };
+
+  const trackedClearInterval = (id: ReturnType<typeof setInterval>) => {
+    intervalIds.delete(id);
+    clearInterval(id);
+  };
+
+  const clearAllTimers = () => {
+    for (const id of timeoutIds) clearTimeout(id);
+    timeoutIds.clear();
+    for (const id of intervalIds) clearInterval(id);
+    intervalIds.clear();
+  };
+
+  return {
+    globals: {
+      setTimeout: trackedSetTimeout,
+      clearTimeout: trackedClearTimeout,
+      setInterval: trackedSetInterval,
+      clearInterval: trackedClearInterval,
+    },
+    clearAllTimers,
+  };
+}
+
+const DEFAULT_STATIC_GLOBALS: Record<string, unknown> = {
   console,
-  setTimeout,
-  clearTimeout,
-  setInterval,
-  clearInterval,
   URL,
   URLSearchParams,
   TextEncoder,
@@ -81,8 +127,11 @@ export async function loadPluginModuleInSandbox(
   const entrypointPath = path.resolve(options.entrypointPath);
   const pluginRoot = path.dirname(entrypointPath);
 
+  const { globals: timerGlobals, clearAllTimers } = createTrackedTimerGlobals();
+
   const context = vm.createContext({
-    ...DEFAULT_GLOBALS,
+    ...DEFAULT_STATIC_GLOBALS,
+    ...timerGlobals,
     ...options.allowedGlobals,
   });
 
@@ -168,7 +217,13 @@ export async function loadPluginModuleInSandbox(
     return normalizedExports;
   };
 
-  const entryExports = loadModuleSync(entrypointPath);
+  let entryExports: Record<string, unknown>;
+  try {
+    entryExports = loadModuleSync(entrypointPath);
+  } finally {
+    // Clean up any pending timers left by the plugin during module evaluation
+    clearAllTimers();
+  }
 
   return {
     namespace: { ...entryExports },

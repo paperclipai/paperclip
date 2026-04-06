@@ -487,7 +487,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Identity</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? "border border-border rounded-[2px] p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
@@ -549,7 +549,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }}
                   />
                 </Field>
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div className="rounded-[2px] border border-[var(--status-warning)]/25 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
                   Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
                 </div>
               </>
@@ -578,7 +578,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Button>
           )}
         </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+        <div className={cn(cards ? "border border-border rounded-[2px] p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && (
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
@@ -686,7 +686,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }}
                 />
               </Field>
-              <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              <div className="rounded-[2px] border border-[var(--status-warning)]/25 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
                 Prompt template is replayed on every heartbeat. Prefer small task framing and variables like <code>{"{{ context.* }}"}</code> or <code>{"{{ run.* }}"}</code>; avoid repeating stable instructions here.
               </div>
             </>
@@ -705,7 +705,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? "border border-border rounded-[2px] p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -785,7 +785,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   {adapterType === "codex_local" &&
                     codexSearchEnabled &&
                     currentThinkingEffort === "minimal" && (
-                      <p className="text-xs text-amber-400">
+                      <p className="text-xs text-[var(--status-warning)]">
                         Codex may reject `minimal` thinking when search is enabled.
                       </p>
                     )}
@@ -812,7 +812,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       }}
                     />
                   </Field>
-                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  <div className="rounded-[2px] border border-[var(--status-warning)]/25 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
                     Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
                   </div>
                 </>
@@ -900,7 +900,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? "border border-border rounded-[2px] p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <ToggleWithNumber
               label="Heartbeat on interval"
               hint={help.heartbeatInterval}
@@ -921,7 +921,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
+          <div className={cn(cards ? "border border-border rounded-[2px] overflow-hidden" : "")}>
             <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <ToggleWithNumber
                 label="Heartbeat on interval"
@@ -992,10 +992,10 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
   const statusClass =
     result.status === "pass"
-      ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
+      ? "text-[var(--status-active)] border-[var(--status-active)]/30 bg-[var(--status-active)]/10"
       : result.status === "warn"
-        ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
-        : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
+        ? "text-[var(--status-warning)] border-[var(--status-warning)]/30 bg-[var(--status-warning)]/10"
+        : "text-[var(--status-error)] border-[var(--status-error)]/30 bg-[var(--status-error)]/10";
 
   return (
     <div className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>
@@ -1503,7 +1503,7 @@ function ModelDropdown({
               <span className="block w-full text-left truncate font-mono text-xs" title={value}>
                 {value}
               </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+              <span className="shrink-0 ml-auto text-[9px] font-[var(--font-mono)] font-medium uppercase px-1.5 py-0.5 rounded-[2px] bg-[var(--status-active)]/15 text-[var(--status-active)] border border-[var(--status-active)]/20">
                 current
               </span>
             </button>
@@ -1522,7 +1522,7 @@ function ModelDropdown({
               <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
                 {detectedModel}
               </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
+              <span className="shrink-0 ml-auto text-[9px] font-[var(--font-mono)] font-medium uppercase px-1.5 py-0.5 rounded-[2px] bg-[var(--primary)]/15 text-[var(--primary)] border border-[var(--primary)]/20">
                 detected
               </span>
             </button>

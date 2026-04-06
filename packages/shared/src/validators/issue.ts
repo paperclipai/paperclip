@@ -85,6 +85,7 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  circular: z.boolean().optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;

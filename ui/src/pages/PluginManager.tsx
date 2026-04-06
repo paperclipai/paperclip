@@ -46,7 +46,7 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
 /**
  * PluginManager page component.
  *
- * Provides a management UI for the Paperclip plugin system:
+ * Provides a management UI for the OhMyCompany plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
  * - Allows installing new plugins by npm package name.
  * - Provides per-plugin actions: enable, disable, navigate to settings.
@@ -97,13 +97,23 @@ export function PluginManager() {
   };
 
   const installMutation = useMutation({
-    mutationFn: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
-      pluginsApi.install(params),
+    mutationFn: async (params: { packageName: string; version?: string; isLocalPath?: boolean }) => {
+      const result = await pluginsApi.install(params);
+      // Auto-enable the plugin if it's not already in 'ready' state
+      if (result && result.id && result.status !== "ready") {
+        try {
+          await pluginsApi.enable(result.id);
+        } catch {
+          // Non-fatal: plugin installed but couldn't auto-enable
+        }
+      }
+      return result;
+    },
     onSuccess: () => {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
-      pushToast({ title: "Plugin installed successfully", tone: "success" });
+      pushToast({ title: "Plugin installed and activated", tone: "success" });
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
@@ -163,7 +173,7 @@ export function PluginManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Plugin Manager</h1>
+          <h1 className="text-xl font-[var(--font-display)] uppercase tracking-[0.06em]">Plugin Manager</h1>
         </div>
         
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
@@ -204,9 +214,9 @@ export function PluginManager() {
         </Dialog>
       </div>
 
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+      <div className="rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-4 py-3">
         <div className="flex items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">Plugins are alpha.</p>
             <p className="text-muted-foreground">
@@ -219,9 +229,12 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge variant="outline">Examples</Badge>
+          <h2 className="hud-section-header">Available Plugins</h2>
+          <Badge variant="outline">Bundled</Badge>
         </div>
+        <p className="text-xs text-muted-foreground">
+          These plugins are bundled with OhMyCompany. Click Install to activate them. You can also install custom plugins via the Install Plugin button above.
+        </p>
 
         {examplesQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">Loading bundled examples...</div>
@@ -232,7 +245,7 @@ export function PluginManager() {
             No bundled example plugins were found in this checkout.
           </div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <ul className="divide-y rounded-[2px] border bg-card">
             {examples.map((example) => {
               const installedPlugin = installedByPackageName.get(example.packageName);
               const installPending =
@@ -250,7 +263,7 @@ export function PluginManager() {
                         {installedPlugin ? (
                           <Badge
                             variant={installedPlugin.status === "ready" ? "default" : "secondary"}
-                            className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
+                            className={installedPlugin.status === "ready" ? "bg-[var(--status-active)] hover:bg-[var(--status-active)]/80" : ""}
                           >
                             {installedPlugin.status}
                           </Badge>
@@ -303,14 +316,18 @@ export function PluginManager() {
         )}
       </section>
 
+      {/* Featured plugins section removed — the npm packages listed were not
+          published. All installable plugins are shown in the "Available Plugins"
+          section above, which uses local-path install for bundled examples. */}
+
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Puzzle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Installed Plugins</h2>
+          <h2 className="hud-section-header">Installed Plugins</h2>
         </div>
 
         {!installedPlugins.length ? (
-          <Card className="bg-muted/30">
+          <Card className="hud-panel hud-shimmer rounded-[2px] bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
               <p className="text-sm font-medium">No plugins installed</p>
@@ -320,7 +337,7 @@ export function PluginManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <ul className="divide-y rounded-[2px] border bg-card">
             {installedPlugins.map((plugin) => (
               <li key={plugin.id}>
                 <div className="flex items-start gap-4 px-4 py-3">
@@ -346,15 +363,15 @@ export function PluginManager() {
                       {plugin.manifestJson.description || "No description provided."}
                     </p>
                     {plugin.status === "error" && (
-                      <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2">
+                      <div className="mt-3 rounded-[2px] border border-[var(--status-error)]/25 bg-[var(--status-error)]/[0.06] px-3 py-2">
                         <div className="flex flex-wrap items-start gap-3">
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
+                            <div className="flex items-center gap-2 text-sm font-medium text-[var(--status-error)]">
                               <AlertTriangle className="h-4 w-4 shrink-0" />
                               <span>Plugin error</span>
                             </div>
                             <p
-                              className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"
+                              className="mt-1 text-sm text-[var(--status-error)]/90 break-words"
                               title={plugin.lastError ?? undefined}
                             >
                               {errorSummaryByPluginId.get(plugin.id)}
@@ -363,7 +380,7 @@ export function PluginManager() {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="border-red-500/30 bg-background/60 text-red-700 hover:bg-red-500/10 hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
+                            className="border-[var(--status-error)]/30 bg-background/60 text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
                             onClick={() => setErrorDetailsPlugin(plugin)}
                           >
                             View full error
@@ -385,7 +402,7 @@ export function PluginManager() {
                           }
                           className={cn(
                             "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
+                            plugin.status === "ready" ? "bg-[var(--status-active)] hover:bg-[var(--status-active)]/80" : ""
                           )}
                         >
                           {plugin.status}
@@ -404,7 +421,7 @@ export function PluginManager() {
                           }}
                           disabled={enableMutation.isPending || disableMutation.isPending}
                         >
-                          <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
+                          <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-[var(--status-active)]" : "")} />
                         </Button>
                         <Button
                           variant="outline"
@@ -477,14 +494,14 @@ export function PluginManager() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="rounded-md border border-red-500/25 bg-red-500/[0.06] px-4 py-3">
+            <div className="rounded-[2px] border border-[var(--status-error)]/25 bg-[var(--status-error)]/[0.06] px-4 py-3">
               <div className="flex items-start gap-3">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-error)]" />
                 <div className="space-y-1 text-sm">
-                  <p className="font-medium text-red-700 dark:text-red-300">
+                  <p className="font-medium text-[var(--status-error)]">
                     What errored
                   </p>
-                  <p className="text-red-700/90 dark:text-red-200/90 break-words">
+                  <p className="text-[var(--status-error)]/90 break-words">
                     {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
                   </p>
                 </div>
@@ -492,7 +509,7 @@ export function PluginManager() {
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">Full error output</p>
-              <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
+              <pre className="max-h-[50vh] overflow-auto rounded-[2px] border bg-muted/40 p-3 font-[var(--font-mono)] text-xs leading-5 whitespace-pre-wrap break-words">
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>
             </div>
@@ -507,3 +524,11 @@ export function PluginManager() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Featured Plugins — curated list of suggested plugins for discovery
+// ---------------------------------------------------------------------------
+
+/* Featured plugins section was removed — the npm package names listed
+   were never published. All installable plugins are shown in the
+   "Available Plugins" examples section above. */

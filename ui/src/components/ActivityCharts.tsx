@@ -23,7 +23,7 @@ function DateLabels({ days }: { days: string[] }) {
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-[9px] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
+            <span className="text-[9px] font-[var(--font-mono)] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
           ) : null}
         </div>
       ))}
@@ -35,8 +35,8 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+        <span key={item.label} className="flex items-center gap-1 text-[9px] font-[var(--font-mono)] text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-[1px] shrink-0" style={{ backgroundColor: item.color }} />
           {item.label}
         </span>
       ))}
@@ -46,10 +46,10 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
+    <div className="border border-border rounded-[2px] p-4 space-y-3 hud-panel hud-shimmer">
       <div>
-        <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
+        <h3 className="text-[10px] font-semibold font-[var(--font-display)] uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>
+        {subtitle && <span className="text-[9px] font-[var(--font-mono)] text-muted-foreground/60">{subtitle}</span>}
       </div>
       {children}
     </div>
@@ -105,10 +105,10 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#6b7280",
+  critical: "oklch(0.65 0.2 25)",
+  high: "oklch(0.7 0.15 55)",
+  medium: "oklch(0.75 0.12 85)",
+  low: "oklch(0.55 0.02 240)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -158,13 +158,13 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#8b5cf6",
-  in_review: "#a855f7",
-  done: "#10b981",
-  blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
+  todo: "oklch(0.72 0.15 220)",
+  in_progress: "oklch(0.65 0.18 290)",
+  in_review: "oklch(0.6 0.2 300)",
+  done: "oklch(0.7 0.18 155)",
+  blocked: "oklch(0.65 0.2 25)",
+  cancelled: "oklch(0.55 0.02 240)",
+  backlog: "oklch(0.5 0.02 240)",
 };
 
 const statusLabels: Record<string, string> = {

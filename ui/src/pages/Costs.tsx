@@ -9,7 +9,7 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, Pencil, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -80,18 +80,128 @@ function MetricTile({
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="border border-border p-4">
+    <div className="border border-border rounded-[2px] p-4 hud-panel hud-shimmer">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-          <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
+          <div className="text-[11px] font-[var(--font-display)] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div className="mt-2 text-2xl font-semibold font-[var(--font-mono)] tabular-nums">{value}</div>
+          <div className="mt-1 text-xs leading-5 text-muted-foreground font-[var(--font-mono)]">{subtitle}</div>
         </div>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
       </div>
     </div>
+  );
+}
+
+function CompanyBudgetEditor({
+  companyId,
+  currentBudgetCents,
+  currentSpendCents,
+  onSave,
+  isSaving,
+}: {
+  companyId: string;
+  currentBudgetCents: number;
+  currentSpendCents: number;
+  onSave: (amountCents: number) => void;
+  isSaving: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [budgetInput, setBudgetInput] = useState("");
+
+  const hasBudget = currentBudgetCents > 0;
+
+  function startEditing() {
+    setBudgetInput(hasBudget ? (currentBudgetCents / 100).toFixed(2) : "");
+    setEditing(true);
+  }
+
+  function handleSave() {
+    const parsed = parseFloat(budgetInput.trim());
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onSave(Math.round(parsed * 100));
+    setEditing(false);
+  }
+
+  function handleRemove() {
+    onSave(0);
+    setEditing(false);
+  }
+
+  return (
+    <Card className="border-border/70">
+      <CardHeader className="px-5 pt-5 pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Company Monthly Budget</CardTitle>
+            <CardDescription>
+              Set a monthly spending cap for the entire company. Agents will be paused when the budget is exceeded.
+            </CardDescription>
+          </div>
+          {!editing && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={startEditing}>
+              <Pencil className="h-3.5 w-3.5" />
+              {hasBudget ? "Edit Budget" : "Set Budget"}
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-0">
+        {editing ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 max-w-xs">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="w-full rounded-[2px] border border-border bg-secondary pl-7 pr-3 py-2 text-sm outline-none font-[var(--font-mono)] tabular-nums"
+                  placeholder="0.00"
+                  value={budgetInput}
+                  onChange={(e) => setBudgetInput(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <span className="text-sm text-muted-foreground">USD / month</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleSave} disabled={isSaving || !budgetInput.trim()}>
+                {isSaving ? "Saving..." : "Save"}
+              </Button>
+              {hasBudget && (
+                <Button size="sm" variant="destructive" onClick={handleRemove} disabled={isSaving}>
+                  Remove Budget
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-baseline gap-3">
+            <span className="text-2xl font-semibold tabular-nums">
+              {hasBudget ? formatCents(currentBudgetCents) : "No limit"}
+            </span>
+            {hasBudget && (
+              <span className="text-sm text-muted-foreground">
+                {formatCents(currentSpendCents)} spent ({currentBudgetCents > 0
+                  ? Math.round((currentSpendCents / currentBudgetCents) * 100)
+                  : 0}%)
+              </span>
+            )}
+            {!hasBudget && (
+              <span className="text-sm text-muted-foreground">
+                No monthly cap configured
+              </span>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -228,6 +338,17 @@ export function Costs() {
       budgetsApi.resolveIncident(companyId, input.incidentId, input),
     onSuccess: invalidateBudgetViews,
   });
+
+  const recalculateMutation = useMutation({
+    mutationFn: () => costsApi.recalculate(companyId),
+    onSuccess: (result) => {
+      // Invalidate all cost-related queries for this company (any date range)
+      queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      setRecalcResult(result);
+    },
+  });
+  const [recalcResult, setRecalcResult] = useState<{ updated: number; totalCentsAdded: number } | null>(null);
 
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
@@ -541,11 +662,25 @@ export function Costs() {
       <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-                <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
+                <h1 className="text-3xl font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Costs</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                   Inference spend, platform fees, credits, and live quota windows.
                 </p>
+                {recalcResult && recalcResult.updated > 0 && (
+                  <p className="mt-1 text-xs text-[var(--status-active)] font-[var(--font-mono)]">
+                    Recalculated {recalcResult.updated} events — added {formatCents(recalcResult.totalCentsAdded)}
+                  </p>
+                )}
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={recalculateMutation.isPending}
+              onClick={() => recalculateMutation.mutate()}
+              title="Estimate costs for events that have token usage but no reported cost"
+            >
+              {recalculateMutation.isPending ? "Recalculating..." : "Recalculate Costs"}
+            </Button>
 
             <div className="flex flex-wrap items-center gap-2">
               {PRESET_KEYS.map((key) => (
@@ -567,14 +702,14 @@ export function Costs() {
                 type="date"
                 value={customFrom}
                 onChange={(event) => setCustomFrom(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                className="h-9 rounded-[2px] border border-input bg-secondary px-3 text-sm text-foreground font-[var(--font-mono)]"
               />
               <span className="text-sm text-muted-foreground">to</span>
               <input
                 type="date"
                 value={customTo}
                 onChange={(event) => setCustomTo(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                className="h-9 rounded-[2px] border border-input bg-secondary px-3 text-sm text-foreground font-[var(--font-mono)]"
               />
             </div>
           ) : null}
@@ -674,8 +809,8 @@ export function Costs() {
                             : "Unlimited budget"}
                         </div>
                       </div>
-                      <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
+                      <div className="border border-border rounded-[2px] px-4 py-3 text-right">
+                        <div className="text-[11px] font-[var(--font-display)] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
                           {formatTokens(inferenceTokenTotal)}
                         </div>
@@ -688,10 +823,10 @@ export function Costs() {
                             className={cn(
                               "h-full transition-[width,background-color] duration-150",
                               spendData.summary.utilizationPercent > 90
-                                ? "bg-red-400"
+                                ? "bg-[var(--status-error)]"
                                 : spendData.summary.utilizationPercent > 70
-                                  ? "bg-yellow-400"
-                                  : "bg-emerald-400",
+                                  ? "bg-[var(--status-warning)]"
+                                  : "bg-[var(--status-active)]",
                             )}
                             style={{ width: `${Math.min(100, spendData.summary.utilizationPercent)}%` }}
                           />
@@ -728,7 +863,7 @@ export function Costs() {
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
                         return (
-                          <div key={row.agentId} className="border border-border px-4 py-3">
+                          <div key={row.agentId} className="border border-border rounded-[2px] px-4 py-3">
                             <div
                               className={cn("flex items-start justify-between gap-3", hasBreakdown ? "cursor-pointer select-none" : "")}
                               onClick={() => hasBreakdown && toggleAgent(row.agentId)}
@@ -814,7 +949,7 @@ export function Costs() {
                         spendData?.byProject.map((row, index) => (
                           <div
                             key={row.projectId ?? `unattributed-${index}`}
-                            className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
+                            className="flex items-center justify-between gap-3 border border-border rounded-[2px] px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
                             <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
@@ -838,6 +973,21 @@ export function Costs() {
             <p className="text-sm text-destructive">{(budgetError as Error).message}</p>
           ) : (
             <>
+              <CompanyBudgetEditor
+                companyId={companyId}
+                currentBudgetCents={spendData?.summary.budgetCents ?? 0}
+                currentSpendCents={spendData?.summary.spendCents ?? 0}
+                onSave={(amount) =>
+                  policyMutation.mutate({
+                    scopeType: "company",
+                    scopeId: companyId,
+                    amount,
+                    windowKind: "calendar_month_utc",
+                  })
+                }
+                isSaving={policyMutation.isPending}
+              />
+
               <Card className="border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))]">
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
@@ -876,7 +1026,7 @@ export function Costs() {
               {activeBudgetIncidents.length > 0 ? (
                 <div className="space-y-3">
                   <div>
-                    <h2 className="text-lg font-semibold">Active incidents</h2>
+                    <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Active incidents</h2>
                     <p className="text-sm text-muted-foreground">
                       Resolve hard stops here by raising the budget or explicitly keeping the scope paused.
                     </p>
@@ -907,7 +1057,7 @@ export function Costs() {
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
-                        <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
+                        <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">{scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
                             ? "Company-wide monthly policy."

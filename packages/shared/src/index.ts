@@ -134,6 +134,16 @@ export {
   type PluginWebhookDeliveryStatus,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  DELIVERABLE_TYPES,
+  DELIVERABLE_STATUSES,
+  DELIVERABLE_PRIORITIES,
+  DELIVERABLE_CONTENT_KINDS,
+  DELIVERABLE_STAGE_STATUSES,
+  type DeliverableType,
+  type DeliverableStatus,
+  type DeliverablePriority,
+  type DeliverableContentKind,
+  type DeliverableStageStatus,
 } from "./constants.js";
 
 export type {
@@ -579,6 +589,12 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  createDeliverableSchema,
+  updateDeliverableSchema,
+  addDeliverableCommentSchema,
+  type CreateDeliverable,
+  type UpdateDeliverable,
+  type AddDeliverableComment,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

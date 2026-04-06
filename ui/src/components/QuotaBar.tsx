@@ -12,9 +12,9 @@ interface QuotaBarProps {
 }
 
 function fillColor(pct: number): string {
-  if (pct > 90) return "bg-red-400";
-  if (pct > 70) return "bg-yellow-400";
-  return "bg-green-400";
+  if (pct > 90) return "bg-[var(--status-error)]";
+  if (pct > 70) return "bg-[var(--status-warning)]";
+  return "bg-[var(--status-active)]";
 }
 
 export function QuotaBar({
@@ -33,11 +33,11 @@ export function QuotaBar({
     <div className={cn("space-y-1.5", className)}>
       {/* row header */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">{label}</span>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs font-medium tabular-nums">{leftLabel}</span>
+          <span className="text-xs font-[var(--font-mono)] font-medium tabular-nums">{leftLabel}</span>
           {rightLabel && (
-            <span className="text-xs text-muted-foreground tabular-nums">{rightLabel}</span>
+            <span className="text-xs font-[var(--font-mono)] text-muted-foreground tabular-nums">{rightLabel}</span>
           )}
         </div>
       </div>

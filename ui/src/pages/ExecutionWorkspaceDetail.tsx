@@ -181,7 +181,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 
 function StatusPill({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground", className)}>
+    <div className={cn("inline-flex items-center rounded-[2px] border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground font-[var(--font-mono)] uppercase", className)}>
       {children}
     </div>
   );
@@ -190,7 +190,7 @@ function StatusPill({ children, className }: { children: React.ReactNode; classN
 function MonoValue({ value, copy }: { value: string; copy?: boolean }) {
   return (
     <div className="inline-flex max-w-full items-start gap-2">
-      <span className="break-all font-mono text-xs">{value}</span>
+      <span className="break-all font-[var(--font-mono)] text-xs">{value}</span>
       {copy ? (
         <CopyText text={value} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Copied">
           <Copy className="h-3.5 w-3.5" />
@@ -384,22 +384,22 @@ export function ExecutionWorkspaceDetail() {
           </Button>
           <StatusPill>{workspace.mode}</StatusPill>
           <StatusPill>{workspace.providerType}</StatusPill>
-          <StatusPill className={workspace.status === "active" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : undefined}>
+          <StatusPill className={workspace.status === "active" ? "border-[var(--status-active)]/30 bg-[var(--status-active)]/10 text-[var(--status-active)]" : undefined}>
             {workspace.status}
           </StatusPill>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.95fr)]">
           <div className="space-y-6">
-            <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="space-y-2">
                   <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
                     Execution workspace
                   </div>
-                  <h1 className="text-2xl font-semibold">{workspace.name}</h1>
+                  <h1 className="text-2xl font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">{workspace.name}</h1>
                   <p className="max-w-2xl text-sm text-muted-foreground">
-                    Configure the concrete runtime workspace that Paperclip reuses for this issue flow. These settings stay
+                    Configure the concrete runtime workspace that OhMyCompany reuses for this issue flow. These settings stay
                     attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown,
                     and runtime-service behavior in sync with the actual workspace being reused.
                   </p>
@@ -421,7 +421,7 @@ export function ExecutionWorkspaceDetail() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Workspace name">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.name}
                     onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
                     placeholder="Execution workspace name"
@@ -429,7 +429,7 @@ export function ExecutionWorkspaceDetail() {
                 </Field>
                 <Field label="Branch name" hint="Useful for isolated worktrees">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.branchName}
                     onChange={(event) => setForm((current) => current ? { ...current, branchName: event.target.value } : current)}
                     placeholder="PAP-946-workspace"
@@ -440,7 +440,7 @@ export function ExecutionWorkspaceDetail() {
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <Field label="Working directory">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.cwd}
                     onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
                     placeholder="/absolute/path/to/workspace"
@@ -448,7 +448,7 @@ export function ExecutionWorkspaceDetail() {
                 </Field>
                 <Field label="Provider path / ref">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.providerRef}
                     onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
                     placeholder="/path/to/worktree or provider ref"
@@ -459,7 +459,7 @@ export function ExecutionWorkspaceDetail() {
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <Field label="Repo URL">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.repoUrl}
                     onChange={(event) => setForm((current) => current ? { ...current, repoUrl: event.target.value } : current)}
                     placeholder="https://github.com/org/repo"
@@ -467,7 +467,7 @@ export function ExecutionWorkspaceDetail() {
                 </Field>
                 <Field label="Base ref">
                   <input
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.baseRef}
                     onChange={(event) => setForm((current) => current ? { ...current, baseRef: event.target.value } : current)}
                     placeholder="origin/main"
@@ -476,9 +476,9 @@ export function ExecutionWorkspaceDetail() {
               </div>
 
               <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                <Field label="Provision command" hint="Runs when OhMyCompany prepares this execution workspace">
                   <textarea
-                    className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="min-h-28 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.provisionCommand}
                     onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
                     placeholder="bash ./scripts/provision-worktree.sh"
@@ -486,7 +486,7 @@ export function ExecutionWorkspaceDetail() {
                 </Field>
                 <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
                   <textarea
-                    className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="min-h-28 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.teardownCommand}
                     onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
                     placeholder="bash ./scripts/teardown-worktree.sh"
@@ -497,14 +497,14 @@ export function ExecutionWorkspaceDetail() {
               <div className="mt-4 grid gap-4">
                 <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
                   <textarea
-                    className="min-h-24 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                    className="min-h-24 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
                     value={form.cleanupCommand}
                     onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
                     placeholder="pkill -f vite || true"
                   />
                 </Field>
 
-                <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-3">
+                <div className="rounded-[2px] border border-dashed border-border/70 bg-muted/20 px-3 py-3">
                   <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                     <div>
                       <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
@@ -549,7 +549,7 @@ export function ExecutionWorkspaceDetail() {
                     <label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</label>
                   </div>
                   <textarea
-                    className="min-h-48 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    className="min-h-48 w-full rounded-[2px] border border-border bg-background px-3 py-2 font-[var(--font-mono)] text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     value={form.workspaceRuntime}
                     onChange={(event) => setForm((current) => current ? { ...current, workspaceRuntime: event.target.value } : current)}
                     disabled={form.inheritRuntime}
@@ -583,10 +583,10 @@ export function ExecutionWorkspaceDetail() {
           </div>
 
           <div className="space-y-6">
-            <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Linked objects</div>
-                <h2 className="text-lg font-semibold">Workspace context</h2>
+                <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Workspace context</h2>
               </div>
               <Separator className="my-4" />
               <DetailRow label="Project">
@@ -628,10 +628,10 @@ export function ExecutionWorkspaceDetail() {
               </DetailRow>
             </div>
 
-            <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Paths and refs</div>
-                <h2 className="text-lg font-semibold">Concrete location</h2>
+                <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Concrete location</h2>
               </div>
               <Separator className="my-4" />
               <DetailRow label="Working dir">
@@ -672,11 +672,11 @@ export function ExecutionWorkspaceDetail() {
               </DetailRow>
             </div>
 
-            <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="space-y-1">
                   <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime services</div>
-                  <h2 className="text-lg font-semibold">Attached services</h2>
+                  <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Attached services</h2>
                   <p className="text-sm text-muted-foreground">
                     Source: {runtimeConfigSource === "execution_workspace"
                       ? "execution workspace override"
@@ -720,7 +720,7 @@ export function ExecutionWorkspaceDetail() {
               {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
                 <div className="space-y-3">
                   {workspace.runtimeServices.map((service) => (
-                    <div key={service.id} className="rounded-xl border border-border/80 bg-background px-3 py-2">
+                    <div key={service.id} className="rounded-[2px] border border-border/80 bg-background px-3 py-2">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <div className="text-sm font-medium">{service.serviceName}</div>
@@ -751,10 +751,10 @@ export function ExecutionWorkspaceDetail() {
               )}
             </div>
 
-            <div className="rounded-2xl border border-border bg-card p-5">
+            <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Recent operations</div>
-                <h2 className="text-lg font-semibold">Runtime and cleanup logs</h2>
+                <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Runtime and cleanup logs</h2>
               </div>
               <Separator className="my-4" />
               {workspaceOperationsQuery.isLoading ? (
@@ -768,7 +768,7 @@ export function ExecutionWorkspaceDetail() {
               ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
                 <div className="space-y-3">
                   {workspaceOperationsQuery.data.slice(0, 6).map((operation) => (
-                    <div key={operation.id} className="rounded-xl border border-border/80 bg-background px-3 py-2">
+                    <div key={operation.id} className="rounded-[2px] border border-border/80 bg-background px-3 py-2">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>
@@ -794,11 +794,11 @@ export function ExecutionWorkspaceDetail() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-border bg-card p-5">
+        <div className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div className="space-y-1">
               <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Linked issues</div>
-              <h2 className="text-lg font-semibold">Issues using this workspace</h2>
+              <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Issues using this workspace</h2>
               <p className="text-sm text-muted-foreground">
                 Any issue attached to this execution workspace appears here so you can review the full session context before reusing or closing it.
               </p>
@@ -820,11 +820,11 @@ export function ExecutionWorkspaceDetail() {
                 <Link
                   key={issue.id}
                   to={issueUrl(issue)}
-                  className="min-w-72 rounded-xl border border-border/80 bg-background px-4 py-3 transition-colors hover:bg-accent/20"
+                  className="min-w-72 rounded-[2px] border border-border/80 bg-background px-4 py-3 transition-colors hover:bg-[var(--sidebar-accent)]"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                      <div className="font-mono text-xs text-muted-foreground">
+                      <div className="font-[var(--font-mono)] text-xs text-muted-foreground">
                         {issue.identifier ?? issue.id.slice(0, 8)}
                       </div>
                       <div className="line-clamp-2 text-sm font-medium">{issue.title}</div>

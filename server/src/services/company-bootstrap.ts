@@ -7,14 +7,74 @@ import { logActivity } from "./activity-log.js";
 
 type HeartbeatService = ReturnType<typeof heartbeatService>;
 
+/**
+ * Founding team agent definitions — always created for every new company.
+ * CEO is created first, then all others report to the CEO.
+ */
+const FOUNDING_TEAM = [
+  {
+    name: "CEO",
+    role: "ceo",
+    title: "Chief Executive Officer",
+    capabilities: "leadership, strategy, hiring, delegation, company management, org structure",
+    permissions: { canCreateAgents: true },
+    budgetMonthlyCents: 500,
+  },
+  {
+    name: "Document Manager",
+    role: "document_manager",
+    title: "Document Management System Agent",
+    capabilities: "documentation, deliverables tracking, task filing, knowledge base, reports, filing center, record keeping",
+    permissions: {},
+    budgetMonthlyCents: 300,
+  },
+  {
+    name: "Cybersecurity Expert",
+    role: "cybersecurity",
+    title: "Cybersecurity Expert",
+    capabilities: "security auditing, vulnerability assessment, access control, compliance, threat analysis, incident response",
+    permissions: {},
+    budgetMonthlyCents: 300,
+  },
+  {
+    name: "Integration Expert",
+    role: "integration",
+    title: "Integration Expert",
+    capabilities: "MCP servers, n8n workflows, API integrations, webhooks, platform connectors, data sync, automation",
+    permissions: {},
+    budgetMonthlyCents: 300,
+  },
+  {
+    name: "Quality Control Expert",
+    role: "quality_control",
+    title: "Quality Control Expert",
+    capabilities: "quality assurance, testing, code review, standards enforcement, process improvement, bug tracking",
+    permissions: {},
+    budgetMonthlyCents: 300,
+  },
+  {
+    name: "Finance Expert",
+    role: "finance",
+    title: "Finance Expert",
+    capabilities: "budgeting, cost tracking, financial reporting, spending analysis, resource allocation, ROI analysis",
+    permissions: {},
+    budgetMonthlyCents: 300,
+  },
+] as const;
+
 export function companyBootstrapService(db: Db, heartbeat: HeartbeatService) {
   const agentSvc = agentService(db);
 
   return {
-    async bootstrapCeo(companyId: string, options?: {
+    /**
+     * Bootstrap the full founding team for a newly created company.
+     * Creates CEO + 5 core agents (Document Manager, Cybersecurity, Integration, QC, Finance).
+     * All non-CEO agents report to the CEO.
+     */
+    async bootstrapCompany(companyId: string, options?: {
       ceoModel?: string;
       actorUserId?: string;
-    }): Promise<{ agentId: string } | null> {
+    }): Promise<{ ceoId: string; agentIds: string[] } | null> {
       const [company] = await db
         .select()
         .from(companies)
@@ -23,50 +83,69 @@ export function companyBootstrapService(db: Db, heartbeat: HeartbeatService) {
 
       if (!company) return null;
 
-      // Check if CEO already exists using agentSvc.list()
+      // Check if CEO already exists — skip if company already bootstrapped
       const allAgents = await agentSvc.list(companyId);
-      const ceoAgent = allAgents.find((a: any) => a.role === "ceo" && a.status !== "terminated");
-      if (ceoAgent) {
-        return { agentId: ceoAgent.id };
+      const existingCeo = allAgents.find((a: any) => a.role === "ceo" && a.status !== "terminated");
+      if (existingCeo) {
+        return { ceoId: existingCeo.id, agentIds: allAgents.map((a: any) => a.id) };
       }
 
       const model = options?.ceoModel ?? (company as any).defaultCeoModel ?? "sonnet";
+      const createdIds: string[] = [];
+      let ceoId: string | null = null;
 
-      const ceo = await agentSvc.create(companyId, {
-        name: "CEO",
-        role: "ceo",
-        title: "Chief Executive Officer",
-        status: "idle",
-        adapterType: "claude_local",
-        adapterConfig: { model },
-        runtimeConfig: {},
-        budgetMonthlyCents: 500,
-        spentMonthlyCents: 0,
-        capabilities: "leadership, strategy, hiring, delegation, company management",
-        permissions: { canCreateAgents: true },
-        lastHeartbeatAt: null,
-      });
+      for (const def of FOUNDING_TEAM) {
+        const agent = await agentSvc.create(companyId, {
+          name: def.name,
+          role: def.role,
+          title: def.title,
+          status: "idle",
+          adapterType: "claude_local",
+          adapterConfig: { model },
+          runtimeConfig: {},
+          budgetMonthlyCents: def.budgetMonthlyCents,
+          spentMonthlyCents: 0,
+          capabilities: def.capabilities,
+          permissions: def.permissions as Record<string, unknown>,
+          lastHeartbeatAt: null,
+          // All non-CEO agents report to the CEO
+          reportsTo: def.role === "ceo" ? null : ceoId,
+        });
 
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "auto-bootstrap",
-        action: "agent.created",
-        entityType: "agent",
-        entityId: ceo.id,
-        details: { name: "CEO", role: "ceo", reason: "auto-bootstrap" },
-      });
+        if (def.role === "ceo") {
+          ceoId = agent.id;
+        }
+        createdIds.push(agent.id);
 
-      await heartbeat.wakeup(ceo.id, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "Company bootstrap — CEO initialized, ready for onboarding",
-        payload: { companyId, companyName: company.name, bootstrapAction: "onboard" },
-        requestedByActorType: "system",
-        requestedByActorId: "auto-bootstrap",
-      });
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "auto-bootstrap",
+          action: "agent.created",
+          entityType: "agent",
+          entityId: agent.id,
+          details: { name: def.name, role: def.role, reason: "auto-bootstrap" },
+        });
+      }
 
-      return { agentId: ceo.id };
+      // Wake the CEO to start onboarding — CEO will coordinate the team
+      if (ceoId) {
+        await heartbeat.wakeup(ceoId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "Company bootstrap — CEO and founding team created, ready for onboarding",
+          payload: {
+            companyId,
+            companyName: company.name,
+            bootstrapAction: "onboard",
+            foundingTeam: createdIds,
+          },
+          requestedByActorType: "system",
+          requestedByActorId: "auto-bootstrap",
+        });
+      }
+
+      return { ceoId: ceoId!, agentIds: createdIds };
     },
   };
 }

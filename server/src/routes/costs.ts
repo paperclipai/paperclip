@@ -281,6 +281,28 @@ export function costRoutes(db: Db) {
     res.json(company);
   });
 
+  // Recalculate costs for events that have tokens but $0 cost (backfill)
+  router.post("/companies/:companyId/costs/recalculate", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const result = await costs.recalculateZeroCostEvents(companyId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "cost.recalculated",
+      entityType: "company",
+      entityId: companyId,
+      details: { eventsUpdated: result.updated, totalCentsAdded: result.totalCentsAdded },
+    });
+
+    res.json(result);
+  });
+
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
     const agentId = req.params.agentId as string;
     const agent = await agents.getById(agentId);

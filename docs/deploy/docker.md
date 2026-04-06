@@ -3,7 +3,7 @@ title: Docker
 summary: Docker Compose quickstart
 ---
 
-Run Paperclip in Docker without installing Node or pnpm locally.
+Run OhMyCompany in Docker without installing Node or pnpm locally.
 
 ## Compose Quickstart (Recommended)
 

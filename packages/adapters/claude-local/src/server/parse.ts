@@ -167,6 +167,31 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+/**
+ * Detect Anthropic API 400 "tool use concurrency" errors.
+ * The Claude CLI exits with code 0 but the result text contains the API error.
+ * These are transient and can be retried.
+ */
+export function isClaudeToolUseConcurrencyError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /tool.use.concurren|concurrent.*tool.use|API\s*Error:\s*400.*tool/i.test(msg),
+  );
+}
+
+/**
+ * Detect any API error reported in the result text when exitCode is 0.
+ * Claude CLI sometimes exits 0 but reports an API error in result.
+ */
+export function isClaudeApiErrorInResult(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  return /API\s*Error:\s*[45]\d{2}/i.test(resultText);
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]

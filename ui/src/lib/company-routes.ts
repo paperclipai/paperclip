@@ -15,7 +15,19 @@ const BOARD_ROUTE_ROOTS = new Set([
   "usage",
   "activity",
   "inbox",
+  "chat",
   "design-guide",
+  "artifacts",
+  "deployments",
+  "cloud-deploy",
+  "sandboxes",
+  "deliverables",
+  "communication",
+  "vault",
+  "onboarding",
+  "plugins",
+  "settings",
+  "tests",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

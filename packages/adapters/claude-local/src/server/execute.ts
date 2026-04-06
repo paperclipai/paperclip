@@ -28,6 +28,8 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeToolUseConcurrencyError,
+  isClaudeApiErrorInResult,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
@@ -235,6 +237,15 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  // If the server resolved a managed LLM API key (from Settings > API Keys),
+  // inject it as ANTHROPIC_API_KEY so Claude CLI uses it instead of the global env var.
+  const resolvedApiKey = typeof context.paperclipResolvedApiKey === "string"
+    ? context.paperclipResolvedApiKey.trim()
+    : "";
+  if (resolvedApiKey) {
+    env.ANTHROPIC_API_KEY = resolvedApiKey;
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -559,7 +570,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage:
         (proc.exitCode ?? 0) === 0
-          ? null
+          ? (isClaudeApiErrorInResult(parsed) ? describeClaudeFailure(parsed) : null)
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
       errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
       errorMeta,
@@ -593,6 +604,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
+
+    // Retry on Anthropic API 400 "tool use concurrency" errors — these are transient.
+    // The Claude CLI exits 0 but reports the API error in result text.
+    if (
+      initial.parsed &&
+      isClaudeToolUseConcurrencyError(initial.parsed)
+    ) {
+      const MAX_RETRIES = 3;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const delaySec = attempt * 5; // 5s, 10s, 15s backoff
+        await onLog(
+          "stdout",
+          `[paperclip] Anthropic API 400 tool_use concurrency error detected; retrying in ${delaySec}s (attempt ${attempt}/${MAX_RETRIES}).\n`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
+
+        const retry = await runAttempt(null); // fresh session to avoid stale state
+        if (!retry.parsed || !isClaudeToolUseConcurrencyError(retry.parsed)) {
+          // Either succeeded or hit a different error — return this result
+          return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+        }
+      }
+      // All retries exhausted — return the last result with the error surfaced
+      await onLog(
+        "stdout",
+        `[paperclip] Anthropic API tool_use concurrency error persists after ${MAX_RETRIES} retries.\n`,
+      );
+      return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
     }
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });

@@ -99,13 +99,14 @@ export const issuesApi = {
       allowSharing?: boolean;
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
+  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean, circular?: boolean) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
       {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+        ...(circular === undefined ? {} : { circular }),
       },
     ),
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),

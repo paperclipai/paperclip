@@ -1211,7 +1211,7 @@ export function NewIssueDialog() {
                       data-slot="toggle"
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        assigneeChrome ? "bg-green-600" : "bg-muted"
+                        assigneeChrome ? "bg-[var(--status-active)]" : "bg-muted"
                       )}
                       onClick={() => setAssigneeChrome((value) => !value)}
                     >
@@ -1258,7 +1258,7 @@ export function NewIssueDialog() {
             />
           </div>
           {stagedFiles.length > 0 ? (
-            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+            <div className="mt-4 space-y-3 rounded-[2px] border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
                   <div className="text-xs font-medium text-muted-foreground">Documents</div>
@@ -1267,7 +1267,7 @@ export function NewIssueDialog() {
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                            <span className="rounded-[2px] border border-border px-2 py-0.5 font-[var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                               {file.documentKey}
                             </span>
                             <span className="truncate text-sm">{file.file.name}</span>

@@ -43,7 +43,10 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { queueIssueAssignmentWakeup, extractAgentMentions, queueMentionWakeups } from "../services/issue-assignment-wakeup.js";
+import { companyVaultService } from "../services/company-vault.js";
+import { deliverableService } from "../services/index.js";
+import { issueRouterService } from "../services/issue-router.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -65,6 +68,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const deliverableSvc = deliverableService(db);
+  const vault = companyVaultService(db);
+  const issueRouter = issueRouterService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1016,9 +1022,32 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { title: issue.title, identifier: issue.identifier },
     });
 
+    // Auto-route if no assignee specified
+    let routedIssue = issue;
+    if (!issue.assigneeAgentId) {
+      const bestAgentId = await issueRouter.routeIssue(companyId, {
+        id: issue.id,
+        title: issue.title,
+        description: (issue as any).description,
+      });
+      if (bestAgentId) {
+        const updated = await svc.update(issue.id, { assigneeAgentId: bestAgentId });
+        if (updated) routedIssue = updated;
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "issue-router",
+          action: "issue.assigned",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { assigneeAgentId: bestAgentId, reason: "auto-routed" },
+        });
+      }
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
-      issue,
+      issue: routedIssue,
       reason: "issue_assigned",
       mutation: "create",
       contextSource: "issue.create",
@@ -1026,7 +1055,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json(routedIssue);
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -1176,6 +1205,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    // Auto-create a deliverable when an issue transitions to "done"
+    const justCompleted = issue.status === "done" && existing.status !== "done";
+    if (justCompleted) {
+      void (async () => {
+        try {
+          await deliverableSvc.create(issue.companyId, {
+            title: issue.title,
+            description: `Auto-generated from completed issue ${issue.identifier}`,
+            type: "mixed",
+            priority: issue.priority ?? "medium",
+            projectId: issue.projectId ?? null,
+            issueId: issue.id,
+            submittedByAgentId: issue.assigneeAgentId ?? null,
+            submittedByUserId: issue.assigneeUserId ?? null,
+          });
+          logger.info({ issueId: issue.id, identifier: issue.identifier }, "Auto-created deliverable for completed issue");
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "Failed to auto-create deliverable for completed issue");
+        }
+      })();
+    }
 
     let comment = null;
     if (commentBody) {
@@ -1585,6 +1636,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
+    const circularRequested = req.body.circular === true;
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     let reopened = false;
     let reopenFromStatus: string | null = null;
@@ -1646,7 +1698,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
+    // Detect and vault any secrets in the comment body before persisting
+    let commentBody = req.body.body as string;
+    let secretsFound = 0;
+    try {
+      const vaultResult = await vault.processComment(
+        currentIssue.companyId,
+        `pending-${Date.now()}`,
+        currentIssue.id,
+        commentBody,
+        actor.actorType === "user" ? actor.actorId : actor.agentId ?? undefined,
+      );
+      commentBody = vaultResult.redactedBody;
+      secretsFound = vaultResult.secretsFound;
+      if (secretsFound > 0) {
+        logger.info({ issueId: id, secretsFound }, "Secrets detected and vaulted from comment");
+      }
+    } catch (err) {
+      logger.warn({ err, issueId: id }, "Failed to process comment for secrets, saving as-is");
+    }
+
+    const comment = await svc.addComment(id, commentBody, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
@@ -1671,6 +1743,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...(secretsFound > 0 ? { secretsDetected: secretsFound } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },
@@ -1679,11 +1752,50 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+
+      // CEO Circular: broadcast to ALL agents with highest priority
+      if (circularRequested) {
+        try {
+          const allAgents = await agentsSvc.list(currentIssue.companyId);
+          for (const agent of allAgents) {
+            if (agent.status === "terminated" || agent.status === "pending_approval") continue;
+            wakeups.set(agent.id, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "ceo_circular",
+              payload: {
+                issueId: currentIssue.id,
+                commentId: comment.id,
+                mutation: "comment",
+                circular: true,
+                priority: "highest",
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: currentIssue.id,
+                taskId: currentIssue.id,
+                commentId: comment.id,
+                source: "ceo.circular",
+                wakeReason: "ceo_circular",
+                priority: "highest",
+              },
+            });
+          }
+          logger.info(
+            { issueId: currentIssue.id, agentCount: wakeups.size },
+            "CEO circular broadcast: waking all agents",
+          );
+        } catch (err) {
+          logger.warn({ err, issueId: currentIssue.id }, "Failed to broadcast circular to all agents");
+        }
+      }
+
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !wakeups.has(assigneeId) && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -1744,7 +1856,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {
-          source: "automation",
+          source: "mention",
           triggerDetail: "system",
           reason: "issue_comment_mentioned",
           payload: { issueId: id, commentId: comment.id },

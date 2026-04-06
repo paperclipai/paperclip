@@ -89,6 +89,6 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       for (const { pluginId, error } of errors) {
         logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
       }
-    }).catch(() => {});
+    }).catch((err) => { console.warn("[activity-log] Failed to write activity log entry:", err?.message ?? err); });
   }
 }

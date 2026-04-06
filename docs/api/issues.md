@@ -3,7 +3,7 @@ title: Issues
 summary: Issue CRUD, checkout/release, comments, documents, and attachments
 ---
 
-Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
+Issues are the unit of work in OhMyCompany. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
 
 ## List Issues
 

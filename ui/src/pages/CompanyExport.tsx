@@ -352,7 +352,7 @@ function FrontmatterCard({
   onSkillClick?: (skill: string) => void;
 }) {
   return (
-    <div className="rounded-md border border-border bg-accent/20 px-4 py-3 mb-4">
+    <div className="rounded-[2px] border border-border bg-[var(--sidebar-accent)] px-4 py-3 mb-4 hud-panel">
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
         {Object.entries(data).map(([key, value]) => (
           <div key={key} className="contents">
@@ -367,8 +367,8 @@ function FrontmatterCard({
                       key={item}
                       type="button"
                       className={cn(
-                        "inline-flex items-center rounded-md border border-border bg-background px-2 py-0.5 text-xs",
-                        key === "skills" && onSkillClick && "cursor-pointer hover:bg-accent/50 hover:border-foreground/30 transition-colors",
+                        "inline-flex items-center rounded-[2px] border border-border bg-background px-2 py-0.5 font-[var(--font-mono)] text-[9px] uppercase",
+                        key === "skills" && onSkillClick && "cursor-pointer hover:bg-[var(--sidebar-accent)] hover:border-foreground/30 transition-colors",
                       )}
                       onClick={() => key === "skills" && onSkillClick?.(item)}
                     >
@@ -429,7 +429,7 @@ function generateReadmeFromSelection(
 
   lines.push("## What's Inside");
   lines.push("");
-  lines.push("This is an [Agent Company](https://paperclip.ing) package.");
+  lines.push("This is an [Agent Company](https://www.linkedin.com/groups/18235015/) package — powered by OhMyCompany.");
   lines.push("");
 
   const counts: Array<[string, number]> = [];
@@ -476,10 +476,10 @@ function generateReadmeFromSelection(
   lines.push("pnpm paperclipai company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
-  lines.push("See [Paperclip](https://paperclip.ing) for more information.");
+  lines.push("See [OhMyCompany](https://www.linkedin.com/groups/18235015/) for more information.");
   lines.push("");
   lines.push("---");
-  lines.push(`Exported from [Paperclip](https://paperclip.ing) on ${new Date().toISOString().split("T")[0]}`);
+  lines.push(`Exported from [OhMyCompany](https://www.linkedin.com/groups/18235015/) on ${new Date().toISOString().split("T")[0]}`);
   lines.push("");
 
   return lines.join("\n");
@@ -537,7 +537,7 @@ function ExportPreviewPane({
         ) : isMarkdown ? (
           <MarkdownBody resolveImageSrc={resolveImageSrc}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
-          <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
+          <div className="flex min-h-[520px] items-center justify-center rounded-[2px] border border-border bg-[var(--sidebar-accent)] p-6">
             <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
@@ -545,7 +545,7 @@ function ExportPreviewPane({
             <code>{textContent}</code>
           </pre>
         ) : (
-          <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
+          <div className="rounded-[2px] border border-border bg-[var(--sidebar-accent)] px-4 py-3 text-sm text-muted-foreground">
             Binary asset preview is not available for this file type.
           </div>
         )}
@@ -934,14 +934,14 @@ export function CompanyExport() {
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-4 text-sm">
-            <span className="font-medium">
+            <span className="font-[var(--font-display)] uppercase tracking-[0.06em]">
               {selectedCompany?.name ?? "Company"} export
             </span>
-            <span className="text-muted-foreground">
+            <span className="font-[var(--font-mono)] text-muted-foreground">
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
             </span>
             {warnings.length > 0 && (
-              <span className="text-amber-500">
+              <span className="font-[var(--font-mono)] text-[var(--status-warning)]">
                 {warnings.length} warning{warnings.length === 1 ? "" : "s"}
               </span>
             )}
@@ -961,9 +961,9 @@ export function CompanyExport() {
 
       {/* Warnings */}
       {warnings.length > 0 && (
-        <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <div className="mx-5 mt-3 rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-4 py-3 hud-panel">
           {warnings.map((w) => (
-            <div key={w} className="text-xs text-amber-500">{w}</div>
+            <div key={w} className="text-xs text-[var(--status-warning)]">{w}</div>
           ))}
         </div>
       )}
@@ -972,10 +972,10 @@ export function CompanyExport() {
       <div className="grid h-[calc(100vh-12rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
         <aside className="flex flex-col border-r border-border overflow-hidden">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-[var(--font-display)] uppercase tracking-[0.06em]">Package files</h2>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
-            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
+            <div className="flex items-center gap-2 rounded-[2px] border border-border px-2 py-1">
               <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
               <input
                 type="text"
@@ -1001,7 +1001,7 @@ export function CompanyExport() {
                 <button
                   type="button"
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
-                  className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
+                  className="w-full rounded-[2px] border border-border px-3 py-1.5 font-[var(--font-mono)] text-xs text-muted-foreground hover:bg-[var(--sidebar-accent)] hover:text-foreground transition-colors"
                 >
                   Show more issues ({visibleTaskChildren} of {totalTaskChildren})
                 </button>

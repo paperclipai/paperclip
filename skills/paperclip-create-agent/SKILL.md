@@ -1,12 +1,12 @@
 ---
 name: paperclip-create-agent
 description: >
-  Create new agents in Paperclip with governance-aware hiring. Use when you need
+  Create new agents in OhMyCompany with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
-  draft a new agent prompt/config, and submit a hire request.
+  draft a new agent prompt/config, and submit a hire request with task delegation.
 ---
 
-# Paperclip Create Agent Skill
+# OhMyCompany Create Agent Skill
 
 Use this skill when you are asked to hire/create an agent.
 
@@ -28,7 +28,7 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-2. Discover available adapter configuration docs for this Paperclip instance.
+2. Discover available adapter configuration docs for this instance.
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration.txt" \
@@ -59,12 +59,15 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 6. Draft the new hire config:
 - role/title/name
 - icon (required in practice; use one from `/llms/agent-icons.txt`)
-- reporting line (`reportsTo`)
+- reporting line (`reportsTo` — set to your own agent ID so they report to you in the org chart)
 - adapter type
 - optional `desiredSkills` from the company skill library when this role needs installed skills on day one
 - adapter and runtime config aligned to this environment
 - capabilities
 - run prompt in adapter config (`promptTemplate` where applicable)
+- **Task delegation** (so the new agent starts working immediately after approval):
+  - `delegateIssueId` — assign an existing task to the new agent
+  - OR `delegateTaskTitle` + `delegateTaskDescription` — create a new task for the agent
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 
 7. Submit hire request.
@@ -74,24 +77,29 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "CTO",
-    "role": "cto",
-    "title": "Chief Technology Officer",
-    "icon": "crown",
-    "reportsTo": "<ceo-agent-id>",
-    "capabilities": "Owns technical roadmap, architecture, staffing, execution",
-    "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
-    "adapterType": "codex_local",
-    "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
+    "name": "GrowthHacker",
+    "role": "ic",
+    "title": "Growth Hacker",
+    "icon": "rocket",
+    "reportsTo": "<your-agent-id>",
+    "capabilities": "SEO, content marketing, growth experiments, analytics",
+    "desiredSkills": [],
+    "adapterType": "claude_local",
+    "adapterConfig": {"cwd": "/abs/path/to/repo"},
     "runtimeConfig": {"heartbeat": {"enabled": true, "intervalSec": 300, "wakeOnDemand": true}},
-    "sourceIssueId": "<issue-id>"
+    "delegateTaskTitle": "Implement growth strategy for Q2",
+    "delegateTaskDescription": "Research competitors, define KPIs, create content calendar, and implement initial growth experiments.",
+    "sourceIssueId": "<parent-issue-id>"
   }'
 ```
 
 8. Handle governance state:
 - if response has `approval`, hire is `pending_approval`
+- the new agent immediately appears in the org chart under your reporting line
 - monitor and discuss on approval thread
-- when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
+- when the board approves:
+  - the new agent is activated and automatically starts working on the delegated task
+  - you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
@@ -100,7 +108,7 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
 curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
+  -d '{"body":"## Hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Delegated task: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nNew agent will auto-start on the delegated task once approved."}'
 ```
 
 If the approval already exists and needs manual linking to the issue:
@@ -130,12 +138,14 @@ For each linked issue, either:
 
 Before sending a hire request:
 
-- if the role needs skills, make sure they already exist in the company library or install them first using the Paperclip company-skills workflow
+- if the role needs skills, make sure they already exist in the company library or install them first using the company-skills workflow
 - Reuse proven config patterns from related agents where possible.
 - Set a concrete `icon` from `/llms/agent-icons.txt` so the new hire is identifiable in org and task views.
+- Always set `reportsTo` so the new agent appears correctly in the org chart.
 - Avoid secrets in plain text unless required by adapter behavior.
 - Ensure reporting line is correct and in-company.
 - Ensure prompt is role-specific and operationally scoped.
+- Include `delegateTaskTitle` or `delegateIssueId` so the new agent has work from day one.
 - If board requests revision, update payload and resubmit through approval flow.
 
 For endpoint payload shapes and full examples, read:

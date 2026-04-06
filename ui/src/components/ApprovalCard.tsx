@@ -7,10 +7,10 @@ import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
 
 function statusIcon(status: string) {
-  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
-  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />;
-  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
-  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />;
+  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-[var(--status-active)]" />;
+  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-[var(--status-error)]" />;
+  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-[var(--status-warning)]" />;
+  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-[var(--status-warning)]" />;
   return null;
 }
 
@@ -38,13 +38,13 @@ export function ApprovalCard({
     (approval.status === "pending" || approval.status === "revision_requested");
 
   return (
-    <div className="border border-border rounded-lg p-4 space-y-0">
+    <div className="hud-panel hud-shimmer border border-border rounded-[2px] p-4 space-y-0">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
           <div className="flex items-center gap-2">
-            <span className="font-medium text-sm">{label}</span>
+            <span className="font-[var(--font-display)] uppercase tracking-[0.06em] text-sm">{label}</span>
             {requesterAgent && (
               <span className="text-xs text-muted-foreground">
                 requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
@@ -74,7 +74,7 @@ export function ApprovalCard({
         <div className="flex gap-2 mt-4 pt-3 border-t border-border">
           <Button
             size="sm"
-            className="bg-green-700 hover:bg-green-600 text-white"
+            className="bg-[var(--status-active)] hover:bg-[var(--status-active)]/80 text-white"
             onClick={onApprove}
             disabled={isPending}
           >

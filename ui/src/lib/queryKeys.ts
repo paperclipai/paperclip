@@ -90,6 +90,9 @@ export const queryKeys = {
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
   },
+  members: {
+    list: (companyId: string) => ["members", companyId] as const,
+  },
   auth: {
     session: ["auth", "session"] as const,
   },
@@ -134,6 +137,32 @@ export const queryKeys = {
   skills: {
     available: ["skills", "available"] as const,
   },
+  artifacts: {
+    list: (companyId: string, issueId?: string) =>
+      ["artifacts", companyId, issueId ?? "__all__"] as const,
+    detail: (companyId: string, id: string) => ["artifacts", companyId, id] as const,
+  },
+  deployments: {
+    list: (companyId: string) => ["deployments", companyId] as const,
+    detail: (companyId: string, id: string) => ["deployments", companyId, id] as const,
+  },
+  cloudDeployments: {
+    healthChecks: (companyId: string, deploymentId: string) =>
+      ["cloud-deployments", "health-checks", companyId, deploymentId] as const,
+    recipes: (companyId: string) =>
+      ["cloud-deployments", "recipes", companyId] as const,
+  },
+  sandboxes: {
+    list: (companyId: string, agentId?: string) =>
+      ["sandboxes", companyId, agentId ?? "__all__"] as const,
+    detail: (companyId: string, id: string) => ["sandboxes", companyId, id] as const,
+  },
+  llmApiKeys: {
+    list: (companyId: string) => ["llm-api-keys", companyId] as const,
+    detail: (companyId: string, keyId: string) => ["llm-api-keys", companyId, keyId] as const,
+    agentKeys: (companyId: string, agentId: string) =>
+      ["llm-api-keys", "agent", companyId, agentId] as const,
+  },
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,
@@ -143,5 +172,15 @@ export const queryKeys = {
     config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
     logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
+  },
+  deliverables: {
+    list: (companyId: string, filters?: { status?: string; projectId?: string; issueId?: string }) =>
+      ["deliverables", companyId, filters ?? {}] as const,
+    detail: (id: string) => ["deliverables", "detail", id] as const,
+    comments: (id: string) => ["deliverables", "comments", id] as const,
+  },
+  reviewTemplates: {
+    list: (companyId: string) => ["review-templates", companyId] as const,
+    projectDefault: (projectId: string) => ["review-templates", "project-default", projectId] as const,
   },
 };

@@ -60,7 +60,7 @@ export function InstanceExperimentalSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Experimental</h1>
+          <h1 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">Experimental</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Opt into features that are still being evaluated before they become default behavior.
@@ -73,7 +73,7 @@ export function InstanceExperimentalSettings() {
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <section className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
@@ -89,7 +89,7 @@ export function InstanceExperimentalSettings() {
             disabled={toggleMutation.isPending}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              enableIsolatedWorkspaces ? "bg-green-600" : "bg-muted",
+              enableIsolatedWorkspaces ? "bg-[var(--status-active)]" : "bg-muted",
             )}
             onClick={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
           >
@@ -103,7 +103,7 @@ export function InstanceExperimentalSettings() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <section className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
@@ -119,7 +119,7 @@ export function InstanceExperimentalSettings() {
             disabled={toggleMutation.isPending}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              autoRestartDevServerWhenIdle ? "bg-green-600" : "bg-muted",
+              autoRestartDevServerWhenIdle ? "bg-[var(--status-active)]" : "bg-muted",
             )}
             onClick={() =>
               toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })

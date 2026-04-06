@@ -658,21 +658,21 @@ function TranscriptToolCard({
         : "Completed";
   const statusTone =
     block.status === "running"
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-[var(--primary)]"
       : block.status === "error"
-        ? "text-red-700 dark:text-red-300"
-        : "text-emerald-700 dark:text-emerald-300";
+        ? "text-[var(--status-error)]"
+        : "text-[var(--status-active)]";
   const detailsClass = cn(
     "space-y-3",
-    block.status === "error" && "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3",
+    block.status === "error" && "rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/[0.06] p-3",
   );
   const iconClass = cn(
     "mt-0.5 h-3.5 w-3.5 shrink-0",
     block.status === "error"
-      ? "text-red-600 dark:text-red-300"
+      ? "text-[var(--status-error)]"
       : block.status === "completed"
-        ? "text-emerald-600 dark:text-emerald-300"
-        : "text-cyan-600 dark:text-cyan-300",
+        ? "text-[var(--status-active)]"
+        : "text-[var(--primary)]",
   );
   const summary = block.status === "running"
     ? summarizeToolInput(block.name, block.input, density)
@@ -681,7 +681,7 @@ function TranscriptToolCard({
       : summarizeToolResult(block.result, block.isError, density);
 
   return (
-    <div className={cn(block.status === "error" && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
+    <div className={cn(block.status === "error" && "rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/[0.04] p-3")}>
       <div className="flex items-start gap-2">
         {block.status === "error" ? (
           <CircleAlert className={iconClass} />
@@ -730,7 +730,7 @@ function TranscriptToolCard({
                 </div>
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  block.status === "error" ? "text-[var(--status-error)]" : "text-foreground/80",
                 )}>
                   {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
                 </pre>
@@ -771,11 +771,11 @@ function TranscriptCommandGroup({
     ? summarizeToolInput("command_execution", runningItem.input, density)
     : null;
   const statusTone = isRunning
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-[var(--primary)]"
       : "text-foreground/70";
 
   return (
-    <div className={cn(showExpandedErrorState && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
+    <div className={cn(showExpandedErrorState && "rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/[0.04] p-3")}>
       <div
         role="button"
         tabIndex={0}
@@ -799,7 +799,7 @@ function TranscriptCommandGroup({
                 "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
                 index > 0 && "-ml-1.5",
                 isRunning
-                  ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                  ? "border-[var(--primary)]/25 bg-[var(--primary)]/[0.08] text-[var(--primary)]"
                   : "border-border/70 bg-background text-foreground/55",
                 isRunning && "animate-pulse",
               )}
@@ -839,16 +839,16 @@ function TranscriptCommandGroup({
         </button>
       </div>
       {open && (
-        <div className={cn("mt-3 space-y-3", hasError && "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3")}>
+        <div className={cn("mt-3 space-y-3", hasError && "rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/[0.06] p-3")}>
           {block.items.map((item, index) => (
             <div key={`${item.ts}-${index}`} className="space-y-2">
               <div className="flex items-center gap-2">
                 <span className={cn(
                   "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                   item.status === "error"
-                    ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                    ? "border-[var(--status-error)]/25 bg-[var(--status-error)]/[0.08] text-[var(--status-error)]"
                     : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                      ? "border-[var(--primary)]/25 bg-[var(--primary)]/[0.08] text-[var(--primary)]"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
                   <TerminalSquare className="h-3 w-3" />
@@ -860,7 +860,7 @@ function TranscriptCommandGroup({
               {item.result && (
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  item.status === "error" ? "text-[var(--status-error)]" : "text-foreground/80",
                 )}>
                   {formatToolPayload(item.result)}
                 </pre>
@@ -899,11 +899,11 @@ function TranscriptToolGroup({
     ? summarizeToolInput(runningItem.name, runningItem.input, density)
     : null;
   const statusTone = isRunning
-    ? "text-cyan-700 dark:text-cyan-300"
+    ? "text-[var(--primary)]"
     : "text-foreground/70";
 
   return (
-    <div className="rounded-xl border border-border/40 bg-muted/[0.25]">
+    <div className="rounded-[2px] border border-border/40 bg-muted/[0.25]">
       <div
         role="button"
         tabIndex={0}
@@ -922,9 +922,9 @@ function TranscriptToolGroup({
                   "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
                   index > 0 && "-ml-1.5",
                   isItemRunning
-                    ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                    ? "border-[var(--primary)]/25 bg-[var(--primary)]/[0.08] text-[var(--primary)]"
                     : isItemError
-                      ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                      ? "border-[var(--status-error)]/25 bg-[var(--status-error)]/[0.08] text-[var(--status-error)]"
                       : "border-border/70 bg-background text-foreground/55",
                   isItemRunning && "animate-pulse",
                 )}
@@ -954,16 +954,16 @@ function TranscriptToolGroup({
         </button>
       </div>
       {open && (
-        <div className={cn("space-y-2 border-t border-border/30 px-3 py-3", hasError && "rounded-b-xl")}>
+        <div className={cn("space-y-2 border-t border-border/30 px-3 py-3", hasError && "rounded-b-[2px]")}>
           {block.items.map((item, index) => (
             <div key={`${item.ts}-${index}`} className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className={cn(
                   "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                   item.status === "error"
-                    ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                    ? "border-[var(--status-error)]/25 bg-[var(--status-error)]/[0.08] text-[var(--status-error)]"
                     : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                      ? "border-[var(--primary)]/25 bg-[var(--primary)]/[0.08] text-[var(--primary)]"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
                   <Wrench className="h-3 w-3" />
@@ -972,9 +972,9 @@ function TranscriptToolGroup({
                   {humanizeLabel(item.name)}
                 </span>
                 <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]",
-                  item.status === "running" ? "text-cyan-700 dark:text-cyan-300"
-                  : item.status === "error" ? "text-red-700 dark:text-red-300"
-                  : "text-emerald-700 dark:text-emerald-300"
+                  item.status === "running" ? "text-[var(--primary)]"
+                  : item.status === "error" ? "text-[var(--status-error)]"
+                  : "text-[var(--status-active)]"
                 )}>
                   {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
                 </span>
@@ -991,7 +991,7 @@ function TranscriptToolGroup({
                     <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Result</div>
                     <pre className={cn(
                       "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                      item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                      item.status === "error" ? "text-[var(--status-error)]" : "text-foreground/80",
                     )}>
                       {formatToolPayload(item.result)}
                     </pre>
@@ -1016,11 +1016,11 @@ function TranscriptActivityRow({
   return (
     <div className="flex items-start gap-2">
       {block.status === "completed" ? (
-        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
+        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--status-active)]" />
       ) : (
         <span className="relative mt-1 flex h-2.5 w-2.5 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--primary)] opacity-70" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />
         </span>
       )}
       <div className={cn(
@@ -1043,11 +1043,11 @@ function TranscriptEventRow({
   const compact = density === "compact";
   const toneClasses =
     block.tone === "error"
-      ? "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3 text-red-700 dark:text-red-300"
+      ? "rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/[0.06] p-3 text-[var(--status-error)]"
       : block.tone === "warn"
-        ? "text-amber-700 dark:text-amber-300"
+        ? "text-[var(--status-warning)]"
         : block.tone === "info"
-          ? "text-sky-700 dark:text-sky-300"
+          ? "text-[var(--primary)]"
           : "text-foreground/75";
 
   return (
@@ -1062,7 +1062,7 @@ function TranscriptEventRow({
         )}
         <div className="min-w-0 flex-1">
           {block.label === "result" && block.tone !== "error" ? (
-            <div className={cn("whitespace-pre-wrap break-words text-sky-700 dark:text-sky-300", compact ? "text-[11px]" : "text-xs")}>
+            <div className={cn("whitespace-pre-wrap break-words text-[var(--primary)]", compact ? "text-[11px]" : "text-xs")}>
               {block.text}
             </div>
           ) : (
@@ -1094,7 +1094,7 @@ function TranscriptStderrGroup({
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
   return (
-    <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-2 text-amber-700 dark:text-amber-300">
+    <div className="rounded-[2px] border border-[var(--status-warning)]/20 bg-[var(--status-warning)]/[0.06] p-2 text-[var(--status-warning)]">
       <div
         role="button"
         tabIndex={0}
@@ -1108,10 +1108,10 @@ function TranscriptStderrGroup({
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
       {open && (
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-amber-700/80 dark:text-amber-300/80 pl-5">
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--status-warning)]/80 pl-5">
           {block.lines.map((line, i) => (
             <span key={`${line.ts}-${i}`}>
-              <span className="select-none text-amber-500/50 dark:text-amber-400/40">{i > 0 ? "\n" : ""}</span>
+              <span className="select-none text-[var(--status-warning)]/40">{i > 0 ? "\n" : ""}</span>
               {line.text}
             </span>
           ))}

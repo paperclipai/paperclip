@@ -39,6 +39,13 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
 
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
+// Propagate llm.apiKey from config file to ANTHROPIC_API_KEY env var if not already set.
+// This ensures the Claude adapter receives the API key without requiring a separate env var.
+const earlyConfig = readConfigFile();
+if (earlyConfig?.llm?.apiKey && !process.env.ANTHROPIC_API_KEY) {
+  process.env.ANTHROPIC_API_KEY = earlyConfig.llm.apiKey;
+}
+
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
@@ -75,6 +82,10 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  llm: {
+    provider: "claude" | "openai";
+    apiKey: string | undefined;
+  };
 }
 
 export function loadConfig(): Config {
@@ -267,5 +278,9 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    llm: {
+      provider: (fileConfig?.llm?.provider === "openai" ? "openai" : "claude") as "claude" | "openai",
+      apiKey: process.env.ANTHROPIC_API_KEY ?? fileConfig?.llm?.apiKey ?? undefined,
+    },
   };
 }

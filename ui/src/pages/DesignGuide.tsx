@@ -131,7 +131,7 @@ import { Identity } from "@/components/Identity";
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-4">
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+      <h3 className="hud-section-header">
         {title}
       </h3>
       <Separator />
@@ -157,11 +157,11 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
   return (
     <div className="flex items-center gap-3">
       <div
-        className="h-8 w-8 rounded-md border border-border shrink-0"
+        className="h-8 w-8 rounded-[2px] border border-border shrink-0"
         style={{ backgroundColor: `var(${cssVar})` }}
       />
       <div>
-        <p className="text-xs font-mono">{cssVar}</p>
+        <p className="text-xs font-[var(--font-mono)]">{cssVar}</p>
         <p className="text-xs text-muted-foreground">{name}</p>
       </div>
     </div>
@@ -192,9 +192,9 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
+        <h2 className="text-xl font-[var(--font-display)] uppercase tracking-[0.06em]">Design Guide</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          Every component, style, and pattern used across OhMyCompany.
         </p>
       </div>
 
@@ -213,7 +213,7 @@ export function DesignGuide() {
                 "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
                 "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
               ].map((name) => (
-                <Badge key={name} variant="outline" className="font-mono text-[10px]">
+                <Badge key={name} variant="outline" className="font-[var(--font-mono)] text-[10px]">
                   {name}
                 </Badge>
               ))}
@@ -226,7 +226,7 @@ export function DesignGuide() {
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette",
               ].map((name) => (
-                <Badge key={name} variant="ghost" className="font-mono text-[10px]">
+                <Badge key={name} variant="ghost" className="font-[var(--font-mono)] text-[10px]">
                   {name}
                 </Badge>
               ))}
@@ -279,10 +279,10 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Typography">
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
-          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
+          <h2 className="text-xl font-[var(--font-display)] uppercase tracking-[0.06em]">Page Title — font-display uppercase</h2>
+          <h2 className="text-lg font-[var(--font-display)] uppercase tracking-[0.06em]">Section Title — font-display uppercase</h2>
+          <h3 className="hud-section-header">
+            Section Heading — hud-section-header
           </h3>
           <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
           <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
@@ -293,11 +293,11 @@ export function DesignGuide() {
           <p className="text-xs text-muted-foreground">
             Tiny label — text-xs text-muted-foreground
           </p>
-          <p className="text-sm font-mono text-muted-foreground">
-            Mono identifier — text-sm font-mono text-muted-foreground
+          <p className="text-sm font-[var(--font-mono)] text-muted-foreground">
+            Mono identifier — font-mono text-muted-foreground
           </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+          <p className="text-2xl font-[var(--font-display)] uppercase tracking-[0.06em]">Large stat — font-display</p>
+          <p className="font-[var(--font-mono)] text-xs">Log/code text — font-mono text-xs</p>
         </div>
       </Section>
 
@@ -455,12 +455,12 @@ export function DesignGuide() {
         <SubSection title="Run invocation badges">
           <div className="flex items-center gap-2 flex-wrap">
             {[
-              ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
-              ["assignment", "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"],
-              ["on_demand", "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"],
+              ["timer", "bg-[var(--status-info)]/15 text-[var(--status-info)]"],
+              ["assignment", "bg-[var(--status-violet)]/15 text-[var(--status-violet)]"],
+              ["on_demand", "bg-[var(--primary)]/15 text-[var(--primary)]"],
               ["automation", "bg-muted text-muted-foreground"],
             ].map(([label, cls]) => (
-              <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+              <span key={label} className={`rounded-[2px] px-1.5 py-0.5 text-[10px] font-[var(--font-mono)] ${cls}`}>
                 {label}
               </span>
             ))}
@@ -635,7 +635,7 @@ export function DesignGuide() {
               {collapsibleOpen ? "Hide" : "Show"} advanced filters
             </Button>
           </CollapsibleTrigger>
-          <CollapsibleContent className="rounded-md border border-border p-3">
+          <CollapsibleContent className="rounded-[2px] border border-border p-3">
             <div className="space-y-2">
               <Label htmlFor="owner-filter">Owner</Label>
               <Input id="owner-filter" placeholder="Filter by agent name" />
@@ -679,10 +679,10 @@ export function DesignGuide() {
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
       <Section title="Scroll Area">
-        <ScrollArea className="h-36 rounded-md border border-border">
+        <ScrollArea className="h-36 rounded-[2px] border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
-              <div key={i} className="rounded-md border border-border p-2 text-sm">
+              <div key={i} className="rounded-[2px] border border-border p-2 text-sm">
                 Heartbeat run #{i + 1}: completed successfully
               </div>
             ))}
@@ -694,7 +694,7 @@ export function DesignGuide() {
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
       <Section title="Command (CMDK)">
-        <div className="rounded-md border border-border">
+        <div className="rounded-[2px] border border-border">
           <Command>
             <CommandInput placeholder="Type a command or search..." />
             <CommandList>
@@ -736,7 +736,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">OhMyCompany App</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
@@ -827,7 +827,7 @@ export function DesignGuide() {
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
       <Section title="Entity Rows">
-        <div className="border border-border rounded-md">
+        <div className="border border-border rounded-[2px]">
           <EntityRow
             leading={
               <>
@@ -1011,7 +1011,7 @@ export function DesignGuide() {
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
       <Section title="Empty State">
-        <div className="border border-border rounded-md">
+        <div className="border border-border rounded-[2px]">
           <EmptyState
             icon={Inbox}
             message="No items to show. Create your first one to get started."
@@ -1027,14 +1027,14 @@ export function DesignGuide() {
       <Section title="Progress Bars (Budget)">
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: "Under budget (40%)", pct: 40, color: "bg-[var(--status-active)]" },
+            { label: "Warning (75%)", pct: 75, color: "bg-[var(--status-warning)]" },
+            { label: "Over budget (95%)", pct: 95, color: "bg-[var(--status-error)]" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">{label}</span>
-                <span className="text-xs font-mono">{pct}%</span>
+                <span className="text-xs font-[var(--font-mono)]">{pct}%</span>
               </div>
               <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                 <div
@@ -1051,13 +1051,13 @@ export function DesignGuide() {
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
       <Section title="Log Viewer">
-        <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
+        <div className="bg-neutral-950 rounded-[2px] p-3 font-[var(--font-mono)] text-xs max-h-80 overflow-y-auto">
           <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
           <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
-          <div className="text-yellow-400">[12:00:05] WARN  Rate limit approaching (80%)</div>
+          <div className="text-[var(--status-warning)]">[12:00:05] WARN  Rate limit approaching (80%)</div>
           <div className="text-foreground">[12:00:08] INFO  Task PAP-001 completed</div>
-          <div className="text-red-400">[12:00:12] ERROR Connection timeout to upstream service</div>
-          <div className="text-blue-300">[12:00:12] SYS   Retrying connection in 5s...</div>
+          <div className="text-[var(--status-error)]">[12:00:12] ERROR Connection timeout to upstream service</div>
+          <div className="text-[var(--status-info)]">[12:00:12] SYS   Retrying connection in 5s...</div>
           <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
@@ -1073,7 +1073,7 @@ export function DesignGuide() {
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
       <Section title="Property Row Pattern">
-        <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
+        <div className="hud-panel border border-border rounded-[2px] p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Status</span>
             <StatusBadge status="active" />
@@ -1101,23 +1101,23 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
-          <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
+          <div className="w-60 border border-border rounded-[2px] p-3 space-y-0.5 bg-card">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[2px] text-sm font-medium bg-[var(--sidebar-accent)] text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[2px] text-sm font-medium text-muted-foreground hover:bg-[var(--sidebar-accent)] hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
               Issues
-              <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
+              <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-[2px] px-1.5 py-0.5">
                 12
               </span>
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[2px] text-sm font-medium text-muted-foreground hover:bg-[var(--sidebar-accent)] hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
               Agents
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[2px] text-sm font-medium text-muted-foreground hover:bg-[var(--sidebar-accent)] hover:text-accent-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />
               Projects
             </div>
@@ -1125,12 +1125,12 @@ export function DesignGuide() {
         </SubSection>
 
         <SubSection title="View toggle">
-          <div className="flex items-center border border-border rounded-md w-fit">
-            <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
+          <div className="flex items-center border border-border rounded-[2px] w-fit">
+            <button className="px-3 py-1.5 text-xs font-medium bg-[var(--sidebar-accent)] text-foreground rounded-l-[2px]">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
               List
             </button>
-            <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
+            <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-[var(--sidebar-accent)] rounded-r-[2px]">
               <Target className="h-3.5 w-3.5 inline mr-1" />
               Org
             </button>
@@ -1143,12 +1143,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Grouped List (Issues pattern)">
         <div>
-          <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
+          <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-[2px]">
             <StatusIcon status="in_progress" />
             <span className="text-sm font-medium">In Progress</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
-          <div className="border border-border rounded-b-md">
+          <div className="border border-border rounded-b-[2px]">
             <EntityRow
               leading={<PriorityIcon priority="high" />}
               identifier="PAP-101"
@@ -1170,16 +1170,16 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Comment Thread Pattern">
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="hud-section-header">Comments (2)</h3>
           <div className="space-y-3">
-            <div className="rounded-md border border-border p-3">
+            <div className="rounded-[2px] border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">Agent</span>
                 <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
               </div>
               <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
             </div>
-            <div className="rounded-md border border-border p-3">
+            <div className="rounded-[2px] border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">Human</span>
                 <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
@@ -1198,30 +1198,30 @@ export function DesignGuide() {
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
       <Section title="Cost Table Pattern">
-        <div className="border border-border rounded-lg overflow-hidden">
+        <div className="border border-border rounded-[2px] overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
               <tr>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Tokens</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Model</th>
+                <th className="text-left px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Tokens</th>
+                <th className="text-left px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Cost</th>
               </tr>
             </thead>
             <tbody>
               <tr className="border-b border-border">
                 <td className="px-3 py-2">claude-sonnet-4-20250514</td>
-                <td className="px-3 py-2 font-mono">1.2M</td>
-                <td className="px-3 py-2 font-mono">$18.00</td>
+                <td className="px-3 py-2 font-[var(--font-mono)]">1.2M</td>
+                <td className="px-3 py-2 font-[var(--font-mono)]">$18.00</td>
               </tr>
               <tr className="border-b border-border">
                 <td className="px-3 py-2">claude-haiku-4-20250506</td>
-                <td className="px-3 py-2 font-mono">500k</td>
-                <td className="px-3 py-2 font-mono">$1.25</td>
+                <td className="px-3 py-2 font-[var(--font-mono)]">500k</td>
+                <td className="px-3 py-2 font-[var(--font-mono)]">$1.25</td>
               </tr>
               <tr>
                 <td className="px-3 py-2 font-medium">Total</td>
-                <td className="px-3 py-2 font-mono">1.7M</td>
-                <td className="px-3 py-2 font-mono font-medium">$19.25</td>
+                <td className="px-3 py-2 font-[var(--font-mono)]">1.7M</td>
+                <td className="px-3 py-2 font-[var(--font-mono)] font-medium">$19.25</td>
               </tr>
             </tbody>
           </table>

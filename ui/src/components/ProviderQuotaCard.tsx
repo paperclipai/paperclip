@@ -338,10 +338,10 @@ export function ProviderQuotaCard({
                         qw.usedPercent == null
                           ? null
                           : qw.usedPercent >= 90
-                            ? "bg-red-400"
+                            ? "bg-[var(--status-error)]"
                             : qw.usedPercent >= 70
-                              ? "bg-yellow-400"
-                              : "bg-green-400";
+                              ? "bg-[var(--status-warning)]"
+                              : "bg-[var(--status-active)]";
                       return (
                         <div key={qw.label} className="space-y-1">
                           <div className="flex items-center justify-between gap-2 text-xs">

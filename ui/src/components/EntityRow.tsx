@@ -28,7 +28,7 @@ export function EntityRow({
   const isClickable = !!(to || onClick);
   const classes = cn(
     "flex items-center gap-3 px-4 py-2 text-sm border-b border-border last:border-b-0 transition-colors",
-    isClickable && "cursor-pointer hover:bg-accent/50",
+    isClickable && "cursor-pointer hover:bg-[var(--sidebar-accent)]",
     selected && "bg-accent/30",
     className
   );
@@ -39,7 +39,7 @@ export function EntityRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {identifier && (
-            <span className="text-xs text-muted-foreground font-mono shrink-0 relative top-[1px]">
+            <span className="text-xs text-muted-foreground font-[var(--font-mono)] shrink-0 relative top-[1px]">
               {identifier}
             </span>
           )}

@@ -140,9 +140,9 @@ function TriggerEditor({
   }, [trigger]);
 
   return (
-    <div className="rounded-lg border border-border p-4 space-y-4">
+    <div className="hud-panel rounded-[2px] border border-border p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium">
+        <div className="flex items-center gap-2 text-sm font-[var(--font-display)] uppercase tracking-[0.06em]">
           {trigger.kind === "schedule" ? <Clock3 className="h-3.5 w-3.5" /> : trigger.kind === "webhook" ? <Webhook className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
           {trigger.label ?? trigger.kind}
         </div>
@@ -402,7 +402,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to save routine",
-        body: error instanceof Error ? error.message : "Paperclip could not save the routine.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not save the routine.",
         tone: "error",
       });
     },
@@ -423,7 +423,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Routine run failed",
-        body: error instanceof Error ? error.message : "Paperclip could not start the routine run.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not start the routine run.",
         tone: "error",
       });
     },
@@ -445,7 +445,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to update routine",
-        body: error instanceof Error ? error.message : "Paperclip could not update the routine.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not update the routine.",
         tone: "error",
       });
     },
@@ -486,7 +486,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to add trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not create the trigger.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not create the trigger.",
         tone: "error",
       });
     },
@@ -504,7 +504,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to update trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not update the trigger.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not update the trigger.",
         tone: "error",
       });
     },
@@ -522,7 +522,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to delete trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not delete the trigger.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not delete the trigger.",
         tone: "error",
       });
     },
@@ -544,7 +544,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to rotate webhook secret",
-        body: error instanceof Error ? error.message : "Paperclip could not rotate the webhook secret.",
+        body: error instanceof Error ? error.message : "OhMyCompany could not rotate the webhook secret.",
         tone: "error",
       });
     },
@@ -605,7 +605,7 @@ export function RoutineDetail() {
   const automationLabelClassName = routine.status === "archived"
     ? "text-muted-foreground"
     : automationEnabled
-      ? "text-emerald-400"
+      ? "text-[var(--status-active)]"
       : "text-muted-foreground";
 
   return (
@@ -614,7 +614,7 @@ export function RoutineDetail() {
       <div className="flex items-start gap-4">
         <textarea
           ref={titleInputRef}
-          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-[var(--font-display)] uppercase tracking-[0.06em] outline-none placeholder:text-muted-foreground/50"
           placeholder="Routine title"
           rows={1}
           value={editDraft.title}
@@ -652,7 +652,7 @@ export function RoutineDetail() {
             aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
             disabled={automationToggleDisabled}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              automationEnabled ? "bg-emerald-500" : "bg-muted"
+              automationEnabled ? "bg-[var(--status-active)]" : "bg-muted"
             } ${automationToggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
             onClick={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
           >
@@ -670,10 +670,10 @@ export function RoutineDetail() {
 
       {/* Secret message banner */}
       {secretMessage && (
-        <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3 text-sm">
+        <div className="rounded-[2px] border border-[var(--status-info)]/30 bg-[var(--status-info)]/5 p-4 space-y-3 text-sm">
           <div>
             <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">Save this now. Paperclip will not show the secret value again.</p>
+            <p className="text-xs text-muted-foreground">Save this now. OhMyCompany will not show the secret value again.</p>
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -847,7 +847,7 @@ export function RoutineDetail() {
       {/* Save bar */}
       <div className="flex items-center justify-between">
         {isEditDirty ? (
-          <span className="text-xs text-amber-600">Unsaved changes</span>
+          <span className="text-xs text-[var(--status-warning)]">Unsaved changes</span>
         ) : (
           <span />
         )}
@@ -872,7 +872,7 @@ export function RoutineDetail() {
           <TabsTrigger value="runs" className="gap-1.5">
             <Play className="h-3.5 w-3.5" />
             Runs
-            {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
+            {hasLiveRun && <span className="h-2 w-2 rounded-full bg-[var(--status-info)] animate-pulse" />}
           </TabsTrigger>
 <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
@@ -882,8 +882,8 @@ export function RoutineDetail() {
 
         <TabsContent value="triggers" className="space-y-4">
           {/* Add trigger form */}
-          <div className="rounded-lg border border-border p-4 space-y-3">
-            <p className="text-sm font-medium">Add trigger</p>
+          <div className="hud-panel rounded-[2px] border border-border p-4 space-y-3">
+            <p className="text-sm font-[var(--font-display)] uppercase tracking-[0.06em]">Add trigger</p>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs">Kind</Label>
@@ -964,7 +964,7 @@ export function RoutineDetail() {
           {(routineRuns ?? []).length === 0 ? (
             <p className="text-xs text-muted-foreground">No runs yet.</p>
           ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
+            <div className="border border-border rounded-[2px] divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
                 <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
                   <div className="flex items-center gap-2 min-w-0">
@@ -992,7 +992,7 @@ export function RoutineDetail() {
           {(activity ?? []).length === 0 ? (
             <p className="text-xs text-muted-foreground">No activity yet.</p>
           ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
+            <div className="border border-border rounded-[2px] divide-y divide-border">
               {(activity ?? []).map((event) => (
                 <div key={event.id} className="flex items-center justify-between px-3 py-2 text-xs gap-4">
                   <div className="flex items-center gap-2 min-w-0">

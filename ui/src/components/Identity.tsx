@@ -33,7 +33,7 @@ export function Identity({ name, avatarUrl, initials, size = "default", classNam
         {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
         <AvatarFallback>{displayInitials}</AvatarFallback>
       </Avatar>
-      <span className={cn("truncate", textSize[size])}>{name}</span>
+      <span className={cn("truncate font-[var(--font-mono)]", textSize[size])}>{name}</span>
     </span>
   );
 }

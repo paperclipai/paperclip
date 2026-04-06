@@ -38,6 +38,13 @@ export const heartbeatRuns = pgTable(
     }),
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // MAXIMIZER MODE columns
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    interruptedAt: timestamp("interrupted_at", { withTimezone: true }),
+    interruptMessage: text("interrupt_message"),
+    interruptMode: text("interrupt_mode"), // "hint" | "correction" | "hard_override"
+    circuitBreakerTripped: boolean("circuit_breaker_tripped").notNull().default(false),
+    circuitBreakerReason: text("circuit_breaker_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -46,6 +53,14 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.agentId,
       table.startedAt,
+    ),
+    companyStatusIdx: index("idx_heartbeat_runs_company_status").on(
+      table.companyId,
+      table.status,
+    ),
+    agentStatusIdx: index("idx_heartbeat_runs_agent_status").on(
+      table.agentId,
+      table.status,
     ),
   }),
 );

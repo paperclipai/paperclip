@@ -14,14 +14,14 @@ const SURFACES = [
     description: "Account-level charges that are not one prompt-response pair.",
     icon: ReceiptText,
     points: ["top-ups, refunds, fees", "Bedrock provisioned or training charges", "credit expiries and adjustments"],
-    tone: "from-amber-500/14 via-amber-500/6 to-transparent",
+    tone: "from-[var(--status-warning)]/14 via-[var(--status-warning)]/6 to-transparent",
   },
   {
     title: "Live quotas",
     description: "Provider or biller windows that can stop traffic in real time.",
     icon: Gauge,
     points: ["provider quota windows", "biller credit systems", "errors surfaced directly"],
-    tone: "from-emerald-500/14 via-emerald-500/6 to-transparent",
+    tone: "from-[var(--status-active)]/14 via-[var(--status-active)]/6 to-transparent",
   },
 ] as const;
 
@@ -34,7 +34,7 @@ export function AccountingModelCard() {
           Accounting model
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">
-          Paperclip now separates request-level inference usage from account-level finance events.
+          OhMyCompany now separates request-level inference usage from account-level finance events.
           That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
         </CardDescription>
       </CardHeader>

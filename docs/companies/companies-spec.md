@@ -12,7 +12,7 @@ This specification is an extension of the Agent Skills specification, not a repl
 
 It defines how company-, team-, and agent-level package structure composes around the existing `SKILL.md` model.
 
-This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only Paperclip.
+This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only OhMyCompany.
 
 The format is designed to:
 
@@ -21,7 +21,7 @@ The format is designed to:
 - require no central registry
 - support attribution and pinned references to upstream files
 - extend the existing Agent Skills ecosystem without redefining it
-- be useful outside Paperclip
+- be useful outside OhMyCompany
 
 ## 2. Core Principles
 
@@ -272,7 +272,7 @@ recurring: true
 - this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
 - legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
 
-Example Paperclip extension:
+Example OhMyCompany extension:
 
 ```yaml
 routines:
@@ -293,8 +293,8 @@ A skill package must remain a valid Agent Skills package.
 Rules:
 
 - `SKILL.md` should follow the Agent Skills spec
-- Paperclip must not require extra top-level fields for skill validity
-- Paperclip-specific extensions must live under `metadata.paperclip` or `metadata.sources`
+- OhMyCompany must not require extra top-level fields for skill validity
+- OhMyCompany-specific extensions must live under `metadata.paperclip` or `metadata.sources`
 - a skill directory may include `scripts/`, `references/`, and `assets/` exactly as the Agent Skills ecosystem expects
 - tools implementing this spec should treat `skills.sh` compatibility as a first-class goal rather than inventing a parallel skill format
 
@@ -418,7 +418,7 @@ Suggested import UI behavior:
 
 Vendor-specific data should live outside the base package shape.
 
-For Paperclip, the preferred fidelity extension is:
+For OhMyCompany, the preferred fidelity extension is:
 
 ```text
 .paperclip.yaml
@@ -433,15 +433,15 @@ Example uses:
 - budgets
 - approval policies
 - project execution workspace policies
-- issue/task Paperclip-only metadata
+- issue/task OhMyCompany-only metadata
 
 Rules:
 
 - the base package must remain readable without the extension
 - tools that do not understand a vendor extension should ignore it
-- Paperclip tools may emit the vendor extension by default as a sidecar while keeping the base markdown clean
+- OhMyCompany tools may emit the vendor extension by default as a sidecar while keeping the base markdown clean
 
-Suggested Paperclip shape:
+Suggested OhMyCompany shape:
 
 ```yaml
 schema: paperclip/v1
@@ -472,13 +472,13 @@ routines:
         timezone: America/Chicago
 ```
 
-Additional rules for Paperclip exporters:
+Additional rules for OhMyCompany exporters:
 
 - do not duplicate `promptTemplate` when `AGENTS.md` already contains the agent instructions
 - do not export provider-specific secret bindings such as `secretId`, `version`, or `type: secret_ref`
 - export env inputs as portable declarations with `required` or `optional` semantics and optional defaults
 - warn on system-dependent values such as absolute commands and absolute `PATH` overrides
-- omit empty and default-valued Paperclip fields when possible
+- omit empty and default-valued OhMyCompany fields when possible
 
 ## 16. Export Rules
 
@@ -491,7 +491,7 @@ A compliant exporter should:
 - preserve task descriptions and recurring-task declarations when exporting tasks
 - omit empty/default fields
 - default to the vendor-neutral base package
-- Paperclip exporters should emit `.paperclip.yaml` as a sidecar by default
+- OhMyCompany exporters should emit `.paperclip.yaml` as a sidecar by default
 - preserve attribution and source references
 - prefer `referenced` over silent vendoring for third-party content
 - preserve `SKILL.md` as-is when exporting compatible skills
@@ -528,9 +528,9 @@ Rules:
 - lock files are generated artifacts, not canonical authoring input
 - the markdown package remains the source of truth
 
-## 19. Paperclip Mapping
+## 19. OhMyCompany Mapping
 
-Paperclip can map this spec to its runtime model like this:
+OhMyCompany can map this spec to its runtime model like this:
 
 - base package:
   - `COMPANY.md` -> company metadata
@@ -540,24 +540,24 @@ Paperclip can map this spec to its runtime model like this:
   - `TASK.md` -> starter issue/task definition, or recurring task template when `recurring: true`
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
-- Paperclip extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
+- OhMyCompany extension:
+  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other OhMyCompany-specific fidelity
 
-Inline Paperclip-only metadata that must live inside a shared markdown file should use:
+Inline OhMyCompany-only metadata that must live inside a shared markdown file should use:
 
 - `metadata.paperclip`
 
-That keeps the base format broader than Paperclip.
+That keeps the base format broader than OhMyCompany.
 
-This specification itself remains vendor-neutral and intended for any agent-company runtime, not only Paperclip.
+This specification itself remains vendor-neutral and intended for any agent-company runtime, not only OhMyCompany.
 
 ## 20. Cutover
 
-Paperclip should cut over to this markdown-first package model as the primary portability format.
+OhMyCompany should cut over to this markdown-first package model as the primary portability format.
 
 `paperclip.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
 
-For Paperclip, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
+For OhMyCompany, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
 
 ## 21. Minimal Example
 

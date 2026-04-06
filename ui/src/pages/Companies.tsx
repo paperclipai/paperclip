@@ -128,7 +128,7 @@ export function Companies() {
                   setSelectedCompanyId(company.id);
                 }
               }}
-              className={`group text-left bg-card border rounded-lg p-5 transition-colors cursor-pointer ${
+              className={`group text-left bg-card border rounded-[2px] p-5 transition-colors cursor-pointer hud-panel hud-shimmer ${
                 selected
                   ? "border-primary ring-1 ring-primary"
                   : "border-border hover:border-muted-foreground/30"
@@ -166,13 +166,13 @@ export function Companies() {
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-base">{company.name}</h3>
+                      <h3 className="font-semibold text-base font-[var(--font-display)] uppercase tracking-[0.06em]">{company.name}</h3>
                       <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        className={`inline-flex items-center rounded-[2px] px-2 py-0.5 text-[9px] font-medium font-[var(--font-mono)] uppercase ${
                           company.status === "active"
-                            ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                            ? "bg-[var(--status-active)]/10 text-[var(--status-active)]"
                             : company.status === "paused"
-                              ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                              ? "bg-[var(--status-warning)]/10 text-[var(--status-warning)]"
                               : "bg-muted text-muted-foreground"
                         }`}
                       >
@@ -262,7 +262,7 @@ export function Companies() {
               {/* Delete confirmation */}
               {isConfirmingDelete && (
                 <div
-                  className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
+                  className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-[2px] px-4 py-3"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-sm text-destructive font-medium">

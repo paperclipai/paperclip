@@ -61,7 +61,7 @@ function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   }
   if (state === "saved") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--status-active)]">
         <Check className="h-3 w-3" />
         Saved
       </span>
@@ -686,7 +686,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
-                    <div className="text-[11px] text-muted-foreground">Paperclip-managed folder.</div>
+                    <div className="text-[11px] text-muted-foreground">OH MY Company-managed folder.</div>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
@@ -718,7 +718,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
             {hasAdditionalLegacyWorkspaces && (
               <div className="text-[11px] text-muted-foreground">
-                Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
+                Additional legacy workspace records exist on this project. OH MY Company is using the primary workspace as the codebase view.
               </div>
             )}
 
@@ -736,9 +736,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           className={cn(
                             "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
                             service.status === "running"
-                              ? "bg-green-500/15 text-green-700 dark:text-green-300"
+                              ? "bg-[var(--status-active)]/15 text-[var(--status-active)]"
                               : service.status === "failed"
-                                ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                                ? "bg-[var(--status-error)]/15 text-[var(--status-error)]"
                                 : "bg-muted text-muted-foreground",
                           )}
                         >
@@ -889,7 +889,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       data-slot="toggle"
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
+                        executionWorkspacesEnabled ? "bg-[var(--status-active)]" : "bg-muted",
                       )}
                       type="button"
                       onClick={() =>
@@ -928,7 +928,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         data-slot="toggle"
                         className={cn(
                           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                          executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",
+                          executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-[var(--status-active)]" : "bg-muted",
                         )}
                         type="button"
                         onClick={() =>

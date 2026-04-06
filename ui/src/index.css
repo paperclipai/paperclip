@@ -361,11 +361,10 @@
 /* HUD Panel — clip-path tactical corners */
 .hud-panel {
   position: relative;
-  container-type: size;
 }
 
-/* Scan line pseudo-element on panels */
-.hud-panel::after {
+/* Scan line pseudo-element on panels — uses ::before so it doesn't conflict with hud-shimmer ::after */
+.hud-panel::before {
   content: "";
   position: absolute;
   top: 0;
@@ -377,7 +376,7 @@
   animation: hud-scan 8s linear infinite;
   will-change: transform, opacity;
   pointer-events: none;
-  z-index: 1;
+  z-index: 0;
 }
 
 /* Inner wrapper gets the clip-path (so pseudo-elements on outer are not clipped) */
@@ -392,42 +391,22 @@
   );
 }
 
-/* Border trace on hover */
+/* Border trace on hover — uses outline + box-shadow to avoid ::before conflict with hud-panel */
 .hud-border-trace {
-  position: relative;
+  transition: box-shadow 200ms;
 }
-.hud-border-trace::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border: 1px solid transparent;
-  background: linear-gradient(90deg, transparent 0%, var(--primary) 50%, transparent 100%) border-box;
-  background-size: 200% 100%;
-  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity 200ms;
-  pointer-events: none;
-  z-index: 2;
-  border-radius: inherit;
-}
-.hud-border-trace:hover::before {
-  opacity: 1;
-  animation: border-trace 2s linear infinite;
+.hud-border-trace:hover {
+  box-shadow: inset 0 0 0 1px oklch(0.72 0.15 220 / 0.3), 0 0 12px oklch(0.72 0.15 220 / 0.08);
 }
 
-/* Holographic shimmer on hover */
+/* Holographic shimmer on hover — no overflow:hidden to avoid clipping content */
 .hud-shimmer {
   position: relative;
-  overflow: hidden;
 }
 .hud-shimmer::after {
   content: "";
   position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
+  inset: 0;
   background: linear-gradient(
     to right,
     transparent 0%,
@@ -437,11 +416,12 @@
     transparent 100%
   );
   pointer-events: none;
-  z-index: 1;
-  transform: translateX(-100%) rotate(-45deg);
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 300ms;
 }
 .hud-shimmer:hover::after {
-  animation: holo-shimmer 1.5s ease-in-out;
+  opacity: 1;
 }
 
 /* Glow pulse for status indicators */
@@ -488,9 +468,9 @@
     animation: none;
   }
   .hud-shimmer:hover::after {
-    animation: none;
+    opacity: 0;
   }
-  .hud-panel::after {
+  .hud-panel::before {
     animation-duration: 16s;
   }
 }

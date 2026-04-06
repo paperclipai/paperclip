@@ -24,5 +24,6 @@ export const approvals = pgTable(
       table.status,
       table.type,
     ),
+    requestedByAgentIdx: index("idx_approvals_requested_by_agent").on(table.requestedByAgentId),
   }),
 );

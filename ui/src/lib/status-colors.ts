@@ -66,6 +66,20 @@ export const statusBadge: Record<string, string> = {
   approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 
+  // Deployment statuses
+  deploying: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  rolling_back: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
+
+  // Sandbox statuses
+  provisioning: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  stopped: "bg-muted text-muted-foreground",
+
+  // Health statuses
+  healthy: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  degraded: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  unhealthy: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  unknown: "bg-muted text-muted-foreground",
+
   // Issue statuses — consistent hues with issueStatusIcon above
   backlog: "bg-muted text-muted-foreground",
   todo: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",

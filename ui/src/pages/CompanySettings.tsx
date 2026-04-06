@@ -1,15 +1,23 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Agent } from "@paperclipai/shared";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { agentsApi } from "../api/agents";
+import { companySkillsApi } from "../api/companySkills";
+import { llmApiKeysApi } from "../api/llmApiKeys";
+import type { LlmApiKey } from "../api/llmApiKeys";
+import { companyEmailApi } from "../api/company-email";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Settings, Check, Download, Upload, Bot, Key, Zap, ChevronRight, Plus, Trash2, ExternalLink, Mail } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -23,7 +31,7 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://www.linkedin.com/groups/18235015/";
 
 export function CompanySettings() {
   const {
@@ -248,18 +256,18 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-[var(--font-display)] uppercase tracking-[0.06em]">Company Settings</h1>
       </div>
 
       {/* General */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           General
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3 rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
           <Field label="Company name" hint="The display name for your company.">
             <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
@@ -270,7 +278,7 @@ export function CompanySettings() {
             hint="Optional description shown in the company profile."
           >
             <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
               placeholder="Optional company description"
@@ -282,10 +290,10 @@ export function CompanySettings() {
 
       {/* Appearance */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           Appearance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3 rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon
@@ -305,7 +313,7 @@ export function CompanySettings() {
                     type="file"
                     accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
                     onChange={handleLogoFileChange}
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
+                    className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-[2px] file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
                   />
                   {logoUrl && (
                     <div className="flex items-center gap-2">
@@ -358,7 +366,7 @@ export function CompanySettings() {
                       }
                     }}
                     placeholder="Auto"
-                    className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                    className="w-28 rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm font-[var(--font-mono)] outline-none"
                   />
                   {brandColor && (
                     <Button
@@ -400,12 +408,24 @@ export function CompanySettings() {
         </div>
       )}
 
+      {/* Email / Communication Center */}
+      <EmailSettingsSection companyId={selectedCompanyId!} />
+
+      {/* Agents */}
+      <AgentsSection companyId={selectedCompanyId!} />
+
+      {/* LLM API Keys */}
+      <LlmKeysSection companyId={selectedCompanyId!} />
+
+      {/* Company Skills */}
+      <SkillsSection companyId={selectedCompanyId!} />
+
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           Hiring
         </div>
-        <div className="rounded-md border border-border px-4 py-3">
+        <div className="rounded-[2px] border border-border px-4 py-3 hud-panel hud-shimmer">
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
@@ -417,18 +437,18 @@ export function CompanySettings() {
       </div>
 
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           Feedback Sharing
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3 rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
           <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
+            label="Allow sharing voted AI outputs with OhMyCompany Labs"
             hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
             checked={!!selectedCompany.feedbackDataSharingEnabled}
             onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
           />
           <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with OhMyCompany Labs.
           </p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <div>
@@ -460,10 +480,10 @@ export function CompanySettings() {
 
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           Invites
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3 rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
               Generate an OpenClaw agent invite snippet.
@@ -487,7 +507,7 @@ export function CompanySettings() {
           )}
           {inviteSnippet && (
             <div
-              className="rounded-md border border-border bg-muted/30 p-2"
+              className="rounded-[2px] border border-border bg-[var(--sidebar-accent)] p-2"
               data-testid="company-settings-invites-snippet"
             >
               <div className="flex items-center justify-between gap-2">
@@ -497,7 +517,7 @@ export function CompanySettings() {
                 {snippetCopied && (
                   <span
                     key={snippetCopyDelightId}
-                    className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
+                    className="flex items-center gap-1 text-xs text-[var(--status-active)] hud-glow"
                   >
                     <Check className="h-3 w-3" />
                     Copied
@@ -507,7 +527,7 @@ export function CompanySettings() {
               <div className="mt-1 space-y-1.5">
                 <textarea
                   data-testid="company-settings-invites-snippet-textarea"
-                  className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+                  className="h-[28rem] w-full rounded-[2px] border border-border bg-secondary px-2 py-1.5 font-[var(--font-mono)] text-xs outline-none"
                   value={inviteSnippet}
                   readOnly
                 />
@@ -538,10 +558,10 @@ export function CompanySettings() {
 
       {/* Import / Export */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hud-section-header">
           Company Packages
         </div>
-        <div className="rounded-md border border-border px-4 py-4">
+        <div className="rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
             <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
@@ -565,10 +585,10 @@ export function CompanySettings() {
 
       {/* Danger Zone */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+        <div className="hud-section-header text-[var(--status-error)]">
           Danger Zone
         </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+        <div className="space-y-3 rounded-[2px] border border-[var(--status-error)]/40 bg-[var(--status-error)]/5 px-4 py-4 hud-panel">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in
             the database.
@@ -619,6 +639,319 @@ export function CompanySettings() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Sub-sections: Agents, LLM Keys, Skills
+// ---------------------------------------------------------------------------
+
+const STATUS_COLOR: Record<string, string> = {
+  active: "bg-[var(--status-active)] hover:bg-[var(--status-active)]/80",
+  running: "bg-[var(--status-info)] hover:bg-[var(--status-info)]/80",
+  paused: "bg-[var(--status-warning)] hover:bg-[var(--status-warning)]/80",
+  idle: "bg-muted-foreground/60 hover:bg-muted-foreground/70",
+  error: "bg-[var(--status-error)] hover:bg-[var(--status-error)]/80",
+  pending_approval: "bg-[var(--status-violet)] hover:bg-[var(--status-violet)]/80",
+  terminated: "bg-muted-foreground/40 hover:bg-muted-foreground/50",
+};
+
+function AgentsSection({ companyId }: { companyId: string }) {
+  const { data: agents, isLoading } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="hud-section-header">
+          Agents
+        </div>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" asChild>
+          <Link to="/onboarding">
+            <Plus className="h-3 w-3" />
+            Hire Agent
+          </Link>
+        </Button>
+      </div>
+      <div className="rounded-[2px] border border-border hud-panel hud-shimmer">
+        {isLoading ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">Loading agents...</div>
+        ) : !agents?.length ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">
+            No agents hired yet. Create one to get started.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {agents.map((agent) => (
+              <li key={agent.id}>
+                <Link
+                  to={`/agents/${agent.urlKey || agent.id}`}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--sidebar-accent)] transition-colors group"
+                >
+                  <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium truncate">{agent.name}</span>
+                      <Badge
+                        variant="default"
+                        className={`rounded-[2px] font-[var(--font-mono)] text-[9px] uppercase px-1.5 py-0 ${STATUS_COLOR[agent.status] ?? ""}`}
+                      >
+                        {agent.status}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[11px] text-muted-foreground capitalize">{agent.role}</span>
+                      <span className="text-[11px] text-muted-foreground">·</span>
+                      <span className="text-[11px] text-muted-foreground">{agent.adapterType.replace(/_/g, " ")}</span>
+                      {typeof agent.adapterConfig?.model === "string" && agent.adapterConfig.model && (
+                        <>
+                          <span className="text-[11px] text-muted-foreground">·</span>
+                          <span className="text-[11px] text-muted-foreground font-mono">
+                            {agent.adapterConfig.model}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50 group-hover:text-foreground transition-colors shrink-0" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LlmKeysSection({ companyId }: { companyId: string }) {
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
+
+  const { data: keys, isLoading } = useQuery({
+    queryKey: queryKeys.llmApiKeys.list(companyId),
+    queryFn: () => llmApiKeysApi.list(companyId),
+  });
+
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyProvider, setNewKeyProvider] = useState("openai");
+  const [newKeyValue, setNewKeyValue] = useState("");
+
+  const createMutation = useMutation({
+    mutationFn: (input: { name: string; provider: string; apiKey: string }) =>
+      llmApiKeysApi.create(companyId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.llmApiKeys.list(companyId) });
+      setShowAddForm(false);
+      setNewKeyName("");
+      setNewKeyProvider("openai");
+      setNewKeyValue("");
+      pushToast({ title: "LLM API key added", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to add key", body: err instanceof Error ? err.message : "Unknown error", tone: "error" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (keyId: string) => llmApiKeysApi.delete(companyId, keyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.llmApiKeys.list(companyId) });
+      pushToast({ title: "LLM API key removed", tone: "success" });
+    },
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ keyId, isActive }: { keyId: string; isActive: boolean }) =>
+      llmApiKeysApi.update(companyId, keyId, { isActive }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.llmApiKeys.list(companyId) });
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="hud-section-header">
+          LLM API Keys
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1"
+          onClick={() => setShowAddForm((v) => !v)}
+        >
+          <Plus className="h-3 w-3" />
+          Add Key
+        </Button>
+      </div>
+      <div className="rounded-[2px] border border-border hud-panel hud-shimmer">
+        {showAddForm && (
+          <div className="px-4 py-3 border-b border-border space-y-2 bg-[var(--sidebar-accent)]">
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none"
+                placeholder="Key name"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+              />
+              <select
+                className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none"
+                value={newKeyProvider}
+                onChange={(e) => setNewKeyProvider(e.target.value)}
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google</option>
+                <option value="lmstudio">LM Studio</option>
+                <option value="openclaw">OpenClaw</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                className="w-full rounded-[2px] border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none font-mono"
+                placeholder="sk-..."
+                type="password"
+                value={newKeyValue}
+                onChange={(e) => setNewKeyValue(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                disabled={!newKeyName.trim() || !newKeyValue.trim() || createMutation.isPending}
+                onClick={() => createMutation.mutate({ name: newKeyName.trim(), provider: newKeyProvider, apiKey: newKeyValue.trim() })}
+              >
+                {createMutation.isPending ? "Adding..." : "Add"}
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowAddForm(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+        {isLoading ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">Loading keys...</div>
+        ) : !keys?.length ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">
+            No LLM API keys configured. Add one to connect your agents to LLM providers.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {keys.map((key) => (
+              <li key={key.id} className="flex items-center gap-3 px-4 py-3">
+                <Key className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{key.name}</span>
+                    <Badge variant="outline" className="text-[10px]">
+                      {key.provider}
+                    </Badge>
+                    {key.isDefault && (
+                      <Badge variant="secondary" className="text-[10px]">Default</Badge>
+                    )}
+                    <Badge
+                      variant={key.isActive ? "default" : "secondary"}
+                      className={`rounded-[2px] font-[var(--font-mono)] text-[9px] uppercase px-1.5 py-0 cursor-pointer ${key.isActive ? "bg-[var(--status-active)] hover:bg-[var(--status-active)]/80" : ""}`}
+                      onClick={() => toggleMutation.mutate({ keyId: key.id, isActive: !key.isActive })}
+                    >
+                      {key.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[11px] text-muted-foreground font-mono">{key.apiKeyMasked}</span>
+                    {key.totalRequests > 0 && (
+                      <>
+                        <span className="text-[11px] text-muted-foreground">·</span>
+                        <span className="text-[11px] text-muted-foreground">{key.totalRequests} requests</span>
+                      </>
+                    )}
+                    {key.lastUsedAt && (
+                      <>
+                        <span className="text-[11px] text-muted-foreground">·</span>
+                        <span className="text-[11px] text-muted-foreground">
+                          Last used {new Date(key.lastUsedAt).toLocaleDateString()}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0"
+                  onClick={() => {
+                    if (window.confirm(`Delete key "${key.name}"?`)) {
+                      deleteMutation.mutate(key.id);
+                    }
+                  }}
+                  disabled={deleteMutation.isPending}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SkillsSection({ companyId }: { companyId: string }) {
+  const { data: skills, isLoading } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="hud-section-header">
+          Company Skills
+        </div>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" asChild>
+          <Link to="/skills">
+            <ExternalLink className="h-3 w-3" />
+            Manage Skills
+          </Link>
+        </Button>
+      </div>
+      <div className="rounded-[2px] border border-border hud-panel hud-shimmer">
+        {isLoading ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">Loading skills...</div>
+        ) : !skills?.length ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground text-center">
+            No company skills installed. Visit the Skills page to add skills for your agents.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {skills.map((skill) => (
+              <li key={skill.id} className="flex items-center gap-3 px-4 py-3">
+                <Zap className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{skill.name}</span>
+                    {skill.sourceType && (
+                      <Badge variant="outline" className="text-[10px]">{skill.sourceType}</Badge>
+                    )}
+                    {skill.attachedAgentCount > 0 && (
+                      <span className="text-[10px] text-muted-foreground">{skill.attachedAgentCount} agent{skill.attachedAgentCount !== 1 ? "s" : ""}</span>
+                    )}
+                  </div>
+                  {skill.description && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{skill.description}</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function buildAgentSnippet(input: AgentSnippetInput) {
   const candidateUrls = buildCandidateOnboardingUrls(input);
   const resolutionTestUrl = buildResolutionTestUrl(input);
@@ -630,35 +963,35 @@ function buildAgentSnippet(input: AgentSnippetInput) {
 
   const connectivityBlock =
     candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
+      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in OhMyCompany, then retry.
 Suggested steps:
-- choose a hostname that resolves to the Paperclip host from your runtime
+- choose a hostname that resolves to the OhMyCompany host from your runtime
 - run: pnpm paperclipai allowed-hostname <host>
-- restart Paperclip
+- restart OhMyCompany
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
+      : `If none are reachable, ask your user to add a reachable hostname in OhMyCompany, restart, and retry.
 Suggested command:
 - pnpm paperclipai allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? `\nYou MUST test OhMyCompany-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from OhMyCompany. Test it. `
     : "";
 
-  return `You're invited to join a Paperclip organization.
+  return `You're invited to join an OhMyCompany organization.
 
 The URLs you should try are:
 ${candidateList}
 
 Connectivity guidance:
-If you are running on a different machine than Paperclip, Paperclip must be reachable at one of the hostnames used above.
+If you are running on a different machine than OhMyCompany, OhMyCompany must be reachable at one of the hostnames used above.
 Verify the hostname works from your runtime with: GET <base-url>/api/health
 
 ${connectivityBlock}
 
 For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
+You also need to send a gateway URL that OhMyCompany can access. Check your config and include that URL.${resolutionLine}
 
 ---
 
@@ -668,14 +1001,14 @@ When you submit the join request, use:
 - \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
 - \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
 - (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
-- Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, Paperclip will generate and persist one during join so pairing approvals remain stable.
+- Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, OhMyCompany will generate and persist one during join so pairing approvals remain stable.
 - Only use \`disableDeviceAuth=true\` for special environments where pairing cannot be completed.
 
 Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
 Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
 
-Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
+Then after you've connected to OhMyCompany (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
 
 `;
 }
@@ -715,6 +1048,123 @@ function buildCandidateOnboardingUrls(input: AgentSnippetInput): string[] {
   }
 
   return Array.from(urls);
+}
+
+// ---------------------------------------------------------------------------
+// Email / Communication Center Settings
+// ---------------------------------------------------------------------------
+
+function EmailSettingsSection({ companyId }: { companyId: string }) {
+  const { pushToast } = useToast();
+  const qc = useQueryClient();
+  const [apiKey, setApiKey] = useState("");
+  const [displayName, setDisplayName] = useState("");
+
+  const settingsQ = useQuery({
+    queryKey: ["company-email-settings", companyId],
+    queryFn: () => companyEmailApi.getSettings(companyId),
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (data: { agentmailApiKey?: string; agentmailDisplayName?: string; enabled?: boolean }) =>
+      companyEmailApi.saveSettings(companyId, data),
+    onSuccess: () => {
+      pushToast({ title: "Email settings saved", tone: "success" });
+      qc.invalidateQueries({ queryKey: ["company-email-settings", companyId] });
+      setApiKey("");
+    },
+    onError: (err) =>
+      pushToast({ title: `Failed: ${err instanceof Error ? err.message : String(err)}`, tone: "error" }),
+  });
+
+  const createInboxMutation = useMutation({
+    mutationFn: (data?: { username?: string; display_name?: string }) =>
+      companyEmailApi.createInbox(companyId, data),
+    onSuccess: (inbox) => {
+      pushToast({ title: `Inbox created: ${inbox.email}`, tone: "success" });
+      qc.invalidateQueries({ queryKey: ["company-email-settings", companyId] });
+    },
+    onError: (err) =>
+      pushToast({ title: `Failed: ${err instanceof Error ? err.message : String(err)}`, tone: "error" }),
+  });
+
+  const settings = settingsQ.data;
+
+  return (
+    <div className="space-y-4">
+      <div className="hud-section-header flex items-center gap-1.5">
+        <Mail className="h-3.5 w-3.5" />
+        Email / Communication Center
+      </div>
+      <div className="space-y-3 rounded-[2px] border border-border px-4 py-4 hud-panel hud-shimmer">
+        <p className="text-xs text-muted-foreground">
+          Connect AgentMail to give your company a dedicated email address for all agent
+          communication. Agents and tasks will use this to send and receive emails.
+        </p>
+
+        {/* API Key */}
+        <Field label="AgentMail API Key" hint="Get your key from agentmail.to">
+          <input
+            type="password"
+            className="w-full rounded-[2px] border border-border bg-secondary px-3 py-1.5 text-sm"
+            placeholder={settings?.agentmailApiKey ? settings.agentmailApiKey : "Enter API key..."}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </Field>
+
+        {/* Display Name */}
+        <Field label="Display Name" hint="Shown as the sender name on outgoing emails">
+          <input
+            className="w-full rounded-[2px] border border-border bg-secondary px-3 py-1.5 text-sm"
+            placeholder={settings?.agentmailDisplayName ?? "Company Name"}
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+        </Field>
+
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={saveMutation.isPending}
+            onClick={() =>
+              saveMutation.mutate({
+                ...(apiKey ? { agentmailApiKey: apiKey } : {}),
+                ...(displayName ? { agentmailDisplayName: displayName } : {}),
+                enabled: true,
+              })
+            }
+          >
+            {saveMutation.isPending ? "Saving..." : "Save Email Settings"}
+          </Button>
+
+          {settings?.agentmailApiKey && !settings?.agentmailInboxId && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={createInboxMutation.isPending}
+              onClick={() => createInboxMutation.mutate(displayName ? { display_name: displayName } : undefined)}
+            >
+              {createInboxMutation.isPending ? "Creating..." : "Create Inbox"}
+            </Button>
+          )}
+        </div>
+
+        {/* Current inbox status */}
+        {settings?.agentmailEmail && (
+          <div className="flex items-center gap-2 rounded-[2px] bg-[var(--sidebar-accent)] px-3 py-2">
+            <Mail className="h-4 w-4 text-primary" />
+            <div>
+              <p className="text-sm font-medium">{settings.agentmailEmail}</p>
+              <p className="text-[10px] text-muted-foreground">
+                Active inbox &middot; {settings.enabled ? "Enabled" : "Disabled"}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function buildResolutionTestUrl(input: AgentSnippetInput): string | null {

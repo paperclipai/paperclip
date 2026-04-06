@@ -173,7 +173,7 @@ export function ApprovalDetail() {
   return (
     <div className="space-y-6 max-w-3xl">
       {showApprovedBanner && (
-        <div className="border border-green-300 dark:border-green-700/40 bg-green-50 dark:bg-green-900/20 rounded-lg px-4 py-3 animate-in fade-in zoom-in-95 duration-300">
+        <div className="border border-[var(--status-active)]/30 bg-[var(--status-active)]/5 rounded-[2px] px-4 py-3 animate-in fade-in zoom-in-95 duration-300">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-2">
               <div className="relative mt-0.5">
@@ -198,13 +198,13 @@ export function ApprovalDetail() {
           </div>
         </div>
       )}
-      <div className="border border-border rounded-lg p-4 space-y-3">
+      <div className="border border-border rounded-[2px] p-4 space-y-3 hud-panel hud-shimmer">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
-              <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+              <h2 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <p className="text-xs text-muted-foreground font-[var(--font-mono)]">{approval.id}</p>
             </div>
           </div>
           <StatusBadge status={approval.status} />
@@ -229,7 +229,7 @@ export function ApprovalDetail() {
             See full request
           </button>
           {showRawPayload && (
-            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
+            <pre className="text-xs bg-muted/40 rounded-[2px] p-3 overflow-x-auto font-[var(--font-mono)]">
               {JSON.stringify(payload, null, 2)}
             </pre>
           )}
@@ -265,7 +265,7 @@ export function ApprovalDetail() {
             <>
               <Button
                 size="sm"
-                className="bg-green-700 hover:bg-green-600 text-white"
+                className="bg-[var(--status-active)] hover:bg-[var(--status-active)]/80 text-white"
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
@@ -323,11 +323,11 @@ export function ApprovalDetail() {
         </div>
       </div>
 
-      <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+      <div className="border border-border rounded-[2px] p-4 space-y-3 hud-panel hud-shimmer">
+        <h3 className="text-sm font-medium hud-section-header font-[var(--font-display)] uppercase tracking-[0.06em]">Comments ({comments?.length ?? 0})</h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment: ApprovalComment) => (
-            <div key={comment.id} className="border border-border/60 rounded-md p-3">
+            <div key={comment.id} className="border border-border/60 rounded-[2px] p-3">
               <div className="flex items-center justify-between mb-1">
                 {comment.authorAgentId ? (
                   <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">

@@ -76,6 +76,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import { MaximizerModePanel } from "../components/MaximizerModePanel";
 import {
   isUuidLike,
   type Agent,
@@ -98,11 +99,11 @@ import {
 } from "../lib/agent-skills-state";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
-  succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
-  failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
-  running: { icon: Loader2, color: "text-cyan-600 dark:text-cyan-400" },
-  queued: { icon: Clock, color: "text-yellow-600 dark:text-yellow-400" },
-  timed_out: { icon: Timer, color: "text-orange-600 dark:text-orange-400" },
+  succeeded: { icon: CheckCircle2, color: "text-[var(--status-active)]" },
+  failed: { icon: XCircle, color: "text-[var(--status-error)]" },
+  running: { icon: Loader2, color: "text-[var(--status-info)]" },
+  queued: { icon: Clock, color: "text-[var(--status-warning)]" },
+  timed_out: { icon: Timer, color: "text-[var(--status-warning)]" },
   cancelled: { icon: Slash, color: "text-neutral-500 dark:text-neutral-400" },
 };
 
@@ -323,13 +324,13 @@ function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
 function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
   switch (status) {
     case "succeeded":
-      return "border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-300";
+      return "border-[var(--status-active)]/20 bg-[var(--status-active)]/10 text-[var(--status-active)]";
     case "failed":
-      return "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300";
+      return "border-[var(--status-error)]/20 bg-[var(--status-error)]/10 text-[var(--status-error)]";
     case "running":
-      return "border-cyan-500/20 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300";
+      return "border-[var(--status-info)]/20 bg-[var(--status-info)]/10 text-[var(--status-info)]";
     case "skipped":
-      return "border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
+      return "border-[var(--status-warning)]/20 bg-[var(--status-warning)]/10 text-[var(--status-warning)]";
     default:
       return "border-border bg-muted/40 text-muted-foreground";
   }
@@ -339,7 +340,7 @@ function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation[
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize",
+        "inline-flex items-center rounded-[2px] border px-2 py-0.5 font-[var(--font-mono)] text-[9px] uppercase",
         workspaceOperationStatusTone(status),
       )}
     >
@@ -378,7 +379,7 @@ function WorkspaceOperationLogViewer({
         {open ? "Hide full log" : "Show full log"}
       </button>
       {open && (
-        <div className="rounded-md border border-border bg-background/70 p-2">
+        <div className="rounded-[2px] border border-border bg-background/70 p-2">
           {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
           {error && (
             <div className="text-xs text-destructive">
@@ -399,9 +400,9 @@ function WorkspaceOperationLogViewer({
                     className={cn(
                       "shrink-0 w-14",
                       chunk.stream === "stderr"
-                        ? "text-red-600 dark:text-red-300"
+                        ? "text-[var(--status-error)]"
                         : chunk.stream === "system"
-                          ? "text-blue-600 dark:text-blue-300"
+                          ? "text-[var(--status-info)]"
                           : "text-muted-foreground",
                     )}
                   >
@@ -428,7 +429,7 @@ function WorkspaceOperationsSection({
   if (operations.length === 0) return null;
 
   return (
-    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
+    <div className="hud-panel hud-shimmer rounded-[2px] border border-border bg-background/60 p-3 space-y-3">
       <div className="text-xs font-medium text-muted-foreground">
         Workspace ({operations.length})
       </div>
@@ -436,7 +437,7 @@ function WorkspaceOperationsSection({
         {operations.map((operation) => {
           const metadata = asRecord(operation.metadata);
           return (
-            <div key={operation.id} className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2">
+            <div key={operation.id} className="rounded-[2px] border border-border/70 bg-background/70 p-3 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
                 <WorkspaceOperationStatusBadge status={operation.status} />
@@ -487,8 +488,8 @@ function WorkspaceOperationsSection({
               )}
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">stderr excerpt</div>
-                  <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
+                  <div className="mb-1 text-xs text-[var(--status-error)]">stderr excerpt</div>
+                  <pre className="rounded-[2px] bg-[var(--status-error)]/5 p-2 text-xs whitespace-pre-wrap break-all text-[var(--status-error)] font-[var(--font-mono)]">
                     {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
@@ -496,7 +497,7 @@ function WorkspaceOperationsSection({
               {operation.stdoutExcerpt && operation.stdoutExcerpt.trim() && (
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">stdout excerpt</div>
-                  <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
+                  <pre className="rounded-[2px] bg-secondary p-2 text-xs font-[var(--font-mono)] whitespace-pre-wrap break-all">
                     {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
@@ -768,8 +769,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Instructions" });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+      } else if (activeView === "skills") {
+        crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -812,12 +813,12 @@ export function AgentDetail() {
             value={agent.icon}
             onChange={(icon) => updateIcon.mutate(icon)}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
+            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-[2px] bg-[var(--sidebar-accent)] hover:bg-[var(--sidebar-accent)]/80 transition-colors">
               <AgentIcon icon={agent.icon} className="h-6 w-6" />
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+            <h2 className="text-2xl font-[var(--font-display)] uppercase tracking-[0.06em] truncate">{agent.name}</h2>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
@@ -848,13 +849,13 @@ export function AgentDetail() {
           {mobileLiveRun && (
             <Link
               to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] bg-[var(--status-info)]/10 hover:bg-[var(--status-info)]/20 transition-colors no-underline"
             >
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-info)]" />
               </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+              <span className="text-[11px] font-[var(--font-mono)] uppercase text-[var(--status-info)]">Live</span>
             </Link>
           )}
 
@@ -867,7 +868,7 @@ export function AgentDetail() {
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="end">
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-[var(--sidebar-accent)]"
                 onClick={() => {
                   navigator.clipboard.writeText(agent.id);
                   setMoreOpen(false);
@@ -877,7 +878,7 @@ export function AgentDetail() {
                 Copy Agent ID
               </button>
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-[var(--sidebar-accent)]"
                 onClick={() => {
                   resetTaskSession.mutate(null);
                   setMoreOpen(false);
@@ -887,7 +888,7 @@ export function AgentDetail() {
                 Reset Sessions
               </button>
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-[var(--sidebar-accent)] text-destructive"
                 onClick={() => {
                   agentAction.mutate("terminate");
                   setMoreOpen(false);
@@ -923,7 +924,7 @@ export function AgentDetail() {
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
-        <p className="text-sm text-amber-500">
+        <p className="text-sm text-[var(--status-warning)]">
           This agent is pending board approval and cannot be invoked yet.
         </p>
       )}
@@ -938,7 +939,7 @@ export function AgentDetail() {
               : "opacity-0 pointer-events-none"
           )}
         >
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
+          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-[2px] px-3 py-1.5 shadow-lg">
             <Button
               variant="ghost"
               size="sm"
@@ -986,14 +987,40 @@ export function AgentDetail() {
 
       {/* View content */}
       {activeView === "dashboard" && (
-        <AgentOverview
-          agent={agent}
-          runs={heartbeats ?? []}
-          assignedIssues={assignedIssues}
-          runtimeState={runtimeState}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-        />
+        <>
+          <AgentOverview
+            agent={agent}
+            runs={heartbeats ?? []}
+            assignedIssues={assignedIssues}
+            runtimeState={runtimeState}
+            agentId={agent.id}
+            agentRouteId={canonicalAgentRef}
+          />
+          {resolvedCompanyId && (
+            <MaximizerModePanel
+              companyId={resolvedCompanyId}
+              agent={agent}
+              activeRun={
+                mobileLiveRun
+                  ? {
+                      id: mobileLiveRun.id,
+                      status: mobileLiveRun.status,
+                      pausedAt: mobileLiveRun.pausedAt ? String(mobileLiveRun.pausedAt) : null,
+                      interruptedAt: mobileLiveRun.interruptedAt ? String(mobileLiveRun.interruptedAt) : null,
+                      interruptMessage: mobileLiveRun.interruptMessage ?? null,
+                      interruptMode: mobileLiveRun.interruptMode ?? null,
+                      circuitBreakerTripped: mobileLiveRun.circuitBreakerTripped ?? false,
+                      circuitBreakerReason: mobileLiveRun.circuitBreakerReason ?? null,
+                    }
+                  : null
+              }
+              onUpdated={() => {
+                queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+                queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent.id) });
+              }}
+            />
+          )}
+        </>
       )}
 
       {activeView === "instructions" && (
@@ -1100,11 +1127,11 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
-        <h3 className="flex items-center gap-2 text-sm font-medium">
+        <h3 className="hud-section-header flex items-center gap-2 text-sm font-[var(--font-display)] uppercase tracking-[0.06em]">
           {isLive && (
             <span className="relative flex h-2 w-2">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-info)]" />
             </span>
           )}
           {isLive ? "Live Run" : "Latest Run"}
@@ -1120,8 +1147,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
       <Link
         to={`/agents/${agentId}/runs/${run.id}`}
         className={cn(
-          "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
-          isLive ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.08)]" : "border-border"
+          "hud-panel block border rounded-[2px] p-4 space-y-2 w-full no-underline transition-colors hover:bg-[var(--sidebar-accent)] cursor-pointer",
+          isLive ? "border-[var(--status-info)]/30 shadow-[0_0_12px_rgba(6,182,212,0.08)]" : "border-border"
         )}
       >
         <div className="flex items-center gap-2">
@@ -1129,15 +1156,15 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
           <StatusBadge status={run.status} />
           <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
           <span className={cn(
-            "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-            run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-              : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-              : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+            "inline-flex items-center rounded-[2px] px-1.5 py-0.5 font-[var(--font-mono)] text-[9px] uppercase",
+            run.invocationSource === "timer" ? "bg-[var(--status-info)]/10 text-[var(--status-info)]"
+              : run.invocationSource === "assignment" ? "bg-[var(--status-violet)]/10 text-[var(--status-violet)]"
+              : run.invocationSource === "on_demand" ? "bg-[var(--primary)]/10 text-[var(--primary)]"
               : "bg-muted text-muted-foreground"
           )}>
             {sourceLabels[run.invocationSource] ?? run.invocationSource}
           </span>
-          <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt)}</span>
+          <span className="ml-auto text-xs font-[var(--font-mono)] text-muted-foreground">{relativeTime(run.createdAt)}</span>
         </div>
 
         {summary && (
@@ -1191,7 +1218,7 @@ function AgentOverview({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Issues</h3>
+          <h3 className="hud-section-header text-sm font-[var(--font-display)] uppercase tracking-[0.06em]">Recent Issues</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -1202,7 +1229,7 @@ function AgentOverview({
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent issues.</p>
         ) : (
-          <div className="border border-border rounded-lg">
+          <div className="hud-panel border border-border rounded-[2px]">
             {assignedIssues.slice(0, 10).map((issue) => (
               <EntityRow
                 key={issue.id}
@@ -1223,7 +1250,7 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="hud-section-header text-sm font-[var(--font-display)] uppercase tracking-[0.06em]">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
@@ -1249,37 +1276,37 @@ function CostsSection({
   return (
     <div className="space-y-4">
       {runtimeState && (
-        <div className="border border-border rounded-lg p-4">
+        <div className="hud-panel hud-shimmer border border-border rounded-[2px] p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
+              <span className="text-xs text-muted-foreground block font-[var(--font-mono)] uppercase">Input tokens</span>
+              <span className="text-lg font-[var(--font-mono)] font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
+              <span className="text-xs text-muted-foreground block font-[var(--font-mono)] uppercase">Output tokens</span>
+              <span className="text-lg font-[var(--font-mono)] font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
+              <span className="text-xs text-muted-foreground block font-[var(--font-mono)] uppercase">Cached tokens</span>
+              <span className="text-lg font-[var(--font-mono)] font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
-              <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
+              <span className="text-xs text-muted-foreground block font-[var(--font-mono)] uppercase">Total cost</span>
+              <span className="text-lg font-[var(--font-mono)] font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
             </div>
           </div>
         </div>
       )}
       {runsWithCost.length > 0 && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
+        <div className="border border-border rounded-[2px] overflow-hidden">
+          <table className="w-full text-xs font-[var(--font-mono)]">
             <thead>
-              <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+              <tr className="border-b border-border bg-[var(--sidebar-accent)]">
+                <th className="text-left px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground text-[10px]">Date</th>
+                <th className="text-left px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground text-[10px]">Run</th>
+                <th className="text-right px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground text-[10px]">Input</th>
+                <th className="text-right px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground text-[10px]">Output</th>
+                <th className="text-right px-3 py-2 font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground text-[10px]">Cost</th>
               </tr>
             </thead>
             <tbody>
@@ -1360,7 +1387,7 @@ function AgentConfigurePage({
         hideInstructionsFile
       />
       <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
+        <h3 className="hud-section-header text-sm font-[var(--font-display)] uppercase tracking-[0.06em] mb-3">API Keys</h3>
         <KeysTab agentId={agentId} companyId={companyId} />
       </div>
 
@@ -1384,7 +1411,7 @@ function AgentConfigurePage({
             ) : (
               <div className="space-y-2">
                 {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
+                  <div key={revision.id} className="border border-border/70 rounded-[2px] p-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-xs text-muted-foreground">
                         <span className="font-mono">{revision.id.slice(0, 8)}</span>
@@ -1521,8 +1548,8 @@ function ConfigurationTab({
       />
 
       <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
+        <h3 className="hud-section-header text-sm font-[var(--font-display)] uppercase tracking-[0.06em] mb-3">Permissions</h3>
+        <div className="hud-panel border border-border rounded-[2px] p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
               <div>Can create new agents</div>
@@ -1537,7 +1564,7 @@ function ConfigurationTab({
               aria-checked={canCreateAgents}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canCreateAgents ? "bg-green-600" : "bg-muted",
+                canCreateAgents ? "bg-[var(--status-active)]" : "bg-muted",
               )}
               onClick={() =>
                 updatePermissions.mutate({
@@ -1569,7 +1596,7 @@ function ConfigurationTab({
               aria-checked={canAssignTasks}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canAssignTasks ? "bg-green-600" : "bg-muted",
+                canAssignTasks ? "bg-[var(--status-active)]" : "bg-muted",
               )}
               onClick={() =>
                 updatePermissions.mutate({
@@ -1921,7 +1948,7 @@ function PromptsTab({
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
-            <div key={warning} className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+            <div key={warning} className="rounded-[2px] border border-[var(--status-info)]/25 bg-[var(--status-info)]/10 px-3 py-2 text-xs text-[var(--status-info)]">
               {warning}
             </div>
           ))}
@@ -1944,7 +1971,7 @@ function PromptsTab({
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      Managed: Paperclip stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.
+                      Managed: OhMyCompany stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -1999,7 +2026,7 @@ function PromptsTab({
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip automatically.
+                      The absolute directory on disk where the instructions bundle lives. In managed mode this is set by OhMyCompany automatically.
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -2083,7 +2110,7 @@ function PromptsTab({
 
       <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
         <div className={cn(
-          "border border-border rounded-lg p-3 space-y-3 shrink-0",
+          "hud-panel border border-border rounded-[2px] p-3 space-y-3 shrink-0",
           isMobile && showFilePanel && "block",
           isMobile && !showFilePanel && "hidden",
         )} style={isMobile ? undefined : { width: filePanelWidth }}>
@@ -2188,7 +2215,7 @@ function PromptsTab({
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
+                      <span className="ml-3 shrink-0 rounded-[2px] border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 text-[var(--status-warning)] px-1.5 py-0.5 font-[var(--font-mono)] text-[9px] uppercase tracking-wide cursor-help">
                         virtual file
                       </span>
                     </TooltipTrigger>
@@ -2215,7 +2242,7 @@ function PromptsTab({
           />
         )}
 
-        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
+        <div className={cn("hud-panel border border-border rounded-[2px] p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
@@ -2281,7 +2308,7 @@ function PromptsTab({
             <textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="min-h-[420px] w-full rounded-[2px] border border-border bg-secondary px-3 py-2 font-[var(--font-mono)] text-sm outline-none"
               placeholder="File contents"
             />
           )}
@@ -2295,7 +2322,7 @@ function PromptsTab({
 function PromptsTabSkeleton() {
   return (
     <div className="max-w-5xl space-y-4">
-      <div className="rounded-lg border border-border p-4 space-y-4">
+      <div className="hud-panel rounded-[2px] border border-border p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
             <Skeleton className="h-4 w-40" />
@@ -2313,7 +2340,7 @@ function PromptsTabSkeleton() {
         </div>
       </div>
       <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="rounded-lg border border-border p-3 space-y-3">
+        <div className="hud-panel rounded-[2px] border border-border p-3 space-y-3">
           <div className="flex items-center justify-between">
             <Skeleton className="h-4 w-12" />
             <Skeleton className="h-8 w-16" />
@@ -2325,7 +2352,7 @@ function PromptsTabSkeleton() {
             ))}
           </div>
         </div>
-        <div className="rounded-lg border border-border p-4 space-y-3">
+        <div className="hud-panel rounded-[2px] border border-border p-4 space-y-3">
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-3 w-28" />
@@ -2530,9 +2557,9 @@ function AgentSkillsTab({
   const unsupportedSkillMessage = useMemo(() => {
     if (skillSnapshot?.mode !== "unsupported") return null;
     if (agent.adapterType === "openclaw_gateway") {
-      return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
+      return "OhMyCompany cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
     }
-    return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
+    return "OhMyCompany cannot manage skills for this adapter yet. Manage them in the adapter directly.";
   }, [agent.adapterType, skillSnapshot?.mode]);
   const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
   const saveStatusLabel = syncSkills.isPending
@@ -2559,7 +2586,7 @@ function AgentSkillsTab({
       </div>
 
       {skillSnapshot?.warnings.length ? (
-        <div className="space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+        <div className="space-y-1 rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-4 py-3 text-sm text-[var(--status-warning)]">
           {skillSnapshot.warnings.map((warning) => (
             <div key={warning}>{warning}</div>
           ))}
@@ -2567,7 +2594,7 @@ function AgentSkillsTab({
       ) : null}
 
       {unsupportedSkillMessage ? (
-        <div className="rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
+        <div className="rounded-[2px] border border-border px-4 py-3 text-sm text-muted-foreground">
           {unsupportedSkillMessage}
         </div>
       ) : null}
@@ -2582,7 +2609,7 @@ function AgentSkillsTab({
               const required = Boolean(adapterEntry?.required);
               const rowClassName = cn(
                 "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
-                skill.readOnly ? "bg-muted/20" : "hover:bg-accent/20",
+                skill.readOnly ? "bg-muted/20" : "hover:bg-[var(--sidebar-accent)]",
               );
               const body = (
                 <div className="min-w-0 flex-1">
@@ -2690,7 +2717,7 @@ function AgentSkillsTab({
                   <section className="border-y border-border">
                     <div className="border-b border-border bg-muted/40 px-3 py-2">
                       <span className="text-xs font-medium text-muted-foreground">
-                        Required by Paperclip
+                        Required by OhMyCompany
                       </span>
                     </div>
                     {requiredSkillRows.map(renderSkillRow)}
@@ -2707,7 +2734,7 @@ function AgentSkillsTab({
                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
                     >
                       <span className="text-xs font-medium text-muted-foreground">
-                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
+                        ({unmanagedSkillRows.length}) User-installed skills, not managed by OhMyCompany
                       </span>
                       {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
@@ -2719,7 +2746,7 @@ function AgentSkillsTab({
           })()}
 
           {desiredOnlyMissingSkills.length > 0 && (
-            <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+            <div className="rounded-[2px] border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 px-4 py-3 text-sm text-[var(--status-warning)]">
               <div className="font-medium">Requested skills missing from the company library</div>
               <div className="mt-1 text-xs">
                 {desiredOnlyMissingSkills.join(", ")}
@@ -2770,7 +2797,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       to={isSelected ? `/agents/${agentId}/runs` : `/agents/${agentId}/runs/${run.id}`}
       className={cn(
         "flex flex-col gap-1 w-full px-3 py-2.5 text-left border-b border-border last:border-b-0 transition-colors no-underline text-inherit",
-        isSelected ? "bg-accent/40" : "hover:bg-accent/20",
+        isSelected ? "bg-[var(--sidebar-accent)]" : "hover:bg-[var(--sidebar-accent)]",
       )}
     >
       <div className="flex items-center gap-2">
@@ -2779,10 +2806,10 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {run.id.slice(0, 8)}
         </span>
         <span className={cn(
-          "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
-          run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-            : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-            : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+          "inline-flex items-center rounded-[2px] px-1.5 py-0.5 font-[var(--font-mono)] text-[9px] uppercase shrink-0",
+          run.invocationSource === "timer" ? "bg-[var(--status-info)]/10 text-[var(--status-info)]"
+            : run.invocationSource === "assignment" ? "bg-[var(--status-violet)]/10 text-[var(--status-violet)]"
+            : run.invocationSource === "on_demand" ? "bg-[var(--primary)]/10 text-[var(--primary)]"
             : "bg-muted text-muted-foreground"
         )}>
           {sourceLabels[run.invocationSource] ?? run.invocationSource}
@@ -2853,7 +2880,7 @@ function RunsTab({
       );
     }
     return (
-      <div className="border border-border rounded-lg overflow-x-hidden">
+      <div className="hud-panel border border-border rounded-[2px] overflow-x-hidden">
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
@@ -2866,7 +2893,7 @@ function RunsTab({
     <div className="flex gap-0">
       {/* Left: run list — border stretches full height, content sticks */}
       <div className={cn(
-        "shrink-0 border border-border rounded-lg",
+        "shrink-0 border border-border rounded-[2px]",
         selectedRun ? "w-72" : "w-full",
       )}>
         <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
@@ -3040,7 +3067,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
   return (
     <div className="space-y-4 min-w-0">
       {/* Run summary card */}
-      <div className="border border-border rounded-lg overflow-hidden">
+      <div className="border border-border rounded-[2px] overflow-hidden">
         <div className="flex flex-col sm:flex-row">
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
@@ -3112,7 +3139,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
             )}
             {run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                <span className="text-[var(--status-error)]">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
@@ -3139,7 +3166,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                     Login URL:
                     <a
                       href={claudeLoginResult.loginUrl}
-                      className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
+                      className="text-[var(--primary)] underline underline-offset-2 ml-1 break-all"
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -3150,12 +3177,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 {claudeLoginResult && (
                   <>
                     {!!claudeLoginResult.stdout && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                      <pre className="bg-secondary rounded-[2px] p-3 text-xs font-[var(--font-mono)] text-foreground overflow-x-auto whitespace-pre-wrap">
                         {claudeLoginResult.stdout}
                       </pre>
                     )}
                     {!!claudeLoginResult.stderr && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                      <pre className="bg-secondary rounded-[2px] p-3 text-xs font-[var(--font-mono)] text-[var(--status-error)] overflow-x-auto whitespace-pre-wrap">
                         {claudeLoginResult.stderr}
                       </pre>
                     )}
@@ -3164,7 +3191,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
               </div>
             )}
             {hasNonZeroExit && (
-              <div className="text-xs text-red-600 dark:text-red-400">
+              <div className="text-xs text-[var(--status-error)]">
                 Exit code {run.exitCode}
                 {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
               </div>
@@ -3175,20 +3202,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
           {hasMetrics && (
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
+                <div className="text-xs text-muted-foreground font-[var(--font-mono)] uppercase">Input</div>
+                <div className="text-sm font-medium font-[var(--font-mono)]">{formatTokens(metrics.input)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
+                <div className="text-xs text-muted-foreground font-[var(--font-mono)] uppercase">Output</div>
+                <div className="text-sm font-medium font-[var(--font-mono)]">{formatTokens(metrics.output)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
+                <div className="text-xs text-muted-foreground font-[var(--font-mono)] uppercase">Cached</div>
+                <div className="text-sm font-medium font-[var(--font-mono)]">{formatTokens(metrics.cached)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
+                <div className="text-xs text-muted-foreground font-[var(--font-mono)] uppercase">Cost</div>
+                <div className="text-sm font-medium font-[var(--font-mono)]">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
               </div>
             </div>
           )}
@@ -3203,7 +3230,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
             >
               <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
               Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
+              {sessionChanged && <span className="text-[var(--status-warning)] ml-1">(changed)</span>}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
@@ -3256,13 +3283,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Issues Touched ({touchedIssues.length})</span>
-          <div className="border border-border rounded-lg divide-y divide-border">
+          <span className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Issues Touched ({touchedIssues.length})</span>
+          <div className="hud-panel border border-border rounded-[2px] divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
                 key={issue.issueId}
                 to={`/issues/${issue.identifier ?? issue.issueId}`}
-                className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit"
+                className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-[var(--sidebar-accent)] transition-colors text-left no-underline text-inherit"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <StatusBadge status={issue.status} />
@@ -3278,16 +3305,16 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <span className="text-xs font-[var(--font-mono)] uppercase text-[var(--status-error)]">stderr</span>
+          <pre className="bg-secondary rounded-[2px] p-3 text-xs font-[var(--font-mono)] text-[var(--status-error)] overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
         </div>
       )}
 
       {/* stdout excerpt when no log is available */}
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <span className="text-xs font-[var(--font-mono)] uppercase text-muted-foreground">stdout</span>
+          <pre className="bg-secondary rounded-[2px] p-3 text-xs font-[var(--font-mono)] text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
         </div>
       )}
 
@@ -3690,14 +3717,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   const levelColors: Record<string, string> = {
     info: "text-foreground",
-    warn: "text-yellow-600 dark:text-yellow-400",
-    error: "text-red-600 dark:text-red-400",
+    warn: "text-[var(--status-warning)]",
+    error: "text-[var(--status-error)]",
   };
 
   const streamColors: Record<string, string> = {
     stdout: "text-foreground",
-    stderr: "text-red-600 dark:text-red-300",
-    system: "text-blue-600 dark:text-blue-300",
+    stderr: "text-[var(--status-error)]",
+    system: "text-[var(--status-info)]",
   };
 
   return (
@@ -3707,8 +3734,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+        <div className="hud-panel hud-shimmer rounded-[2px] border border-border bg-background/60 p-3 space-y-2">
+          <div className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Invocation</div>
           {typeof adapterInvokePayload.adapterType === "string" && (
             <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
           )}
@@ -3745,7 +3772,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {adapterInvokePayload.prompt !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-secondary rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap">
                 {typeof adapterInvokePayload.prompt === "string"
                   ? redactPathText(adapterInvokePayload.prompt, censorUsernameInLogs)
                   : JSON.stringify(redactPathValue(adapterInvokePayload.prompt, censorUsernameInLogs), null, 2)}
@@ -3755,7 +3782,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {adapterInvokePayload.context !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-secondary rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap">
                 {JSON.stringify(redactPathValue(adapterInvokePayload.context, censorUsernameInLogs), null, 2)}
               </pre>
             </div>
@@ -3763,7 +3790,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {adapterInvokePayload.env !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+              <pre className="bg-secondary rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap">
                 {formatEnvForDisplay(adapterInvokePayload.env, censorUsernameInLogs)}
               </pre>
             </div>
@@ -3776,15 +3803,15 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           Transcript ({transcript.length})
         </span>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-border/70 bg-background/70 p-0.5">
+          <div className="inline-flex rounded-[2px] border border-border/70 bg-background/70 p-0.5">
             {(["nice", "raw"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-[11px] font-medium capitalize transition-colors",
+                  "rounded-[2px] px-2.5 py-1 font-[var(--font-mono)] text-[9px] uppercase transition-colors",
                   transcriptMode === mode
-                    ? "bg-accent text-foreground shadow-sm"
+                    ? "bg-[var(--sidebar-accent)] text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
                 onClick={() => setTranscriptMode(mode)}
@@ -3809,10 +3836,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             </Button>
           )}
           {isLive && (
-            <span className="flex items-center gap-1 text-xs text-cyan-400">
+            <span className="flex items-center gap-1 text-xs text-[var(--status-info)]">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-info)]" />
               </span>
               Live
             </span>
@@ -3827,7 +3854,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {logError && (
-          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <div className="mt-3 rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/5 px-3 py-2 text-xs text-[var(--status-error)]">
             {logError}
           </div>
         )}
@@ -3835,34 +3862,34 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       </div>
 
       {(run.status === "failed" || run.status === "timed_out") && (
-        <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
+        <div className="hud-panel rounded-[2px] border border-[var(--status-error)]/30 bg-[var(--status-error)]/5 p-3 space-y-2">
+          <div className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-[var(--status-error)]">Failure details</div>
           {run.error && (
-            <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
+            <div className="text-xs text-[var(--status-error)]">
+              <span className="text-[var(--status-error)]">Error: </span>
               {redactPathText(run.error, censorUsernameInLogs)}
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <div className="text-xs text-[var(--status-error)] mb-1 font-[var(--font-mono)] uppercase">stderr excerpt</div>
+              <pre className="bg-[var(--status-error)]/5 rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap text-[var(--status-error)]">
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
           )}
           {run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <div className="text-xs text-[var(--status-error)] mb-1 font-[var(--font-mono)] uppercase">adapter result JSON</div>
+              <pre className="bg-[var(--status-error)]/5 rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap text-[var(--status-error)]">
                 {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
               </pre>
             </div>
           )}
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <div className="text-xs text-[var(--status-error)] mb-1 font-[var(--font-mono)] uppercase">stdout excerpt</div>
+              <pre className="bg-[var(--status-error)]/5 rounded-[2px] p-2 text-xs font-[var(--font-mono)] overflow-x-auto whitespace-pre-wrap text-[var(--status-error)]">
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
@@ -3872,8 +3899,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {events.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
-          <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
+          <div className="hud-section-header mb-2 text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground">Events ({events.length})</div>
+          <div className="bg-secondary rounded-[2px] p-3 font-[var(--font-mono)] text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color
                 ?? (evt.level ? levelColors[evt.level] : null)
@@ -3950,12 +3977,12 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
     <div className="space-y-6">
       {/* New token banner */}
       {newToken && (
-        <div className="border border-yellow-300 dark:border-yellow-600/40 bg-yellow-50 dark:bg-yellow-500/5 rounded-lg p-4 space-y-2">
-          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
+        <div className="hud-panel border border-[var(--status-warning)]/30 bg-[var(--status-warning)]/5 rounded-[2px] p-4 space-y-2">
+          <p className="text-sm font-[var(--font-display)] uppercase tracking-[0.06em] text-[var(--status-warning)]">
             API key created — copy it now, it will not be shown again.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
+            <code className="flex-1 bg-secondary rounded-[2px] px-3 py-1.5 text-xs font-[var(--font-mono)] text-[var(--status-active)] truncate">
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
             </code>
             <Button
@@ -3974,7 +4001,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            {copied && <span className="text-xs text-green-400">Copied!</span>}
+            {copied && <span className="text-xs text-[var(--status-active)]">Copied!</span>}
           </div>
           <Button
             variant="ghost"
@@ -3988,13 +4015,13 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       )}
 
       {/* Create new key */}
-      <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+      <div className="hud-panel border border-border rounded-[2px] p-4 space-y-3">
+        <h3 className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground flex items-center gap-2">
           <Key className="h-3.5 w-3.5" />
           Create API Key
         </h3>
         <p className="text-xs text-muted-foreground">
-          API keys allow this agent to authenticate calls to the Paperclip server.
+          API keys allow this agent to authenticate calls to the OhMyCompany server.
         </p>
         <div className="flex items-center gap-2">
           <Input
@@ -4026,10 +4053,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
 
       {activeKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
+          <h3 className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground mb-2">
             Active Keys
           </h3>
-          <div className="border border-border rounded-lg divide-y divide-border">
+          <div className="hud-panel border border-border rounded-[2px] divide-y divide-border">
             {activeKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>
@@ -4056,10 +4083,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {/* Revoked keys */}
       {revokedKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
+          <h3 className="hud-section-header text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-muted-foreground mb-2">
             Revoked Keys
           </h3>
-          <div className="border border-border rounded-lg divide-y divide-border opacity-50">
+          <div className="hud-panel border border-border rounded-[2px] divide-y divide-border opacity-50">
             {revokedKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>

@@ -65,6 +65,12 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
+  /** Existing issue to delegate to the new agent once approved. */
+  delegateIssueId: z.string().uuid().optional().nullable(),
+  /** If no delegateIssueId, create a new task with this title for the new agent. */
+  delegateTaskTitle: z.string().min(1).optional().nullable(),
+  /** Body / description for the auto-created delegate task. */
+  delegateTaskDescription: z.string().optional().nullable(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;

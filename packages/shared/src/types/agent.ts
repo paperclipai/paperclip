@@ -79,6 +79,11 @@ export interface Agent {
   pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  maximizerEnabled: boolean;
+  maximizerMaxConsecutiveFailures: number;
+  maximizerMaxRunsWithoutProgress: number;
+  maximizerTokenVelocityLimit: number | null;
+  maximizerAutoApprove: boolean;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

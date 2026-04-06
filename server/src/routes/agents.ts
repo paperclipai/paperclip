@@ -556,25 +556,29 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
   ) {
-    if (!requestedDesiredSkills) {
-      return {
-        adapterConfig,
-        desiredSkills: null as string[] | null,
-        runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
-      };
-    }
-
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedDesiredSkills,
-    );
+    // Always resolve runtime skills so every agent gets bundled required skills
+    // (heartbeat protocol, create-agent, etc.) even when no desiredSkills are specified.
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
     const requiredSkills = runtimeSkillEntries
       .filter((entry) => entry.required)
       .map((entry) => entry.key);
+
+    const resolvedRequestedSkills = requestedDesiredSkills
+      ? await companySkills.resolveRequestedSkillKeys(companyId, requestedDesiredSkills)
+      : [];
+
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
+
+    // If no skills to assign (no bundled + no requested), preserve old behaviour
+    if (desiredSkills.length === 0) {
+      return {
+        adapterConfig,
+        desiredSkills: null as string[] | null,
+        runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
+      };
+    }
 
     return {
       adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
@@ -1187,6 +1191,9 @@ export function agentRoutes(db: Db) {
       desiredSkills: requestedDesiredSkills,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
+      delegateIssueId: requestedDelegateIssueId,
+      delegateTaskTitle: requestedDelegateTaskTitle,
+      delegateTaskDescription: requestedDelegateTaskDescription,
       ...hireInput
     } = req.body;
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
@@ -1280,6 +1287,9 @@ export function agentRoutes(db: Db) {
             runtimeConfig: requestedRuntimeConfig,
             desiredSkills: desiredSkillAssignment.desiredSkills,
           },
+          delegateIssueId: requestedDelegateIssueId ?? null,
+          delegateTaskTitle: requestedDelegateTaskTitle ?? null,
+          delegateTaskDescription: requestedDelegateTaskDescription ?? null,
         },
         decisionNote: null,
         decidedByUserId: null,
@@ -1332,6 +1342,58 @@ export function agentRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type, linkedAgentId: agent.id },
       });
+    }
+
+    // ── When no approval required, immediately delegate task and wake new agent ──
+    if (!requiresApproval) {
+      const issuesSvc = issueService(db);
+      let delegateIssueId = requestedDelegateIssueId ?? null;
+
+      // Create a new task if title was provided but no existing issue to delegate
+      if (!delegateIssueId && requestedDelegateTaskTitle) {
+        const newIssue = await issuesSvc.create(companyId, {
+          title: requestedDelegateTaskTitle,
+          description: requestedDelegateTaskDescription ?? "",
+          assigneeAgentId: agent.id,
+          priority: "medium",
+          status: "open",
+        });
+        delegateIssueId = newIssue.id;
+      }
+
+      // Assign existing issue to the new agent
+      if (delegateIssueId) {
+        try {
+          await issuesSvc.update(delegateIssueId, {
+            assigneeAgentId: agent.id,
+          });
+        } catch (_assignErr) {
+          // Non-fatal: agent still gets created
+        }
+      }
+
+      // Wake the new agent so it starts working immediately
+      try {
+        await heartbeat.wakeup(agent.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "hire_no_approval",
+          payload: {
+            delegateIssueId,
+            hiredByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            source: "agent_hire.auto_activated",
+            taskId: delegateIssueId,
+            issueId: delegateIssueId,
+            wakeReason: "hire_no_approval",
+          },
+        });
+      } catch (_wakeErr) {
+        // Non-fatal: agent is created and visible, heartbeat will fire on schedule
+      }
     }
 
     res.status(201).json({ agent, approval });
@@ -1882,8 +1944,44 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+
+    // Gate: agent-initiated terminations require approval
+    if (req.actor.type === "agent") {
+      const agent = await svc.getById(id);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const approval = await approvalsSvc.create(agent.companyId, {
+        type: "terminate_agent",
+        payload: {
+          targetAgentId: agent.id,
+          targetAgentName: agent.name,
+          reason: req.body?.reason ?? "Requested by agent",
+        },
+        requestedByAgentId: req.actor.agentId ?? undefined,
+      });
+
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "agent",
+        actorId: req.actor.agentId ?? "unknown",
+        action: "approval.created",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { type: "terminate_agent", targetAgentId: agent.id },
+      });
+
+      res.status(202).json({
+        message: "Termination requires approval",
+        approvalId: approval.id,
+      });
+      return;
+    }
+
+    assertBoard(req);
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });

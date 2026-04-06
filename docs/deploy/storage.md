@@ -3,7 +3,7 @@ title: Storage
 summary: Local disk vs S3-compatible storage
 ---
 
-Paperclip stores uploaded files (issue attachments, images) using a configurable storage provider.
+OhMyCompany stores uploaded files (issue attachments, images) using a configurable storage provider.
 
 ## Local Disk (Default)
 

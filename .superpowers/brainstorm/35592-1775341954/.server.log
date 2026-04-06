@@ -1,0 +1,20 @@
+node:events:496
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EACCES: permission denied 127.0.0.1:62506
+    at Server.setupListenHandle [as _listen2] (node:net:1915:21)
+    at listenInCluster (node:net:1994:12)
+    at node:net:2203:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EACCES',
+  errno: -4092,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 62506
+}
+
+Node.js v22.14.0

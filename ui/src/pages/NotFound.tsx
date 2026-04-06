@@ -34,19 +34,19 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
 
   return (
     <div className="mx-auto max-w-2xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <div className="rounded-[2px] border border-border bg-card p-6 hud-panel hud-shimmer">
         <div className="flex items-center gap-3">
-          <div className="rounded-md border border-destructive/20 bg-destructive/10 p-2">
+          <div className="rounded-[2px] border border-destructive/20 bg-destructive/10 p-2">
             <AlertTriangle className="h-5 w-5 text-destructive" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">{title}</h1>
+            <h1 className="text-xl font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">{title}</h1>
             <p className="text-sm text-muted-foreground">{description}</p>
           </div>
         </div>
 
-        <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          Requested path: <code className="font-mono">{currentPath}</code>
+        <div className="mt-4 rounded-[2px] border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          Requested path: <code className="font-[var(--font-mono)]">{currentPath}</code>
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">

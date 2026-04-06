@@ -666,6 +666,17 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
   
+  // Mark any runtime services left as "running" from a previous crash as stopped
+  try {
+    const { recoverStaleRuntimeServices } = await import("./services/workspace-runtime.js");
+    const recovered = await recoverStaleRuntimeServices(db);
+    if (recovered > 0) {
+      logger.info(`Recovered ${recovered} stale runtime service(s) from previous run`);
+    }
+  } catch {
+    // Non-fatal: recovery is best-effort
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

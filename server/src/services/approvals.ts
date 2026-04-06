@@ -194,7 +194,7 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -203,9 +203,14 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        throw unprocessable("Only pending approvals can request revision (status changed concurrently)");
+      }
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -215,7 +220,7 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "pending",
@@ -225,9 +230,14 @@ export function approvalService(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "revision_requested")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        throw unprocessable("Only revision requested approvals can be resubmitted (status changed concurrently)");
+      }
+      return updated;
     },
 
     listComments: async (approvalId: string) => {

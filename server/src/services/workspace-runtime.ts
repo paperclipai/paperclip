@@ -107,6 +107,20 @@ export async function resetRuntimeServicesForTests() {
   runtimeServiceLeasesByRun.clear();
 }
 
+/**
+ * On server startup, mark any DB runtime service records that claim to be
+ * "running" or "starting" as "stopped" — those processes are dead after a
+ * server restart. This prevents stale "running" entries from lingering.
+ */
+export async function recoverStaleRuntimeServices(db: Db): Promise<number> {
+  const result = await db
+    .update(workspaceRuntimeServices)
+    .set({ status: "stopped", stoppedAt: new Date(), healthStatus: "unknown" })
+    .where(inArray(workspaceRuntimeServices.status, ["running", "starting"]))
+    .returning({ id: workspaceRuntimeServices.id });
+  return result.length;
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;

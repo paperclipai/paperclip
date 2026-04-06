@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PWD/scripts/preflight-check.ps1"
+          }
+        ]
+      }
+    ]
+  }
+}

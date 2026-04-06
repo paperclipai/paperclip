@@ -213,7 +213,7 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
+        <h1 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">New Agent</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Advanced agent configuration
         </p>
@@ -293,7 +293,7 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Optional skills from the company library. Built-in OhMyCompany runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (

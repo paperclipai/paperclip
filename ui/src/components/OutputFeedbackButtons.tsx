@@ -113,7 +113,7 @@ export function OutputFeedbackButtons({
           size="sm"
           variant="outline"
           disabled={disabled || isSaving}
-          className={cn(visibleVote === "up" && "border-green-600/50 bg-green-500/10 text-green-700")}
+          className={cn(visibleVote === "up" && "border-[var(--status-active)]/50 bg-[var(--status-active)]/10 text-[var(--status-active)]")}
           onClick={() => handleVote("up")}
         >
           <ThumbsUp className="mr-1.5 h-3.5 w-3.5" />
@@ -124,7 +124,7 @@ export function OutputFeedbackButtons({
           size="sm"
           variant="outline"
           disabled={disabled || isSaving}
-          className={cn(visibleVote === "down" && "border-amber-600/50 bg-amber-500/10 text-amber-800")}
+          className={cn(visibleVote === "down" && "border-[var(--status-warning)]/50 bg-[var(--status-warning)]/10 text-[var(--status-warning)]")}
           onClick={() => handleVote("down")}
         >
           <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
@@ -132,7 +132,7 @@ export function OutputFeedbackButtons({
         </Button>
       </div>
       {collectingDownvoteReason ? (
-        <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
+        <div className="mt-2 rounded-[2px] border border-border/60 bg-accent/20 p-3">
           <div className="mb-2 text-sm font-medium">What could have been better?</div>
           <Textarea
             value={downvoteReason}
@@ -185,7 +185,7 @@ export function OutputFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
+              Choose whether voted AI outputs can be shared with OhMyCompany Labs. This
               answer becomes the default for future thumbs up and thumbs down votes.
             </DialogDescription>
           </DialogHeader>

@@ -175,7 +175,7 @@ function CommentCard({
       id={`comment-${comment.id}`}
       className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
-          ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
+          ? "border-[var(--status-warning)]/40 bg-[var(--status-warning)]/5"
           : isHighlighted
             ? "border-primary/50 bg-primary/5"
             : "border-border"
@@ -194,7 +194,7 @@ function CommentCard({
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <span className="inline-flex items-center rounded-[2px] border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/15 px-2 py-0.5 text-[9px] font-[var(--font-mono)] font-medium uppercase tracking-[0.14em] text-[var(--status-warning)]">
               Queued
             </span>
           ) : null}
@@ -260,12 +260,12 @@ function CommentCard({
           {comment.runAgentId ? (
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+              className="inline-flex items-center rounded-[2px] border border-border bg-accent/30 px-2 py-1 text-[10px] font-[var(--font-mono)] text-muted-foreground hover:text-foreground hover:bg-[var(--sidebar-accent)] transition-colors"
             >
               run {comment.runId.slice(0, 8)}
             </Link>
           ) : (
-            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+            <span className="inline-flex items-center rounded-[2px] border border-border bg-accent/30 px-2 py-1 text-[10px] font-[var(--font-mono)] text-muted-foreground">
               run {comment.runId.slice(0, 8)}
             </span>
           )}
@@ -332,7 +332,7 @@ const TimelineList = memo(function TimelineList({
                 <span className="text-muted-foreground">Run</span>
                 <Link
                   to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+                  className="inline-flex items-center rounded-[2px] border border-border bg-accent/40 px-2 py-1 font-[var(--font-mono)] text-muted-foreground hover:text-foreground hover:bg-[var(--sidebar-accent)] transition-colors"
                 >
                   {run.runId.slice(0, 8)}
                 </Link>
@@ -400,6 +400,7 @@ export function CommentThread({
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
   const hasScrolledRef = useRef(false);
+  const threadEndRef = useRef<HTMLDivElement>(null);
 
   const timeline = useMemo<TimelineItem[]>(() => {
     const commentItems: TimelineItem[] = comments.map((comment) => ({
@@ -486,6 +487,18 @@ export function CommentThread({
     }
   }, [location.hash, comments, queuedComments]);
 
+  // Auto-scroll to the latest comment/run when first loading the thread
+  useEffect(() => {
+    if (hasScrolledRef.current) return;
+    if (location.hash) return; // hash-scroll will handle it
+    if (comments.length + queuedComments.length === 0) return;
+    hasScrolledRef.current = true;
+    // Defer to allow DOM to render
+    requestAnimationFrame(() => {
+      threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  }, [comments.length, queuedComments.length, location.hash]);
+
   async function handleSubmit() {
     const trimmed = body.trim();
     if (!trimmed) return;
@@ -567,18 +580,19 @@ export function CommentThread({
       />
 
       {liveRunSlot}
+      <div ref={threadEndRef} />
 
       {queuedComments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+            <h4 className="text-xs font-[var(--font-display)] uppercase tracking-[0.06em] text-[var(--status-warning)]">
               Queued Comments ({queuedComments.length})
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="border-[var(--status-error)]/40 text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >

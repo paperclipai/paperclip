@@ -36,7 +36,7 @@ export function Goals() {
 
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p className="text-sm text-[var(--status-error)]">{error.message}</p>}
 
       {goals && goals.length === 0 && (
         <EmptyState

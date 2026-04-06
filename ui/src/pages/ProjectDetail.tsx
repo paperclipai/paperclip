@@ -280,7 +280,7 @@ function ProjectWorkspacesContent({
             <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
               <span className="inline-flex items-center gap-1">
                 <GitBranch className="h-3.5 w-3.5" />
-                <span className="font-mono">{summary.branchName ?? "No branch info"}</span>
+                <span className="font-[var(--font-mono)]">{summary.branchName ?? "No branch info"}</span>
               </span>
               <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
                 {summary.runningServiceCount}/{summary.serviceCount} services running
@@ -304,7 +304,7 @@ function ProjectWorkspacesContent({
 
             {summary.cwd ? (
               <div className="mt-2 flex min-w-0 items-start gap-2 text-xs text-muted-foreground">
-                <span className="min-w-0 truncate font-mono leading-tight" title={summary.cwd}>
+                <span className="min-w-0 truncate font-[var(--font-mono)] leading-tight" title={summary.cwd}>
                   {summary.cwd}
                 </span>
                 <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
@@ -323,9 +323,9 @@ function ProjectWorkspacesContent({
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-left text-xs leading-none transition-colors hover:bg-accent"
+                  className="inline-flex max-w-full items-center gap-2 rounded-[2px] border border-border bg-background px-2.5 py-1.5 text-left text-xs leading-none transition-colors hover:bg-[var(--sidebar-accent)]"
                 >
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                  <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted-foreground">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
                   <span className="truncate leading-tight">{issue.title}</span>
@@ -409,7 +409,7 @@ function ProjectWorkspacesContent({
   return (
     <>
       <div className="space-y-4">
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="overflow-hidden rounded-[2px] border border-border bg-card">
           {activeSummaries.map(renderSummaryRow)}
         </div>
         {cleanupFailedSummaries.length > 0 ? (
@@ -417,7 +417,7 @@ function ProjectWorkspacesContent({
             <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
               Cleanup attention needed
             </div>
-            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
+            <div className="overflow-hidden rounded-[2px] border border-[var(--status-warning)]/20 bg-[var(--status-warning)]/5">
               {cleanupFailedSummaries.map(renderSummaryRow)}
             </div>
           </div>
@@ -811,11 +811,11 @@ export function ProjectDetail() {
             value={project.name}
             onSave={(name) => updateProject.mutate({ name })}
             as="h2"
-            className="text-xl font-bold"
+            className="text-xl font-[var(--font-display)] uppercase tracking-[0.06em]"
           />
           {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
-              <span className="h-2 w-2 rounded-full bg-red-400" />
+            <div className="inline-flex items-center gap-2 rounded-[2px] border border-[var(--status-error)]/30 bg-[var(--status-error)]/10 px-3 py-1 text-[11px] font-[var(--font-mono)] uppercase tracking-[0.18em] text-[var(--status-error)]">
+              <span className="h-2 w-2 rounded-full bg-[var(--status-error)]" />
               Paused by budget hard stop
             </div>
           ) : null}

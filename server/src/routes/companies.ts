@@ -291,12 +291,12 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     res.status(201).json(company);
 
-    // Auto-bootstrap CEO if enabled (fire-and-forget, don't block response)
+    // Auto-bootstrap founding team if enabled (fire-and-forget, don't block response)
     if ((company as Record<string, unknown>).autoBootstrapCeo !== false) {
-      void bootstrap.bootstrapCeo(company.id, {
+      void bootstrap.bootstrapCompany(company.id, {
         actorUserId: req.actor.userId ?? undefined,
       }).catch((err) => {
-        console.error(`[company-bootstrap] Failed to bootstrap CEO for ${company.id}:`, err);
+        console.error(`[company-bootstrap] Failed to bootstrap founding team for ${company.id}:`, err);
       });
     }
   });

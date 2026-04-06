@@ -47,6 +47,8 @@ export const costsApi = {
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
+  recalculate: (companyId: string) =>
+    api.post<{ updated: number; totalCentsAdded: number }>(`/companies/${companyId}/costs/recalculate`, {}),
 };
 
 function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {

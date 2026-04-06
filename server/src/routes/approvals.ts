@@ -9,10 +9,12 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
+import { companyVaultService } from "../services/company-vault.js";
 import {
   approvalService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
@@ -29,6 +31,7 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
 export function approvalRoutes(db: Db) {
   const router = Router();
   const svc = approvalService(db);
+  const vault = companyVaultService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -146,6 +149,88 @@ export function approvalRoutes(db: Db) {
         },
       });
 
+      // ── Wake the newly hired agent and assign its delegated task ──
+      if (applied && approval.type === "hire_agent") {
+        const hirePayload = approval.payload as Record<string, unknown>;
+        const hiredAgentId = typeof hirePayload.agentId === "string" ? hirePayload.agentId : null;
+        const delegateIssueId = typeof hirePayload.delegateIssueId === "string" ? hirePayload.delegateIssueId : null;
+        const delegateTaskTitle = typeof hirePayload.delegateTaskTitle === "string" ? hirePayload.delegateTaskTitle : null;
+        const delegateTaskDescription = typeof hirePayload.delegateTaskDescription === "string" ? hirePayload.delegateTaskDescription : null;
+
+        if (hiredAgentId) {
+          const issuesSvc = issueService(db);
+          let taskIdForNewAgent = delegateIssueId;
+
+          // Create a new task if title was provided but no existing issue
+          if (!taskIdForNewAgent && delegateTaskTitle) {
+            try {
+              const newIssue = await issuesSvc.create(approval.companyId, {
+                title: delegateTaskTitle,
+                description: delegateTaskDescription ?? "",
+                assigneeAgentId: hiredAgentId,
+                priority: "medium",
+                status: "open",
+              });
+              taskIdForNewAgent = newIssue.id;
+            } catch (createErr) {
+              logger.warn({ err: createErr, hiredAgentId }, "failed to create delegated task for new hire");
+            }
+          }
+
+          // Assign existing issue to the new agent
+          if (taskIdForNewAgent && !delegateTaskTitle) {
+            try {
+              await issuesSvc.update(taskIdForNewAgent, {
+                assigneeAgentId: hiredAgentId,
+              });
+            } catch (_assignErr) {
+              // Non-fatal
+            }
+          }
+
+          // Wake the new agent to start working
+          try {
+            await heartbeat.wakeup(hiredAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "hire_approved",
+              payload: {
+                approvalId: approval.id,
+                delegateIssueId: taskIdForNewAgent,
+                hiredByAgentId: approval.requestedByAgentId,
+              },
+              requestedByActorType: "user",
+              requestedByActorId: req.actor.userId ?? "board",
+              contextSnapshot: {
+                source: "agent_hire.approved",
+                approvalId: approval.id,
+                taskId: taskIdForNewAgent,
+                issueId: taskIdForNewAgent,
+                wakeReason: "hire_approved",
+              },
+            });
+            await logActivity(db, {
+              companyId: approval.companyId,
+              actorType: "user",
+              actorId: req.actor.userId ?? "board",
+              action: "approval.new_agent_wakeup_queued",
+              entityType: "agent",
+              entityId: hiredAgentId,
+              details: {
+                approvalId: approval.id,
+                delegateIssueId: taskIdForNewAgent,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, approvalId: approval.id, hiredAgentId },
+              "failed to queue new hire wakeup after approval",
+            );
+          }
+        }
+      }
+
+      // ── Wake the requesting agent to notify it of the approval ──
       if (approval.requestedByAgentId) {
         try {
           const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
@@ -223,6 +308,10 @@ export function approvalRoutes(db: Db) {
     );
 
     if (applied) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -230,8 +319,72 @@ export function approvalRoutes(db: Db) {
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, linkedIssueIds },
       });
+
+      // ── Wake the requesting agent to notify it of the rejection ──
+      if (approval.requestedByAgentId) {
+        try {
+          const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: req.actor.userId ?? "board",
+            contextSnapshot: {
+              source: "approval.rejected",
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              taskId: primaryIssueId,
+              wakeReason: "approval_rejected",
+            },
+          });
+
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_queued",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              wakeRunId: wakeRun?.id ?? null,
+              linkedIssueIds,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              approvalId: approval.id,
+              requestedByAgentId: approval.requestedByAgentId,
+            },
+            "failed to queue requester wakeup after rejection",
+          );
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              linkedIssueIds,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
     }
 
     res.json(redactApprovalPayload(approval));
@@ -322,7 +475,21 @@ export function approvalRoutes(db: Db) {
     }
     assertCompanyAccess(req, approval.companyId);
     const actor = getActorInfo(req);
-    const comment = await svc.addComment(id, req.body.body, {
+
+    // Auto-detect and vault any secrets in the comment
+    let commentBody = req.body.body as string;
+    try {
+      const vaultResult = await vault.processComment(
+        approval.companyId,
+        `approval-${id}`,
+        id,
+        commentBody,
+        actor.actorType === "user" ? actor.actorId : actor.agentId ?? undefined,
+      );
+      commentBody = vaultResult.redactedBody;
+    } catch (_) { /* vault failure should not block comment */ }
+
+    const comment = await svc.addComment(id, commentBody, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
     });

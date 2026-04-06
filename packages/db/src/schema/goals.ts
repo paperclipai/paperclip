@@ -25,5 +25,6 @@ export const goals = pgTable(
   },
   (table) => ({
     companyIdx: index("goals_company_idx").on(table.companyId),
+    parentIdx: index("idx_goals_parent_id").on(table.parentId),
   }),
 );

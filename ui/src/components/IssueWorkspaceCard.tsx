@@ -82,7 +82,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         onClick={handleCopy}
         title={copied ? "Copied!" : "Copy"}
       >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {copied ? <Check className="h-3 w-3 text-[var(--status-active)]" /> : <Copy className="h-3 w-3" />}
       </button>
     </span>
   );
@@ -139,13 +139,13 @@ function workspaceDetailLink(input: {
 
 function statusBadge(status: string) {
   const colors: Record<string, string> = {
-    active: "bg-green-500/15 text-green-700 dark:text-green-400",
+    active: "bg-[var(--status-active)]/15 text-[var(--status-active)]",
     idle: "bg-muted text-muted-foreground",
-    in_review: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+    in_review: "bg-[var(--primary)]/15 text-[var(--primary)]",
     archived: "bg-muted text-muted-foreground",
   };
   return (
-    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
+    <span className={cn("text-[9px] px-1.5 py-0.5 rounded-[2px] font-[var(--font-mono)] font-medium uppercase", colors[status] ?? colors.idle)}>
       {status.replace(/_/g, " ")}
     </span>
   );
@@ -275,7 +275,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
   if (!policyEnabled || !project) return null;
 
   return (
-    <div className="rounded-lg border border-border p-3 space-y-2">
+    <div className="rounded-[2px] border border-border p-3 space-y-2">
       {/* Header row */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">

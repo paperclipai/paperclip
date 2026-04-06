@@ -139,6 +139,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-authoring-smoke-example",
+    pluginKey: "paperclip.authoring-smoke-example",
+    displayName: "Authoring Smoke Test (Example)",
+    description: "Smoke test plugin for validating the plugin authoring and publishing pipeline end-to-end.",
+    localPath: "packages/plugins/examples/plugin-authoring-smoke-example",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {

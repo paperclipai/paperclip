@@ -28,11 +28,25 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { memberRoutes } from "./routes/members.js";
+import { runRoutes } from "./routes/runs.js";
+import { artifactRoutes } from "./routes/artifacts.js";
+import { deploymentRoutes } from "./routes/deployments.js";
+import { cloudDeploymentRoutes } from "./routes/cloud-deployments.js";
+import { sandboxRoutes } from "./routes/sandboxes.js";
+import { llmApiKeyRoutes } from "./routes/llm-api-keys.js";
+import { deliverableRoutes } from "./routes/deliverables.js";
+import { reviewTemplateRoutes } from "./routes/review-templates.js";
+import { companyVaultRoutes } from "./routes/company-vault.js";
+import { companyEmailRoutes } from "./routes/company-email.js";
+import { agentMessageRoutes } from "./routes/agent-messages.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import { heartbeatService } from "./services/heartbeat.js";
+import { autoRecoveryService } from "./services/auto-recovery.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
@@ -148,6 +162,7 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use("/companies/:companyId/members", memberRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
@@ -163,6 +178,17 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(artifactRoutes(db));
+  api.use(deploymentRoutes(db));
+  api.use(cloudDeploymentRoutes(db));
+  api.use(sandboxRoutes(db));
+  api.use(llmApiKeyRoutes(db));
+  api.use(deliverableRoutes(db));
+  api.use(reviewTemplateRoutes(db));
+  api.use(companyVaultRoutes(db));
+  api.use(companyEmailRoutes(db));
+  api.use(runRoutes(db));
+  api.use(agentMessageRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
@@ -296,6 +322,22 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+
+  // Auto-recovery: clean up stale runs every 5 minutes
+  const heartbeat = heartbeatService(db);
+  const staleCleanupTimer = setInterval(async () => {
+    try {
+      const recovery = autoRecoveryService(db, heartbeat);
+      const cleaned = await recovery.cleanupStaleRuns();
+      if (cleaned > 0) {
+        console.log(`[auto-recovery] Cleaned up ${cleaned} stale runs`);
+      }
+    } catch (err) {
+      console.error("[auto-recovery] Stale cleanup error:", err);
+    }
+  }, 5 * 60 * 1000);
+  staleCleanupTimer.unref?.();
+
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -329,6 +371,7 @@ export async function createApp(
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   process.once("exit", () => {
+    clearInterval(staleCleanupTimer);
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
     devWatcher?.close();
     hostServiceCleanup.disposeAll();

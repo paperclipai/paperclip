@@ -25,6 +25,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { estimateCostUsd } from "./costPricing.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
@@ -286,7 +287,7 @@ async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
 }
 
 interface WakeupOptions {
-  source?: "timer" | "assignment" | "on_demand" | "automation";
+  source?: "timer" | "assignment" | "on_demand" | "automation" | "mention" | "approval_response" | "message" | "skill_available";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
   reason?: string | null;
   payload?: Record<string, unknown> | null;
@@ -372,8 +373,10 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+function normalizeBilledCostCents(costUsd: number | null | undefined, _billingType: BillingType): number {
+  // Always compute cost from token usage regardless of billing type.
+  // The billingType is stored on the cost event for reporting/filtering,
+  // but we want to show estimated spend even for subscription-included usage.
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
@@ -1967,7 +1970,15 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    // Use adapter-reported cost when available; otherwise estimate from token counts
+    let effectiveCostUsd = result.costUsd;
+    if ((effectiveCostUsd == null || !Number.isFinite(effectiveCostUsd)) && (inputTokens > 0 || outputTokens > 0)) {
+      const estimated = estimateCostUsd(result.model ?? "unknown", inputTokens, outputTokens, cachedInputTokens);
+      if (estimated !== null) {
+        effectiveCostUsd = estimated;
+      }
+    }
+    const additionalCostCents = normalizeBilledCostCents(effectiveCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -2638,6 +2649,19 @@ export function heartbeatService(db: Db) {
           payload: meta as unknown as Record<string, unknown>,
         });
       };
+
+      // Resolve managed LLM API key for this agent (from Settings > API Keys).
+      // Inject into context so the adapter can use it instead of the global env var.
+      try {
+        const { llmApiKeyService } = await import("./llm-api-keys.js");
+        const keySvc = llmApiKeyService(db);
+        const resolvedApiKey = await keySvc.resolveKeyForAgent(agent.companyId, agent.id, "anthropic");
+        if (resolvedApiKey) {
+          context.paperclipResolvedApiKey = resolvedApiKey;
+        }
+      } catch {
+        // Silently fall back to env var if key resolution fails
+      }
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt

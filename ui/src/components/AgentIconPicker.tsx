@@ -44,7 +44,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="w-72 p-3" align="start">
+      <PopoverContent className="w-72 p-3 rounded-[2px]" align="start">
         <Input
           placeholder="Search icons..."
           value={search}
@@ -62,8 +62,8 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
                 setSearch("");
               }}
               className={cn(
-                "flex items-center justify-center h-8 w-8 rounded hover:bg-accent transition-colors",
-                (value ?? DEFAULT_ICON) === name && "bg-accent ring-1 ring-primary"
+                "flex items-center justify-center h-8 w-8 rounded-[2px] hover:bg-[var(--sidebar-accent)] transition-colors",
+                (value ?? DEFAULT_ICON) === name && "bg-accent ring-1 ring-[var(--primary)]"
               )}
               title={name}
             >

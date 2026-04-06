@@ -9,6 +9,40 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 
+/**
+ * When a user logs in / signs up, activate any pending email-based invitations
+ * that were created before their account existed.
+ */
+async function activatePendingInvites(db: Db, userId: string, email: string): Promise<void> {
+  const pendingPrincipalId = `pending:${email.toLowerCase().trim()}`;
+  try {
+    const pendingRows = await db
+      .select({ id: companyMemberships.id, role: companyMemberships.role })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, pendingPrincipalId),
+          eq(companyMemberships.status, "invited"),
+        ),
+      );
+    for (const row of pendingRows) {
+      await db
+        .update(companyMemberships)
+        .set({
+          principalId: userId,
+          status: "active",
+          joinedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(companyMemberships.id, row.id));
+      logger.info({ userId, email, membershipId: row.id }, "Activated pending invite on login");
+    }
+  } catch (err) {
+    logger.warn({ err, userId, email }, "Failed to activate pending invites");
+  }
+}
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -42,6 +76,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         }
         if (session?.user?.id) {
           const userId = session.user.id;
+          // Activate any pending invitations for this user's email
+          if (session.user.email) {
+            void activatePendingInvites(db, userId, session.user.email);
+          }
           const [roleRow, memberships] = await Promise.all([
             db
               .select({ id: instanceUserRoles.id })

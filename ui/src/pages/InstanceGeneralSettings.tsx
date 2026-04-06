@@ -6,7 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://www.linkedin.com/groups/18235015/";
 
 export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -58,7 +58,7 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">General</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Configure instance-wide defaults that affect how operator-visible logs are displayed.
@@ -71,7 +71,7 @@ export function InstanceGeneralSettings() {
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <section className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Censor username in logs</h2>
@@ -88,7 +88,7 @@ export function InstanceGeneralSettings() {
             disabled={updateGeneralMutation.isPending}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              censorUsernameInLogs ? "bg-green-600" : "bg-muted",
+              censorUsernameInLogs ? "bg-[var(--status-active)]" : "bg-muted",
             )}
             onClick={() =>
               updateGeneralMutation.mutate({
@@ -106,13 +106,13 @@ export function InstanceGeneralSettings() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <section className="rounded-[2px] border border-border bg-card p-5 hud-panel hud-shimmer">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">AI feedback sharing</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Control whether thumbs up and thumbs down votes can send the voted AI output to
-              Paperclip Labs. Votes are always saved locally.
+              OhMyCompany Labs. Votes are always saved locally.
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -126,7 +126,7 @@ export function InstanceGeneralSettings() {
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
-            <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
+            <div className="rounded-[2px] border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
               No default is saved yet. The next thumbs up or thumbs down choice will ask once and
               then save the answer here.
             </div>
@@ -151,7 +151,7 @@ export function InstanceGeneralSettings() {
                   type="button"
                   disabled={updateGeneralMutation.isPending}
                   className={cn(
-                    "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                    "rounded-[2px] border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                     active
                       ? "border-foreground bg-accent text-foreground"
                       : "border-border bg-background hover:bg-accent/50",

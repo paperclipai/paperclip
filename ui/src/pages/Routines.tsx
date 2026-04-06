@@ -155,7 +155,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        body: mutationError instanceof Error ? mutationError.message : "OhMyCompany could not update the routine.",
         tone: "error",
       });
     },
@@ -178,7 +178,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: mutationError instanceof Error ? mutationError.message : "OhMyCompany could not start the routine run.",
         tone: "error",
       });
     },
@@ -229,9 +229,9 @@ export function Routines() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2 font-[var(--font-display)] uppercase tracking-[0.06em]">
             Routines
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Beta</span>
+            <span className="rounded-[2px] bg-[var(--status-warning)]/10 px-2 py-0.5 text-[9px] font-medium font-[var(--font-mono)] uppercase text-[var(--status-warning)]">Beta</span>
           </h1>
           <p className="text-sm text-muted-foreground">
             Recurring work definitions that materialize into auditable execution issues.
@@ -469,7 +469,7 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.
+              After creation, OhMyCompany takes you straight to trigger setup for schedules, webhooks, or internal runs.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -531,7 +531,7 @@ export function Routines() {
                   return (
                     <tr
                       key={routine.id}
-                      className="align-middle border-b border-border transition-colors hover:bg-accent/50 last:border-b-0 cursor-pointer"
+                      className="align-middle border-b border-border transition-colors hover:bg-[var(--sidebar-accent)] last:border-b-0 cursor-pointer"
                       onClick={() => navigate(`/routines/${routine.id}`)}
                     >
                       <td className="px-3 py-2.5">

@@ -14,13 +14,13 @@ import { Button } from "@/components/ui/button";
 function statusDotColor(status?: string): string {
   switch (status) {
     case "active":
-      return "bg-green-400";
+      return "bg-[var(--status-active)]";
     case "paused":
-      return "bg-yellow-400";
+      return "bg-[var(--status-warning)]";
     case "archived":
       return "bg-neutral-400";
     default:
-      return "bg-green-400";
+      return "bg-[var(--status-active)]";
   }
 }
 

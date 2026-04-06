@@ -13,9 +13,11 @@ export function AuthPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [mode, setMode] = useState<AuthMode>("sign_in");
+  const initialMode = searchParams.get("mode") === "sign_up" ? "sign_up" : "sign_in";
+  const initialEmail = searchParams.get("email") ?? "";
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -75,11 +77,11 @@ export function AuthPage() {
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="flex items-center gap-2 mb-8">
             <Sparkles className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Paperclip</span>
+            <span className="text-sm font-medium">OH MY Company</span>
           </div>
 
-          <h1 className="text-xl font-semibold">
-            {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
+          <h1 className="text-xl font-semibold font-[var(--font-display)] uppercase tracking-[0.06em]">
+            {mode === "sign_in" ? "Sign in to OH MY Company" : "Create your OH MY Company account"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "sign_in"
@@ -107,7 +109,7 @@ export function AuthPage() {
                 <input
                   id="name"
                   name="name"
-                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  className="w-full rounded-[2px] border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   autoComplete="name"
@@ -120,7 +122,7 @@ export function AuthPage() {
               <input
                 id="email"
                 name="email"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                className="w-full rounded-[2px] border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -133,7 +135,7 @@ export function AuthPage() {
               <input
                 id="password"
                 name="password"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                className="w-full rounded-[2px] border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}

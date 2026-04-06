@@ -30,9 +30,9 @@ function readinessTone(state: "ready" | "ready_with_warnings" | "blocked") {
     return "border-destructive/30 bg-destructive/5 text-destructive";
   }
   if (state === "ready_with_warnings") {
-    return "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300";
+    return "border-[var(--status-warning)]/30 bg-[var(--status-warning)]/10 text-[var(--status-warning)]";
   }
-  return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  return "border-[var(--status-active)]/30 bg-[var(--status-active)]/10 text-[var(--status-active)]";
 }
 
 export function ExecutionWorkspaceCloseDialog({
@@ -93,22 +93,22 @@ export function ExecutionWorkspaceCloseDialog({
           <DialogTitle>{actionLabel}</DialogTitle>
           <DialogDescription className="break-words">
             Archive <span className="font-medium text-foreground">{workspaceName}</span> and clean up any owned workspace
-            artifacts. Paperclip keeps the workspace record and issue history, but removes it from active workspace views.
+            artifacts. OH MY Company keeps the workspace record and issue history, but removes it from active workspace views.
           </DialogDescription>
         </DialogHeader>
 
         {readinessQuery.isLoading ? (
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-[2px] border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking whether this workspace is safe to close...
           </div>
         ) : readinessQuery.error ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <div className="rounded-[2px] border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             {readinessQuery.error instanceof Error ? readinessQuery.error.message : "Failed to inspect workspace close readiness."}
           </div>
         ) : readiness ? (
           <div className="space-y-4">
-            <div className={`rounded-xl border px-4 py-3 text-sm ${readinessTone(readiness.state)}`}>
+            <div className={`rounded-[2px] border px-4 py-3 text-sm ${readinessTone(readiness.state)}`}>
               <div className="font-medium">
                 {readiness.state === "blocked"
                   ? "Close is blocked"
@@ -132,7 +132,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Blocking issues</h3>
                 <div className="space-y-2">
                   {blockingIssues.map((issue) => (
-                    <div key={issue.id} className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm">
+                    <div key={issue.id} className="rounded-[2px] border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm">
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <Link to={issueUrl(issue)} className="min-w-0 break-words font-medium hover:underline">
                           {issue.identifier ?? issue.id} · {issue.title}
@@ -150,7 +150,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Blocking reasons</h3>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   {readiness.blockingReasons.map((reason, idx) => (
-                    <li key={`blocking-${idx}`} className="break-words rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-destructive">
+                    <li key={`blocking-${idx}`} className="break-words rounded-[2px] border border-destructive/20 bg-destructive/5 px-3 py-2 text-destructive">
                       {reason}
                     </li>
                   ))}
@@ -163,7 +163,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Warnings</h3>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   {readiness.warnings.map((warning, idx) => (
-                    <li key={`warning-${idx}`} className="break-words rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                    <li key={`warning-${idx}`} className="break-words rounded-[2px] border border-[var(--status-warning)]/20 bg-[var(--status-warning)]/5 px-3 py-2">
                       {warning}
                     </li>
                   ))}
@@ -174,7 +174,7 @@ export function ExecutionWorkspaceCloseDialog({
             {readiness.git ? (
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">Git status</h3>
-                <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                <div className="rounded-[2px] border border-border bg-muted/20 px-4 py-3 text-sm">
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
                       <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Branch</div>
@@ -212,7 +212,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Other linked issues</h3>
                 <div className="space-y-2">
                   {otherLinkedIssues.map((issue) => (
-                    <div key={issue.id} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                    <div key={issue.id} className="rounded-[2px] border border-border bg-muted/20 px-4 py-3 text-sm">
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <Link to={issueUrl(issue)} className="min-w-0 break-words font-medium hover:underline">
                           {issue.identifier ?? issue.id} · {issue.title}
@@ -230,7 +230,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Attached runtime services</h3>
                 <div className="space-y-2">
                   {readiness.runtimeServices.map((service) => (
-                    <div key={service.id} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                    <div key={service.id} className="rounded-[2px] border border-border bg-muted/20 px-4 py-3 text-sm">
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <span className="font-medium">{service.serviceName}</span>
                         <span className="text-xs text-muted-foreground">{service.status} · {service.lifecycle}</span>
@@ -248,11 +248,11 @@ export function ExecutionWorkspaceCloseDialog({
               <h3 className="text-sm font-medium">Cleanup actions</h3>
               <div className="space-y-2">
                 {readiness.plannedActions.map((action, index) => (
-                  <div key={`${action.kind}-${index}`} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                  <div key={`${action.kind}-${index}`} className="rounded-[2px] border border-border bg-muted/20 px-4 py-3 text-sm">
                     <div className="font-medium">{action.label}</div>
                     <div className="mt-1 break-words text-muted-foreground">{action.description}</div>
                     {action.command ? (
-                      <pre className="mt-2 whitespace-pre-wrap break-all rounded-lg bg-background px-3 py-2 font-mono text-xs text-foreground">
+                      <pre className="mt-2 whitespace-pre-wrap break-all rounded-[2px] bg-background px-3 py-2 font-mono text-xs text-foreground">
                         {action.command}
                       </pre>
                     ) : null}
@@ -262,14 +262,14 @@ export function ExecutionWorkspaceCloseDialog({
             </section>
 
             {currentStatus === "cleanup_failed" ? (
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-muted-foreground">
+              <div className="rounded-[2px] border border-[var(--status-warning)]/20 bg-[var(--status-warning)]/5 px-4 py-3 text-sm text-muted-foreground">
                 Cleanup previously failed on this workspace. Retrying close will rerun the cleanup flow and update the
                 workspace status if it succeeds.
               </div>
             ) : null}
 
             {currentStatus === "archived" ? (
-              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+              <div className="rounded-[2px] border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
                 This workspace is already archived.
               </div>
             ) : null}

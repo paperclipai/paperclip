@@ -141,7 +141,7 @@ export function SwipeToArchive({
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex items-center justify-end bg-emerald-600 px-4 text-white"
+        className="pointer-events-none absolute inset-0 flex items-center justify-end bg-[var(--status-active)] px-4 text-white"
         style={{ opacity: Math.max(archiveReveal, 0.2) }}
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">

@@ -153,7 +153,7 @@ export function PluginSettings() {
         </Link>
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
+          <h1 className="text-xl font-[var(--font-display)] uppercase tracking-[0.06em]">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
           <Badge variant={statusVariant} className="ml-2">
             {displayStatus}
           </Badge>
@@ -177,7 +177,7 @@ export function PluginSettings() {
         <TabsContent value="configuration" className="space-y-6">
           <div className="space-y-8">
             <section className="space-y-5">
-              <h2 className="text-base font-semibold">About</h2>
+              <h2 className="hud-section-header">About</h2>
               <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]">
                 <div className="space-y-2">
                   <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
@@ -210,7 +210,7 @@ export function PluginSettings() {
 
             <section className="space-y-4">
               <div className="space-y-1">
-                <h2 className="text-base font-semibold">Settings</h2>
+                <h2 className="hud-section-header">Settings</h2>
               </div>
               {hasCustomSettingsPage ? (
                 <div className="space-y-3">
@@ -247,9 +247,9 @@ export function PluginSettings() {
         <TabsContent value="status" className="space-y-6">
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_320px]">
             <div className="space-y-6">
-              <Card>
+              <Card className="hud-panel hud-shimmer rounded-[2px]">
                 <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                  <CardTitle className="text-base font-[var(--font-display)] uppercase tracking-[0.06em] flex items-center gap-1.5">
                     <Cpu className="h-4 w-4" />
                     Runtime Dashboard
                   </CardTitle>
@@ -275,7 +275,7 @@ export function PluginSettings() {
                             </div>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">PID</span>
-                              <span className="font-mono text-xs">{dashboardData.worker.pid ?? "—"}</span>
+                              <span className="font-[var(--font-mono)] text-xs">{dashboardData.worker.pid ?? "—"}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">Uptime</span>
@@ -289,7 +289,7 @@ export function PluginSettings() {
                               <>
                                 <div className="flex justify-between col-span-2">
                                   <span className="text-muted-foreground flex items-center gap-1">
-                                    <AlertTriangle className="h-3 w-3 text-amber-500" />
+                                    <AlertTriangle className="h-3 w-3 text-[var(--status-warning)]" />
                                     Crashes
                                   </span>
                                   <span className="text-xs">
@@ -322,11 +322,11 @@ export function PluginSettings() {
                             {dashboardData.recentJobRuns.map((run) => (
                               <div
                                 key={run.id}
-                                className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
+                                className="flex items-center justify-between gap-2 rounded-[2px] bg-muted/50 px-2 py-1.5 text-sm"
                               >
                                 <div className="flex min-w-0 items-center gap-2">
                                   <JobStatusDot status={run.status} />
-                                  <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
+                                  <span className="truncate font-[var(--font-mono)] text-xs" title={run.jobKey ?? run.jobId}>
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
                                   <Badge variant="outline" className="px-1 py-0 text-[10px]">
@@ -357,11 +357,11 @@ export function PluginSettings() {
                             {dashboardData.recentWebhookDeliveries.map((delivery) => (
                               <div
                                 key={delivery.id}
-                                className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
+                                className="flex items-center justify-between gap-2 rounded-[2px] bg-muted/50 px-2 py-1.5 text-sm"
                               >
                                 <div className="flex min-w-0 items-center gap-2">
                                   <DeliveryStatusDot status={delivery.status} />
-                                  <span className="truncate font-mono text-xs" title={delivery.webhookKey}>
+                                  <span className="truncate font-[var(--font-mono)] text-xs" title={delivery.webhookKey}>
                                     {delivery.webhookKey}
                                   </span>
                                 </div>
@@ -391,24 +391,24 @@ export function PluginSettings() {
               </Card>
 
               {recentLogs && recentLogs.length > 0 ? (
-                <Card>
+                <Card className="hud-panel hud-shimmer rounded-[2px]">
                   <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-1.5">
+                    <CardTitle className="text-base font-[var(--font-display)] uppercase tracking-[0.06em] flex items-center gap-1.5">
                       <ActivitySquare className="h-4 w-4" />
                       Recent Logs
                     </CardTitle>
                     <CardDescription>Last {recentLogs.length} log entries</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
+                    <div className="max-h-64 space-y-1 overflow-y-auto font-[var(--font-mono)] text-xs">
                       {recentLogs.map((entry) => (
                         <div
                           key={entry.id}
                           className={`flex gap-2 py-0.5 ${
                             entry.level === "error"
-                              ? "text-destructive"
+                              ? "text-[var(--status-error)]"
                               : entry.level === "warn"
-                                ? "text-yellow-600 dark:text-yellow-400"
+                                ? "text-[var(--status-warning)]"
                                 : entry.level === "debug"
                                   ? "text-muted-foreground/60"
                                   : "text-muted-foreground"
@@ -426,9 +426,9 @@ export function PluginSettings() {
             </div>
 
             <div className="space-y-6">
-              <Card>
+              <Card className="hud-panel hud-shimmer rounded-[2px]">
                 <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                  <CardTitle className="text-base font-[var(--font-display)] uppercase tracking-[0.06em] flex items-center gap-1.5">
                     <ActivitySquare className="h-4 w-4" />
                     Health Status
                   </CardTitle>
@@ -453,9 +453,9 @@ export function PluginSettings() {
                                 {check.name}
                               </span>
                               {check.passed ? (
-                                <CheckCircle className="h-4 w-4 shrink-0 text-green-500" />
+                                <CheckCircle className="h-4 w-4 shrink-0 text-[var(--status-active)]" />
                               ) : (
-                                <XCircle className="h-4 w-4 shrink-0 text-destructive" />
+                                <XCircle className="h-4 w-4 shrink-0 text-[var(--status-error)]" />
                               )}
                             </div>
                           ))}
@@ -463,7 +463,7 @@ export function PluginSettings() {
                       ) : null}
 
                       {healthData.lastError ? (
-                        <div className="break-words rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
+                        <div className="break-words rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/10 p-2 text-xs text-[var(--status-error)]">
                           {healthData.lastError}
                         </div>
                       ) : null}
@@ -476,7 +476,7 @@ export function PluginSettings() {
                       </div>
                       <p>Health checks run once the plugin is ready.</p>
                       {plugin.lastError ? (
-                        <div className="break-words rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
+                        <div className="break-words rounded-[2px] border border-[var(--status-error)]/20 bg-[var(--status-error)]/10 p-2 text-xs text-[var(--status-error)]">
                           {plugin.lastError}
                         </div>
                       ) : null}
@@ -485,18 +485,18 @@ export function PluginSettings() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="hud-panel hud-shimmer rounded-[2px]">
                 <CardHeader>
-                  <CardTitle className="text-base">Details</CardTitle>
+                  <CardTitle className="text-base font-[var(--font-display)] uppercase tracking-[0.06em]">Details</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
                     <span>Plugin ID</span>
-                    <span className="font-mono text-xs text-right">{plugin.id}</span>
+                    <span className="font-[var(--font-mono)] text-xs text-right">{plugin.id}</span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>Plugin Key</span>
-                    <span className="font-mono text-xs text-right">{plugin.pluginKey}</span>
+                    <span className="font-[var(--font-mono)] text-xs text-right">{plugin.pluginKey}</span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>NPM Package</span>
@@ -511,9 +511,9 @@ export function PluginSettings() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="hud-panel hud-shimmer rounded-[2px]">
                 <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                  <CardTitle className="text-base font-[var(--font-display)] uppercase tracking-[0.06em] flex items-center gap-1.5">
                     <ShieldAlert className="h-4 w-4" />
                     Permissions
                   </CardTitle>
@@ -522,7 +522,7 @@ export function PluginSettings() {
                   {pluginCapabilities.length > 0 ? (
                     <ul className="space-y-2 text-sm text-muted-foreground">
                       {pluginCapabilities.map((cap) => (
-                        <li key={cap} className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85">
+                        <li key={cap} className="rounded-[2px] bg-muted/40 px-2.5 py-2 font-[var(--font-mono)] text-xs text-foreground/85">
                           {cap}
                         </li>
                       ))}
@@ -681,8 +681,8 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         <div
           className={`text-sm p-2 rounded border ${
             saveMessage.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
-              : "text-destructive bg-destructive/10 border-destructive/20"
+              ? "text-[var(--status-active)] bg-[var(--status-active)]/10 border-[var(--status-active)]/20"
+              : "text-[var(--status-error)] bg-[var(--status-error)]/10 border-[var(--status-error)]/20"
           }`}
         >
           {saveMessage.text}
@@ -693,8 +693,8 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         <div
           className={`text-sm p-2 rounded border ${
             testResult.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
-              : "text-destructive bg-destructive/10 border-destructive/20"
+              ? "text-[var(--status-active)] bg-[var(--status-active)]/10 border-[var(--status-active)]/20"
+              : "text-[var(--status-error)] bg-[var(--status-error)]/10 border-[var(--status-error)]/20"
           }`}
         >
           {testResult.text}
@@ -799,14 +799,14 @@ function formatTimestamp(epochMs: number): string {
 function JobStatusDot({ status }: { status: string }) {
   const colorClass =
     status === "success" || status === "succeeded"
-      ? "bg-green-500"
+      ? "bg-[var(--status-active)]"
       : status === "failed"
-        ? "bg-red-500"
+        ? "bg-[var(--status-error)]"
         : status === "running"
-          ? "bg-blue-500 animate-pulse"
+          ? "bg-[var(--status-info)] animate-pulse"
           : status === "cancelled"
             ? "bg-gray-400"
-            : "bg-amber-500"; // queued, pending
+            : "bg-[var(--status-warning)]"; // queued, pending
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
@@ -821,12 +821,12 @@ function JobStatusDot({ status }: { status: string }) {
 function DeliveryStatusDot({ status }: { status: string }) {
   const colorClass =
     status === "processed" || status === "success"
-      ? "bg-green-500"
+      ? "bg-[var(--status-active)]"
       : status === "failed"
-        ? "bg-red-500"
+        ? "bg-[var(--status-error)]"
         : status === "received"
-          ? "bg-blue-500"
-          : "bg-amber-500"; // pending
+          ? "bg-[var(--status-info)]"
+          : "bg-[var(--status-warning)]"; // pending
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}

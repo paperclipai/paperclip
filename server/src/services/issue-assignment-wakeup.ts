@@ -1,7 +1,7 @@
 import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
-type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
+type WakeupSource = "timer" | "assignment" | "on_demand" | "automation" | "mention" | "approval_response" | "message" | "skill_available";
 
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
@@ -45,4 +45,50 @@ export function queueIssueAssignmentWakeup(input: {
       if (input.rethrowOnError) throw err;
       return null;
     });
+}
+
+/**
+ * Extract agent IDs mentioned via @AgentName in text.
+ * Case-insensitive match against known agents in the company.
+ */
+export function extractAgentMentions(
+  text: string,
+  companyAgents: Array<{ id: string; name: string; status: string }>,
+): string[] {
+  const mentionedIds: string[] = [];
+  for (const agent of companyAgents) {
+    if (agent.status === "terminated") continue;
+    const pattern = new RegExp(`@${agent.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+    if (pattern.test(text)) {
+      mentionedIds.push(agent.id);
+    }
+  }
+  return mentionedIds;
+}
+
+/**
+ * Queue wakeup requests for all mentioned agents.
+ */
+export function queueMentionWakeups(input: {
+  heartbeat: IssueAssignmentWakeupDeps;
+  issueId: string;
+  mentionedAgentIds: string[];
+  commentId?: string;
+  requestedByActorType?: "user" | "agent" | "system";
+  requestedByActorId?: string | null;
+}) {
+  for (const agentId of input.mentionedAgentIds) {
+    void input.heartbeat
+      .wakeup(agentId, {
+        source: "mention",
+        triggerDetail: "system",
+        reason: "Mentioned in issue comment",
+        payload: { issueId: input.issueId, commentId: input.commentId },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId ?? null,
+      })
+      .catch((err: unknown) => {
+        console.error(`[mention-wakeup] Failed to wake agent ${agentId}:`, err);
+      });
+  }
 }

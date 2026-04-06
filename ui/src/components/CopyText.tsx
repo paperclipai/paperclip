@@ -61,7 +61,7 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
         role="status"
         aria-live="polite"
         className={cn(
-          "pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 rounded-md bg-foreground text-background px-2 py-1 text-xs whitespace-nowrap transition-opacity duration-300",
+          "pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 rounded-[2px] bg-foreground text-background px-2 py-1 text-xs font-[var(--font-mono)] whitespace-nowrap transition-opacity duration-300",
           visible ? "opacity-100" : "opacity-0",
         )}
       >

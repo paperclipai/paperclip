@@ -360,5 +360,65 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    /**
+     * Recalculate costs for existing cost_events that have token usage but
+     * costCents == 0.  Uses the fallback model pricing table to estimate
+     * costs from token counts.  Returns the number of events updated.
+     */
+    recalculateZeroCostEvents: async (companyId: string): Promise<{ updated: number; totalCentsAdded: number }> => {
+      // Lazy-import the pricing helper so we don't create a circular dep
+      const { estimateCostForEvent } = await import("./costPricing.js");
+
+      const zeroCostRows = await db
+        .select()
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            eq(costEvents.costCents, 0),
+            sql`(${costEvents.inputTokens} > 0 OR ${costEvents.outputTokens} > 0)`,
+          ),
+        );
+
+      let updated = 0;
+      let totalCentsAdded = 0;
+
+      for (const row of zeroCostRows) {
+        const estimatedCents = estimateCostForEvent(
+          row.model,
+          row.inputTokens,
+          row.outputTokens,
+          row.cachedInputTokens,
+        );
+        if (estimatedCents > 0) {
+          await db
+            .update(costEvents)
+            .set({ costCents: estimatedCents })
+            .where(eq(costEvents.id, row.id));
+          updated++;
+          totalCentsAdded += estimatedCents;
+        }
+      }
+
+      // Refresh monthly spend totals for affected agents and the company
+      if (updated > 0) {
+        const affectedAgentIds = [...new Set(zeroCostRows.map((r) => r.agentId))];
+        for (const agentId of affectedAgentIds) {
+          const monthSpend = await getMonthlySpendTotal(db, { companyId, agentId });
+          await db
+            .update(agents)
+            .set({ spentMonthlyCents: monthSpend, updatedAt: new Date() })
+            .where(eq(agents.id, agentId));
+        }
+        const companySpend = await getMonthlySpendTotal(db, { companyId });
+        await db
+          .update(companies)
+          .set({ spentMonthlyCents: companySpend, updatedAt: new Date() })
+          .where(eq(companies.id, companyId));
+      }
+
+      return { updated, totalCentsAdded };
+    },
   };
 }
