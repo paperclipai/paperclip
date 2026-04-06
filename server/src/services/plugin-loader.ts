@@ -25,7 +25,7 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -1923,7 +1923,10 @@ function resolveWorkerEntrypoint(
   for (const dir of [packageDir, directDir]) {
     const entrypoint = path.resolve(dir, workerRelPath);
 
-    // Security: ensure entrypoint is actually inside the directory (prevent path traversal)
+    // Security: ensure the unresolved entrypoint is inside the declared plugin
+    // directory before following symlinks. The returned realpath may point
+    // outside that directory for managed local-plugin symlinks, so this guard
+    // is only a manifest path traversal check, not a sandbox guarantee.
     if (!entrypoint.startsWith(path.resolve(dir))) {
       continue;
     }
@@ -1976,10 +1979,14 @@ async function createRuntimePackageWrapper(params: {
   sourceDir: string;
   targetDir: string;
   extraLinks: Array<{ packageName: string; targetPath: string; optional?: boolean }>;
-}): Promise<void> {
+}): Promise<boolean> {
   const sourcePkg = await readPackageJson(params.sourceDir);
   if (!sourcePkg) {
-    throw new Error(`Missing package.json for runtime package wrapper source: ${params.sourceDir}`);
+    logger.warn(
+      { sourceDir: params.sourceDir, targetDir: params.targetDir },
+      "plugin-loader: skipping runtime package wrapper because package.json is missing",
+    );
+    return false;
   }
 
   const publishConfig =
@@ -1997,29 +2004,64 @@ async function createRuntimePackageWrapper(params: {
     exports: publishConfig.exports ?? sourcePkg.exports,
   };
 
-  await rm(params.targetDir, { recursive: true, force: true });
-  await mkdir(path.join(params.targetDir, "node_modules"), { recursive: true });
+  const sourceDist = path.join(params.sourceDir, "dist");
+  if (!existsSync(sourceDist)) {
+    logger.warn(
+      { sourceDir: params.sourceDir, targetDir: params.targetDir, sourceDist },
+      "plugin-loader: skipping runtime package wrapper because dist directory is missing",
+    );
+    return false;
+  }
+
+  const parentDir = path.dirname(params.targetDir);
+  const tempDir = await mkdtemp(path.join(parentDir, `${path.basename(params.targetDir)}.tmp-`));
+  await mkdir(path.join(tempDir, "node_modules"), { recursive: true });
   await writeFile(
-    path.join(params.targetDir, "package.json"),
+    path.join(tempDir, "package.json"),
     `${JSON.stringify(wrapperPkg, null, 2)}\n`,
     "utf8",
   );
-
-  const sourceDist = path.join(params.sourceDir, "dist");
-  if (!existsSync(sourceDist)) {
-    throw new Error(`Missing dist directory for runtime package wrapper source: ${sourceDist}`);
-  }
-  await symlink(sourceDist, path.join(params.targetDir, "dist"), "dir");
+  await symlink(sourceDist, path.join(tempDir, "dist"), "dir");
 
   for (const link of params.extraLinks) {
     if (!existsSync(link.targetPath)) {
       if (link.optional) continue;
-      throw new Error(`Missing runtime dependency target: ${link.targetPath}`);
+      await rm(tempDir, { recursive: true, force: true });
+      logger.warn(
+        { targetDir: params.targetDir, packageName: link.packageName, targetPath: link.targetPath },
+        "plugin-loader: skipping runtime package wrapper because a required dependency target is missing",
+      );
+      return false;
     }
 
-    const targetPath = path.join(params.targetDir, "node_modules", ...link.packageName.split("/"));
+    const targetPath = path.join(tempDir, "node_modules", ...link.packageName.split("/"));
     await mkdir(path.dirname(targetPath), { recursive: true });
     await symlink(link.targetPath, targetPath, "dir");
+  }
+
+  const backupDir = `${params.targetDir}.bak-${process.pid}-${Date.now()}`;
+  let movedExisting = false;
+
+  try {
+    if (existsSync(params.targetDir)) {
+      await rename(params.targetDir, backupDir);
+      movedExisting = true;
+    }
+
+    await rename(tempDir, params.targetDir);
+
+    if (movedExisting) {
+      await rm(backupDir, { recursive: true, force: true });
+    }
+    return true;
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true });
+
+    if (movedExisting && !existsSync(params.targetDir) && existsSync(backupDir)) {
+      await rename(backupDir, params.targetDir);
+    }
+
+    throw error;
   }
 }
 
