@@ -22,7 +22,7 @@ import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
-import { Dialog, DialogPortal } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -454,18 +454,25 @@ export function RaavaOnboardingWizard() {
 
   // When the wizard opens with an initialStep (e.g. "Hire" from My Team page),
   // jump directly to that step and use the existing company context.
+  // We clamp to step 2 at most because later steps require state (selectedRole,
+  // credentials) that cannot be reliably restored from a deep-link alone.
   useEffect(() => {
     if (!onboardingOpen) return;
     const initStep = onboardingOptions.initialStep;
-    if (initStep && initStep > 1) {
-      setStep(initStep);
-      // Use the company passed via options, or fall back to the currently
-      // selected company so step 1 (company creation) can be skipped.
-      const companyId = onboardingOptions.companyId ?? selectedCompanyId;
-      if (companyId) {
-        setCreatedCompanyId(companyId);
-      }
+    if (!initStep || initStep <= 1) return;
+
+    const companyId = onboardingOptions.companyId ?? selectedCompanyId;
+    if (!companyId) {
+      // Cannot skip company creation without a resolved company — stay on step 1.
+      setStep(1);
+      setError("A company must be selected before skipping company setup.");
+      return;
     }
+
+    setCreatedCompanyId(companyId);
+    // Clamp to step 2 — steps 3/4 require a selectedRole which isn't passed
+    // via deep-link options and would cause handleHire to silently bail out.
+    setStep(Math.min(initStep, 2) as WizardStep);
   // eslint-disable-next-line react-hooks/exhaustive-deps — only run when the
   // dialog opens/closes, not on every options or selectedCompanyId change.
   }, [onboardingOpen]);
@@ -732,50 +739,47 @@ export function RaavaOnboardingWizard() {
   if (successState) {
     return (
       <Dialog open onOpenChange={handleClose}>
-        <DialogPortal>
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="relative w-full max-w-md mx-4 rounded-2xl bg-card p-8 shadow-2xl border border-border text-center animate-in fade-in-0 zoom-in-95 duration-300">
-              {/* Raava star mark */}
-              <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-[#224AE8] via-[#716EFF] to-[#00BDB7]">
-                <Sparkles className="w-8 h-8 text-white" />
-              </div>
-
-              <h2 className="font-display text-2xl text-foreground">
-                {hiredAgentName} is on your team!
-              </h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                They&apos;re starting on their first task now.
-              </p>
-
-              <Button
-                onClick={handleGoToTeam}
-                className="mt-6 w-full text-white font-semibold"
-                style={{
-                  background:
-                    "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
-                }}
-              >
-                Go to My Team
-              </Button>
-            </div>
+        <DialogContent
+          showCloseButton={false}
+          className="w-full max-w-md rounded-2xl bg-card p-8 shadow-2xl border border-border text-center animate-in fade-in-0 zoom-in-95 duration-300"
+        >
+          {/* Raava star mark */}
+          <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-[#224AE8] via-[#716EFF] to-[#00BDB7]">
+            <Sparkles className="w-8 h-8 text-white" />
           </div>
-        </DialogPortal>
+
+          <DialogTitle className="font-display text-2xl text-foreground">
+            {hiredAgentName} is on your team!
+          </DialogTitle>
+          <DialogDescription className="mt-2 text-sm text-muted-foreground">
+            They&apos;re starting on their first task now.
+          </DialogDescription>
+
+          <Button
+            onClick={handleGoToTeam}
+            className="mt-6 w-full text-white font-semibold"
+            style={{
+              background:
+                "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
+            }}
+          >
+            Go to My Team
+          </Button>
+        </DialogContent>
       </Dialog>
     );
   }
 
   return (
     <Dialog open onOpenChange={handleClose}>
-      <DialogPortal>
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <div
-          className={cn(
-            "relative w-full mx-4 rounded-2xl bg-card shadow-2xl border border-border animate-in fade-in-0 zoom-in-95 duration-300 overflow-hidden",
-            step === 2 ? "max-w-3xl" : "max-w-lg",
-          )}
-        >
+      <DialogContent
+        showCloseButton={false}
+        className={cn(
+          "relative w-full rounded-2xl bg-card shadow-2xl border border-border animate-in fade-in-0 zoom-in-95 duration-300 overflow-hidden p-0",
+          step === 2 ? "max-w-3xl" : "max-w-lg",
+        )}
+      >
+        <div className="relative">
           {/* Close button — disabled while async operations are in-flight */}
           <button
             type="button"
@@ -786,6 +790,9 @@ export function RaavaOnboardingWizard() {
           >
             <X className="w-4 h-4" />
           </button>
+
+          {/* Visually hidden title for ARIA dialog labelling */}
+          <DialogTitle className="sr-only">Onboarding Wizard</DialogTitle>
 
           <div className="p-8 max-h-[85vh] overflow-y-auto">
               {/* Raava star mark */}
@@ -1103,8 +1110,7 @@ export function RaavaOnboardingWizard() {
               )}
             </div>
           </div>
-        </div>
-      </DialogPortal>
-      </Dialog>
+      </DialogContent>
+    </Dialog>
     );
   }
