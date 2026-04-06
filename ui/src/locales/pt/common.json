@@ -1219,6 +1219,43 @@
         "launch": "Lançamento"
       }
     },
+    "pathInstructionsModal": {
+      "title": "Como obter um caminho completo",
+      "description": "Cole o caminho absoluto (ex.",
+      "choose": "Escolher",
+      "platforms": {
+        "mac": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "instructions": {
+        "mac": {
+          "steps": {
+            "1": "Abra o Finder e navegue até a pasta.",
+            "2": "Clique com o botão direito (ou Control-clique) na pasta.",
+            "3": "Segure a tecla Option e escolha \"Copiar como nome do caminho\".",
+            "4": "Cole o caminho copiado aqui."
+          },
+          "tip": "Você também pode abrir o Terminal, digitar cd, arrastar a pasta para o terminal, pressionar Enter e depois executar pwd."
+        },
+        "windows": {
+          "steps": {
+            "1": "Abra o Explorador de Arquivos e navegue até a pasta.",
+            "2": "Clique na barra de endereço no topo e copie o caminho completo.",
+            "3": "Cole o caminho copiado aqui."
+          },
+          "tip": "Como alternativa, segure Shift e clique com o botão direito na pasta, depois selecione \"Copiar como caminho\"."
+        },
+        "linux": {
+          "steps": {
+            "1": "Abra um terminal e navegue até o diretório com cd.",
+            "2": "Execute pwd para mostrar o caminho completo.",
+            "3": "Copie a saída e cole aqui."
+          },
+          "tip": "Na maioria dos gerenciadores de arquivos, Ctrl+L mostra o caminho completo na barra de endereço."
+        }
+      }
+    },
     "budgetPolicyCard": {
       "scope": {
         "project": "Projeto",

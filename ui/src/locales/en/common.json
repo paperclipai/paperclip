@@ -1280,6 +1280,43 @@
         "launch": "Launch"
       }
     },
+    "pathInstructionsModal": {
+      "title": "How to get a full path",
+      "description": "Paste the absolute path (e.g.",
+      "choose": "Choose",
+      "platforms": {
+        "mac": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "instructions": {
+        "mac": {
+          "steps": {
+            "1": "Open Finder and navigate to the folder.",
+            "2": "Right-click (or Control-click) the folder.",
+            "3": "Hold the Option key and choose \"Copy as Pathname\".",
+            "4": "Paste the copied path here."
+          },
+          "tip": "You can also open Terminal, type cd, drag the folder into the terminal window, press Enter, then run pwd."
+        },
+        "windows": {
+          "steps": {
+            "1": "Open File Explorer and navigate to the folder.",
+            "2": "Click in the address bar at the top and copy the full path.",
+            "3": "Paste the copied path here."
+          },
+          "tip": "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\"."
+        },
+        "linux": {
+          "steps": {
+            "1": "Open a terminal and navigate to the directory with cd.",
+            "2": "Run pwd to print the full path.",
+            "3": "Copy the output and paste it here."
+          },
+          "tip": "In most file managers, Ctrl+L reveals the full path in the address bar."
+        }
+      }
+    },
     "budgetPolicyCard": {
       "scope": {
         "project": "Project",

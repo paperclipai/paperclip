@@ -33,9 +33,9 @@ export function PathInstructionsModal({
 
   const platforms: { id: Platform; label: string; icon: typeof Apple }[] = useMemo(
     () => [
-      { id: "mac", label: t("page.components.pathInstructionsModal.platforms.mac"), icon: Apple },
-      { id: "windows", label: t("page.components.pathInstructionsModal.platforms.windows"), icon: Monitor },
-      { id: "linux", label: t("page.components.pathInstructionsModal.platforms.linux"), icon: Terminal },
+      { id: "mac", label: t("components.pathInstructionsModal.platforms.mac"), icon: Apple },
+      { id: "windows", label: t("components.pathInstructionsModal.platforms.windows"), icon: Monitor },
+      { id: "linux", label: t("components.pathInstructionsModal.platforms.linux"), icon: Terminal },
     ],
     [t],
   );
@@ -44,28 +44,28 @@ export function PathInstructionsModal({
     () => ({
       mac: {
         steps: [
-          t("page.components.pathInstructionsModal.instructions.mac.steps.1"),
-          t("page.components.pathInstructionsModal.instructions.mac.steps.2"),
-          t("page.components.pathInstructionsModal.instructions.mac.steps.3"),
-          t("page.components.pathInstructionsModal.instructions.mac.steps.4"),
+          t("components.pathInstructionsModal.instructions.mac.steps.1"),
+          t("components.pathInstructionsModal.instructions.mac.steps.2"),
+          t("components.pathInstructionsModal.instructions.mac.steps.3"),
+          t("components.pathInstructionsModal.instructions.mac.steps.4"),
         ],
-        tip: t("page.components.pathInstructionsModal.instructions.mac.tip"),
+        tip: t("components.pathInstructionsModal.instructions.mac.tip"),
       },
       windows: {
         steps: [
-          t("page.components.pathInstructionsModal.instructions.windows.steps.1"),
-          t("page.components.pathInstructionsModal.instructions.windows.steps.2"),
-          t("page.components.pathInstructionsModal.instructions.windows.steps.3"),
+          t("components.pathInstructionsModal.instructions.windows.steps.1"),
+          t("components.pathInstructionsModal.instructions.windows.steps.2"),
+          t("components.pathInstructionsModal.instructions.windows.steps.3"),
         ],
-        tip: t("page.components.pathInstructionsModal.instructions.windows.tip"),
+        tip: t("components.pathInstructionsModal.instructions.windows.tip"),
       },
       linux: {
         steps: [
-          t("page.components.pathInstructionsModal.instructions.linux.steps.1"),
-          t("page.components.pathInstructionsModal.instructions.linux.steps.2"),
-          t("page.components.pathInstructionsModal.instructions.linux.steps.3"),
+          t("components.pathInstructionsModal.instructions.linux.steps.1"),
+          t("components.pathInstructionsModal.instructions.linux.steps.2"),
+          t("components.pathInstructionsModal.instructions.linux.steps.3"),
         ],
-        tip: t("page.components.pathInstructionsModal.instructions.linux.tip"),
+        tip: t("components.pathInstructionsModal.instructions.linux.tip"),
       },
     }),
     [t],
@@ -77,9 +77,9 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">{t("page.components.pathInstructionsModal.title")}</DialogTitle>
+          <DialogTitle className="text-base">{t("components.pathInstructionsModal.title")}</DialogTitle>
           <DialogDescription>
-            {t("page.components.pathInstructionsModal.description")}{" "}
+            {t("components.pathInstructionsModal.description")}{" "}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
             .
           </DialogDescription>
@@ -139,7 +139,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        {t("page.components.pathInstructionsModal.choose")}
+        {t("components.pathInstructionsModal.choose")}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>
