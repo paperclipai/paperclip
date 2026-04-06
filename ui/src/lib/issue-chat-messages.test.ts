@@ -1,0 +1,179 @@
+import { describe, expect, it } from "vitest";
+import type { Agent } from "@paperclipai/shared";
+import {
+  buildAssistantPartsFromTranscript,
+  buildIssueChatMessages,
+  type IssueChatComment,
+  type IssueChatLinkedRun,
+} from "./issue-chat-messages";
+import type { IssueTimelineEvent } from "./issue-timeline-events";
+import type { LiveRunForIssue } from "../api/heartbeats";
+
+function createAgent(id: string, name: string): Agent {
+  return {
+    id,
+    companyId: "company-1",
+    name,
+    role: "engineer",
+    title: null,
+    icon: "code",
+    status: "active",
+    reportsTo: null,
+    capabilities: null,
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    lastHeartbeatAt: null,
+    metadata: {},
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    pauseReason: null,
+    pausedAt: null,
+    urlKey: "codexcoder",
+    permissions: { canCreateAgents: false },
+  } as Agent;
+}
+
+function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComment {
+  return {
+    id: "comment-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorAgentId: null,
+    authorUserId: "user-1",
+    body: "Hello",
+    createdAt: new Date("2026-04-06T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+describe("buildAssistantPartsFromTranscript", () => {
+  it("maps assistant text, reasoning, tool calls, and tool results", () => {
+    const result = buildAssistantPartsFromTranscript([
+      { kind: "assistant", ts: "2026-04-06T12:00:00.000Z", text: "Working on it. " },
+      { kind: "assistant", ts: "2026-04-06T12:00:01.000Z", text: "Done." },
+      { kind: "thinking", ts: "2026-04-06T12:00:02.000Z", text: "Need to inspect files." },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T12:00:03.000Z",
+        name: "read_file",
+        toolUseId: "tool-1",
+        input: { path: "ui/src/pages/IssueDetail.tsx" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T12:00:04.000Z",
+        toolUseId: "tool-1",
+        content: "file contents",
+        isError: false,
+      },
+      { kind: "stderr", ts: "2026-04-06T12:00:05.000Z", text: "warn: noisy setup output" },
+    ]);
+
+    expect(result.parts).toHaveLength(3);
+    expect(result.parts[0]).toMatchObject({ type: "text", text: "Working on it. Done." });
+    expect(result.parts[1]).toMatchObject({ type: "reasoning", text: "Need to inspect files." });
+    expect(result.parts[2]).toMatchObject({
+      type: "tool-call",
+      toolCallId: "tool-1",
+      toolName: "read_file",
+      result: "file contents",
+      isError: false,
+    });
+    expect(result.notices).toEqual(["warn: noisy setup output"]);
+  });
+});
+
+describe("buildIssueChatMessages", () => {
+  it("orders events before comments and appends active live runs as running assistant messages", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
+    const comments = [
+      createComment(),
+      createComment({
+        id: "comment-2",
+        authorAgentId: "agent-1",
+        authorUserId: null,
+        body: "I made the change.",
+        createdAt: new Date("2026-04-06T12:03:00.000Z"),
+        updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+        runId: "run-1",
+        runAgentId: "agent-1",
+      }),
+    ];
+    const timelineEvents: IssueTimelineEvent[] = [
+      {
+        id: "event-1",
+        createdAt: new Date("2026-04-06T11:59:00.000Z"),
+        actorType: "user",
+        actorId: "user-1",
+        statusChange: {
+          from: "done",
+          to: "todo",
+        },
+      },
+    ];
+    const linkedRuns: IssueChatLinkedRun[] = [
+      {
+        runId: "run-history-1",
+        status: "succeeded",
+        agentId: "agent-1",
+        createdAt: new Date("2026-04-06T12:01:00.000Z"),
+        startedAt: new Date("2026-04-06T12:01:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+      },
+    ];
+    const liveRuns: LiveRunForIssue[] = [
+      {
+        id: "run-live-1",
+        status: "running",
+        invocationSource: "manual",
+        triggerDetail: null,
+        startedAt: "2026-04-06T12:04:00.000Z",
+        finishedAt: null,
+        createdAt: "2026-04-06T12:04:00.000Z",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        adapterType: "codex_local",
+      },
+    ];
+
+    const messages = buildIssueChatMessages({
+      comments,
+      timelineEvents,
+      linkedRuns,
+      liveRuns,
+      transcriptsByRunId: new Map([
+        [
+          "run-live-1",
+          [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text: "Streaming reply" }],
+        ],
+      ]),
+      hasOutputForRun: () => true,
+      companyId: "company-1",
+      projectId: "project-1",
+      agentMap,
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "system:activity:event-1",
+      "user:comment-1",
+      "system:run:run-history-1",
+      "assistant:comment-2",
+      "assistant:live-run:run-live-1",
+    ]);
+
+    const liveRunMessage = messages.at(-1);
+    expect(liveRunMessage).toMatchObject({
+      role: "assistant",
+      status: { type: "running" },
+    });
+    expect(liveRunMessage?.content[0]).toMatchObject({
+      type: "text",
+      text: "Streaming reply",
+    });
+  });
+});
