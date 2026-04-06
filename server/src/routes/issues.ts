@@ -1049,7 +1049,7 @@ export function issueRoutes(
       action: "issue.created",
       entityType: "issue",
       entityId: issue.id,
-      details: { title: issue.title, identifier: issue.identifier },
+      details: { title: issue.title, identifier: issue.identifier, originKind: issue.originKind },
     });
 
     void queueIssueAssignmentWakeup({
@@ -1213,6 +1213,7 @@ export function issueRoutes(
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        originKind: existing.originKind,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -1252,6 +1253,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          originKind: existing.originKind,
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
