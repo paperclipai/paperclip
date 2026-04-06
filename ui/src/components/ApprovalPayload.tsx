@@ -17,15 +17,19 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   return null;
 }
 
-/** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
-export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
-  const base = typeLabel[type] ?? type;
-  const subject = firstNonEmptyString(
+export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
+  return firstNonEmptyString(
     payload?.title,
     payload?.name,
     payload?.summary,
     payload?.recommendedAction,
   );
+}
+
+/** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
+export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
+  const base = typeLabel[type] ?? type;
+  const subject = approvalSubject(payload);
   if (subject) {
     return `${base}: ${subject}`;
   }
@@ -144,39 +148,100 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
   );
 }
 
-export function BoardApprovalPayload({ payload }: { payload: Record<string, unknown> }) {
+export function BoardApprovalPayload({
+  payload,
+  hideTitle = false,
+}: {
+  payload: Record<string, unknown>;
+  hideTitle?: boolean;
+}) {
+  const nextPayload = hideTitle ? { ...payload, title: undefined } : payload;
   return (
-    <div className="mt-3 space-y-2 text-sm">
-      <PayloadField label="Title" value={payload.title} />
-      {!!payload.summary && (
-        <div className="flex items-start gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Summary</span>
-          <span className="text-muted-foreground">{String(payload.summary)}</span>
+    <BoardApprovalPayloadContent payload={nextPayload} />
+  );
+}
+
+function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
+  const risks = Array.isArray(payload.risks)
+    ? payload.risks
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  const title = firstNonEmptyString(payload.title);
+  const summary = firstNonEmptyString(payload.summary);
+  const recommendedAction = firstNonEmptyString(payload.recommendedAction);
+  const nextActionOnApproval = firstNonEmptyString(payload.nextActionOnApproval);
+  const proposedComment = firstNonEmptyString(payload.proposedComment);
+
+  return (
+    <div className="mt-4 space-y-3.5 text-sm">
+      {title && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Title</p>
+          <p className="font-medium leading-6 text-foreground">{title}</p>
         </div>
       )}
-      {!!payload.recommendedAction && (
-        <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          Recommended: {String(payload.recommendedAction)}
+      {summary && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Summary</p>
+          <p className="leading-6 text-foreground/90">{summary}</p>
         </div>
       )}
-      {!!payload.nextActionOnApproval && (
-        <div className="flex items-start gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">On approval</span>
-          <span>{String(payload.nextActionOnApproval)}</span>
+      {recommendedAction && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
+            Recommended action
+          </p>
+          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
         </div>
       )}
-      {!!payload.proposedComment && (
-        <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">
-          {String(payload.proposedComment)}
+      {nextActionOnApproval && (
+        <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">On approval</p>
+          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
+        </div>
+      )}
+      {risks.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Risks</p>
+          <ul className="space-y-1 text-sm text-muted-foreground">
+            {risks.map((risk) => (
+              <li key={risk} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{risk}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {proposedComment && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            Proposed comment
+          </p>
+          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+            {proposedComment}
+          </pre>
         </div>
       )}
     </div>
   );
 }
 
-export function ApprovalPayloadRenderer({ type, payload }: { type: string; payload: Record<string, unknown> }) {
+export function ApprovalPayloadRenderer({
+  type,
+  payload,
+  hidePrimaryTitle = false,
+}: {
+  type: string;
+  payload: Record<string, unknown>;
+  hidePrimaryTitle?: boolean;
+}) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
-  if (type === "request_board_approval") return <BoardApprovalPayload payload={payload} />;
+  if (type === "request_board_approval") {
+    return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+  }
   return <CeoStrategyPayload payload={payload} />;
 }
