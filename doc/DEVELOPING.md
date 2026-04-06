@@ -133,6 +133,19 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Optional Slack stakeholder progress notifications
+
+To emit Slack notifications when issues move to `done`, `blocked`, or get handed back to the requesting user, set a Slack Incoming Webhook in local env/runtime config:
+
+```sh
+PAPERCLIP_STAKEHOLDER_PROGRESS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+Notes:
+
+- Do not commit webhook URLs to the repo.
+- Message links use `PAPERCLIP_PUBLIC_URL` when set; otherwise Paperclip falls back to the current request host / `PAPERCLIP_API_URL`.
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:

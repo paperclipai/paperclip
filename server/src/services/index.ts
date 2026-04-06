@@ -28,6 +28,14 @@ export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
+export {
+  notifyIssueStakeholderProgress,
+  selectIssueStakeholderProgressEvent,
+  buildIssueStakeholderProgressSlackMessage,
+  type NotifyIssueStakeholderProgressInput,
+  type IssueStakeholderProgressIssueSnapshot,
+  type IssueStakeholderProgressEvent,
+} from "./issue-stakeholder-progress.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
