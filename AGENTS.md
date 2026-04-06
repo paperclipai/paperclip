@@ -7,6 +7,9 @@ Guidance for human and AI contributors working in this repository.
 Paperclip is a control plane for AI-agent companies.
 The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
 
+This is a **pnpm workspace monorepo**. Key stack: Node 20+, Express 5, Drizzle ORM, PostgreSQL,
+React 19, Vite, TailwindCSS 4, Radix UI, React Router 7, React Query, Vitest, Playwright.
+
 ## 2. Read This First
 
 Before making changes, read in this order:
@@ -22,14 +25,37 @@ Before making changes, read in this order:
 
 ## 3. Repo Map
 
-- `server/`: Express REST API and orchestration services
-- `ui/`: React + Vite board UI
-- `packages/db/`: Drizzle schema, migrations, DB clients
-- `packages/shared/`: shared types, constants, validators, API path constants
-- `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
-- `packages/adapter-utils/`: shared adapter utilities
-- `packages/plugins/`: plugin system packages
-- `doc/`: operational and product docs
+### Top-level
+
+- `server/` — Express REST API and orchestration services
+- `ui/` — React + Vite board UI
+- `cli/` — CLI tool (`pnpm paperclipai`)
+- `doc/` — Internal operational and product docs
+- `docs/` — Public-facing documentation (API reference, guides, adapter docs)
+- `skills/` — Agent skills (paperclip heartbeat, create-agent, create-plugin, para-memory-files)
+- `tests/e2e/` — Playwright end-to-end tests
+- `scripts/` — Build, release, and utility scripts
+- `docker/` — Docker configurations
+- `.claude/skills/` — Claude Code skills (design-guide)
+
+### Packages (`packages/`)
+
+- `db/` — Drizzle schema, migrations, DB clients
+- `shared/` — Shared types, validators, constants, API path constants
+- `adapters/` — Agent adapters: claude-local, codex-local, cursor-local, gemini-local, openclaw-gateway, opencode-local, pi-local
+- `adapter-utils/` — Shared adapter utilities
+- `plugins/` — Plugin SDK and scaffolder (`create-paperclip-plugin`)
+
+### Server internals (`server/src/`)
+
+- `routes/` — ~20 Express route modules (companies, agents, issues, approvals, goals, costs, etc.)
+- `services/` — ~50 service files (business logic layer)
+- `middleware/` — Auth, validation, error handling, logging
+- `adapters/` — Agent process and HTTP execution dispatchers
+- `realtime/` — WebSocket live-event streaming
+- `storage/` — File/object storage abstraction (local disk, S3)
+- `secrets/` — Secrets management (local encryption)
+- `auth/` — Authentication (Better Auth, session + API keys)
 
 ## 4. Dev Setup (Auto DB)
 
@@ -84,7 +110,12 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep plan docs dated and centralized.
 New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
-## 6. Database Change Workflow
+## 6. Lockfile Policy
+
+Do **not** commit `pnpm-lock.yaml` in pull requests. CI owns the lockfile.
+See `doc/DEVELOPING.md` § Dependency Lockfile Policy for details.
+
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -106,7 +137,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
 
@@ -118,7 +149,25 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. Testing
+
+- **Unit/integration tests** (Vitest): `pnpm test:run` — covers packages/db, packages/adapters/opencode-local, server, ui, cli
+- **E2E tests** (Playwright): `pnpm test:e2e` — tests live in `tests/e2e/`
+- **Server test location**: `server/src/__tests__/`
+
+When adding features, add or update relevant Vitest tests. E2E tests cover onboarding and critical user flows.
+
+## 10. Adapters and Plugins
+
+**Adapters** (`packages/adapters/`) connect external AI agents (Claude, Codex, Cursor, etc.)
+to the Paperclip control plane. Each adapter is its own workspace package with a config schema.
+The server dispatches to adapters via `server/src/adapters/`.
+
+**Plugins** extend Paperclip's runtime capabilities. The SDK is at `packages/plugins/sdk/`.
+Plugin services live in `server/src/services/plugin-*.ts` (~15 files).
+Scaffold new plugins with `packages/plugins/create-paperclip-plugin/`.
+
+## 11. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -132,13 +181,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 12. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Pull Request Requirements
+## 13. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
@@ -149,7 +198,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 14. Definition of Done
 
 A change is done when all are true:
 
