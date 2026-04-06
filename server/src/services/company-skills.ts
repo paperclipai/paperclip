@@ -1494,8 +1494,26 @@ export function companySkillService(db: Db) {
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
     if (missingIds.size === 0) return;
 
+    const managedRoot = resolveManagedSkillsRoot(companyId);
+
     for (const skill of skills) {
       if (!missingIds.has(skill.id)) continue;
+
+      // If the skill lives inside the managed skills root, it was created via the
+      // UI and its full markdown is already stored in the DB. Rather than deleting
+      // the record, recreate the file on disk so the skill survives ephemeral
+      // filesystem resets (e.g. Railway deployments).
+      const skillDir = normalizeSourceLocatorDirectory(skill.sourceLocator);
+      if (skillDir && skillDir.startsWith(managedRoot + path.sep)) {
+        try {
+          await fs.mkdir(skillDir, { recursive: true });
+          await fs.writeFile(path.join(skillDir, "SKILL.md"), skill.markdown, "utf8");
+          continue;
+        } catch {
+          // Fall through to delete if we can't recreate the file.
+        }
+      }
+
       await db
         .delete(companySkills)
         .where(eq(companySkills.id, skill.id));
