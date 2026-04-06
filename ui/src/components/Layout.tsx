@@ -357,16 +357,24 @@ export function Layout() {
               >
                 {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
               </div>
-              {/* Resize handle - outside overflow container so it's always clickable */}
-              {sidebarOpen && !isMobile && (
+              {/* Resize handle - always visible on desktop, dragging expands/collapses sidebar */}
+              {!isMobile && (
                 <div
                   className="w-2 h-full cursor-col-resize group shrink-0 flex items-center justify-center hover:bg-accent/30 active:bg-accent/50 transition-colors"
                   onMouseDown={(e) => {
                     e.preventDefault();
                     const startX = e.clientX;
-                    const startW = sidebarWidth;
+                    const startW = sidebarOpen ? sidebarWidth : 0;
                     const onMove = (ev: MouseEvent) => {
-                      setSidebarWidth(startW + (ev.clientX - startX));
+                      const newW = startW + (ev.clientX - startX);
+                      if (newW > 120 && !sidebarOpen) {
+                        setSidebarOpen(true);
+                        setSidebarWidth(Math.max(newW, 180));
+                      } else if (newW < 60 && sidebarOpen) {
+                        setSidebarOpen(false);
+                      } else if (sidebarOpen) {
+                        setSidebarWidth(newW);
+                      }
                     };
                     const onUp = () => {
                       document.removeEventListener("mousemove", onMove);
@@ -408,7 +416,7 @@ export function Layout() {
               id="main-content"
               tabIndex={-1}
               className={cn(
-                "flex-1 px-4 py-3 md:px-5 md:py-4",
+                "flex-1 px-3 py-2 md:px-4 md:py-3",
                 isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
               )}
             >
