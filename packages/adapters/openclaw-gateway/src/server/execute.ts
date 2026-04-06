@@ -320,6 +320,12 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
+const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+
+function resolveClaimedApiKeyPath(value: unknown): string {
+  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+}
+
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
@@ -342,12 +348,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(
-  payload: WakePayload,
-  paperclipEnv: Record<string, string>,
-  structuredWakePrompt: string,
-): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+    const apiKeyPath = agent.config.claimedApiKeyPath || DEFAULT_CLAIMED_API_KEY_PATH;
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1085,6 +1086,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+<<<<<<< HEAD
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
@@ -1093,16 +1095,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
-  );
-
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
-  const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
-  const sessionKey = resolveSessionKey({
-    strategy: sessionKeyStrategy,
-    configuredSessionKey,
-    runId: ctx.runId,
-    issueId: wakePayload.issueId,
-  });
+    const apiKeyPath = agent.config.claimedApiKeyPath || DEFAULT_CLAIMED_API_KEY_PATH;
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
