@@ -1140,6 +1140,7 @@ export function Inbox() {
     mutationFn: (id: string) => approvalsApi.approve(id),
     onSuccess: (_approval, id) => {
       setActionError(null);
+      markItemRead(`approval:${id}`);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       navigate(`/approvals/${id}?resolved=approved`);
     },
@@ -1150,8 +1151,9 @@ export function Inbox() {
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.reject(id),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       setActionError(null);
+      markItemRead(`approval:${id}`);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
@@ -1347,8 +1349,10 @@ export function Inbox() {
     }, 200);
   }, [dismiss]);
 
-  const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
+  const nonIssueUnreadState = (key: string, item?: InboxWorkItem): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
+    // Resolved approvals should never show as unread
+    if (item?.kind === "approval" && !ACTIONABLE_APPROVAL_STATUSES.has(item.approval.status)) return "hidden";
     const isRead = readItems.has(key);
     const isFading = fadingNonIssueItems.has(key);
     if (isFading) return "fading";
@@ -1795,7 +1799,7 @@ export function Inbox() {
                       onApprove={() => approveMutation.mutate(item.approval.id)}
                       onReject={() => rejectMutation.mutate(item.approval.id)}
                       isPending={approveMutation.isPending || rejectMutation.isPending}
-                      unreadState={nonIssueUnreadState(approvalKey)}
+                      unreadState={nonIssueUnreadState(approvalKey, item)}
                       onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
                       onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}
                       archiveDisabled={isArchiving}
