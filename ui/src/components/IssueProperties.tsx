@@ -35,14 +35,14 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
   }, [value]);
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0 flex-1 group/copy">
-      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-      <span className="text-sm font-mono truncate min-w-0" title={value}>
+    <div className="flex items-start gap-1.5 min-w-0 flex-1">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <span className="text-sm font-mono min-w-0 break-all">
         {value}
       </span>
       <button
         type="button"
-        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
+        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
         onClick={handleCopy}
         title={copied ? "Copied!" : "Copy"}
       >
