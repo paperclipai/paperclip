@@ -24,8 +24,8 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -77,6 +77,8 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 );
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
+const HOST_PLUGIN_SDK_DIR = path.resolve(__dirname, "../../../packages/plugins/sdk");
+const HOST_SHARED_DIR = path.resolve(__dirname, "../../../packages/shared");
 
 // ---------------------------------------------------------------------------
 // Discovery result types
@@ -819,6 +821,8 @@ export function pluginLoader(
         { localPath: absLocalPath, packageName: resolvedPackageName },
         "plugin-loader: fetching plugin from local path",
       );
+
+      await ensureLocalPluginRuntimePackages(absLocalPath);
     } else {
       // npm install
       const spec = version ? `${packageName}@${version}` : packageName!;
@@ -1734,10 +1738,13 @@ export function pluginLoader(
         autoRestart: true,
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      // Only use the tsx loader for TypeScript worker entrypoints. Compiled
+      // dist/*.js workers should run under plain Node resolution; forcing them
+      // through tsx can pull workspace source packages into runtime.
+      if (
+        (workerEntrypoint.endsWith(".ts") || workerEntrypoint.endsWith(".tsx")) &&
+        existsSync(DEV_TSX_LOADER_PATH)
+      ) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
@@ -1892,7 +1899,7 @@ function resolveWorkerEntrypoint(
   if (plugin.packagePath && existsSync(plugin.packagePath)) {
     const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
     if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
-      return entrypoint;
+      return realpathSync(entrypoint);
     }
   }
 
@@ -1922,14 +1929,14 @@ function resolveWorkerEntrypoint(
     }
 
     if (existsSync(entrypoint)) {
-      return entrypoint;
+      return realpathSync(entrypoint);
     }
   }
 
   // Fallback: try the worker path as-is (absolute or relative to cwd)
   // ONLY if it's already an absolute path and we trust the manifest (which we've already validated)
   if (path.isAbsolute(workerRelPath) && existsSync(workerRelPath)) {
-    return workerRelPath;
+    return realpathSync(workerRelPath);
   }
 
   throw new Error(
@@ -1937,6 +1944,83 @@ function resolveWorkerEntrypoint(
       `Checked: ${path.resolve(packageDir, workerRelPath)}, ` +
       `${path.resolve(directDir, workerRelPath)}`,
   );
+}
+
+async function ensureLocalPluginRuntimePackages(localPluginDir: string): Promise<void> {
+  const scopedDir = path.join(localPluginDir, "node_modules", "@paperclipai");
+  await mkdir(scopedDir, { recursive: true });
+
+  const sharedTarget = path.join(scopedDir, "shared");
+  const sdkTarget = path.join(scopedDir, "plugin-sdk");
+
+  await createRuntimePackageWrapper({
+    sourceDir: HOST_SHARED_DIR,
+    targetDir: sharedTarget,
+    extraLinks: [
+      { packageName: "zod", targetPath: path.join(HOST_SHARED_DIR, "node_modules", "zod") },
+    ],
+  });
+
+  await createRuntimePackageWrapper({
+    sourceDir: HOST_PLUGIN_SDK_DIR,
+    targetDir: sdkTarget,
+    extraLinks: [
+      { packageName: "zod", targetPath: path.join(HOST_PLUGIN_SDK_DIR, "node_modules", "zod") },
+      { packageName: "react", targetPath: path.join(HOST_PLUGIN_SDK_DIR, "node_modules", "react"), optional: true },
+      { packageName: "@paperclipai/shared", targetPath: sharedTarget },
+    ],
+  });
+}
+
+async function createRuntimePackageWrapper(params: {
+  sourceDir: string;
+  targetDir: string;
+  extraLinks: Array<{ packageName: string; targetPath: string; optional?: boolean }>;
+}): Promise<void> {
+  const sourcePkg = await readPackageJson(params.sourceDir);
+  if (!sourcePkg) {
+    throw new Error(`Missing package.json for runtime package wrapper source: ${params.sourceDir}`);
+  }
+
+  const publishConfig =
+    typeof sourcePkg.publishConfig === "object" && sourcePkg.publishConfig !== null
+      ? sourcePkg.publishConfig as Record<string, unknown>
+      : {};
+
+  const wrapperPkg = {
+    name: sourcePkg.name,
+    version: sourcePkg.version,
+    license: sourcePkg.license,
+    type: sourcePkg.type ?? "module",
+    main: publishConfig.main ?? sourcePkg.main,
+    types: publishConfig.types ?? sourcePkg.types,
+    exports: publishConfig.exports ?? sourcePkg.exports,
+  };
+
+  await rm(params.targetDir, { recursive: true, force: true });
+  await mkdir(path.join(params.targetDir, "node_modules"), { recursive: true });
+  await writeFile(
+    path.join(params.targetDir, "package.json"),
+    `${JSON.stringify(wrapperPkg, null, 2)}\n`,
+    "utf8",
+  );
+
+  const sourceDist = path.join(params.sourceDir, "dist");
+  if (!existsSync(sourceDist)) {
+    throw new Error(`Missing dist directory for runtime package wrapper source: ${sourceDist}`);
+  }
+  await symlink(sourceDist, path.join(params.targetDir, "dist"), "dir");
+
+  for (const link of params.extraLinks) {
+    if (!existsSync(link.targetPath)) {
+      if (link.optional) continue;
+      throw new Error(`Missing runtime dependency target: ${link.targetPath}`);
+    }
+
+    const targetPath = path.join(params.targetDir, "node_modules", ...link.packageName.split("/"));
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await symlink(link.targetPath, targetPath, "dir");
+  }
 }
 
 function resolveManagedInstallPackageDir(localPluginDir: string, packageName: string): string {
