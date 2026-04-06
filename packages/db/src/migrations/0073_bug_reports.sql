@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS bug_reports (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid REFERENCES companies(id),
-  reported_by_user_id uuid REFERENCES auth_users(id),
+  reported_by_user_id text REFERENCES "user"(id),
   type text NOT NULL DEFAULT 'bug',
   title text NOT NULL,
   description text,

@@ -6,14 +6,12 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
-import { authUsers } from "./auth.js";
-
 export const bugReports = pgTable(
   "bug_reports",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").references(() => companies.id),
-    reportedByUserId: uuid("reported_by_user_id").references(() => authUsers.id),
+    reportedByUserId: text("reported_by_user_id"),
     type: text("type").notNull().default("bug"),
     title: text("title").notNull(),
     description: text("description"),
