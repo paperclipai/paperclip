@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -143,6 +144,7 @@ describe("transition gate", () => {
       { body: "QA: PASS", authorAgentId: "qa-agent-1", authorUserId: null },
     ]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "test" });
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
@@ -201,6 +203,13 @@ describe("transition gate", () => {
     mockIssueService.update.mockResolvedValue({ ...issue, status: "in_review" });
     mockWorkProductService.listForIssue.mockResolvedValue([
       { type: "branch", status: "active" },
+    ]);
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: "agent-1", authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "agent-1", createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
     ]);
 
     const res = await request(createAgentApp())

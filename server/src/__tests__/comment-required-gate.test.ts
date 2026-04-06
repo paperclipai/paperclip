@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -160,12 +161,14 @@ describe("comment-required gate", () => {
     mockIssueService.listComments.mockResolvedValue([
       { body: "QA: PASS", authorAgentId: QA_1, authorUserId: null },
     ]);
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
   it("rejects agent status change without comment", async () => {
     // assigneeAgentId differs from actor so review handoff gate doesn't fire
-    const issue = makeIssue({ status: "in_progress", assigneeAgentId: "agent-other" });
+    // executionWorkspaceId: null bypasses engineer evidence gate (non-code issue)
+    const issue = makeIssue({ status: "in_progress", assigneeAgentId: "agent-other", executionWorkspaceId: null });
     mockIssueService.getById.mockResolvedValue(issue);
 
     const res = await request(createAgentApp(AGENT_1))
@@ -194,6 +197,13 @@ describe("comment-required gate", () => {
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockResolvedValue({ ...issue, status: "in_review" });
     mockIssueService.addComment.mockResolvedValue({ id: "c-1", body: "Moving to review" });
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: AGENT_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: AGENT_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(AGENT_1))
       .patch(`/api/issues/${issue.id}`)
@@ -211,6 +221,13 @@ describe("comment-required gate", () => {
       status: "in_review",
     });
     mockIssueService.addComment.mockResolvedValue({ id: "c-2", body: "Handing off to QA" });
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: AGENT_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: AGENT_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(AGENT_1))
       .patch(`/api/issues/${issue.id}`)
@@ -245,7 +262,8 @@ describe("comment-required gate", () => {
 
   it("logs comment-required rejection to activity log", async () => {
     // assigneeAgentId differs from actor so review handoff gate doesn't fire
-    const issue = makeIssue({ status: "in_progress", assigneeAgentId: "agent-other" });
+    // executionWorkspaceId: null bypasses engineer evidence gate (non-code issue)
+    const issue = makeIssue({ status: "in_progress", assigneeAgentId: "agent-other", executionWorkspaceId: null });
     mockIssueService.getById.mockResolvedValue(issue);
 
     await request(createAgentApp(AGENT_1))

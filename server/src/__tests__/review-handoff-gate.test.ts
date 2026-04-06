@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -167,6 +168,7 @@ describe("review handoff gate", () => {
     ]);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "test" });
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
@@ -190,6 +192,13 @@ describe("review handoff gate", () => {
       assigneeAgentId: QA_1,
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)
@@ -207,6 +216,13 @@ describe("review handoff gate", () => {
       assigneeAgentId: QA_1,
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)
@@ -216,7 +232,8 @@ describe("review handoff gate", () => {
   });
 
   it("auto-infers assignee from recent comment when PATCH comment has no mention", async () => {
-    const issue = makeIssue({ assigneeAgentId: ENGINEER_1, status: "in_progress" });
+    // Non-code issue (executionWorkspaceId: null) to test handoff logic in isolation from evidence gate
+    const issue = makeIssue({ assigneeAgentId: ENGINEER_1, status: "in_progress", executionWorkspaceId: null });
     mockIssueService.getById.mockResolvedValue(issue);
     // First call: inline comment has no mention → returns []
     // Second call: recent comment has @qa-agent → returns [QA_1]
@@ -284,6 +301,13 @@ describe("review handoff gate", () => {
     const issue = makeIssue({ assigneeAgentId: ENGINEER_1, status: "in_review" });
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockResolvedValue(issue);
+    // Engineer evidence gate: browse evidence from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)
@@ -299,6 +323,13 @@ describe("review handoff gate", () => {
       ...issue,
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence from the acting agent (ENGINEER_1)
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)
@@ -318,6 +349,13 @@ describe("review handoff gate", () => {
       assigneeUserId: "board-user-1",
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence from the acting agent (ENGINEER_1)
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)

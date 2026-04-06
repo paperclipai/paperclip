@@ -296,15 +296,14 @@ export function issueRoutes(
   const QA_PASS_PATTERN = /\bqa[\s:]+pass(ed)?\b/i;
 
   async function assertQAGate(
-    issueSvc: ReturnType<typeof issueService>,
     req: Request,
     issue: { id: string; executionWorkspaceId: string | null; assigneeAgentId: string | null },
     targetStatus: string,
+    comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
     if (targetStatus !== "done") return null;
 
-    const comments = await issueSvc.listComments(issue.id, { order: "asc" });
     const hasQAPass = comments.some(
       c =>
         (c.authorAgentId || c.authorUserId) &&
@@ -317,6 +316,131 @@ export function issueRoutes(
         reason: "Cannot mark done without QA approval. A comment containing 'QA: PASS' from a different reviewer is required. The assigned agent cannot approve their own work.",
       };
     }
+    return null;
+  }
+
+  // ---------- Browse evidence gates (v1 — interim regex control) ----------
+  // This regex is a stopgap. It detects common browser testing command patterns
+  // from the dogfood skill and AGENTS.md. It is gameable (canned text) and will
+  // miss novel workflows. The v2 path is structured evidence tokens from browser-test CLI.
+  const BROWSE_EVIDENCE_PATTERN =
+    /\b(browser-test\s+(headless|headed)|browse\s+(goto|screenshot|snapshot|click)|dump-dom|--dump-dom|screenshot\s+saved|console\s+output|no\s+console\s+errors|DOM\s+(dump|snapshot|output))\b/i;
+
+  /**
+   * Check if an actor has posted browse evidence text in their comments on this issue.
+   * Only considers comments created after `sinceDate` to scope evidence to the current review cycle.
+   */
+  function actorHasBrowseEvidence(
+    comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
+    actorAgentId: string | null,
+    actorUserId: string | null,
+    sinceDate: Date | string,
+  ): boolean {
+    const since = new Date(sinceDate).getTime();
+    return comments.some(c => {
+      if (new Date(c.createdAt).getTime() < since) return false;
+      const isActor =
+        (actorAgentId && c.authorAgentId === actorAgentId) ||
+        (actorUserId && c.authorUserId === actorUserId);
+      return isActor && BROWSE_EVIDENCE_PATTERN.test(c.body);
+    });
+  }
+
+  /**
+   * Check if an actor has uploaded an image attachment to this issue.
+   * Only considers attachments created after `sinceDate`.
+   */
+  function actorHasImageAttachment(
+    attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
+    actorAgentId: string | null,
+    actorUserId: string | null,
+    sinceDate: Date | string,
+  ): boolean {
+    const since = new Date(sinceDate).getTime();
+    return attachments.some(a => {
+      if (new Date(a.createdAt).getTime() < since) return false;
+      const isActor =
+        (actorAgentId && a.createdByAgentId === actorAgentId) ||
+        (actorUserId && a.createdByUserId === actorUserId);
+      return isActor && a.contentType?.startsWith("image/");
+    });
+  }
+
+  /**
+   * Engineer evidence gate: code issues moving to in_review must include
+   * browser testing evidence (browse command text + image attachment)
+   * from the transitioning agent.
+   */
+  async function assertEngineerBrowseEvidence(
+    req: Request,
+    issue: { id: string; executionWorkspaceId: string | null; updatedAt: Date | string },
+    targetStatus: string,
+    comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
+    attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
+  ): Promise<{ gate: string; reason: string } | null> {
+    if (req.actor.type !== "agent") return null;
+    if (targetStatus !== "in_review") return null;
+    if (!issue.executionWorkspaceId) return null;
+
+    const agentId = req.actor.agentId ?? null;
+    const sinceDate = issue.updatedAt;
+
+    const hasBrowseText = actorHasBrowseEvidence(comments, agentId, null, sinceDate);
+    const hasImage = actorHasImageAttachment(attachments, agentId, null, sinceDate);
+
+    if (!hasBrowseText || !hasImage) {
+      const missing: string[] = [];
+      if (!hasBrowseText) missing.push("browser testing commands in a comment (e.g. 'browser-test headless <url>')");
+      if (!hasImage) missing.push("an image attachment (screenshot)");
+      return {
+        gate: "in_review_requires_browse_evidence",
+        reason: `Code issues require interactive browser testing evidence before moving to in_review. Missing: ${missing.join(" and ")}. Use the Browser Testing VPS (ssh -i $BROWSER_TEST_SSH_KEY ...) to test your changes, post the output as a comment, and attach a screenshot.`,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * QA browse evidence gate: code issues moving to done must have browse
+   * evidence from the same actor who posted QA: PASS.
+   * Runs AFTER assertQAGate (which confirms QA: PASS exists).
+   */
+  async function assertQABrowseEvidence(
+    req: Request,
+    issue: { id: string; executionWorkspaceId: string | null; assigneeAgentId: string | null; updatedAt: Date | string },
+    comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
+    attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
+  ): Promise<{ gate: string; reason: string } | null> {
+    if (req.actor.type !== "agent") return null;
+    if (!issue.executionWorkspaceId) return null;
+
+    // Find the QA PASS comment author (same logic as assertQAGate: non-assignee, authenticated)
+    const qaPassComment = comments.find(
+      c =>
+        (c.authorAgentId || c.authorUserId) &&
+        c.authorAgentId !== issue.assigneeAgentId &&
+        QA_PASS_PATTERN.test(c.body),
+    );
+    if (!qaPassComment) return null; // assertQAGate should have caught this already
+
+    const qaAgentId = qaPassComment.authorAgentId;
+    const qaUserId = qaPassComment.authorUserId;
+    const sinceDate = issue.updatedAt;
+
+    const hasBrowseText = actorHasBrowseEvidence(comments, qaAgentId, qaUserId, sinceDate);
+    const hasImage = actorHasImageAttachment(attachments, qaAgentId, qaUserId, sinceDate);
+
+    if (!hasBrowseText || !hasImage) {
+      const missing: string[] = [];
+      if (!hasBrowseText) missing.push("browser testing commands");
+      if (!hasImage) missing.push("screenshot attachment");
+      return {
+        gate: "done_requires_qa_browse_evidence",
+        reason: `QA PASS without interactive testing evidence is insufficient for code issues. The QA reviewer must include ${missing.join(" and ")} in their review. Use the Browser Testing VPS to verify the fix interactively.`,
+      };
+    }
+
     return null;
   }
 
@@ -1610,8 +1734,33 @@ export function issueRoutes(
         return;
       }
 
+      // Fetch comments + attachments once for evidence and QA gates (only on transitions that need them)
+      const needsEvidenceOrQA = req.body.status === "in_review" || req.body.status === "done";
+      const allComments = needsEvidenceOrQA ? await svc.listComments(existing.id, { order: "asc" }) : [];
+      const allAttachments = needsEvidenceOrQA ? await svc.listAttachments(existing.id) : [];
+
+      // Engineer evidence gate: browse evidence + screenshot for in_review (code issues)
+      const evidenceResult = await assertEngineerBrowseEvidence(req, existing, req.body.status, allComments, allAttachments);
+      if (evidenceResult) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.evidence_gate_blocked",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { gate: evidenceResult.gate, reason: evidenceResult.reason, targetStatus: req.body.status },
+        });
+        await incrementGateBlockCount(existing.id);
+        res.status(422).json({ error: evidenceResult.reason, gate: evidenceResult.gate });
+        return;
+      }
+
       // QA gate: agents must have QA approval before marking code issues done
-      const qaGateResult = await assertQAGate(svc, req, existing, req.body.status);
+      const qaGateResult = await assertQAGate(req, existing, req.body.status, allComments);
       if (qaGateResult) {
         const actor = getActorInfo(req);
         await logActivity(db, {
@@ -1628,6 +1777,28 @@ export function issueRoutes(
         await incrementGateBlockCount(existing.id);
         res.status(422).json({ error: qaGateResult.reason, gate: qaGateResult.gate });
         return;
+      }
+
+      // QA browse evidence gate: QA reviewer must include testing evidence (code issues, done only)
+      if (req.body.status === "done") {
+        const qaBrowseResult = await assertQABrowseEvidence(req, existing, allComments, allAttachments);
+        if (qaBrowseResult) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.qa_evidence_gate_blocked",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { gate: qaBrowseResult.gate, reason: qaBrowseResult.reason, targetStatus: req.body.status },
+          });
+          await incrementGateBlockCount(existing.id);
+          res.status(422).json({ error: qaBrowseResult.reason, gate: qaBrowseResult.gate });
+          return;
+        }
       }
     }
 

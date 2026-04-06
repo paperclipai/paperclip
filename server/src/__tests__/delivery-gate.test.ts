@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -145,6 +146,7 @@ describe("delivery gate", () => {
       { body: "QA: PASS", authorAgentId: "qa-agent-1", authorUserId: null },
     ]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "test" });
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
@@ -232,6 +234,13 @@ describe("delivery gate", () => {
     mockWorkProductService.listForIssue.mockResolvedValue([
       { type: "branch", status: "active" },
     ]);
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: "agent-1", authorUserId: null, createdAt: "2026-03-31T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "agent-1", createdByUserId: null, createdAt: "2026-03-31T00:00:00Z" },
+    ]);
 
     const app = createAgentApp();
     const res = await request(app)
@@ -246,6 +255,13 @@ describe("delivery gate", () => {
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockWorkProductService.listForIssue.mockResolvedValue([
       { type: "pull_request", status: "merged", url: "https://github.com/org/repo/pull/1" },
+    ]);
+    // QA gate + QA browse evidence: QA PASS with browse evidence from the QA reviewer
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "QA: PASS — browser-test headless http://localhost:3000 verified", authorAgentId: "qa-agent-1", authorUserId: null, createdAt: "2026-03-31T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "qa-agent-1", createdByUserId: null, createdAt: "2026-03-31T00:00:00Z" },
     ]);
 
     const app = createAgentApp();

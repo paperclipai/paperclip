@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -251,6 +252,7 @@ describe("assignment policy gate", () => {
       { body: "QA: PASS", authorAgentId: QA_1, authorUserId: null },
     ]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "test" });
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
@@ -264,6 +266,13 @@ describe("assignment policy gate", () => {
       assigneeAgentId: QA_1,
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence + screenshot from the acting agent
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: ENGINEER_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: ENGINEER_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(ENGINEER_1))
       .patch(`/api/issues/${issue.id}`)
@@ -413,6 +422,13 @@ describe("assignment policy gate", () => {
       assigneeAgentId: QA_1,
       status: "in_review",
     });
+    // Engineer evidence gate: browse evidence from the acting agent (CEO_1)
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless http://localhost:3000", authorAgentId: CEO_1, authorUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: CEO_1, createdByUserId: null, createdAt: "2026-04-02T00:00:00Z" },
+    ]);
 
     const res = await request(createAgentApp(CEO_1))
       .patch(`/api/issues/${issue.id}`)

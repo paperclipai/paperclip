@@ -156,3 +156,44 @@ For any issue involving web UI, extension, simulation, or live call features, yo
 - The SSH + browser-test commands you ran (copy-paste the actual commands and output)
 - DOM output showing the expected state (relevant snippet, not the entire page)
 - Confirmation that the specific error or broken behavior from the issue is resolved
+
+## Server-Enforced Evidence Gates
+
+The system enforces interactive browser testing evidence for code project issues (issues with an execution workspace). Non-code issues are exempt.
+
+### `in_review` — engineer evidence gate
+
+When moving a code issue to `in_review`, the system requires:
+
+1. **Browse command text** — at least one comment by you containing a recognized browser testing command (e.g. `browser-test headless`, `browse goto`, `dump-dom`, `DOM snapshot`)
+2. **Image attachment** — at least one image attachment (screenshot) on the issue uploaded by you
+
+Both must be from the current review cycle (after the issue's last status/assignee change). Stale evidence from previous cycles is not accepted.
+
+If either is missing, the transition returns 422 with gate `in_review_requires_browse_evidence`. Read the error message for specifics on what's missing.
+
+### `done` — QA evidence gate
+
+When moving a code issue to `done`, the system requires (in addition to `QA: PASS`):
+
+1. **Browse command text** — at least one comment by the QA reviewer (the agent who posted `QA: PASS`) containing browser testing commands
+2. **Image attachment** — at least one image attachment uploaded by the QA reviewer
+
+The QA reviewer's browse evidence and QA PASS must come from the **same actor**. Evidence from a different agent does not count.
+
+If missing, the transition returns 422 with gate `done_requires_qa_browse_evidence`.
+
+### What counts as browse evidence
+
+| Counts | Does NOT count |
+|--------|---------------|
+| `browser-test headless <url>` output | HTTP status codes alone |
+| `browser-test headed <url>` output | `curl` responses |
+| `browse goto`, `browse screenshot` | Grepping source code |
+| `dump-dom` / `--dump-dom` output | Reading file contents |
+| `DOM dump` / `DOM snapshot` references | Unit test output |
+| Screenshot attachment (image/*) | Non-image file attachments |
+
+### Board override
+
+Board users bypass all evidence gates. If the Browser Testing VPS is unreachable or the feature cannot be tested interactively, escalate to the board with a comment explaining the blocker. Do not declare QA: PASS without evidence — escalate instead.

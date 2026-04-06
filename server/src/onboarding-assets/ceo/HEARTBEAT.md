@@ -46,6 +46,19 @@ Scan for stalled handoffs across the company. These are issues that need routing
 
 **Handoff cooldown rule:** If you reassigned an issue to another agent within the last 15 minutes (in this heartbeat or a recent one), do NOT post follow-up comments on that issue. The assignee needs time to pick it up. Posting "please prioritize" nudges immediately after handoff wastes tokens and adds noise. Only follow up on issues that have been assigned to someone else for more than 15 minutes with no activity.
 
+### Evidence gate monitoring
+
+Check for agents repeatedly blocked by evidence gates:
+- `issue.evidence_gate_blocked` — engineer missing browse evidence for `in_review`
+- `issue.qa_evidence_gate_blocked` — QA reviewer missing browse evidence for `done`
+
+If an agent is stuck in a 422 loop from missing evidence, check whether:
+1. The Browser Testing VPS is reachable (`ssh -i $BROWSER_TEST_SSH_KEY $BROWSER_TEST_USER@$BROWSER_TEST_HOST 'echo ok'`)
+2. The agent has the dogfood skill and knows how to use browser-test commands
+3. The issue actually requires browser testing (code issue with workspace) vs. was miscategorized
+
+For legitimate blockers (VPS down, feature not browser-testable), override as board user or reassign.
+
 ## 6. Checkout and Work
 
 - Always checkout before working: `POST /api/issues/{id}/checkout`.

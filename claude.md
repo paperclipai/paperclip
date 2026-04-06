@@ -396,6 +396,29 @@ For UI/simulation/call features, QA must: log in, navigate to the feature, perfo
 
 Agents must include a comment when changing status or assignee. Returns 422 with gate `comment_required` if either field changes without a `comment` in the request body. Board users bypass this gate. Non-status/non-assignee updates (title, priority, etc.) do not require a comment.
 
+### Browse evidence gates (v1 — interim regex control)
+
+Code issues (with `executionWorkspaceId`) require interactive browser testing evidence for status transitions. Non-code issues are exempt.
+
+| Gate | Transition | Requirements | Activity log action |
+|------|-----------|-------------|-------------------|
+| `in_review_requires_browse_evidence` | → `in_review` | Browse command text in actor's comment + image attachment by actor (both from current review cycle) | `issue.evidence_gate_blocked` |
+| `done_requires_qa_browse_evidence` | → `done` | Browse command text + image attachment from the **same actor** who posted `QA: PASS` (current review cycle) | `issue.qa_evidence_gate_blocked` |
+
+**Timing validation:** Evidence must have `createdAt` >= issue's `updatedAt` (resets on status/assignee change). Stale evidence from previous cycles is rejected.
+
+**Same-actor binding:** QA evidence must come from the QA PASS author. Evidence from a different agent does not satisfy the gate.
+
+**Board override:** Board users bypass all evidence gates (standard pattern).
+
+**This is a v1 interim control.** The regex (`BROWSE_EVIDENCE_PATTERN`) detects common browser-test command patterns. It is gameable with canned text and may miss novel workflows. The v2 path is structured evidence tokens from the browser-test CLI.
+
+### Workspace policy enablement
+
+The `enableIsolatedWorkspaces` instance flag must be `true` for delivery + evidence gates to fire on code issues. When off, `issues.ts:1099-1103` strips workspace fields from new issues, making `executionWorkspaceId = NULL` on all issues, which causes all workspace-gated checks to silently skip.
+
+Code projects must have `execution_workspace_policy` configured with `enabled: true` for new issues to get workspace IDs assigned at creation time.
+
 ### Transition gate (`assertAgentTransition`)
 
 Agents follow a forward-only state machine. Terminal states (done, cancelled) cannot be exited by agents — only board users can reopen. Both reopen paths (PATCH handler implicit reopen and POST comments explicit reopen) are guarded.
@@ -412,7 +435,18 @@ Agents follow a forward-only state machine. Terminal states (done, cancelled) ca
 
 ### Gate ordering
 
-Auto-infer @mention fires first (enriches `assigneeAgentId`), then review handoff gate, then transition gate, then delivery gate, then QA gate, then comment-required gate. This ensures the handoff check runs before any other validation.
+1. Auto-infer @mention (enriches `assigneeAgentId`)
+2. Review handoff gate
+3. Assignment policy
+4. Checkout ownership
+5. Transition gate — status state machine
+6. Delivery gate — work product requirements
+7. **Engineer evidence gate** — browse evidence for `in_review` (code issues)
+8. QA gate — QA PASS requirement
+9. **QA browse evidence gate** — browse evidence from QA reviewer for `done` (code issues)
+10. Comment-required gate
+
+This ensures the handoff check runs before any other validation, and evidence gates run adjacent to their related quality gates.
 
 ### Escape hatches (all gates)
 
@@ -425,7 +459,9 @@ Rejected transitions are logged in the activity log:
 - `issue.review_handoff_blocked` — in_review without assignee change
 - `issue.transition_blocked` — invalid agent state transition
 - `issue.delivery_gate_blocked` — missing work products
+- `issue.evidence_gate_blocked` — missing browse evidence for in_review transition
 - `issue.qa_gate_blocked` — missing QA approval
+- `issue.qa_evidence_gate_blocked` — missing browse evidence from QA reviewer for done transition
 - `issue.comment_required_blocked` — status/assignee change without comment
 
 ### Work product URL verification (PR #124)
@@ -489,6 +525,7 @@ Board users bypass all URL validation.
 - `server/src/__tests__/agent-dispatchability.test.ts` — 8 dispatchability predicate tests
 - `server/src/__tests__/mention-agent-matching.test.ts` — 19 mention resolution tests
 - `server/src/__tests__/work-product-verification.test.ts` — 11 work product URL verification tests
+- `server/src/__tests__/browse-evidence-gate.test.ts` — 14 browse evidence gate tests (8 engineer + 6 QA)
 - `server/src/services/workspace-runtime.ts` — workspace ready comment
 - `server/src/onboarding-assets/default/AGENTS.md` — Code Delivery Protocol + QA Approval Protocol + Assignment Policy
 - `server/src/onboarding-assets/ceo/HEARTBEAT.md` — CEO delivery/QA enforcement guidance

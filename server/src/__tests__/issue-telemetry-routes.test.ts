@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(async () => []),
+  listAttachments: vi.fn(async () => []),
   findMentionedAgents: vi.fn(async () => []),
 }));
 

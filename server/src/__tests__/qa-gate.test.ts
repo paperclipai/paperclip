@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getCommentCursor: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -147,6 +148,7 @@ describe("qa gate", () => {
     mockWorkProductService.listForIssue.mockResolvedValue([validPR]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "test" });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listAttachments.mockResolvedValue([]);
   });
 
   it("agent → done, no comments → 422", async () => {
@@ -166,7 +168,10 @@ describe("qa gate", () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockIssueService.listComments.mockResolvedValue([
-      { body: "QA: PASS — looks good", authorAgentId: "qa-agent-1", authorUserId: null },
+      { body: "QA: PASS — browser-test headless https://viracue.ai, no console errors", authorAgentId: "qa-agent-1", authorUserId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "qa-agent-1", createdByUserId: null, createdAt: new Date("2026-03-30T13:01:00Z") },
     ]);
 
     const app = createAgentApp();
@@ -241,7 +246,12 @@ describe("qa gate", () => {
     const issue = { ...codeIssue, assigneeAgentId: "agent-other" };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockResolvedValue({ ...issue, status: "in_review" });
-    mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "browser-test headless https://viracue.ai — tested", authorAgentId: "agent-1", authorUserId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "agent-1", createdByUserId: null, createdAt: new Date("2026-03-30T13:01:00Z") },
+    ]);
     mockWorkProductService.listForIssue.mockResolvedValue([
       { type: "branch", status: "active" },
     ]);
@@ -258,7 +268,10 @@ describe("qa gate", () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockIssueService.listComments.mockResolvedValue([
-      { body: "QA: passed", authorAgentId: "qa-agent-1", authorUserId: null },
+      { body: "QA: passed — browser-test headless https://viracue.ai", authorAgentId: "qa-agent-1", authorUserId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "qa-agent-1", createdByUserId: null, createdAt: new Date("2026-03-30T13:01:00Z") },
     ]);
 
     const app = createAgentApp();
@@ -273,7 +286,10 @@ describe("qa gate", () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockIssueService.listComments.mockResolvedValue([
-      { body: "QA PASS — all checks green", authorUserId: "user-1", authorAgentId: null },
+      { body: "QA PASS — browser-test headless https://viracue.ai, all checks green", authorUserId: "user-1", authorAgentId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: null, createdByUserId: "user-1", createdAt: new Date("2026-03-30T13:01:00Z") },
     ]);
 
     const app = createAgentApp();
@@ -328,9 +344,12 @@ describe("qa gate", () => {
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockIssueService.listComments.mockResolvedValue([
       // Self-approval from assignee — ignored
-      { body: "QA: PASS", authorAgentId: "agent-1", authorUserId: null },
-      // Real approval from a different agent
-      { body: "QA: PASS — reviewed and approved", authorAgentId: "qa-agent-1", authorUserId: null },
+      { body: "QA: PASS", authorAgentId: "agent-1", authorUserId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+      // Real approval from a different agent with browse evidence
+      { body: "QA: PASS — browser-test headless https://viracue.ai, reviewed and approved", authorAgentId: "qa-agent-1", authorUserId: null, createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: "qa-agent-1", createdByUserId: null, createdAt: new Date("2026-03-30T13:01:00Z") },
     ]);
 
     const app = createAgentApp();
@@ -345,7 +364,10 @@ describe("qa gate", () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockIssueService.listComments.mockResolvedValue([
-      { body: "QA: PASS", authorAgentId: null, authorUserId: "board-user-1" },
+      { body: "QA: PASS — browser-test headless https://viracue.ai", authorAgentId: null, authorUserId: "board-user-1", createdAt: new Date("2026-03-30T13:00:00Z") },
+    ]);
+    mockIssueService.listAttachments.mockResolvedValue([
+      { contentType: "image/png", createdByAgentId: null, createdByUserId: "board-user-1", createdAt: new Date("2026-03-30T13:01:00Z") },
     ]);
 
     const app = createAgentApp();
