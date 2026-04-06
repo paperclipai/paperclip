@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
-import { buildTranscript, getUIAdapter, type RunLogChunk, type TranscriptEntry } from "../../adapters";
+import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
@@ -68,6 +68,11 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  // Tick counter to force transcript recomputation when dynamic parser loads
+  const [parserTick, setParserTick] = useState(0);
+  useEffect(() => {
+    return onAdapterChange(() => setParserTick((t) => t + 1));
+  }, []);
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
@@ -279,13 +284,13 @@ export function useLiveRunTranscripts({
       const adapter = getUIAdapter(run.adapterType);
       next.set(
         run.id,
-        buildTranscript(chunksByRun.get(run.id) ?? [], adapter.parseStdoutLine, {
+        buildTranscript(chunksByRun.get(run.id) ?? [], adapter, {
           censorUsernameInLogs,
         }),
       );
     }
     return next;
-  }, [chunksByRun, generalSettings?.censorUsernameInLogs, runs]);
+  }, [chunksByRun, generalSettings?.censorUsernameInLogs, parserTick, runs]);
 
   return {
     transcriptByRun,

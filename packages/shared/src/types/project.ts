@@ -1,5 +1,9 @@
 import type { PauseReason, ProjectStatus } from "../constants.js";
-import type { ProjectExecutionWorkspacePolicy, WorkspaceRuntimeService } from "./workspace-runtime.js";
+import type {
+  ProjectExecutionWorkspacePolicy,
+  ProjectWorkspaceRuntimeConfig,
+  WorkspaceRuntimeService,
+} from "./workspace-runtime.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -26,6 +30,7 @@ export interface ProjectWorkspace {
   remoteWorkspaceRef: string | null;
   sharedWorkspaceKey: string | null;
   metadata: Record<string, unknown> | null;
+  runtimeConfig: ProjectWorkspaceRuntimeConfig | null;
   isPrimary: boolean;
   runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;

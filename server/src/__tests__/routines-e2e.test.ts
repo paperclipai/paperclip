@@ -10,11 +10,13 @@ import {
   companies,
   companyMemberships,
   createDb,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
   issues,
   principalPermissionGrants,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
@@ -102,6 +104,8 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(routines);
@@ -271,5 +275,137 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  });
+
+  it("runs routines with variable inputs and interpolates the execution issue description", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Repository triage",
+        description: "Review {{repo}} for {{priority}} bugs",
+        assigneeAgentId: agentId,
+        variables: [
+          { name: "repo", type: "text", required: true },
+          { name: "priority", type: "select", required: true, defaultValue: "high", options: ["high", "low"] },
+        ],
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        variables: { repo: "paperclip" },
+      });
+
+    expect(runRes.status).toBe(202);
+    expect(runRes.body.triggerPayload).toEqual({
+      variables: {
+        repo: "paperclip",
+        priority: "high",
+      },
+    });
+
+    const [issue] = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue?.description).toBe("Review paperclip for high bugs");
+  });
+
+  it("persists execution workspace selections from manual routine runs", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(instanceSettings).values({
+      experimental: { enableIsolatedWorkspaces: true },
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Workspace-aware routine",
+        assigneeAgentId: agentId,
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(runRes.status).toBe(202);
+
+    const [issue] = await db
+      .select({
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue).toEqual({
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
   });
 });

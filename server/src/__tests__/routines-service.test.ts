@@ -8,8 +8,11 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
+  instanceSettings,
   issues,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
@@ -20,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { routineService } from "../services/routines.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -49,9 +53,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
@@ -315,6 +322,196 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("interpolates routine variables into the execution issue and stores resolved values", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage",
+        description: "Review {{repo}} for {{priority}} bugs",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+          { name: "priority", label: null, type: "select", defaultValue: "high", required: true, options: ["high", "low"] },
+        ],
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { repo: "paperclip" },
+    });
+
+    const storedIssue = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.description).toBe("Review paperclip for high bugs");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        repo: "paperclip",
+        priority: "high",
+      },
+    });
+  });
+
+  it("attaches the selected execution workspace to manually triggered routine issues", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    const run = await svc.runRoutine(routine.id, {
+      source: "manual",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const storedIssue = await db
+      .select({
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue).toEqual({
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  it("blocks schedule triggers when required variables do not have defaults", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage",
+        description: "Review {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    await expect(
+      svc.createTrigger(variableRoutine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {}),
+    ).rejects.toThrow(/require defaults for required variables/i);
+  });
+
+  it("treats malformed stored defaults as missing when validating schedule triggers", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "ship check",
+        description: "Review {{approved}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "approved", label: null, type: "boolean", defaultValue: true, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    await db
+      .update(routines)
+      .set({
+        variables: [
+          {
+            name: "approved",
+            label: null,
+            type: "boolean",
+            defaultValue: "definitely",
+            required: true,
+            options: [],
+          },
+        ],
+      })
+      .where(eq(routines.id, variableRoutine.id));
+
+    await expect(
+      svc.createTrigger(variableRoutine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {}),
+    ).rejects.toThrow(/require defaults for required variables/i);
   });
 
   it("serializes concurrent dispatches until the first execution issue is linked to a queued run", async () => {

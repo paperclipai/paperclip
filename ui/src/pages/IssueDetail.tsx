@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
@@ -13,8 +14,23 @@ import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
-import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import {
+  createIssueDetailPath,
+  readIssueDetailBreadcrumb,
+  shouldArmIssueDetailInboxQuickArchive,
+} from "../lib/issueDetailBreadcrumb";
+import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
+import {
+  applyOptimisticIssueCommentUpdate,
+  createOptimisticIssueComment,
+  isQueuedIssueComment,
+  mergeIssueComments,
+  upsertIssueComment,
+  type IssueCommentReassignment,
+  type OptimisticIssueComment,
+} from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
@@ -24,6 +40,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
+import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
@@ -54,12 +71,24 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import {
+  getClosedIsolatedExecutionWorkspaceMessage,
+  isClosedIsolatedExecutionWorkspace,
+  type ActivityEvent,
+  type Agent,
+  type FeedbackVote,
+  type Issue,
+  type IssueAttachment,
+  type IssueComment,
+} from "@paperclipai/shared";
 
-type CommentReassignment = {
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
+type CommentReassignment = IssueCommentReassignment;
+type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
+  runId?: string | null;
+  runAgentId?: string | null;
+  interruptedRunId?: string | null;
+  queueState?: "queued";
+  queueTargetRunId?: string | null;
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -68,6 +97,7 @@ const ACTION_LABELS: Record<string, string> = {
   "issue.checked_out": "checked out the issue",
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
+  "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
   "issue.document_created": "created a document",
@@ -85,6 +115,8 @@ const ACTION_LABELS: Record<string, string> = {
   "approval.approved": "approved",
   "approval.rejected": "rejected",
 };
+
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 function humanizeValue(value: unknown): string {
   if (typeof value !== "string") return String(value ?? "none");
@@ -184,6 +216,63 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
   return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
+function mergeOptimisticFeedbackVote(
+  previousVotes: FeedbackVote[] | undefined,
+  nextVote: {
+    issueId: string;
+    targetType: "issue_comment" | "issue_document_revision";
+    targetId: string;
+    vote: "up" | "down";
+    reason?: string;
+  },
+  currentUserId: string | null,
+): FeedbackVote[] {
+  const now = new Date();
+  const existingVotes = previousVotes ?? [];
+  const existingIndex = existingVotes.findIndex(
+    (feedbackVote) =>
+      feedbackVote.targetType === nextVote.targetType &&
+      feedbackVote.targetId === nextVote.targetId &&
+      (!currentUserId || feedbackVote.authorUserId === currentUserId),
+  );
+
+  if (existingIndex >= 0) {
+    const existingVote = existingVotes[existingIndex]!;
+    const updatedVote: FeedbackVote = {
+      ...existingVote,
+      vote: nextVote.vote,
+      reason:
+        nextVote.reason !== undefined
+          ? nextVote.reason.trim() || null
+          : existingVote.reason,
+      updatedAt: now,
+    };
+    const nextVotes = [...existingVotes];
+    nextVotes[existingIndex] = updatedVote;
+    return nextVotes;
+  }
+
+  return [
+    ...existingVotes,
+    {
+      id: `optimistic:${nextVote.targetType}:${nextVote.targetId}`,
+      companyId: "",
+      issueId: nextVote.issueId,
+      targetType: nextVote.targetType,
+      targetId: nextVote.targetId,
+      authorUserId: currentUserId ?? "current-user",
+      vote: nextVote.vote,
+      reason: nextVote.reason?.trim() || null,
+      sharedWithLabs: false,
+      sharedAt: null,
+      consentVersion: null,
+      redactionSummary: null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
 function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
@@ -197,7 +286,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -213,6 +302,9 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -222,6 +314,12 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const commentComposerDisabledReason = useMemo(() => {
+    if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
+      return null;
+    }
+    return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
+  }, [issue?.currentExecutionWorkspace]);
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
@@ -269,9 +367,17 @@ export function IssueDetail() {
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const runningIssueRun = useMemo(
+    () => (
+      activeRun?.status === "running"
+        ? activeRun
+        : (liveRuns ?? []).find((run) => run.status === "running") ?? null
+    ),
+    [activeRun, liveRuns],
+  );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
-    [location.state],
+    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    [location.state, location.search],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -306,6 +412,19 @@ export function IssueDetail() {
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { data: feedbackVotes } = useQuery({
+    queryKey: queryKeys.issues.feedbackVotes(issueId!),
+    queryFn: () => issuesApi.listFeedbackVotes(issueId!),
+    enabled: !!issueId && !!currentUserId,
+  });
+  const { data: instanceGeneralSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    enabled: !!issueId,
+    retry: false,
+  });
+  const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
+  const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -386,12 +505,23 @@ export function IssueDetail() {
   );
 
   const suggestedAssigneeValue = useMemo(
-    () => suggestedCommentAssigneeValue(issue ?? {}, comments, currentUserId),
-    [issue, comments, currentUserId],
+    () =>
+      suggestedCommentAssigneeValue(
+        issue ?? {},
+        mergeIssueComments(comments ?? [], optimisticComments),
+        currentUserId,
+      ),
+    [issue, comments, optimisticComments, currentUserId],
   );
 
-  const commentsWithRunMeta = useMemo(() => {
-    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null }>();
+  const threadComments = useMemo(
+    () => mergeIssueComments(comments ?? [], optimisticComments),
+    [comments, optimisticComments],
+  );
+
+  const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
+    const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
     const agentIdByRunId = new Map<string, string>();
     for (const run of linkedRuns ?? []) {
       agentIdByRunId.set(run.runId, run.agentId);
@@ -401,16 +531,48 @@ export function IssueDetail() {
       const details = evt.details ?? {};
       const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId || runMetaByCommentId.has(commentId)) continue;
+      const interruptedRunId =
+        typeof details["interruptedRunId"] === "string" ? details["interruptedRunId"] : null;
       runMetaByCommentId.set(commentId, {
         runId: evt.runId,
         runAgentId: evt.agentId ?? agentIdByRunId.get(evt.runId) ?? null,
+        interruptedRunId,
       });
     }
-    return (comments ?? []).map((comment) => {
+    return threadComments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
-      return meta ? { ...comment, ...meta } : comment;
+      const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      if (
+        isQueuedIssueComment({
+          comment: nextComment,
+          activeRunStartedAt,
+          runId: meta?.runId ?? nextComment.runId ?? null,
+          interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
+        })
+      ) {
+        return {
+          ...nextComment,
+          queueState: "queued" as const,
+          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+        };
+      }
+      return nextComment;
     });
-  }, [activity, comments, linkedRuns]);
+  }, [activity, threadComments, linkedRuns, runningIssueRun]);
+
+  const queuedComments = useMemo(
+    () => commentsWithRunMeta.filter((comment) => comment.queueState === "queued"),
+    [commentsWithRunMeta],
+  );
+
+  const timelineComments = useMemo(
+    () => commentsWithRunMeta.filter((comment) => comment.queueState !== "queued"),
+    [commentsWithRunMeta],
+  );
+  const timelineEvents = useMemo(
+    () => extractIssueTimelineEvents(activity),
+    [activity],
+  );
 
   const issueCostSummary = useMemo(() => {
     let input = 0;
@@ -456,6 +618,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
@@ -489,9 +652,67 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen),
-    onSuccess: () => {
+    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt),
+    onMutate: async ({ body, reopen, interrupt }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const queuedComment = !interrupt && runningIssueRun;
+      const optimisticComment = issue
+        ? createOptimisticIssueComment({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            body,
+            authorUserId: currentUserId,
+            clientStatus: queuedComment ? "queued" : "pending",
+            queueTargetRunId: queuedComment ? runningIssueRun.id : null,
+          })
+        : null;
+
+      if (optimisticComment) {
+        setOptimisticComments((current) => [...current, optimisticComment]);
+      }
+      if (previousIssue) {
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          applyOptimisticIssueCommentUpdate(previousIssue, { reopen }),
+        );
+      }
+
+      return {
+        optimisticCommentId: optimisticComment?.clientId ?? null,
+        previousIssue,
+      };
+    },
+    onSuccess: (comment, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) =>
+          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+        );
+      }
+      queryClient.setQueryData<IssueComment[]>(
+        queryKeys.issues.comments(issueId!),
+        (current) => upsertIssueComment(current, comment),
+      );
+    },
+    onError: (err, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) =>
+          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+        );
+      }
+      if (context?.previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+      }
+      pushToast({
+        title: "Comment failed",
+        body: err instanceof Error ? err.message : "Unable to post comment",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
     },
@@ -501,10 +722,12 @@ export function IssueDetail() {
     mutationFn: ({
       body,
       reopen,
+      interrupt,
       reassignment,
     }: {
       body: string;
       reopen?: boolean;
+      interrupt?: boolean;
       reassignment: CommentReassignment;
     }) =>
       issuesApi.update(issueId!, {
@@ -512,10 +735,158 @@ export function IssueDetail() {
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
+        ...(interrupt ? { interrupt } : {}),
       }),
-    onSuccess: () => {
+    onMutate: async ({ body, reopen, reassignment, interrupt }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const queuedComment = !interrupt && runningIssueRun;
+      const optimisticComment = issue
+        ? createOptimisticIssueComment({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            body,
+            authorUserId: currentUserId,
+            clientStatus: queuedComment ? "queued" : "pending",
+            queueTargetRunId: queuedComment ? runningIssueRun.id : null,
+          })
+        : null;
+
+      if (optimisticComment) {
+        setOptimisticComments((current) => [...current, optimisticComment]);
+      }
+      if (previousIssue) {
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          applyOptimisticIssueCommentUpdate(previousIssue, { reopen, reassignment }),
+        );
+      }
+
+      return {
+        optimisticCommentId: optimisticComment?.clientId ?? null,
+        previousIssue,
+      };
+    },
+    onSuccess: (result, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) =>
+          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+        );
+      }
+
+      const { comment, ...nextIssue } = result;
+      queryClient.setQueryData(queryKeys.issues.detail(issueId!), nextIssue);
+      if (comment) {
+        queryClient.setQueryData<IssueComment[]>(
+          queryKeys.issues.comments(issueId!),
+          (current) => upsertIssueComment(current, comment),
+        );
+      }
+    },
+    onError: (err, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) =>
+          current.filter((entry) => entry.clientId !== context.optimisticCommentId),
+        );
+      }
+      if (context?.previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+      }
+      pushToast({
+        title: "Comment failed",
+        body: err instanceof Error ? err.message : "Unable to post comment",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+  });
+
+  const interruptQueuedComment = useMutation({
+    mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
+    onSuccess: () => {
+      invalidateIssue();
+      pushToast({
+        title: "Interrupt requested",
+        body: "The active run is stopping so queued comments can continue next.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Interrupt failed",
+        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        tone: "error",
+      });
+    },
+  });
+
+  const feedbackVoteMutation = useMutation({
+    mutationFn: (variables: {
+      targetType: "issue_comment" | "issue_document_revision";
+      targetId: string;
+      vote: "up" | "down";
+      reason?: string;
+      allowSharing?: boolean;
+      sharingPreferenceAtSubmit: "allowed" | "not_allowed" | "prompt";
+    }) =>
+      issuesApi.upsertFeedbackVote(issueId!, {
+        targetType: variables.targetType,
+        targetId: variables.targetId,
+        vote: variables.vote,
+        ...(variables.reason ? { reason: variables.reason } : {}),
+        ...(variables.allowSharing ? { allowSharing: true } : {}),
+      }),
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
+      const previousVotes = queryClient.getQueryData<FeedbackVote[]>(
+        queryKeys.issues.feedbackVotes(issueId!),
+      );
+      queryClient.setQueryData<FeedbackVote[]>(
+        queryKeys.issues.feedbackVotes(issueId!),
+        mergeOptimisticFeedbackVote(
+          previousVotes,
+          {
+            issueId: issueId!,
+            targetType: variables.targetType,
+            targetId: variables.targetId,
+            vote: variables.vote,
+            reason: variables.reason,
+          },
+          currentUserId,
+        ),
+      );
+      return { previousVotes };
+    },
+    onSuccess: (_savedVote, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+      pushToast({
+        title:
+          variables.sharingPreferenceAtSubmit === "prompt"
+            ? variables.allowSharing
+              ? "Feedback saved. Future votes will share"
+              : "Feedback saved. Future votes will stay local"
+            : variables.allowSharing
+              ? "Feedback saved and sharing enabled"
+              : "Feedback saved",
+        tone: "success",
+      });
+    },
+    onError: (err, _variables, context) => {
+      if (context?.previousVotes) {
+        queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
+      }
+      pushToast({
+        title: "Failed to save feedback",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -570,6 +941,22 @@ export function IssueDetail() {
     },
   });
 
+  const archiveFromInbox = useMutation({
+    mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
+    onSuccess: () => {
+      invalidateIssue();
+      navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
+      pushToast({ title: "Issue archived from inbox", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Archive failed",
+        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
@@ -581,9 +968,12 @@ export function IssueDetail() {
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
     if (issue?.identifier && issueId !== issue.identifier) {
-      navigate(`/issues/${issue.identifier}`, { replace: true, state: location.state });
+      navigate(createIssueDetailPath(issue.identifier, location.state, location.search), {
+        replace: true,
+        state: location.state,
+      });
     }
-  }, [issue, issueId, navigate, location.state]);
+  }, [issue, issueId, navigate, location.state, location.search]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -600,6 +990,76 @@ export function IssueDetail() {
     }
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const inboxQuickArchiveArmedRef = useRef(false);
+  const canQuickArchiveFromInbox =
+    keyboardShortcutsEnabled &&
+    !issue?.hiddenAt &&
+    sourceBreadcrumb.href.startsWith("/inbox") &&
+    shouldArmIssueDetailInboxQuickArchive(location.state);
+
+  useEffect(() => {
+    if (!issue?.id || !canQuickArchiveFromInbox) {
+      inboxQuickArchiveArmedRef.current = false;
+      return;
+    }
+
+    inboxQuickArchiveArmedRef.current = true;
+
+    const disarm = () => {
+      inboxQuickArchiveArmedRef.current = false;
+    };
+
+    const handlePointerDown = () => {
+      disarm();
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target !== document.body) {
+        disarm();
+      }
+    };
+
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.toString().trim().length === 0) return;
+      disarm();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const action = resolveInboxQuickArchiveKeyAction({
+        armed: inboxQuickArchiveArmedRef.current,
+        defaultPrevented: event.defaultPrevented,
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        target: event.target,
+        hasOpenDialog: hasBlockingShortcutDialog(document),
+      });
+
+      if (action === "ignore") return;
+
+      disarm();
+      if (action !== "archive") return;
+
+      event.preventDefault();
+      if (!archiveFromInbox.isPending) {
+        archiveFromInbox.mutate(issue.id);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("focusin", handleFocusIn, true);
+    document.addEventListener("selectionchange", handleSelectionChange);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
 
   const copyIssueToClipboard = async () => {
     if (!issue) return;
@@ -654,6 +1114,7 @@ export function IssueDetail() {
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
+  const imageAttachments = attachmentList.filter(isImageAttachment);
   const hasAttachments = attachmentList.length > 0;
   const attachmentUploadButton = (
     <>
@@ -695,7 +1156,7 @@ export function IssueDetail() {
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
               <Link
-                to={`/issues/${ancestor.identifier ?? ancestor.id}`}
+                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id, location.state, location.search)}
                 state={location.state}
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
@@ -916,10 +1377,23 @@ export function IssueDetail() {
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
+        feedbackVotes={feedbackVotes}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        feedbackTermsUrl={FEEDBACK_TERMS_URL}
         mentions={mentionOptions}
         imageUploadHandler={async (file) => {
           const attachment = await uploadAttachment.mutateAsync(file);
           return attachment.contentPath;
+        }}
+        onVote={async (revisionId, vote, options) => {
+          await feedbackVoteMutation.mutateAsync({
+            targetType: "issue_document_revision",
+            targetId: revisionId,
+            vote,
+            reason: options?.reason,
+            allowSharing: options?.allowSharing,
+            sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+          });
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : undefined}
       />
@@ -979,20 +1453,35 @@ export function IssueDetail() {
                 {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
               </p>
               {isImageAttachment(attachment) && (
-                <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                <button
+                  type="button"
+                  className="block w-full text-left"
+                  onClick={() => {
+                    const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+                    setGalleryIndex(idx >= 0 ? idx : 0);
+                    setGalleryOpen(true);
+                  }}
+                >
                   <img
                     src={attachment.contentPath}
                     alt={attachment.originalFilename ?? "attachment"}
-                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10 cursor-pointer hover:opacity-80 transition-opacity"
                     loading="lazy"
                   />
-                </a>
+                </button>
               )}
             </div>
           ))}
         </div>
         </div>
       ) : null}
+
+      <ImageGalleryModal
+        images={imageAttachments}
+        initialIndex={galleryIndex}
+        open={galleryOpen}
+        onOpenChange={setGalleryOpen}
+      />
 
       <IssueWorkspaceCard
         issue={issue}
@@ -1025,18 +1514,39 @@ export function IssueDetail() {
 
         <TabsContent value="comments">
           <CommentThread
-            comments={commentsWithRunMeta}
+            comments={timelineComments}
+            queuedComments={queuedComments}
+            feedbackVotes={feedbackVotes}
+            feedbackDataSharingPreference={feedbackDataSharingPreference}
+            feedbackTermsUrl={FEEDBACK_TERMS_URL}
             linkedRuns={timelineRuns}
+            timelineEvents={timelineEvents}
             companyId={issue.companyId}
             projectId={issue.projectId}
             issueStatus={issue.status}
             agentMap={agentMap}
+            currentUserId={currentUserId}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
             enableReassign
             reassignOptions={commentReassignOptions}
             currentAssigneeValue={actualAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentionOptions}
+            onInterruptQueued={async (runId) => {
+              await interruptQueuedComment.mutateAsync(runId);
+            }}
+            interruptingQueuedRunId={interruptQueuedComment.isPending ? runningIssueRun?.id ?? null : null}
+            composerDisabledReason={commentComposerDisabledReason}
+            onVote={async (commentId, vote, options) => {
+              await feedbackVoteMutation.mutateAsync({
+                targetType: "issue_comment",
+                targetId: commentId,
+                vote,
+                reason: options?.reason,
+                allowSharing: options?.allowSharing,
+                sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+              });
+            }}
             onAdd={async (body, reopen, reassignment) => {
               if (reassignment) {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
@@ -1063,7 +1573,7 @@ export function IssueDetail() {
               {childIssues.map((child) => (
                 <Link
                   key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
+                  to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}
                   state={location.state}
                   className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                 >

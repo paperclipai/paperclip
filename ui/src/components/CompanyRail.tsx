@@ -4,7 +4,7 @@ import { useQueries } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
+  MouseSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -244,7 +244,8 @@ export function CompanyRail() {
 
   // Require 8px of movement before starting a drag to avoid interfering with clicks
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     })
   );
