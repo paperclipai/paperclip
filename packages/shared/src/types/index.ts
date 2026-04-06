@@ -96,6 +96,8 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueRelation,
+  IssueRelationIssueSummary,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,

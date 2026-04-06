@@ -7,6 +7,7 @@ import { errorHandler } from "../middleware/index.js";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getAncestors: vi.fn(),
+  getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
@@ -122,6 +123,7 @@ describe("issue goal context routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
@@ -197,5 +199,34 @@ describe("issue goal context routes", () => {
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+  });
+
+  it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          identifier: "PAP-580",
+          title: "Finish wakeup plumbing",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.blockedBy).toEqual([
+      expect.objectContaining({
+        id: "55555555-5555-4555-8555-555555555555",
+        identifier: "PAP-580",
+      }),
+    ]);
   });
 });

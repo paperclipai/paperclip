@@ -344,6 +344,13 @@
       "when": 1775145655557,
       "tag": "0048_flashy_marrow",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1775349863293,
+      "tag": "0049_flawless_abomination",
+      "breakpoints": true
     }
   ]
 }

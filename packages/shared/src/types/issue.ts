@@ -96,6 +96,25 @@ export interface LegacyPlanDocument {
   source: "issue_description";
 }
 
+export interface IssueRelationIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueRelation {
+  id: string;
+  companyId: string;
+  issueId: string;
+  relatedIssueId: string;
+  type: "blocks";
+  relatedIssue: IssueRelationIssueSummary;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -133,6 +152,8 @@ export interface Issue {
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  blockedBy?: IssueRelationIssueSummary[];
+  blocks?: IssueRelationIssueSummary[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
