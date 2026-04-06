@@ -29,6 +29,13 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
+export function formatShortDate(date: Date | string): string {
+  return new Date(date).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();

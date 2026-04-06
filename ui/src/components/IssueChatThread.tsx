@@ -28,6 +28,14 @@ import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-tim
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -36,14 +44,16 @@ import {
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
-import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatDateTime } from "../lib/utils";
-import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip } from "lucide-react";
+import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
+import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -343,56 +353,84 @@ function IssueChatUserMessage() {
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
-  const authorName = typeof custom.authorName === "string" ? custom.authorName : "You";
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const [copied, setCopied] = useState(false);
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div
-        className={cn(
-          "min-w-0 overflow-hidden rounded-sm border p-3",
-          queued
-            ? "border-amber-300/70 bg-amber-50/80 dark:border-amber-500/40 dark:bg-amber-500/10"
-            : "border-border",
-          pending && "opacity-80",
-        )}
-      >
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Identity name={authorName} size="sm" />
-            {queued ? (
+      <div className="flex justify-end">
+        <div
+          className={cn(
+            "group relative max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
+            queued
+              ? "bg-amber-50/80 dark:bg-amber-500/10"
+              : "bg-muted/60",
+            pending && "opacity-80",
+          )}
+        >
+          {queued ? (
+            <div className="mb-1.5 flex items-center gap-2">
               <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
                 Queued
               </span>
-            ) : null}
-            {pending ? <span className="text-xs text-muted-foreground">Sending...</span> : null}
-          </div>
-          <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            {queued && queueTargetRunId && onInterruptQueued ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 border-red-300 px-2 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queueTargetRunId}
-                onClick={() => void onInterruptQueued(queueTargetRunId)}
-              >
-                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
-              </Button>
-            ) : null}
-            <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
-              {formatDateTime(message.createdAt)}
-            </a>
-          </span>
-        </div>
+              {queueTargetRunId && onInterruptQueued ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                  disabled={interruptingQueuedRunId === queueTargetRunId}
+                  onClick={() => void onInterruptQueued(queueTargetRunId)}
+                >
+                  {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {pending ? <div className="mb-1 text-xs text-muted-foreground">Sending...</div> : null}
 
-        <div className="space-y-3">
-          <MessagePrimitive.Parts
-            components={{
-              Text: ({ text }) => <IssueChatTextPart text={text} />,
-            }}
-          />
+          <div className="space-y-3">
+            <MessagePrimitive.Parts
+              components={{
+                Text: ({ text }) => <IssueChatTextPart text={text} />,
+              }}
+            />
+          </div>
+
+          <div className="mt-1 flex items-center justify-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href={anchorId ? `#${anchorId}` : undefined}
+                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  {message.createdAt ? formatShortDate(message.createdAt) : ""}
+                </a>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {message.createdAt ? formatDateTime(message.createdAt) : ""}
+              </TooltipContent>
+            </Tooltip>
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy message"
+              aria-label="Copy message"
+              onClick={() => {
+                const text = message.content
+                  .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                  .map((p) => p.text)
+                  .join("\n\n");
+                void navigator.clipboard.writeText(text).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          </div>
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -406,7 +444,6 @@ function IssueChatAssistantMessage() {
     feedbackTermsUrl,
     onVote,
     agentMap,
-    currentUserId,
   } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
@@ -418,6 +455,7 @@ function IssueChatAssistantMessage() {
       : "Agent";
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
@@ -434,12 +472,23 @@ function IssueChatAssistantMessage() {
     await onVote(commentId, vote, options);
   };
 
+  const activeVote = commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="min-w-0 overflow-hidden rounded-sm border border-border p-3">
+      <div className="min-w-0 overflow-hidden rounded-sm p-3">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Identity name={authorName} size="sm" />
+            {runAgentId ? (
+              <Avatar size="sm">
+                {runAgentIcon ? (
+                  <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+                ) : (
+                  <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
+                )}
+              </Avatar>
+            ) : null}
+            <span className="text-sm font-medium text-foreground">{authorName}</span>
             {isRunning ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -449,7 +498,7 @@ function IssueChatAssistantMessage() {
           </div>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
-              {formatDateTime(message.createdAt)}
+              {message.createdAt ? formatShortDate(message.createdAt) : ""}
             </a>
             {runHref ? (
               <DropdownMenu>
@@ -458,8 +507,8 @@ function IssueChatAssistantMessage() {
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground hover:text-foreground"
-                    title="Run actions"
-                    aria-label="Run actions"
+                    title="More actions"
+                    aria-label="More actions"
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>
@@ -500,28 +549,247 @@ function IssueChatAssistantMessage() {
           ) : null}
         </div>
 
-        <ActionBarPrimitive.Root className="mt-3 flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground">
+        <div className="mt-2 flex items-center gap-1">
           <ActionBarPrimitive.Copy
             copiedDuration={2000}
-            className="group inline-flex h-8 items-center justify-center text-muted-foreground transition-colors hover:text-foreground data-[copied=true]:text-foreground"
+            className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
             title="Copy message"
             aria-label="Copy message"
           >
-            <Copy className="h-4 w-4 group-data-[copied=true]:hidden" />
-            <Check className="hidden h-4 w-4 group-data-[copied=true]:block" />
+            <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
+            <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
           </ActionBarPrimitive.Copy>
           {commentId && onVote ? (
-            <OutputFeedbackButtons
-              activeVote={feedbackVoteByTargetId.get(commentId) ?? null}
-              sharingPreference={feedbackDataSharingPreference ?? "prompt"}
+            <IssueChatFeedbackButtons
+              activeVote={activeVote}
+              sharingPreference={feedbackDataSharingPreference}
               termsUrl={feedbackTermsUrl ?? null}
               onVote={handleVote}
-              inline
             />
           ) : null}
-        </ActionBarPrimitive.Root>
+        </div>
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+function IssueChatFeedbackButtons({
+  activeVote,
+  sharingPreference = "prompt",
+  termsUrl,
+  onVote,
+}: {
+  activeVote: FeedbackVoteValue | null;
+  sharingPreference: FeedbackDataSharingPreference;
+  termsUrl: string | null;
+  onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
+}) {
+  const [isSaving, setIsSaving] = useState(false);
+  const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [downvoteReason, setDownvoteReason] = useState("");
+  const [pendingSharingDialog, setPendingSharingDialog] = useState<{
+    vote: FeedbackVoteValue;
+    reason?: string;
+  } | null>(null);
+  const visibleVote = optimisticVote ?? activeVote ?? null;
+
+  useEffect(() => {
+    if (optimisticVote && activeVote === optimisticVote) setOptimisticVote(null);
+  }, [activeVote, optimisticVote]);
+
+  async function doVote(
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) {
+    setIsSaving(true);
+    try {
+      await onVote(vote, options);
+    } catch {
+      setOptimisticVote(null);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function handleVote(vote: FeedbackVoteValue, reason?: string) {
+    setOptimisticVote(vote);
+    if (sharingPreference === "prompt") {
+      setPendingSharingDialog({ vote, ...(reason ? { reason } : {}) });
+      return;
+    }
+    const allowSharing = sharingPreference === "allowed";
+    void doVote(vote, {
+      ...(allowSharing ? { allowSharing: true } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  function handleThumbsUp() {
+    handleVote("up");
+  }
+
+  function handleThumbsDown() {
+    setOptimisticVote("down");
+    setReasonOpen(true);
+    // Submit the initial down vote right away
+    handleVote("down");
+  }
+
+  function handleSubmitReason() {
+    if (!downvoteReason.trim()) return;
+    // Re-submit with reason attached
+    if (sharingPreference === "prompt") {
+      setPendingSharingDialog({ vote: "down", reason: downvoteReason });
+    } else {
+      const allowSharing = sharingPreference === "allowed";
+      void doVote("down", {
+        ...(allowSharing ? { allowSharing: true } : {}),
+        reason: downvoteReason,
+      });
+    }
+    setReasonOpen(false);
+    setDownvoteReason("");
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        disabled={isSaving}
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+          visibleVote === "up"
+            ? "text-green-600 dark:text-green-400"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        )}
+        title="Helpful"
+        aria-label="Helpful"
+        onClick={handleThumbsUp}
+      >
+        <ThumbsUp className="h-3.5 w-3.5" />
+      </button>
+      <Popover open={reasonOpen} onOpenChange={setReasonOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            disabled={isSaving}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              visibleVote === "down"
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+            title="Needs work"
+            aria-label="Needs work"
+            onClick={handleThumbsDown}
+          >
+            <ThumbsDown className="h-3.5 w-3.5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-80 p-3">
+          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <Textarea
+            value={downvoteReason}
+            onChange={(event) => setDownvoteReason(event.target.value)}
+            placeholder="Add a short note"
+            className="min-h-20 resize-y bg-background text-sm"
+            disabled={isSaving}
+          />
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={isSaving}
+              onClick={() => {
+                setReasonOpen(false);
+                setDownvoteReason("");
+              }}
+            >
+              Dismiss
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={isSaving || !downvoteReason.trim()}
+              onClick={handleSubmitReason}
+            >
+              {isSaving ? "Saving..." : "Save note"}
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <Dialog
+        open={Boolean(pendingSharingDialog)}
+        onOpenChange={(open) => {
+          if (!open && !isSaving) {
+            setPendingSharingDialog(null);
+            setOptimisticVote(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogDescription>
+              Choose whether voted AI outputs can be shared with Paperclip Labs. This
+              answer becomes the default for future thumbs up and thumbs down votes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>This vote is always saved locally.</p>
+            <p>
+              Choose <span className="font-medium text-foreground">Always allow</span> to share
+              this vote and future voted AI outputs. Choose{" "}
+              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
+              and future votes local.
+            </p>
+            <p>You can change this later in Instance Settings &gt; General.</p>
+            {termsUrl ? (
+              <a
+                href={termsUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-sm text-foreground underline underline-offset-4"
+              >
+                Read our terms of service
+              </a>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!pendingSharingDialog || isSaving}
+              onClick={() => {
+                if (!pendingSharingDialog) return;
+                void doVote(
+                  pendingSharingDialog.vote,
+                  pendingSharingDialog.reason ? { reason: pendingSharingDialog.reason } : undefined,
+                ).then(() => setPendingSharingDialog(null));
+              }}
+            >
+              {isSaving ? "Saving..." : "Don't allow"}
+            </Button>
+            <Button
+              type="button"
+              disabled={!pendingSharingDialog || isSaving}
+              onClick={() => {
+                if (!pendingSharingDialog) return;
+                void doVote(pendingSharingDialog.vote, {
+                  allowSharing: true,
+                  ...(pendingSharingDialog.reason ? { reason: pendingSharingDialog.reason } : {}),
+                }).then(() => setPendingSharingDialog(null));
+              }}
+            >
+              {isSaving ? "Saving..." : "Always allow"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
