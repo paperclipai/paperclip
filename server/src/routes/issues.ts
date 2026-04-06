@@ -1182,16 +1182,18 @@ export function issueRoutes(
 
     // Archive linked execution workspace when issue transitions to terminal state.
     // Fire-and-forget: cleanup should not block the HTTP response.
+    // Use pre-transition linkage (existing) so a PATCH that simultaneously clears or
+    // repoints executionWorkspaceId cannot bypass cleanup of the originally linked workspace.
     const wasTerminal = existing.status === "done" || existing.status === "cancelled";
     const isNowTerminal = issue.status === "done" || issue.status === "cancelled";
-    if (!wasTerminal && isNowTerminal && issue.executionWorkspaceId) {
+    if (!wasTerminal && isNowTerminal && existing.executionWorkspaceId) {
       heartbeat.archiveTerminalIssueExecutionWorkspace({
-        executionWorkspaceId: issue.executionWorkspaceId,
+        executionWorkspaceId: existing.executionWorkspaceId,
         companyId: issue.companyId,
         actor: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
       }).catch((err) =>
         logger.warn(
-          { err, issueId: issue.id, executionWorkspaceId: issue.executionWorkspaceId },
+          { err, issueId: issue.id, executionWorkspaceId: existing.executionWorkspaceId },
           "failed to archive execution workspace on terminal issue transition",
         ),
       );

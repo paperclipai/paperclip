@@ -218,6 +218,46 @@ describe("issue terminal-state workspace cleanup", () => {
     expect(mockArchiveTerminalIssueExecutionWorkspace).not.toHaveBeenCalled();
   });
 
+  it("PATCH to done while clearing executionWorkspaceId → still archives original workspace", async () => {
+    const existing = makeIssue({ status: "in_progress", executionWorkspaceId: WORKSPACE_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    // The update clears the linkage, but archive should still use the pre-transition value.
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionWorkspaceId: null });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ status: "done", executionWorkspaceId: null });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockArchiveTerminalIssueExecutionWorkspace).toHaveBeenCalledWith({
+        executionWorkspaceId: WORKSPACE_ID,
+        companyId: "company-1",
+        actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
+      });
+    });
+  });
+
+  it("PATCH to done while repointing executionWorkspaceId → archives original, not repointed workspace", async () => {
+    const REPOINTED_ID = "44444444-4444-4444-8444-444444444444";
+    const existing = makeIssue({ status: "in_progress", executionWorkspaceId: WORKSPACE_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionWorkspaceId: REPOINTED_ID });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ status: "done", executionWorkspaceId: REPOINTED_ID });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockArchiveTerminalIssueExecutionWorkspace).toHaveBeenCalledWith({
+        executionWorkspaceId: WORKSPACE_ID,
+        companyId: "company-1",
+        actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
+      });
+    });
+  });
+
   it("archive failure does not affect HTTP response", async () => {
     mockArchiveTerminalIssueExecutionWorkspace.mockRejectedValueOnce(new Error("cleanup exploded"));
     const existing = makeIssue({ status: "in_progress" });

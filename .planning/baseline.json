@@ -1,0 +1,11 @@
+{
+  "diagnostics": 0,
+  "tests": 13,
+  "testSuites": [
+    "server/src/__tests__/issue-terminal-workspace-cleanup.test.ts",
+    "server/src/__tests__/issue-terminal-workspace-archive-helper.test.ts"
+  ],
+  "timestamp": "2026-04-06T07:00:00Z",
+  "headCommit": "3d114abc",
+  "note": "Baseline before REVISE pass #6 — pre-transition executionWorkspaceId fix"
+}
