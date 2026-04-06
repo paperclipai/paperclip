@@ -985,11 +985,11 @@ export function IssueDetail() {
   useEffect(() => {
     if (issue) {
       openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} childIssues={childIssues} />
+        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
       );
     }
     return () => closePanel();
-  }, [issue, childIssues]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
@@ -1699,7 +1699,7 @@ export function IssueDetail() {
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline childIssues={childIssues} />
+              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
             </div>
           </ScrollArea>
         </SheetContent>
