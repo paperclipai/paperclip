@@ -138,7 +138,18 @@ When adding endpoints:
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 10. Pull Request Requirements
+
+When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+
+- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
+- **What Changed** — bullet list of concrete changes
+- **Verification** — how a reviewer can confirm it works
+- **Risks** — what could go wrong
+- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
+- **Checklist** — all items checked
+
+## 11. Definition of Done
 
 A change is done when all are true:
 
@@ -146,6 +157,7 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
 ## 11. Fork-Specific: HenkDz/paperclip
 
