@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
@@ -19,8 +19,38 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+
+function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch { /* noop */ }
+  }, [value]);
+
+  return (
+    <div className="flex items-center gap-1.5 min-w-0 flex-1 group/copy">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <span className="text-sm font-mono truncate min-w-0" title={value}>
+        {value}
+      </span>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
+        onClick={handleCopy}
+        title={copied ? "Copied!" : "Copy"}
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
 
 function defaultProjectWorkspaceIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
@@ -699,6 +729,30 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           </PropertyRow>
         )}
       </div>
+
+      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            {issue.currentExecutionWorkspace?.branchName && (
+              <PropertyRow label="Branch">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.branchName}
+                  icon={GitBranch}
+                />
+              </PropertyRow>
+            )}
+            {issue.currentExecutionWorkspace?.cwd && (
+              <PropertyRow label="Folder">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.cwd}
+                  icon={FolderOpen}
+                />
+              </PropertyRow>
+            )}
+          </div>
+        </>
+      ) : null}
 
       <Separator />
 
