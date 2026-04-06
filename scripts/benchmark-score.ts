@@ -15,6 +15,7 @@
 
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -182,36 +183,61 @@ const PROJECT_ROOT = resolveProjectRoot();
 
 async function runTests(): Promise<TestResults> {
   const startMs = Date.now();
+  const jsonOutputFile = path.join(os.tmpdir(), `vitest-results-${Date.now()}.json`);
   try {
-    const { stdout } = await execFileAsync(
-      "npx",
-      ["vitest", "run", "--reporter=json", "--reporter=default"],
-      {
-        maxBuffer: 50 * 1024 * 1024,
-        cwd: PROJECT_ROOT,
-        env: { ...process.env, NODE_ENV: "development" },
-      },
-    );
-    return parseVitestJson(stdout, Date.now() - startMs);
-  } catch (error: any) {
-    // vitest exits non-zero when tests fail, but still outputs JSON
-    const stdout = error?.stdout ?? "";
-    const stderr = error?.stderr ?? "";
-    const combined = stdout + stderr;
-    if (combined) {
-      return parseVitestJson(combined, Date.now() - startMs);
+    try {
+      await execFileAsync(
+        "npx",
+        [
+          "vitest", "run",
+          "--reporter=default", "--reporter=json",
+          "--outputFile.json", jsonOutputFile,
+        ],
+        {
+          maxBuffer: 50 * 1024 * 1024,
+          cwd: PROJECT_ROOT,
+          env: { ...process.env, NODE_ENV: "development" },
+        },
+      );
+    } catch (error: any) {
+      // vitest exits non-zero when tests fail — that's expected, continue to read the file
+      // Only re-throw if the file wasn't created (vitest didn't run at all)
+      try {
+        await fs.access(jsonOutputFile);
+      } catch {
+        // Fall back to parsing stdout/stderr
+        const stdout = error?.stdout ?? "";
+        const stderr = error?.stderr ?? "";
+        const combined = stdout + stderr;
+        if (combined) {
+          return parseVitestJson(combined, Date.now() - startMs);
+        }
+        return emptyTestResults(Date.now() - startMs);
+      }
     }
-    return {
-      totalTests: 0,
-      passedTests: 0,
-      failedTests: 0,
-      skippedTests: 0,
-      totalSuites: 0,
-      passedSuites: 0,
-      failedSuites: 0,
-      durationMs: Date.now() - startMs,
-    };
+
+    // Read the JSON output file
+    const jsonContent = await fs.readFile(jsonOutputFile, "utf8");
+    return parseVitestJson(jsonContent, Date.now() - startMs);
+  } catch {
+    return emptyTestResults(Date.now() - startMs);
+  } finally {
+    // Clean up temp file
+    fs.unlink(jsonOutputFile).catch(() => {});
   }
+}
+
+function emptyTestResults(durationMs: number): TestResults {
+  return {
+    totalTests: 0,
+    passedTests: 0,
+    failedTests: 0,
+    skippedTests: 0,
+    totalSuites: 0,
+    passedSuites: 0,
+    failedSuites: 0,
+    durationMs,
+  };
 }
 
 function parseVitestJson(stdout: string, durationMs: number): TestResults {
@@ -363,16 +389,17 @@ async function main() {
   const coverageData = await readCoverage();
   const coverageScore = computeCoverageScore(coverageData);
 
-  // Step 3+4: Typecheck and build (run in parallel — they are independent)
-  console.error("Running typecheck and build...");
-  const [typecheckResult, buildResult] = await Promise.all([
-    options.skipTypecheck
-      ? Promise.resolve({ passed: true, durationMs: 0 } as CheckResult)
-      : runCheck("typecheck", "pnpm", ["-r", "typecheck"]),
-    options.skipBuild
-      ? Promise.resolve({ passed: true, durationMs: 0 } as CheckResult)
-      : runCheck("build", "pnpm", ["build"]),
-  ]);
+  // Step 3: Typecheck
+  console.error("Running typecheck...");
+  const typecheckResult = options.skipTypecheck
+    ? { passed: true, durationMs: 0 } as CheckResult
+    : await runCheck("typecheck", "pnpm", ["-r", "typecheck"]);
+
+  // Step 4: Build (run after typecheck to avoid pnpm store contention)
+  console.error("Running build...");
+  const buildResult = options.skipBuild
+    ? { passed: true, durationMs: 0 } as CheckResult
+    : await runCheck("build", "pnpm", ["-r", "build"]);
 
   // Compute composite score
   // When coverage data is unavailable, redistribute its weight proportionally
