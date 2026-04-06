@@ -3048,7 +3048,11 @@ export function heartbeatService(db: Db) {
         });
         if (issueId && outcome === "succeeded") {
           try {
-            const issueComment = buildHeartbeatRunIssueComment(adapterResult.resultJson ?? null);
+            const issueComment =
+              (typeof adapterResult.summary === "string" && adapterResult.summary.trim().length > 0
+                ? adapterResult.summary.trim()
+                : null)
+              ?? buildHeartbeatRunIssueComment(adapterResult.resultJson ?? null);
             if (issueComment) {
               await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id });
             }

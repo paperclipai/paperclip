@@ -30,6 +30,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -144,6 +145,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
+  const fallbackModels = asStringArray(config.fallbackModels).map((m) => m.trim()).filter(Boolean);
   const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -328,10 +330,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
-  const buildArgs = (resumeSessionId: string | null) => {
+  const buildArgs = (resumeSessionId: string | null, overrideModel?: string) => {
+    const effectiveModel = overrideModel ?? model;
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
+    if (effectiveModel && effectiveModel !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", effectiveModel);
     args.push("--approval-mode", "yolo");
     if (sandbox) {
       args.push("--sandbox");
@@ -343,8 +346,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return args;
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
-    const args = buildArgs(resumeSessionId);
+  const runAttempt = async (resumeSessionId: string | null, overrideModel?: string) => {
+    const args = buildArgs(resumeSessionId, overrideModel);
     if (onMeta) {
       await onMeta({
         adapterType: "gemini_local",
@@ -388,6 +391,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     },
     clearSessionOnMissingSession = false,
     isRetry = false,
+    usedModel?: string,
   ): AdapterExecutionResult => {
     const authMeta = detectGeminiAuthRequired({
       parsed: attempt.parsed.resultEvent,
@@ -444,12 +448,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: "google",
       biller: "google",
-      model,
+      model: usedModel ?? model,
       billingType,
       costUsd: attempt.parsed.costUsd,
       resultJson: attempt.parsed.resultEvent ?? {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(attempt.parsed.summary ? { summary: attempt.parsed.summary } : {}),
       },
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
@@ -471,6 +476,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const retry = await runAttempt(null);
     return toResult(retry, true, true);
   }
+
+  // --- Model fallback on timeout or quota exhaustion ---
+  if (fallbackModels.length > 0) {
+    const shouldFallback = (() => {
+      if (initial.proc.timedOut) return true;
+      if ((initial.proc.exitCode ?? 0) === 0) return false;
+      return detectGeminiQuotaExhausted({
+        parsed: initial.parsed.resultEvent,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+      }).exhausted;
+    })();
+
+    if (shouldFallback) {
+      const reason = initial.proc.timedOut
+        ? `timed out after ${timeoutSec}s`
+        : "quota exhausted";
+      for (const fallbackModel of fallbackModels) {
+        await onLog(
+          "stdout",
+          `[paperclip] Model "${model}" ${reason}; falling back to "${fallbackModel}"\n`,
+        );
+        const fallbackAttempt = await runAttempt(null, fallbackModel);
+
+        if (fallbackAttempt.proc.timedOut) {
+          await onLog(
+            "stdout",
+            `[paperclip] Fallback model "${fallbackModel}" also timed out after ${timeoutSec}s; trying next...\n`,
+          );
+          continue;
+        }
+
+        const fbQuota = detectGeminiQuotaExhausted({
+          parsed: fallbackAttempt.parsed.resultEvent,
+          stdout: fallbackAttempt.proc.stdout,
+          stderr: fallbackAttempt.proc.stderr,
+        });
+        if (!fbQuota.exhausted || (fallbackAttempt.proc.exitCode ?? 0) === 0) {
+          return toResult(fallbackAttempt, true, true, fallbackModel);
+        }
+        await onLog(
+          "stdout",
+          `[paperclip] Fallback model "${fallbackModel}" also exhausted; trying next...\n`,
+        );
+      }
+      await onLog(
+        "stdout",
+        `[paperclip] All fallback models failed. Returning initial failure.\n`,
+      );
+    }
+  }
+  // --- End model fallback ---
 
   return toResult(initial);
 }
