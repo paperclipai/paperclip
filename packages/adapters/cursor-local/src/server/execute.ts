@@ -24,7 +24,7 @@ import {
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_CURSOR_LOCAL_MODEL, normalizeCursorModelId } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -167,7 +167,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
   const command = asString(config.command, "agent");
-  const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
+  const model = normalizeCursorModelId(asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL));
   const mode = normalizeMode(asString(config.mode, ""));
 
   const workspaceContext = parseObject(context.paperclipWorkspace);

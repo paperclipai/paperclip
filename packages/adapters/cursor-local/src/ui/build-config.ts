@@ -1,5 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_CURSOR_LOCAL_MODEL, normalizeCursorModelId } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -63,7 +63,7 @@ export function buildCursorLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
-  ac.model = v.model || DEFAULT_CURSOR_LOCAL_MODEL;
+  ac.model = normalizeCursorModelId(v.model || DEFAULT_CURSOR_LOCAL_MODEL);
   const mode = normalizeMode(v.thinkingEffort);
   if (mode) ac.mode = mode;
   ac.timeoutSec = 0;

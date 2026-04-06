@@ -2,8 +2,31 @@ export const type = "cursor";
 export const label = "Cursor CLI (local)";
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
-const CURSOR_FALLBACK_MODEL_IDS = [
+const CURSOR_MODEL_ALIASES: Record<string, string> = {
+  "composer-1": "composer-1.5",
+  "gpt-5.1-codex-max": "gpt-5.1-codex-max-medium",
+  "opus-4.6": "claude-4.6-opus-high",
+  "opus-4.6-thinking": "claude-4.6-opus-high-thinking",
+  "opus-4.5": "claude-4.5-opus-high",
+  "opus-4.5-thinking": "claude-4.5-opus-high-thinking",
+  "sonnet-4.6": "claude-4.6-sonnet-medium",
+  "sonnet-4.6-thinking": "claude-4.6-sonnet-medium-thinking",
+  "sonnet-4.5": "claude-4.5-sonnet",
+  "sonnet-4.5-thinking": "claude-4.5-sonnet-thinking",
+  "gemini-3-pro": "gemini-3.1-pro",
+  "grok": "grok-4-20",
+};
+
+export function normalizeCursorModelId(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return trimmed;
+  return CURSOR_MODEL_ALIASES[trimmed] ?? trimmed;
+}
+
+const CURSOR_FALLBACK_MODEL_IDS = Array.from(new Set([
   "auto",
+  "composer-2-fast",
+  "composer-2",
   "composer-1.5",
   "composer-1",
   "gpt-5.3-codex-low",
@@ -25,6 +48,7 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "gpt-5.2-codex-xhigh",
   "gpt-5.2-codex-xhigh-fast",
   "gpt-5.1-codex-max",
+  "gpt-5.1-codex-max-medium",
   "gpt-5.1-codex-max-high",
   "gpt-5.2-high",
   "gpt-5.1-high",
@@ -37,12 +61,24 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "sonnet-4.6-thinking",
   "sonnet-4.5",
   "sonnet-4.5-thinking",
+  "claude-4.6-opus-high",
+  "claude-4.6-opus-high-thinking",
+  "claude-4.6-opus-max",
+  "claude-4.6-opus-max-thinking",
+  "claude-4.6-sonnet-medium",
+  "claude-4.6-sonnet-medium-thinking",
+  "claude-4.5-opus-high",
+  "claude-4.5-opus-high-thinking",
+  "claude-4.5-sonnet",
+  "claude-4.5-sonnet-thinking",
   "gemini-3.1-pro",
   "gemini-3-pro",
   "gemini-3-flash",
   "grok",
+  "grok-4-20",
+  "grok-4-20-thinking",
   "kimi-k2.5",
-];
+].map(normalizeCursorModelId)));
 
 export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
 
@@ -64,7 +100,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
-- model (string, optional): Cursor model id (for example auto or gpt-5.3-codex)
+- model (string, optional): Cursor model id (for example auto or claude-4.6-sonnet-medium-thinking)
 - mode (string, optional): Cursor execution mode passed as --mode (plan|ask). Leave unset for normal autonomous runs.
 - command (string, optional): defaults to "agent"
 - extraArgs (string[], optional): additional CLI args

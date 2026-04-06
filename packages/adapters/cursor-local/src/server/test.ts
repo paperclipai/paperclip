@@ -15,7 +15,7 @@ import {
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_CURSOR_LOCAL_MODEL, normalizeCursorModelId } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
@@ -179,7 +179,7 @@ export async function testEnvironment(
         hint: "Use the `agent` CLI command to run the automatic installation and auth probe.",
       });
     } else {
-      const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
+      const model = normalizeCursorModelId(asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
