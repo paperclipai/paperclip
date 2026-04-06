@@ -11,6 +11,7 @@ export const hermesLocalUIAdapter: UIAdapterModule = {
     const config = buildSchemaAdapterConfig(values);
     if (config.command) {
       config.hermesCommand = config.command;
+      delete config.command;
     }
     return config;
   },
