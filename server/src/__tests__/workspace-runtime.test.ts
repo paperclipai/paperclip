@@ -957,6 +957,57 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
   });
 
+  it("truncates oversized provision command output before storing it in memory", async () => {
+    const repoRoot = await createTempRepo();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "noisy.js"),
+      'process.stdout.write("x".repeat(400000));\n',
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/noisy.js"]);
+    await runGit(repoRoot, ["commit", "-m", "Add noisy provision script"]);
+
+    await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "node ./scripts/noisy.js",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1142",
+        title: "Limit noisy provision output",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    const provisionOperation = operations.find((operation) => operation.phase === "workspace_provision");
+    expect(provisionOperation?.result.metadata).toMatchObject({
+      stdoutTruncated: true,
+      stderrTruncated: false,
+    });
+    expect(provisionOperation?.result.stdout).toContain("[output truncated to last");
+    expect(provisionOperation?.result.stdout?.length ?? 0).toBeLessThan(300000);
+  });
+
   it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-450-recreate-missing-worktree";

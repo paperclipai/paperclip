@@ -102,6 +102,18 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+
+type ProcessOutputCapture = {
+  text: string;
+  truncated: boolean;
+  totalBytes: number;
+};
+
+type ProcessOutputAccumulator = {
+  append(chunk: string): void;
+  finish(): ProcessOutputCapture;
+};
 
 export async function resetRuntimeServicesForTests() {
   for (const record of runtimeServicesById.values()) {
@@ -381,30 +393,96 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
+  const limit = Math.max(1, Math.trunc(maxBytes));
+  let chunks: string[] = [];
+  let truncated = false;
+  let totalBytes = 0;
+
+  return {
+    append(chunk: string) {
+      if (!chunk) return;
+      chunks.push(chunk);
+      totalBytes += Buffer.byteLength(chunk, "utf8");
+
+      let currentBytes = chunks.reduce((sum, value) => sum + Buffer.byteLength(value, "utf8"), 0);
+      if (currentBytes <= limit) return;
+
+      const combined = Buffer.from(chunks.join(""), "utf8");
+      const tail = combined.subarray(Math.max(0, combined.length - limit)).toString("utf8");
+      chunks = [tail];
+      truncated = true;
+      currentBytes = Buffer.byteLength(tail, "utf8");
+      if (currentBytes > limit) {
+        chunks = [Buffer.from(tail, "utf8").subarray(Math.max(0, currentBytes - limit)).toString("utf8")];
+      }
+    },
+    finish(): ProcessOutputCapture {
+      const text = chunks.join("");
+      if (!truncated) {
+        return {
+          text,
+          truncated: false,
+          totalBytes,
+        };
+      }
+      return {
+        text: `[output truncated to last ${limit} bytes; total ${totalBytes} bytes]\n${text}`,
+        truncated: true,
+        totalBytes,
+      };
+    },
+  };
+}
+
 async function executeProcess(input: {
   command: string;
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+  maxStdoutBytes?: number;
+  maxStderrBytes?: number;
+}): Promise<{
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  stdoutBytes: number;
+  stderrBytes: number;
+}> {
+  const proc = await new Promise<{
+    stdout: ProcessOutputAccumulator;
+    stderr: ProcessOutputAccumulator;
+    code: number | null;
+  }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
+      stdout.append(String(chunk));
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
+      stderr.append(String(chunk));
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ stdout, stderr, code }));
   });
-  return proc;
+  const stdout = proc.stdout.finish();
+  const stderr = proc.stderr.finish();
+  return {
+    stdout: stdout.text,
+    stderr: stderr.text,
+    code: proc.code,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    stdoutBytes: stdout.totalBytes,
+    stderrBytes: stderr.totalBytes,
+  };
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -588,6 +666,15 @@ async function recordGitOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
@@ -646,6 +733,15 @@ async function recordWorkspaceCommandOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
