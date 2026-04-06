@@ -273,7 +273,7 @@ export function issueRoutes(
       const hasCodeArtifact = products.some(wp => CODE_DELIVERY_TYPES.has(wp.type));
       if (!hasCodeArtifact) return {
         gate: "in_review_requires_artifact",
-        reason: "Cannot move to in_review without a pushed branch, commit, or pull request.",
+        reason: "Cannot move to in_review without registering a work product. After pushing your code, call POST /api/issues/{issueId}/work-products with type 'commit', 'branch', or 'pull_request', provider 'github', title, and a valid GitHub URL.",
       };
     }
 
@@ -299,7 +299,7 @@ export function issueRoutes(
         } else {
           return {
             gate: "done_requires_pr",
-            reason: "Cannot mark done without a pull request (or a verified commit with a valid GitHub URL for hotfixes).",
+            reason: "Cannot mark done without a pull request work product (or a verified commit with a valid GitHub URL for hotfixes). Register via POST /api/issues/{issueId}/work-products with type 'pull_request', provider 'github', externalId (PR number), title, and the GitHub PR URL.",
           };
         }
       }

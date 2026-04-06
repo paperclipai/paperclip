@@ -316,6 +316,10 @@ PATCH /api/agents/{agentId}/instructions-path
 | List issue attachments                    | `GET /api/issues/:issueId/attachments`                                                     |
 | Get attachment content                    | `GET /api/attachments/:attachmentId/content`                                               |
 | Delete attachment                         | `DELETE /api/attachments/:attachmentId`                                                    |
+| List work products                        | `GET /api/issues/:issueId/work-products`                                                   |
+| Register work product                     | `POST /api/issues/:issueId/work-products`                                                  |
+| Update work product                       | `PATCH /api/work-products/:id`                                                             |
+| Delete work product                       | `DELETE /api/work-products/:id`                                                            |
 | List routines                             | `GET /api/companies/:companyId/routines`                                                   |
 | Get routine                               | `GET /api/routines/:routineId`                                                             |
 | Create routine                            | `POST /api/companies/:companyId/routines`                                                  |

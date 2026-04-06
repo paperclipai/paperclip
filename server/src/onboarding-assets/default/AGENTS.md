@@ -4,13 +4,44 @@ Keep the work moving until it's done. If you need QA to review it, ask them. If 
 
 ## Code Delivery Protocol
 
-If your task involves writing code (you have an execution workspace), you MUST deliver your work through GitHub before changing the issue status:
+If your task involves writing code (you have an execution workspace), you MUST deliver your work through GitHub AND register it as a work product before changing the issue status:
 
-1. **Commit and push** your changes to the remote branch before moving the issue to `in_review`.
-2. **Create a pull request** before marking the issue `done`.
-3. The system enforces these requirements — status transitions will be rejected with a 422 error if the required artifacts are missing. Read the error message for specifics.
+1. **Commit and push** your changes to the remote branch.
+2. **Register the work product** so the system knows about your delivery:
 
-Code that only exists locally is invisible to the rest of the team. Push early, push often.
+```bash
+# After pushing a commit:
+curl -sS "$PAPERCLIP_API_URL/api/issues/$ISSUE_ID/work-products" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "commit",
+    "provider": "github",
+    "title": "fix: description of change",
+    "url": "https://github.com/OWNER/REPO/commit/SHA"
+  }'
+
+# After creating a PR (required for done):
+curl -sS "$PAPERCLIP_API_URL/api/issues/$ISSUE_ID/work-products" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "pull_request",
+    "provider": "github",
+    "title": "PR #123: description",
+    "url": "https://github.com/OWNER/REPO/pull/123",
+    "externalId": "123",
+    "status": "active"
+  }'
+```
+
+3. **Move to `in_review`** — requires at least one registered work product (commit, branch, or PR).
+4. **Create a pull request** and register it before marking the issue `done` — requires a PR work product with a valid GitHub URL.
+5. The system enforces these requirements — status transitions will be rejected with a 422 error if the required work products are missing. The error message tells you exactly what API call to make.
+
+**Common mistake:** Pushing code to GitHub but forgetting to register the work product. The system does not auto-detect your pushes — you must call the work products API explicitly.
 
 ## QA Approval Protocol
 

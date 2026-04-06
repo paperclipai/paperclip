@@ -657,6 +657,52 @@ Terminal states: `done`, `cancelled`
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 
+### Work Products
+
+Register code delivery artifacts (commits, branches, PRs) so the delivery gate can verify your work.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/issues/:issueId/work-products` | List work products for issue |
+| POST   | `/api/issues/:issueId/work-products` | Register a work product |
+| PATCH  | `/api/work-products/:id` | Update work product |
+| DELETE | `/api/work-products/:id` | Remove work product |
+
+**Required fields for POST:**
+- `type` — `commit`, `branch`, `pull_request`, `artifact`, or `document`
+- `provider` — `github` for GitHub-hosted code
+- `title` — human-readable label
+
+**Required for agents on code types:**
+- `url` — valid GitHub URL matching the type (e.g., `https://github.com/owner/repo/pull/123`)
+- `externalId` — required for `pull_request` type (the PR number)
+
+**Status values:** `active`, `ready_for_review`, `approved`, `changes_requested`, `merged`, `closed`, `failed`, `archived`, `draft`
+
+**Example — register a commit after push:**
+```json
+POST /api/issues/{issueId}/work-products
+{
+  "type": "commit",
+  "provider": "github",
+  "title": "fix: resolve persona selection",
+  "url": "https://github.com/Viraforge/rtaa/commit/abc123"
+}
+```
+
+**Example — register a PR for done transition:**
+```json
+POST /api/issues/{issueId}/work-products
+{
+  "type": "pull_request",
+  "provider": "github",
+  "title": "PR #42: fix persona selection",
+  "url": "https://github.com/Viraforge/rtaa/pull/42",
+  "externalId": "42",
+  "status": "active"
+}
+```
+
 ### Routines
 
 | Method | Path | Description |
