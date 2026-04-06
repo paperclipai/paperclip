@@ -27,6 +27,7 @@ import type {
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
+  AgentEnvConfig,
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
@@ -39,6 +40,7 @@ import {
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
+  envConfigSchema,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
@@ -387,6 +389,11 @@ function isSensitiveEnvKey(key: string) {
   );
 }
 
+function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
+  const parsed = envConfigSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -419,6 +426,7 @@ type ProjectLike = {
   targetDate: string | null;
   color: string | null;
   status: string;
+  env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
   workspaces?: Array<{
     id: string;
@@ -2531,6 +2539,7 @@ function buildManifestFromPackageFiles(
       targetDate: asString(extension.targetDate),
       color: asString(extension.color),
       status: asString(extension.status),
+      env: normalizePortableProjectEnv(extension.env),
       executionWorkspacePolicy: isPlainRecord(extension.executionWorkspacePolicy)
         ? extension.executionWorkspacePolicy
         : null,
@@ -3159,6 +3168,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
         status: project.status,
+        env: normalizePortableProjectEnv(project.env) ?? undefined,
         executionWorkspacePolicy: exportPortableProjectExecutionWorkspacePolicy(
           slug,
           project.executionWorkspacePolicy,
@@ -4095,6 +4105,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           status: manifestProject.status && PROJECT_STATUSES.includes(manifestProject.status as any)
             ? manifestProject.status as typeof PROJECT_STATUSES[number]
             : "backlog",
+          env: manifestProject.env,
           executionWorkspacePolicy: stripPortableProjectExecutionWorkspaceRefs(manifestProject.executionWorkspacePolicy),
         };
 

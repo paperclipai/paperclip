@@ -86,6 +86,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+type RuntimeConfigSecretResolver = Pick<
+  ReturnType<typeof secretService>,
+  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+>;
+
+export async function resolveExecutionRunAdapterConfig(input: {
+  companyId: string;
+  executionRunConfig: Record<string, unknown>;
+  projectEnv: unknown;
+  secretsSvc: RuntimeConfigSecretResolver;
+}) {
+  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+    input.companyId,
+    input.executionRunConfig,
+  );
+  const projectEnvResolution = input.projectEnv
+    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
+    : { env: {}, secretKeys: new Set<string>() };
+  if (Object.keys(projectEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...projectEnvResolution.env,
+    };
+    for (const key of projectEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
+  return { resolvedConfig, secretKeys };
+}
+
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
   workspaceConfig: ExecutionWorkspaceConfig | null;
@@ -2309,17 +2339,20 @@ export function heartbeatService(db: Db) {
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectContext = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            env: projects.env,
+          })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) =>
-            gateProjectExecutionWorkspacePolicy(
-              parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
-              isolatedWorkspacesEnabled,
-            ))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
+      parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
+      isolatedWorkspacesEnabled,
+    );
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -2416,10 +2449,12 @@ export function heartbeatService(db: Db) {
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
+    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+      companyId: agent.companyId,
       executionRunConfig,
-    );
+      projectEnv: projectContext?.env ?? null,
+      secretsSvc,
+    });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...resolvedConfig,
