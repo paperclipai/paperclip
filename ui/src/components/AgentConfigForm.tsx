@@ -127,6 +127,10 @@ function parseCommaArgs(value: string): string[] {
     .filter(Boolean);
 }
 
+export function resolveExtraArgsValue(value: string): string[] | null {
+  return value.trim() ? parseCommaArgs(value) : null;
+}
+
 function formatArgList(value: unknown): string {
   if (Array.isArray(value)) {
     return value
@@ -827,7 +831,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onCommit={(v) =>
                     isCreate
                       ? set!({ extraArgs: v })
-                      : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
+                      : mark("adapterConfig", "extraArgs", resolveExtraArgsValue(v))
                   }
                   immediate
                   className={inputClass}
