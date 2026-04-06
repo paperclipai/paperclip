@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Tooltip,
   TooltipTrigger,
@@ -19,42 +20,42 @@ import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
-  name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
-  role: "Organizational role. Determines position and capabilities.",
-  reportsTo: "The agent this one reports to in the org hierarchy.",
-  capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
-  thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
-  chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
-  dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
-  search: "Enable Codex web search capability during runs.",
-  workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
-  command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
-  args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
-  envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
-  heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
-  graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
-  wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
-  cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
-  maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
-  budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  name: "page.components.agentConfigForm.help.name",
+  title: "page.components.agentConfigForm.help.title",
+  role: "page.components.agentConfigForm.help.role",
+  reportsTo: "page.components.agentConfigForm.help.reports_to",
+  capabilities: "page.components.agentConfigForm.help.capabilities",
+  adapterType: "page.components.agentConfigForm.help.adapter_type",
+  cwd: "page.components.agentConfigForm.help.cwd",
+  promptTemplate: "page.components.agentConfigForm.help.prompt_template",
+  model: "page.components.agentConfigForm.help.model",
+  thinkingEffort: "page.components.agentConfigForm.help.thinking_effort",
+  chrome: "page.components.agentConfigForm.help.chrome",
+  dangerouslySkipPermissions: "page.components.agentConfigForm.help.skip_permissions",
+  dangerouslyBypassSandbox: "page.components.agentConfigForm.help.bypass_sandbox",
+  search: "page.components.agentConfigForm.help.search",
+  workspaceStrategy: "page.components.agentConfigForm.help.workspace_strategy",
+  workspaceBaseRef: "page.components.agentConfigForm.help.workspace_base_ref",
+  workspaceBranchTemplate: "page.components.agentConfigForm.help.workspace_branch_template",
+  worktreeParentDir: "page.components.agentConfigForm.help.worktree_parent_dir",
+  runtimeServicesJson: "page.components.agentConfigForm.help.runtime_services_json",
+  maxTurnsPerRun: "page.components.agentConfigForm.help.max_turns_per_run",
+  command: "page.components.agentConfigForm.help.command",
+  localCommand: "page.components.agentConfigForm.help.local_command",
+  args: "page.components.agentConfigForm.help.args",
+  extraArgs: "page.components.agentConfigForm.help.extra_args",
+  envVars: "page.components.agentConfigForm.help.env_vars",
+  bootstrapPrompt: "page.components.agentConfigForm.help.bootstrap_prompt",
+  payloadTemplateJson: "page.components.agentConfigForm.help.payload_template_json",
+  webhookUrl: "page.components.agentConfigForm.help.webhook_url",
+  heartbeatInterval: "page.components.agentConfigForm.help.heartbeat_interval",
+  intervalSec: "page.components.agentConfigForm.help.interval_sec",
+  timeoutSec: "page.components.agentConfigForm.help.timeout_sec",
+  graceSec: "page.components.agentConfigForm.help.grace_sec",
+  wakeOnDemand: "page.components.agentConfigForm.help.wake_on_demand",
+  cooldownSec: "page.components.agentConfigForm.help.cooldown_sec",
+  maxConcurrentRuns: "page.components.agentConfigForm.help.max_concurrent_runs",
+  budgetMonthlyCents: "page.components.agentConfigForm.help.budget_monthly_cents",
 };
 
 export const adapterLabels: Record<string, string> = {
@@ -74,6 +75,7 @@ export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 /* ---- Primitive components ---- */
 
 export function HintIcon({ text }: { text: string }) {
+  const { t } = useTranslation();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -82,7 +84,7 @@ export function HintIcon({ text }: { text: string }) {
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">
-        {text}
+        {t(text, { defaultValue: text })}
       </TooltipContent>
     </Tooltip>
   );

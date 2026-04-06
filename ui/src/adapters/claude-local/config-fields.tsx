@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import { useTranslation } from "react-i18next";
 import {
   Field,
   ToggleField,
@@ -27,10 +28,11 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={t("page.components.agentConfigForm.agent_instructions_file")} hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -78,10 +80,11 @@ export function ClaudeLocalAdvancedFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return (
     <>
       <ToggleField
-        label="Enable Chrome"
+        label={t("page.components.agentConfigForm.enable_chrome")}
         hint={help.chrome}
         checked={
           isCreate
@@ -95,7 +98,7 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       <ToggleField
-        label="Skip permissions"
+        label={t("page.components.agentConfigForm.skip_permissions")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate
@@ -112,7 +115,7 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
-      <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
+      <Field label={t("page.components.agentConfigForm.max_turns_per_run")} hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input
             type="number"

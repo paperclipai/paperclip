@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import { useTranslation } from "react-i18next";
 import {
   Field,
   ToggleField,
@@ -25,13 +26,14 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   const bypassEnabled =
     config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true;
 
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={t("page.components.agentConfigForm.agent_instructions_file")} hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -57,7 +59,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       <ToggleField
-        label="Bypass sandbox"
+        label={t("page.components.agentConfigForm.bypass_sandbox")}
         hint={help.dangerouslyBypassSandbox}
         checked={
           isCreate
@@ -75,7 +77,7 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
-        label="Enable search"
+        label={t("page.components.agentConfigForm.enable_search")}
         hint={help.search}
         checked={
           isCreate
