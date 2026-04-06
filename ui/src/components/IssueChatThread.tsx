@@ -1054,6 +1054,7 @@ export function IssueChatThread({
           />
         ) : null}
       </div>
+      </IssueChatCtx.Provider>
     </AssistantRuntimeProvider>
   );
 }
