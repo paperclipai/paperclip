@@ -7,7 +7,7 @@ import {
   useAui,
   useMessage,
 } from "@assistant-ui/react";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
@@ -44,6 +44,27 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip } from "lucide-react";
+
+interface IssueChatMessageContext {
+  feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
+  feedbackDataSharingPreference: FeedbackDataSharingPreference;
+  feedbackTermsUrl: string | null;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  onVote?: (
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
+  onInterruptQueued?: (runId: string) => Promise<void>;
+  interruptingQueuedRunId?: string | null;
+}
+
+const IssueChatCtx = createContext<IssueChatMessageContext>({
+  feedbackVoteByTargetId: new Map(),
+  feedbackDataSharingPreference: "prompt",
+  feedbackTermsUrl: null,
+});
 
 interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -317,13 +338,8 @@ function IssueChatToolPart({
   );
 }
 
-function IssueChatUserMessage({
-  onInterruptQueued,
-  interruptingQueuedRunId,
-}: {
-  onInterruptQueued?: (runId: string) => Promise<void>;
-  interruptingQueuedRunId?: string | null;
-}) {
+function IssueChatUserMessage() {
+  const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -383,25 +399,15 @@ function IssueChatUserMessage({
   );
 }
 
-function IssueChatAssistantMessage({
-  feedbackVoteByTargetId,
-  feedbackDataSharingPreference,
-  feedbackTermsUrl,
-  onVote,
-  agentMap,
-  currentUserId,
-}: {
-  feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
-  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
-  feedbackTermsUrl?: string | null;
-  agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
-  onVote?: (
-    commentId: string,
-    vote: FeedbackVoteValue,
-    options?: { allowSharing?: boolean; reason?: string },
-  ) => Promise<void>;
-}) {
+function IssueChatAssistantMessage() {
+  const {
+    feedbackVoteByTargetId,
+    feedbackDataSharingPreference,
+    feedbackTermsUrl,
+    onVote,
+    agentMap,
+    currentUserId,
+  } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -519,13 +525,8 @@ function IssueChatAssistantMessage({
   );
 }
 
-function IssueChatSystemMessage({
-  agentMap,
-  currentUserId,
-}: {
-  agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
-}) {
+function IssueChatSystemMessage() {
+  const { agentMap, currentUserId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -979,40 +980,41 @@ export function IssueChatThread({
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
-  const components = useMemo(
+  const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
-      UserMessage: () => (
-        <IssueChatUserMessage
-          onInterruptQueued={onInterruptQueued}
-          interruptingQueuedRunId={interruptingQueuedRunId}
-        />
-      ),
-      AssistantMessage: () => (
-        <IssueChatAssistantMessage
-          feedbackVoteByTargetId={feedbackVoteByTargetId}
-          feedbackDataSharingPreference={feedbackDataSharingPreference}
-          feedbackTermsUrl={feedbackTermsUrl}
-          agentMap={agentMap}
-          currentUserId={currentUserId}
-          onVote={onVote}
-        />
-      ),
-      SystemMessage: () => <IssueChatSystemMessage agentMap={agentMap} currentUserId={currentUserId} />,
-    }),
-    [
-      agentMap,
-      currentUserId,
       feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      agentMap,
+      currentUserId,
+      onVote,
+      onInterruptQueued,
+      interruptingQueuedRunId,
+    }),
+    [
+      feedbackVoteByTargetId,
+      feedbackDataSharingPreference,
+      feedbackTermsUrl,
+      agentMap,
+      currentUserId,
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
     ],
   );
 
+  const components = useMemo(
+    () => ({
+      UserMessage: IssueChatUserMessage,
+      AssistantMessage: IssueChatAssistantMessage,
+      SystemMessage: IssueChatSystemMessage,
+    }),
+    [],
+  );
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <IssueChatCtx.Provider value={chatCtx}>
       <div className="space-y-4">
         <div className="flex justify-end">
           <button
@@ -1024,7 +1026,7 @@ export function IssueChatThread({
           </button>
         </div>
 
-        <ThreadPrimitive.Root className="rounded-[28px] border border-border/70 bg-[linear-gradient(180deg,rgba(15,23,42,0.02),transparent_22%),var(--background)] px-4 py-4 shadow-sm">
+        <ThreadPrimitive.Root className="">
           <ThreadPrimitive.Viewport className="space-y-4">
             <ThreadPrimitive.Empty>
               <div className="rounded-2xl border border-dashed border-border bg-card px-6 py-10 text-center text-sm text-muted-foreground">
