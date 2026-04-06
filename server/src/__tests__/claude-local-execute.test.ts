@@ -28,6 +28,7 @@ const payload = {
   appendedSystemPromptFilePath,
   appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
   agentHome: process.env.AGENT_HOME || null,
+  nodeLlamaCppGpu: process.env.NODE_LLAMA_CPP_GPU || null,
   qmdConfigDir: process.env.QMD_CONFIG_DIR || null,
   xdgCacheHome: process.env.XDG_CACHE_HOME || null,
 };
@@ -388,6 +389,7 @@ describe("claude execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
         claudeConfigDir: string | null;
         agentHome: string | null;
+        nodeLlamaCppGpu: string | null;
         qmdConfigDir: string | null;
         xdgCacheHome: string | null;
       };
@@ -395,11 +397,13 @@ describe("claude execute", () => {
       expect(loggedEnv.HOME).toBe(root);
       expect(loggedEnv.CLAUDE_CONFIG_DIR).toBe(claudeConfigDir);
       expect(loggedEnv.AGENT_HOME).toBe(agentHome);
+      expect(loggedEnv.NODE_LLAMA_CPP_GPU).toBe("false");
       expect(loggedEnv.QMD_CONFIG_DIR).toBe(path.join(agentHome, ".config", "qmd"));
       expect(loggedEnv.XDG_CACHE_HOME).toBe(path.join(agentHome, ".cache"));
       expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
       expect(capture.claudeConfigDir).toBe(claudeConfigDir);
       expect(capture.agentHome).toBe(agentHome);
+      expect(capture.nodeLlamaCppGpu).toBe("false");
       expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
       expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
     } finally {

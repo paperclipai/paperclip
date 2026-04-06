@@ -1004,7 +1004,15 @@ export async function prepareAgentQmdEnvironment(
     }
   }
 
+  const configuredNodeLlamaCppGpu = options.baseEnv?.NODE_LLAMA_CPP_GPU;
+  const nodeLlamaCppGpu =
+    typeof configuredNodeLlamaCppGpu === "string"
+      ? configuredNodeLlamaCppGpu
+      : typeof process.env.NODE_LLAMA_CPP_GPU === "string"
+        ? process.env.NODE_LLAMA_CPP_GPU
+        : "false";
   const env = {
+    NODE_LLAMA_CPP_GPU: nodeLlamaCppGpu,
     QMD_CONFIG_DIR: configDir,
     XDG_CACHE_HOME: cacheHome,
   } satisfies Record<string, string>;
