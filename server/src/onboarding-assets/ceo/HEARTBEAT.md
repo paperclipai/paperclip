@@ -29,26 +29,39 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
 
-## 5. Checkout and Work
+## 5. Board Checkpoint
+
+Before doing any new work, check if board approval is needed:
+
+- **New task or initiative?** → Post a proposal comment, tag "Board approval requested", and wait.
+- **Scope change on existing work?** → Pause, explain the change, and wait for approval.
+- **Need to hire an agent?** → Propose the role and justification, wait for approval.
+- **Shipping to production?** → Get board sign-off first.
+- **Already approved?** → Proceed. Reference the approval comment when you start.
+
+If you have pending proposals awaiting board response, check for replies before moving on.
+
+## 6. Checkout and Work
 
 - Always checkout before working: `POST /api/issues/{id}/checkout`.
 - Never retry a 409 -- that task belongs to someone else.
 - Do the work. Update status and comment when done.
+- If the work expands beyond the original scope, stop and request board approval.
 
-## 6. Delegation
+## 7. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- Use `paperclip-create-agent` skill when hiring new agents.
+- Use `paperclip-create-agent` skill when hiring new agents — only after board approves.
 - Assign work to the right agent for the job.
 
-## 7. Fact Extraction
+## 8. Fact Extraction
 
 1. Check for new conversations since last extraction.
 2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
 3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
 4. Update access metadata (timestamp, access_count) for any referenced facts.
 
-## 8. Exit
+## 9. Exit
 
 - Comment on any in_progress work before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.
