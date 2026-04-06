@@ -1917,6 +1917,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipWhenIdle: asBoolean(heartbeat.skipWhenIdle, false),
     };
   }
 
@@ -4180,6 +4181,7 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -4190,6 +4192,27 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (policy.skipWhenIdle) {
+          const [{ count: openIssueCount }] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, agent.companyId),
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]), // keep in sync with OPEN_ISSUE_STATUSES in routines.ts
+              ),
+            );
+
+          if (Number(openIssueCount ?? 0) === 0) {
+            idleSkipped += 1;
+            await db
+              .update(agents)
+              .set({ lastHeartbeatAt: now, updatedAt: now })
+              .where(eq(agents.id, agent.id));
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -4207,7 +4230,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
