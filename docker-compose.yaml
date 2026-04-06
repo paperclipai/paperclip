@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperclip
+    ports:
+      - "3100:3100"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/paperclip
+      - PAPERCLIP_TELEMETRY_DISABLED=1
+    volumes:
+      - paperclip-data:/app/data
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - paperclip-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: paperclip-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=paperclip
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - paperclip-network
+
+volumes:
+  paperclip-data:
+  postgres_data:
+
+networks:
+  paperclip-network:
+    driver: bridge
