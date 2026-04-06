@@ -42,9 +42,16 @@ These are set automatically by the server when invoking agents:
 | `PAPERCLIP_APPROVAL_STATUS` | Approval decision |
 | `PAPERCLIP_LINKED_ISSUE_IDS` | Comma-separated linked issue IDs |
 
+## CopilotKit AI Assistant
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | — | OpenAI API key (enables the AI chat sidebar and Codex Local adapter) |
+| `COPILOTKIT_MODEL` | `gpt-5.4` | Model used by the CopilotKit runtime |
+
 ## LLM Provider Keys (for adapters)
 
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
-| `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+| `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter and CopilotKit) |

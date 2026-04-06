@@ -34,6 +34,8 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
+import { CopilotSidebar } from "@copilotkit/react-core/v2";
+import { useCopilotActions } from "../hooks/useCopilotActions";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
@@ -145,6 +147,7 @@ export function Layout() {
   const togglePanel = togglePanelVisible;
 
   useCompanyPageMemory();
+  useCopilotActions();
 
   useKeyboardShortcuts({
     enabled: keyboardShortcutsEnabled,
@@ -444,6 +447,14 @@ export function Layout() {
       <NewGoalDialog />
       <NewAgentDialog />
       <ToastViewport />
+      <CopilotSidebar
+        defaultOpen={false}
+        labels={{
+          modalHeaderTitle: "Paperclip AI",
+          welcomeMessageText: "Ask me to create issues, manage agents, check costs, or navigate anywhere in your workspace.",
+          chatInputPlaceholder: "Ask Paperclip AI...",
+        }}
+      />
       </div>
     </GeneralSettingsProvider>
   );

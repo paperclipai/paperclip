@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -73,8 +73,33 @@ if (process.env.npm_config_authenticated_private === "true") {
   tailscaleAuth = true;
 }
 
+// Load select vars from root .env that the server needs but can't find on its
+// own (its CWD is server/, not project root).
+function loadRootDotenvKeys(keys) {
+  const dotenvPath = new URL("../.env", import.meta.url).pathname;
+  if (!existsSync(dotenvPath)) return {};
+  const picked = {};
+  for (const line of readFileSync(dotenvPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!keys.includes(key)) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (!(key in process.env)) {
+      picked[key] = val;
+    }
+  }
+  return picked;
+}
+
 const env = {
   ...process.env,
+  ...loadRootDotenvKeys(["OPENAI_API_KEY", "COPILOTKIT_MODEL"]),
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
 

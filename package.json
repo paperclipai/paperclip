@@ -51,6 +51,10 @@
   "pnpm": {
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    },
+    "overrides": {
+      "langsmith@>=0.3.41 <0.4.6": ">=0.4.6",
+      "prismjs@<1.30.0": ">=1.30.0"
     }
   }
 }
