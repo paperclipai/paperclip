@@ -968,6 +968,16 @@
       "title": "Propriedades",
       "project_name": "Nome do projeto",
       "add_description": "Adicionar uma descrição..."
+    },
+    "onboarding": {
+      "title": "Boas-vindas",
+      "subtitle": "Configure o ambiente da sua empresa",
+      "steps": {
+        "company": "Empresa",
+        "agent": "Agente",
+        "task": "Tarefa",
+        "launch": "Lançamento"
+      }
     }
   }
 }

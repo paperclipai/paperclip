@@ -964,6 +964,16 @@
       "title": "Properties",
       "project_name": "Project name",
       "add_description": "Add a description..."
+    },
+    "onboarding": {
+      "title": "Onboarding",
+      "subtitle": "Configure your company environment",
+      "steps": {
+        "company": "Company",
+        "agent": "Agent",
+        "task": "Task",
+        "launch": "Launch"
+      }
     }
   }
 }
