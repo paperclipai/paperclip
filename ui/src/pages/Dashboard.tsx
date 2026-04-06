@@ -1037,11 +1037,11 @@ export function Dashboard() {
                       <span className="text-xs text-red-400 shrink-0">Blocked</span>
                     </Link>
                     <button
-                      onClick={() => dismissItem(`issue:${issue.id}`)}
-                      className="p-1 rounded text-muted-foreground/50 hover:text-foreground transition-colors shrink-0"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissItem(`issue:${issue.id}`); }}
+                      className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                       title="Dismiss"
                     >
-                      <X className="h-3 w-3" />
+                      <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 ))}
@@ -1063,11 +1063,11 @@ export function Dashboard() {
                       <span className="text-xs text-amber-400 shrink-0">View run</span>
                     </Link>
                     <button
-                      onClick={() => dismissItem(`run:${run.id}`)}
-                      className="p-1 rounded text-muted-foreground/50 hover:text-foreground transition-colors shrink-0"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissItem(`run:${run.id}`); }}
+                      className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                       title="Dismiss"
                     >
-                      <X className="h-3 w-3" />
+                      <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 ))}
