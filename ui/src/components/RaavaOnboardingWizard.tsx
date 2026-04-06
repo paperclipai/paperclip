@@ -655,7 +655,7 @@ export function RaavaOnboardingWizard() {
         assigneeAgentId: agent.id,
         projectId: project.id,
         priority: "medium",
-        status: "open",
+        status: "todo",
       });
 
       // Only invalidate queries after all resources are successfully created
