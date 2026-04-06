@@ -21,6 +21,7 @@ import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
   createIssueDetailPath,
+  rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
@@ -1521,7 +1522,8 @@ export function Inbox() {
           if (item.kind === "issue") {
             const pathId = item.issue.identifier ?? item.issue.id;
             const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
-            act.navigate(createIssueDetailPath(pathId, detailState), { state: detailState });
+            rememberIssueDetailLocationState(pathId, detailState);
+            act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item.kind === "approval") {
             act.navigate(`/approvals/${item.approval.id}`);
           } else if (item.kind === "failed_run") {

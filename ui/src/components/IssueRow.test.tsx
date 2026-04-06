@@ -128,9 +128,7 @@ describe("IssueRow", () => {
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
-    expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toContain(
-      "/issues/PAP-1?from=inbox&fromHref=%2FPAP%2Finbox%2Fmine",
-    );
+    expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toBe("/issues/PAP-1");
 
     act(() => {
       root.unmount();

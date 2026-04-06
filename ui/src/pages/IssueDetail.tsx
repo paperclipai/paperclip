@@ -17,8 +17,11 @@ import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../li
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  hasLegacyIssueDetailQuery,
   createIssueDetailPath,
+  readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
+  rememberIssueDetailLocationState,
   shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
@@ -375,9 +378,13 @@ export function IssueDetail() {
     ),
     [activeRun, liveRuns],
   );
+  const resolvedIssueDetailState = useMemo(
+    () => readIssueDetailLocationState(issueId, location.state, location.search),
+    [issueId, location.state, location.search],
+  );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [location.state, location.search],
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    [issueId, location.state, location.search],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -967,13 +974,24 @@ export function IssueDetail() {
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
+    const nextState = resolvedIssueDetailState ?? location.state;
     if (issue?.identifier && issueId !== issue.identifier) {
-      navigate(createIssueDetailPath(issue.identifier, location.state, location.search), {
+      rememberIssueDetailLocationState(issue.identifier, nextState, location.search);
+      navigate(createIssueDetailPath(issue.identifier), {
         replace: true,
-        state: location.state,
+        state: nextState,
+      });
+      return;
+    }
+
+    if (issueId && hasLegacyIssueDetailQuery(location.search)) {
+      rememberIssueDetailLocationState(issueId, nextState, location.search);
+      navigate(createIssueDetailPath(issueId), {
+        replace: true,
+        state: nextState,
       });
     }
-  }, [issue, issueId, navigate, location.state, location.search]);
+  }, [issue, issueId, navigate, location.state, location.search, resolvedIssueDetailState]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -1155,8 +1173,14 @@ export function IssueDetail() {
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
               <Link
-                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id, location.state, location.search)}
-                state={location.state}
+                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
+                state={resolvedIssueDetailState ?? location.state}
+                onClickCapture={() =>
+                  rememberIssueDetailLocationState(
+                    ancestor.identifier ?? ancestor.id,
+                    resolvedIssueDetailState ?? location.state,
+                    location.search,
+                  )}
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
               >
@@ -1575,8 +1599,14 @@ export function IssueDetail() {
               {childIssues.map((child) => (
                 <Link
                   key={child.id}
-                  to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}
-                  state={location.state}
+                  to={createIssueDetailPath(child.identifier ?? child.id)}
+                  state={resolvedIssueDetailState ?? location.state}
+                  onClickCapture={() =>
+                    rememberIssueDetailLocationState(
+                      child.identifier ?? child.id,
+                      resolvedIssueDetailState ?? location.state,
+                      location.search,
+                    )}
                   className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                 >
                   <div className="flex items-center gap-2 min-w-0">
