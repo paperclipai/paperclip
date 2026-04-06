@@ -1045,7 +1045,7 @@ export function OnboardingWizard() {
 
         // Create CTO kick-off task if CTO exists
         if (ctoAgent) {
-          const ctoTask = buildCtoKickoffTask(importedIssues.length);
+          const ctoTask = buildCtoKickoffTask(importedIssues.length, workspaceScan);
           await issuesApi.create(
             createdCompanyId,
             buildOnboardingIssuePayload({
@@ -1060,7 +1060,7 @@ export function OnboardingWizard() {
 
         // Create CEO kick-off task to triage and delegate the imported issues
         const unassignedCount = importedIssues.length - assignments.length;
-        const triage = buildCeoTriageTask(importedIssues.length, !!ctoAgent);
+        const triage = buildCeoTriageTask(importedIssues.length, !!ctoAgent, workspaceScan);
         const ceoTask = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
@@ -2054,15 +2054,20 @@ export function OnboardingWizard() {
                         <span className="text-sm font-medium">
                           {workspaceScan.projectName ?? "Project detected"}
                         </span>
+                        {workspaceScan.isMonorepo && (
+                          <span className="text-[10px] font-medium bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded">
+                            monorepo ({workspaceScan.monorepoPackages.length} packages)
+                          </span>
+                        )}
                       </div>
-                      {workspaceScan.languages.length > 0 && (
+                      {workspaceScan.frameworks.length > 0 && (
                         <p className="text-xs text-muted-foreground">
-                          Languages: {workspaceScan.languages.join(", ")}
+                          Stack: {workspaceScan.frameworks.join(", ")}
                         </p>
                       )}
-                      {workspaceScan.configFiles.length > 0 && (
+                      {workspaceScan.frameworks.length === 0 && workspaceScan.languages.length > 0 && (
                         <p className="text-xs text-muted-foreground">
-                          Config: {workspaceScan.configFiles.join(", ")}
+                          Languages: {workspaceScan.languages.join(", ")}
                         </p>
                       )}
                       {workspaceScan.gitRemoteUrl && (
@@ -2070,6 +2075,11 @@ export function OnboardingWizard() {
                           <GitBranch className="h-3 w-3" />
                           <span className="font-mono truncate">{workspaceScan.gitRemoteUrl}</span>
                         </div>
+                      )}
+                      {workspaceScan.claudeMdExcerpt && (
+                        <p className="text-xs text-green-400/80">
+                          CLAUDE.md found — agents will receive project guidelines
+                        </p>
                       )}
                       {workspaceScan.readmeExcerpt && (
                         <details className="text-xs">

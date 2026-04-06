@@ -9,6 +9,13 @@ export interface WorkspaceScanResult {
   gitDefaultBranch: string | null;
   readmeExcerpt: string | null;
   topLevelEntries: string[];
+  claudeMdExcerpt: string | null;
+  projectDescription: string | null;
+  frameworks: string[];
+  scripts: string[];
+  srcStructure: string[];
+  isMonorepo: boolean;
+  monorepoPackages: string[];
 }
 
 export interface WorkspaceBrowseResult {

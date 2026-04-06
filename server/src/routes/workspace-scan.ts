@@ -16,6 +16,13 @@ export interface WorkspaceScanResult {
   gitDefaultBranch: string | null;
   readmeExcerpt: string | null;
   topLevelEntries: string[];
+  claudeMdExcerpt: string | null;
+  projectDescription: string | null;
+  frameworks: string[];
+  scripts: string[];
+  srcStructure: string[];
+  isMonorepo: boolean;
+  monorepoPackages: string[];
 }
 
 const CONFIG_FILE_LANGUAGES: Record<string, string> = {
@@ -113,6 +120,188 @@ async function readReadmeExcerpt(cwd: string): Promise<string | null> {
   return null;
 }
 
+async function readClaudeMdExcerpt(cwd: string): Promise<string | null> {
+  const candidates = ["CLAUDE.md", "claude.md"];
+  for (const name of candidates) {
+    try {
+      const content = await readFile(join(cwd, name), "utf-8");
+      const lines = content.split("\n").slice(0, 200);
+      return lines.join("\n").trim() || null;
+    } catch { /* ignore */ }
+  }
+  return null;
+}
+
+const DEP_FRAMEWORKS: Record<string, string> = {
+  "next": "Next.js",
+  "react": "React",
+  "react-native": "React Native",
+  "vue": "Vue",
+  "nuxt": "Nuxt",
+  "svelte": "Svelte",
+  "angular": "Angular",
+  "express": "Express",
+  "fastify": "Fastify",
+  "hono": "Hono",
+  "koa": "Koa",
+  "prisma": "Prisma",
+  "@prisma/client": "Prisma",
+  "drizzle-orm": "Drizzle ORM",
+  "typeorm": "TypeORM",
+  "tailwindcss": "Tailwind CSS",
+  "electron": "Electron",
+  "@tauri-apps/api": "Tauri",
+  "vite": "Vite",
+  "webpack": "webpack",
+  "jest": "Jest",
+  "vitest": "Vitest",
+  "playwright": "Playwright",
+  "storybook": "Storybook",
+  "trpc": "tRPC",
+  "@trpc/server": "tRPC",
+};
+
+const PY_FRAMEWORKS = ["django", "flask", "fastapi", "sqlalchemy", "pytest", "celery", "torch", "tensorflow"];
+
+async function readPackageJson(cwd: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await readFile(join(cwd, "package.json"), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function detectFrameworks(cwd: string, configFiles: string[]): Promise<string[]> {
+  const found = new Set<string>();
+  if (configFiles.includes("package.json")) {
+    const pkg = await readPackageJson(cwd);
+    if (pkg) {
+      const allDeps = {
+        ...(pkg.dependencies as Record<string, string> | undefined),
+        ...(pkg.devDependencies as Record<string, string> | undefined),
+      };
+      for (const [dep, label] of Object.entries(DEP_FRAMEWORKS)) {
+        if (dep in allDeps) found.add(label);
+      }
+    }
+  }
+  if (configFiles.includes("requirements.txt")) {
+    try {
+      const content = await readFile(join(cwd, "requirements.txt"), "utf-8");
+      const lower = content.toLowerCase();
+      for (const fw of PY_FRAMEWORKS) {
+        if (lower.includes(fw)) found.add(fw.charAt(0).toUpperCase() + fw.slice(1));
+      }
+    } catch { /* ignore */ }
+  }
+  if (configFiles.includes("pyproject.toml")) {
+    try {
+      const content = await readFile(join(cwd, "pyproject.toml"), "utf-8");
+      const lower = content.toLowerCase();
+      for (const fw of PY_FRAMEWORKS) {
+        if (lower.includes(fw)) found.add(fw.charAt(0).toUpperCase() + fw.slice(1));
+      }
+    } catch { /* ignore */ }
+  }
+  return [...found].slice(0, 10);
+}
+
+async function extractScripts(cwd: string, configFiles: string[]): Promise<string[]> {
+  if (!configFiles.includes("package.json")) return [];
+  const pkg = await readPackageJson(cwd);
+  if (!pkg || typeof pkg.scripts !== "object" || !pkg.scripts) return [];
+  return Object.keys(pkg.scripts as Record<string, unknown>).slice(0, 15);
+}
+
+async function extractProjectDescription(cwd: string, configFiles: string[]): Promise<string | null> {
+  if (configFiles.includes("package.json")) {
+    const pkg = await readPackageJson(cwd);
+    if (pkg && typeof pkg.description === "string" && pkg.description) return pkg.description;
+  }
+  if (configFiles.includes("Cargo.toml")) {
+    try {
+      const raw = await readFile(join(cwd, "Cargo.toml"), "utf-8");
+      const match = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
+      if (match) return match[1];
+    } catch { /* ignore */ }
+  }
+  if (configFiles.includes("pyproject.toml")) {
+    try {
+      const raw = await readFile(join(cwd, "pyproject.toml"), "utf-8");
+      const match = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
+      if (match) return match[1];
+    } catch { /* ignore */ }
+  }
+  return null;
+}
+
+const SOURCE_DIRS = new Set([
+  "src", "lib", "app", "apps", "packages", "server", "client",
+  "api", "services", "components", "modules", "core", "internal",
+]);
+
+async function detectSrcStructure(cwd: string): Promise<string[]> {
+  const result: string[] = [];
+  try {
+    const entries = await readdir(cwd, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory() && SOURCE_DIRS.has(e.name));
+    for (const dir of dirs) {
+      try {
+        const children = await readdir(join(cwd, dir.name), { withFileTypes: true });
+        const childDirs = children
+          .filter((c) => c.isDirectory() && !c.name.startsWith("."))
+          .map((c) => `${dir.name}/${c.name}/`);
+        result.push(...childDirs);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  return result.sort().slice(0, 30);
+}
+
+async function detectMonorepo(cwd: string, configFiles: string[]): Promise<{ isMonorepo: boolean; packages: string[] }> {
+  // Check pnpm-workspace.yaml
+  try {
+    await stat(join(cwd, "pnpm-workspace.yaml"));
+    const packages = await listWorkspacePackages(cwd);
+    return { isMonorepo: true, packages };
+  } catch { /* ignore */ }
+
+  // Check lerna.json
+  try {
+    await stat(join(cwd, "lerna.json"));
+    const packages = await listWorkspacePackages(cwd);
+    return { isMonorepo: true, packages };
+  } catch { /* ignore */ }
+
+  // Check package.json workspaces
+  if (configFiles.includes("package.json")) {
+    const pkg = await readPackageJson(cwd);
+    if (pkg && pkg.workspaces) {
+      const packages = await listWorkspacePackages(cwd);
+      return { isMonorepo: true, packages };
+    }
+  }
+
+  return { isMonorepo: false, packages: [] };
+}
+
+async function listWorkspacePackages(cwd: string): Promise<string[]> {
+  const result: string[] = [];
+  const globs = ["packages", "apps", "services", "plugins", "libs"];
+  for (const dir of globs) {
+    try {
+      const entries = await readdir(join(cwd, dir), { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory() && !e.name.startsWith(".")) {
+          result.push(`${dir}/${e.name}`);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  return result.sort().slice(0, 20);
+}
+
 export function workspaceScanRoutes() {
   const router = Router();
 
@@ -163,11 +352,21 @@ export function workspaceScanRoutes() {
       }
     }
 
-    const [projectName, gitRemoteUrl, gitDefaultBranch, readmeExcerpt] = await Promise.all([
+    const [
+      projectName, gitRemoteUrl, gitDefaultBranch, readmeExcerpt,
+      claudeMdExcerpt, frameworks, scripts, projectDescription,
+      srcStructure, monorepo,
+    ] = await Promise.all([
       detectProjectName(resolved, configFiles),
       getGitRemoteUrl(resolved),
       getGitDefaultBranch(resolved),
       readReadmeExcerpt(resolved),
+      readClaudeMdExcerpt(resolved),
+      detectFrameworks(resolved, configFiles),
+      extractScripts(resolved, configFiles),
+      extractProjectDescription(resolved, configFiles),
+      detectSrcStructure(resolved),
+      detectMonorepo(resolved, configFiles),
     ]);
 
     const result: WorkspaceScanResult = {
@@ -179,6 +378,13 @@ export function workspaceScanRoutes() {
       gitDefaultBranch,
       readmeExcerpt,
       topLevelEntries,
+      claudeMdExcerpt,
+      projectDescription,
+      frameworks,
+      scripts,
+      srcStructure,
+      isMonorepo: monorepo.isMonorepo,
+      monorepoPackages: monorepo.packages,
     };
 
     res.json(result);

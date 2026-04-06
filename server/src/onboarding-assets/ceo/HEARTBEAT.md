@@ -38,15 +38,16 @@ Before doing any new work, understand what's in the backlog:
 
 ## 5. Board Checkpoint
 
-Before doing any work, check if board approval is needed. Use the Approvals API, not task comments.
+Before doing any work, check if board approval is needed. **Always use the Approvals API** — the board reviews approvals in the Approvals dashboard, not issue comments. Comments are for status updates; approvals are for decisions.
 
-- **First time seeing the backlog?** → Review it, ask the board what to prioritize. Do not propose a strategy — ask what they want done first.
-- **Board gave you direction?** → Create an `approve_ceo_strategy` approval with your execution plan (how you'll accomplish what they asked), link related issues, and wait.
+- **First time seeing the backlog?** → Review the issues, then **create an `approve_ceo_strategy` approval** with your analysis and questions in `payload.plan`. Include: what you found, how you'd categorize the work, and specific questions for the board (e.g., "Which area should we prioritize first?", "Are any of these outdated?", "Should we hire agents for X?"). Put your proposed next steps in `payload.nextStepsIfApproved`. The board will respond by approving, rejecting, or requesting revision — with notes giving you direction.
+- **Board gave you direction (via approval decision)?** → Execute the approved plan. If the decision note changes your approach, create a new approval with the updated plan.
 - **Need to hire an agent?** → Use `paperclip-create-agent` skill (creates `hire_agent` approval automatically).
 - **Shipping to production or opening a PR?** → Create `approve_ceo_strategy` approval with the PR details, and wait.
 - **Already approved?** → Proceed. Reference the approval ID when you start.
+- **No pending work and no approvals to create?** → Exit cleanly. Do not idle.
 
-If you have pending proposals awaiting board response, check for replies before moving on.
+If you have pending proposals awaiting board response, check `GET /api/companies/{companyId}/approvals?status=pending` for replies before moving on.
 
 ## 6. Checkout and Work
 

@@ -444,6 +444,36 @@ function buildJoinRequestToast(
   };
 }
 
+function buildApprovalToast(
+  payload: Record<string, unknown>,
+  nameOf: (id: string) => string | null,
+): ToastInput | null {
+  const entityType = readString(payload.entityType);
+  const action = readString(payload.action);
+  const entityId = readString(payload.entityId);
+  const details = readRecord(payload.details);
+
+  if (entityType !== "approval" || !entityId) return null;
+  if (action !== "approval.created") return null;
+
+  const agentId = readString(payload.agentId);
+  const approvalType = readString(details?.type);
+  const agentLabel = agentId ? (nameOf(agentId) ?? "An agent") : "An agent";
+  const typeLabel = approvalType === "hire_agent"
+    ? "hire request"
+    : approvalType === "budget_override_required"
+      ? "budget override"
+      : "strategy review";
+
+  return {
+    title: `${agentLabel} needs board review`,
+    body: `New ${typeLabel} awaiting your decision.`,
+    tone: "warn",
+    action: { label: "Review now", href: "/approvals" },
+    dedupeKey: `approval:${entityId}`,
+  };
+}
+
 function buildAgentStatusToast(
   payload: Record<string, unknown>,
   nameOf: (id: string) => string | null,
@@ -707,6 +737,7 @@ function handleLiveEvent(
     const action = readString(payload.action);
     const toast =
       buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
+      buildApprovalToast(payload, nameOf) ??
       buildJoinRequestToast(payload);
     if (
       toast &&

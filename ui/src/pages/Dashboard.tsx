@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { approvalsApi } from "../api/approvals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, ShieldAlert, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -79,6 +80,17 @@ export function Dashboard() {
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { data: approvals } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!),
+    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const pendingApprovals = useMemo(
+    () => (approvals ?? []).filter((a) => a.status === "pending" || a.status === "revision_requested"),
+    [approvals],
+  );
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
@@ -208,6 +220,29 @@ export function Dashboard() {
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
+      {pendingApprovals.length > 0 && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/20 bg-[linear-gradient(180deg,rgba(245,180,50,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <div>
+              <p className="text-sm font-medium text-amber-50">
+                {pendingApprovals.length} approval{pendingApprovals.length === 1 ? "" : "s"} awaiting board review
+              </p>
+              <p className="text-xs text-amber-100/70">
+                {pendingApprovals.map((a) => {
+                  const name = agentName(a.requestedByAgentId) ?? "An agent";
+                  const typeLabel = a.type === "hire_agent" ? "hire request" : a.type === "budget_override_required" ? "budget override" : "strategy review";
+                  return `${name}: ${typeLabel}`;
+                }).join(" · ")}
+              </p>
+            </div>
+          </div>
+          <Link to="/approvals" className="text-sm underline underline-offset-2 text-amber-100 shrink-0">
+            Review now
+          </Link>
+        </div>
+      )}
+
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
@@ -269,15 +304,17 @@ export function Dashboard() {
               }
             />
             <MetricCard
-              icon={ShieldCheck}
+              icon={pendingApprovals.length > 0 ? ShieldAlert : ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
               to="/approvals"
               description={
                 <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                  {pendingApprovals.length > 0
+                    ? `${pendingApprovals.length} awaiting your decision`
+                    : data.budgets.pendingApprovals > 0
+                      ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
+                      : "No pending reviews"}
                 </span>
               }
             />
