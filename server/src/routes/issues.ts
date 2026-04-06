@@ -1300,6 +1300,13 @@ export function issueRoutes(
               issueIdentifier: issue.identifier,
             },
           });
+          const prefix = issue.identifier.split("-")[0] || "PAP";
+          const agentName = await agentsSvc.getById(actor.agentId).then((a) => a?.name ?? "An agent");
+          void svc.addComment(issue.id,
+            `**Approval requested** — ${agentName} submitted this for board review.\n\n`
+            + `[Review and decide →](/${prefix}/approvals/${approval.id})`,
+            {},
+          ).catch((err: unknown) => logger.warn({ err, issueId: issue.id }, "failed to post auto-approval comment"));
           logger.info(
             { approvalId: approval.id, issueId: issue.id, agentId: actor.agentId },
             "auto-created approval for in_review status transition",
@@ -1391,6 +1398,13 @@ export function issueRoutes(
                   issueIdentifier: issue.identifier,
                 },
               });
+              const prefix = issue.identifier.split("-")[0] || "PAP";
+              const agentName = await agentsSvc.getById(actor.agentId).then((a) => a?.name ?? "An agent");
+              void svc.addComment(issue.id,
+                `**Approval requested** — ${agentName} submitted this for board review.\n\n`
+                + `[Review and decide →](/${prefix}/approvals/${approval.id})`,
+                {},
+              ).catch((err: unknown) => logger.warn({ err, issueId: issue.id }, "failed to post auto-approval comment"));
               logger.info(
                 { approvalId: approval.id, issueId: issue.id, agentId: actor.agentId },
                 "auto-created approval from agent comment requesting board approval",

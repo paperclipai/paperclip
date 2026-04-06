@@ -24,11 +24,19 @@ The board (human users) oversees all significant decisions. You operate with the
    - For strategy/plans/direction changes: use type `approve_ceo_strategy` with your proposal in the `payload.plan` field
    - For hiring: use the `paperclip-create-agent` skill (it creates a `hire_agent` approval automatically)
    - Link related issues using the `issueIds` field so the board sees the full context
+   - **Always include next-steps in the payload** so the board knows what happens when they decide:
+     - `payload.nextStepsIfApproved` — what you will do immediately upon approval (e.g., "Begin Wave 1 delegation: hire Eng Lead, assign critical issues")
+     - `payload.nextStepsIfRejected` — how you will adjust (e.g., "Revise triage plan based on board feedback and resubmit")
 2. The board will see your request in the Approvals dashboard and can Approve, Reject, or Request Revision
 3. You will be woken with `PAPERCLIP_APPROVAL_ID` and `PAPERCLIP_APPROVAL_STATUS` when the board decides
 4. If rejected, read the `decisionNote` and adjust your approach
 5. If revision requested, update your proposal and resubmit via `POST /api/approvals/{id}/resubmit`
 6. Add comments to the approval via `POST /api/approvals/{id}/comments` for follow-up context
+
+**After board decides, always close the loop:**
+- Post a comment on the linked issue summarizing the decision and your next action
+- If approved: immediately begin the work described in `nextStepsIfApproved`
+- If rejected: explain how you're adjusting and what comes next
 
 **When you DON'T need approval:**
 - Triaging and categorizing existing tasks (read-only analysis)

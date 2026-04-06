@@ -10,9 +10,12 @@ import {
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
+  agentService,
   approvalService,
+  companyService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
@@ -31,8 +34,26 @@ export function approvalRoutes(db: Db) {
   const svc = approvalService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issueSvc = issueService(db);
+  const agentsSvc = agentService(db);
+  const companiesSvc = companyService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  /** Post a system comment on all linked issues for an approval event. */
+  async function commentOnLinkedIssues(
+    approvalId: string,
+    body: string,
+  ): Promise<void> {
+    try {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
+      for (const issue of linkedIssues) {
+        await issueSvc.addComment(issue.id, body, {});
+      }
+    } catch (err) {
+      logger.warn({ err, approvalId }, "failed to post approval event comment on linked issues");
+    }
+  }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -102,6 +123,29 @@ export function approvalRoutes(db: Db) {
       entityId: approval.id,
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
+
+    // Post a comment on linked issues so the timeline shows the approval
+    if (uniqueIssueIds.length > 0) {
+      const company = await companiesSvc.getById(companyId);
+      const prefix = company?.issuePrefix ?? "PAP";
+      const requesterName = approval.requestedByAgentId
+        ? await agentsSvc.getById(approval.requestedByAgentId).then((a) => a?.name ?? "An agent")
+        : "A user";
+      const payload = approval.payload as Record<string, unknown>;
+      const nextIfApproved = typeof payload.nextStepsIfApproved === "string"
+        ? `\n\n**If approved:** ${payload.nextStepsIfApproved}`
+        : "";
+      const nextIfRejected = typeof payload.nextStepsIfRejected === "string"
+        ? `\n**If rejected:** ${payload.nextStepsIfRejected}`
+        : "";
+      void commentOnLinkedIssues(
+        approval.id,
+        `**Approval requested** — ${requesterName} submitted a \`${approval.type}\` approval for board review.\n\n`
+        + `[Review and decide →](/${prefix}/approvals/${approval.id})`
+        + nextIfApproved
+        + nextIfRejected,
+      );
+    }
 
     res.status(201).json(redactApprovalPayload(approval));
   });
@@ -208,6 +252,21 @@ export function approvalRoutes(db: Db) {
           });
         }
       }
+
+      // Post decision comment on linked issues
+      const company = await companiesSvc.getById(approval.companyId);
+      const prefix = company?.issuePrefix ?? "PAP";
+      const agentName = approval.requestedByAgentId
+        ? await agentsSvc.getById(approval.requestedByAgentId).then((a) => a?.name ?? "The requesting agent")
+        : "The requester";
+      const noteSection = approval.decisionNote
+        ? `\n\n> ${approval.decisionNote}`
+        : "";
+      void commentOnLinkedIssues(
+        approval.id,
+        `**Approved** — board approved the \`${approval.type}\` request. ${agentName} has been notified and will proceed.${noteSection}\n\n`
+        + `[View approval →](/${prefix}/approvals/${approval.id})`,
+      );
     }
 
     res.json(redactApprovalPayload(approval));
@@ -232,6 +291,18 @@ export function approvalRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      // Post decision comment on linked issues
+      const company = await companiesSvc.getById(approval.companyId);
+      const prefix = company?.issuePrefix ?? "PAP";
+      const noteSection = approval.decisionNote
+        ? `\n\n> ${approval.decisionNote}`
+        : "";
+      void commentOnLinkedIssues(
+        approval.id,
+        `**Rejected** — board rejected the \`${approval.type}\` request.${noteSection}\n\n`
+        + `[View approval →](/${prefix}/approvals/${approval.id})`,
+      );
     }
 
     res.json(redactApprovalPayload(approval));
@@ -258,6 +329,21 @@ export function approvalRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      // Post revision-request comment on linked issues
+      const company = await companiesSvc.getById(approval.companyId);
+      const prefix = company?.issuePrefix ?? "PAP";
+      const agentName = approval.requestedByAgentId
+        ? await agentsSvc.getById(approval.requestedByAgentId).then((a) => a?.name ?? "The requesting agent")
+        : "The requester";
+      const noteSection = approval.decisionNote
+        ? `\n\n> ${approval.decisionNote}`
+        : "";
+      void commentOnLinkedIssues(
+        approval.id,
+        `**Revision requested** — board asked for changes to the \`${approval.type}\` request. ${agentName} will revise and resubmit.${noteSection}\n\n`
+        + `[View approval →](/${prefix}/approvals/${approval.id})`,
+      );
 
       res.json(redactApprovalPayload(approval));
     },

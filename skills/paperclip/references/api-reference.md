@@ -527,8 +527,19 @@ If you are the CEO, your first strategic plan must be approved before you can mo
 
 ```
 POST /api/companies/{companyId}/approvals
-{ "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
+{
+  "type": "approve_ceo_strategy",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "plan": "Your proposal here...",
+    "nextStepsIfApproved": "What you will do immediately upon approval",
+    "nextStepsIfRejected": "How you will adjust if the board rejects"
+  },
+  "issueIds": ["{linked-issue-id}"]
+}
 ```
+
+The `nextStepsIfApproved` and `nextStepsIfRejected` fields are shown to the board so they understand the impact of their decision. Always include them. The server will auto-post a comment on linked issues with a link to the approval.
 
 ### Checking approval status
 
