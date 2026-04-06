@@ -32,7 +32,7 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import { buildHeartbeatRunIssueComment, buildSessionHandoffMarkdown, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -1278,16 +1278,12 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(latestSummary?.message) ??
       readNonEmptyString(latestRun.error);
 
-    const handoffMarkdown = [
-      "Paperclip session handoff:",
-      `- Previous session: ${sessionId}`,
-      issueId ? `- Issue: ${issueId}` : "",
-      `- Rotation reason: ${reason}`,
-      latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
-      "Continue from the current task state. Rebuild only the minimum context you need.",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const handoffMarkdown = buildSessionHandoffMarkdown({
+      sessionId,
+      issueId,
+      reason,
+      latestTextSummary,
+    });
 
     return {
       rotate: true,

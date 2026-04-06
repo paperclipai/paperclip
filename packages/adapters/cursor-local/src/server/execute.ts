@@ -22,6 +22,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   joinPromptSections,
+  wrapUntrustedHandoff,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
@@ -365,7 +366,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,

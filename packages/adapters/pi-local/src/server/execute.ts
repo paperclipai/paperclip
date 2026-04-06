@@ -10,6 +10,7 @@ import {
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
+  wrapUntrustedHandoff,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -309,7 +310,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
   const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
   const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,

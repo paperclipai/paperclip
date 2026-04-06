@@ -21,6 +21,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   joinPromptSections,
+  wrapUntrustedHandoff,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
@@ -482,7 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ];
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
