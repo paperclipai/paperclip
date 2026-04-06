@@ -33,7 +33,7 @@ Shows a color-coded summary: vote counts, per-trace details with reasons, and ex
 
 ```bash
 # Installed CLI
-paperclipai feedback report
+npx paperclipai feedback report
 
 # Point to a different server or company
 pnpm paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
