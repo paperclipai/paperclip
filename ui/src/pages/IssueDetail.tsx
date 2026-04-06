@@ -1487,6 +1487,50 @@ export function IssueDetail() {
         missingBehavior="placeholder"
       />
 
+      {childIssues.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
+              <ListTree className="h-3.5 w-3.5 mr-1.5" />
+              <span className="hidden sm:inline">Add sub-issue</span>
+              <span className="sm:hidden">Sub-issue</span>
+            </Button>
+          </div>
+          <div className="border border-border rounded-lg divide-y divide-border">
+            {childIssues.map((child) => (
+              <Link
+                key={child.id}
+                to={createIssueDetailPath(child.identifier ?? child.id)}
+                state={resolvedIssueDetailState ?? location.state}
+                onClickCapture={() =>
+                  rememberIssueDetailLocationState(
+                    child.identifier ?? child.id,
+                    resolvedIssueDetailState ?? location.state,
+                    location.search,
+                  )}
+                className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <StatusIcon status={child.status} />
+                  <PriorityIcon priority={child.priority} />
+                  <span className="font-mono text-muted-foreground shrink-0">
+                    {child.identifier ?? child.id.slice(0, 8)}
+                  </span>
+                  <span className="truncate">{child.title}</span>
+                </div>
+                {child.assigneeAgentId && (() => {
+                  const name = agentMap.get(child.assigneeAgentId)?.name;
+                  return name
+                    ? <Identity name={name} size="sm" />
+                    : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                })()}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -1508,7 +1552,18 @@ export function IssueDetail() {
             sharingPreferenceAtSubmit: feedbackDataSharingPreference,
           });
         }}
-        extraActions={!hasAttachments ? attachmentUploadButton : undefined}
+        extraActions={
+          <>
+            {!hasAttachments && attachmentUploadButton}
+            {childIssues.length === 0 && (
+              <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
+                <ListTree className="h-3.5 w-3.5 mr-1.5" />
+                <span className="hidden sm:inline">Add sub-issue</span>
+                <span className="sm:hidden">Sub-issue</span>
+              </Button>
+            )}
+          </>
+        }
       />
 
       {hasAttachments ? (
@@ -1662,10 +1717,6 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Comments
           </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -1736,49 +1787,6 @@ export function IssueDetail() {
             }}
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
           />
-        </TabsContent>
-
-        <TabsContent value="subissues">
-          <div className="mb-3 flex items-center justify-end">
-            <Button variant="outline" size="sm" onClick={openNewSubIssue}>
-              Add sub-issue
-            </Button>
-          </div>
-          {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
-          ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={createIssueDetailPath(child.identifier ?? child.id)}
-                  state={resolvedIssueDetailState ?? location.state}
-                  onClickCapture={() =>
-                    rememberIssueDetailLocationState(
-                      child.identifier ?? child.id,
-                      resolvedIssueDetailState ?? location.state,
-                      location.search,
-                    )}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
-                    </span>
-                    <span className="truncate">{child.title}</span>
-                  </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
-                </Link>
-              ))}
-            </div>
-          )}
         </TabsContent>
 
         <TabsContent value="activity">
