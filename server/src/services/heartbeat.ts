@@ -86,6 +86,20 @@ const execFile = promisify(execFileCallback);
 
 const POSTGRES_TEXT_NULL_BYTE = /\u0000/g;
 
+function mapHermesCommandForRuntimeConfig(
+  adapterType: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (adapterType !== "hermes_local") return config;
+  if (!Object.hasOwn(config, "command")) return config;
+  if (Object.hasOwn(config, "hermesCommand")) return config;
+
+  return {
+    ...config,
+    hermesCommand: config.command,
+  };
+}
+
 function stripPostgresTextNullBytes(value: string): string {
   if (!value.includes("\u0000")) return value;
   return value.replace(POSTGRES_TEXT_NULL_BYTE, "");
@@ -2863,6 +2877,7 @@ export function heartbeatService(db: Db) {
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
     const config = parseObject(agent.adapterConfig);
+    const mappedAgentAdapterConfig = mapHermesCommandForRuntimeConfig(agent.adapterType, config);
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -2945,10 +2960,13 @@ export function heartbeatService(db: Db) {
       executionRunConfig,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    const runtimeConfig = {
-      ...resolvedConfig,
-      paperclipRuntimeSkills: runtimeSkillEntries,
-    };
+    const runtimeConfig = mapHermesCommandForRuntimeConfig(
+      agent.adapterType,
+      {
+        ...resolvedConfig,
+        paperclipRuntimeSkills: runtimeSkillEntries,
+      },
+    );
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -3387,7 +3405,7 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+    const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
@@ -3404,7 +3422,10 @@ export function heartbeatService(db: Db) {
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: {
+          ...agent,
+          adapterConfig: mappedAgentAdapterConfig,
+        },
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
