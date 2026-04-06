@@ -377,6 +377,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
     restore_moved_symlinks() {
       local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
       for relative_path in "${moved_symlink_paths[@]}"; do
         target_path="$worktree_cwd/$relative_path"
         backup_path="${target_path}${backup_suffix}"
@@ -388,6 +389,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
     cleanup_moved_symlinks() {
       local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
       for relative_path in "${moved_symlink_paths[@]}"; do
         target_path="$worktree_cwd/$relative_path"
         backup_path="${target_path}${backup_suffix}"

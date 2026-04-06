@@ -826,6 +826,79 @@ describe("realizeExecutionWorkspace", () => {
     30_000,
   );
 
+  it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "workspace-root",
+          private: true,
+          packageManager: "pnpm@9.15.4",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      [
+        "lockfileVersion: '9.0'",
+        "",
+        "settings:",
+        "  autoInstallPeers: true",
+        "  excludeLinksFromLockfile: false",
+        "",
+        "importers:",
+        "  .: {}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
+    await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+
+    await fs.mkdir(path.join(repoRoot, "node_modules"), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "node_modules", ".keep"), "", "utf8");
+
+    await runGit(repoRoot, ["add", "package.json", "pnpm-lock.yaml", "scripts/provision-worktree.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add minimal provision fixture"]);
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-552",
+        title: "Install without moved symlinks",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip", "config.json"), "utf8")).resolves.toContain(
+      "\"database\"",
+    );
+  }, 30_000);
+
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
