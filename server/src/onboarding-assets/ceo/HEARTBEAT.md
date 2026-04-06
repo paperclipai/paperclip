@@ -25,6 +25,11 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 ## 4. Get Assignments
 
 - `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,blocked`
+- Shell safety: never pipe downloaded content directly into interpreters/shells (no `curl|python`, `curl|bash`, `wget|sh`, etc.).
+- If you need command-line filtering, fetch to a local file first, then inspect/parse from that file.
+- Safe example:
+  - `curl -fsS -o /tmp/paperclip-issues.json "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked" -H "Authorization: Bearer $PAPERCLIP_API_KEY"`
+  - `jq -r '.[] | "\(.identifier) \(.status) \(.priority) \(.title)"' /tmp/paperclip-issues.json`
 - Prioritize: `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
