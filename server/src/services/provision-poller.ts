@@ -49,11 +49,18 @@ function clientForAgent(
   fallbackClient: FleetOSProxyClient,
 ): FleetOSProxyClient {
   const config = adapterConfig ?? {};
-  const apiKey = config.apiKey as string | undefined;
-  const baseUrl = config.fleetosUrl as string | undefined;
-  if (apiKey && baseUrl) {
+  const agentApiKey = config.apiKey as string | undefined;
+  const agentBaseUrl = config.fleetosUrl as string | undefined;
+  // No per-agent overrides — use global client
+  if (!agentApiKey && !agentBaseUrl) {
+    return fallbackClient;
+  }
+  // Mirror kickoff logic: per-agent values fall back to env vars
+  const effectiveApiKey = agentApiKey ?? process.env.FLEETOS_API_KEY ?? "";
+  const effectiveBaseUrl = agentBaseUrl ?? process.env.FLEETOS_API_URL;
+  if (effectiveApiKey && effectiveBaseUrl) {
     try {
-      return createFleetOSClient(apiKey, baseUrl);
+      return createFleetOSClient(effectiveApiKey, effectiveBaseUrl);
     } catch {
       return fallbackClient;
     }
