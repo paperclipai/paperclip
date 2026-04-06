@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import { agentChannels, agents, channelMemberships, channelMessages, issues } from "@ironworksai/db";
 
@@ -139,12 +139,26 @@ export async function getMessages(
     conditions.push(lt(channelMessages.createdAt, new Date(opts.before)));
   }
 
-  return db
+  const rows = await db
     .select()
     .from(channelMessages)
     .where(and(...conditions))
     .orderBy(desc(channelMessages.createdAt))
     .limit(limit);
+
+  // Resolve user names for messages with authorUserId
+  const userIds = [...new Set(rows.filter((r) => r.authorUserId).map((r) => r.authorUserId!))];
+  const userNames = new Map<string, string>();
+  if (userIds.length > 0) {
+    const { authUsers } = await import("@ironworksai/db");
+    const users = await db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, userIds));
+    for (const u of users) userNames.set(u.id, u.name);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    authorUserName: r.authorUserId ? (userNames.get(r.authorUserId) ?? null) : null,
+  }));
 }
 
 /**

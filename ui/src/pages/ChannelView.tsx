@@ -215,7 +215,10 @@ interface MessageRowProps {
 function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinned, onCreateIssue, onReply, threadReplies, companyId, channelId }: MessageRowProps) {
   const isBoard = !msg.authorAgentId && !msg.authorUserId;
   const agent = msg.authorAgentId ? agentMap.get(msg.authorAgentId) : null;
-  const authorName = isBoard ? "Board" : (agent?.name ?? "User");
+  const authorUserName = (msg as unknown as Record<string, unknown>).authorUserName as string | null | undefined;
+  const authorName = isBoard
+    ? "Board"
+    : agent?.name ?? authorUserName ?? "User";
   const replyTo = msg.replyToId ? replyMap.get(msg.replyToId) : null;
   const linkedIssue = msg.linkedIssueId ? issueMap.get(msg.linkedIssueId) : null;
 
