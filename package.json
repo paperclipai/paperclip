@@ -50,7 +50,8 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
+      "hermes-paperclip-adapter@0.2.0": "patches/hermes-paperclip-adapter@0.2.0.patch"
     }
   }
 }
