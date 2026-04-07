@@ -818,6 +818,7 @@ function RuntimeSkillsSidebar({
           ...section,
           items: section.items.filter((item) => item.toLowerCase().includes(needle)),
         }));
+        const hasVisibleSectionContent = filteredSections.some((section) => section.items.length > 0);
         return (
           <div key={adapter.adapterType} className="mt-4 rounded-md border border-border/80 px-2.5 py-2">
             <div className="flex items-center gap-2">
@@ -916,6 +917,9 @@ function RuntimeSkillsSidebar({
                 )}
               </div>
             ))}
+            {adapter.sections && adapter.sections.length > 0 && !hasVisibleSectionContent && needle ? (
+              <p className="mt-2 text-xs text-muted-foreground">No section entries match this filter.</p>
+            ) : null}
           </div>
         );
       })}

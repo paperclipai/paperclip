@@ -2786,8 +2786,12 @@ export function accessRoutes(
     };
   }
 
+<<<<<<< HEAD
   router.get("/skills/available", async (req, res) => {
     assertAuthenticated(req);
+=======
+  router.get("/skills/available", async (_req, res) => {
+>>>>>>> 7fcebd24 (fix: update)
     const adapters = await listRuntimeSkillCatalogs();
     res.json({ adapters });
   });
