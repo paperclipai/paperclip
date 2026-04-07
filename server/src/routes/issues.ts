@@ -468,20 +468,24 @@ export function issueRoutes(
 
     const qaAgentId = qaPassComment.authorAgentId;
     const qaUserId = qaPassComment.authorUserId;
-    const sinceDate = issue.updatedAt;
 
-    const hasBrowseText = actorHasBrowseEvidence(comments, qaAgentId, qaUserId, sinceDate);
-    const hasImage = actorHasImageAttachment(attachments, qaAgentId, qaUserId, sinceDate);
+    // Check for image attachments from the QA reviewer without a time window.
+    // The previous approach used issue.updatedAt as the time anchor, but every failed
+    // gate attempt bumps updatedAt — eventually invalidating all prior evidence and
+    // making the issue impossible to close. The QA PASS comment itself is the review
+    // cycle anchor; if the same agent uploaded screenshots to this issue, that's
+    // sufficient evidence of interactive testing.
+    const hasImage = attachments.some(a => {
+      const isActor =
+        (qaAgentId && a.createdByAgentId === qaAgentId) ||
+        (qaUserId && a.createdByUserId === qaUserId);
+      return isActor && a.contentType?.startsWith("image/");
+    });
 
-    // Image attachment is the primary evidence. If the QA reviewer uploaded
-    // screenshots, accept even without matching browse text pattern — the
-    // screenshots prove interactive testing occurred.
     if (!hasImage) {
-      const missing: string[] = ["screenshot attachment from the QA reviewer"];
-      if (!hasBrowseText) missing.push("browser testing commands in a comment");
       return {
         gate: "done_requires_qa_browse_evidence",
-        reason: `QA PASS without interactive testing evidence is insufficient for code issues. Missing: ${missing.join(" and ")}. The QA reviewer must upload screenshots via POST /api/companies/{companyId}/issues/{issueId}/attachments.`,
+        reason: "QA PASS without screenshot evidence is insufficient for code issues. The QA reviewer must upload at least one screenshot via POST /api/companies/{companyId}/issues/{issueId}/attachments.",
       };
     }
 
