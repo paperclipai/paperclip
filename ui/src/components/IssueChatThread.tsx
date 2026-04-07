@@ -175,9 +175,13 @@ interface IssueChatThreadProps {
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
   showComposer?: boolean;
+  showJumpToLatest?: boolean;
+  emptyMessage?: string;
+  variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
+  includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
 }
@@ -1591,9 +1595,13 @@ export function IssueChatThread({
   mentions = [],
   composerDisabledReason = null,
   showComposer = true,
+  showJumpToLatest,
+  emptyMessage,
+  variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
   hasOutputForRun: hasOutputForRunOverride,
+  includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   interruptingQueuedRunId = null,
 }: IssueChatThreadProps) {
@@ -1659,6 +1667,7 @@ export function IssueChatThread({
         activeRun,
         transcriptsByRunId: resolvedTranscriptByRun,
         hasOutputForRun: resolvedHasOutputForRun,
+        includeSucceededRunsWithoutOutput,
         companyId,
         projectId,
         agentMap,
@@ -1672,6 +1681,7 @@ export function IssueChatThread({
       activeRun,
       resolvedTranscriptByRun,
       resolvedHasOutputForRun,
+      includeSucceededRunsWithoutOutput,
       companyId,
       projectId,
       agentMap,
@@ -1743,25 +1753,38 @@ export function IssueChatThread({
     [],
   );
 
+  const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
+  const resolvedEmptyMessage = emptyMessage
+    ?? (variant === "embedded"
+      ? "No run output yet."
+      : "This issue conversation is empty. Start with a message below.");
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
-      <div className="space-y-4">
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={handleJumpToLatest}
-            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Jump to latest
-          </button>
-        </div>
+      <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        {resolvedShowJumpToLatest ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Jump to latest
+            </button>
+          </div>
+        ) : null}
 
         <ThreadPrimitive.Root className="">
-          <ThreadPrimitive.Viewport className="space-y-4">
+          <ThreadPrimitive.Viewport className={variant === "embedded" ? "space-y-3" : "space-y-4"}>
             <ThreadPrimitive.Empty>
-              <div className="rounded-2xl border border-dashed border-border bg-card px-6 py-10 text-center text-sm text-muted-foreground">
-                This issue conversation is empty. Start with a message below.
+              <div className={cn(
+                "text-center text-sm text-muted-foreground",
+                variant === "embedded"
+                  ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
+                  : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+              )}>
+                {resolvedEmptyMessage}
               </div>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={components} />

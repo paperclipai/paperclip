@@ -139,6 +139,39 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("supports the embedded read-only variant without the jump control", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            variant="embedded"
+            emptyMessage="No run output captured."
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("No run output captured.");
+    expect(container.textContent).not.toContain("Jump to latest");
+
+    const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
+    expect(viewport?.className).toContain("space-y-3");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("stores and restores the composer draft per issue key", () => {
     vi.useFakeTimers();
     const root = createRoot(container);

@@ -332,4 +332,39 @@ describe("buildIssueChatMessages", () => {
       { type: "text", text: "Updated the thread renderer." },
     ]);
   });
+
+  it("can keep succeeded runs without transcript output for embedded run feeds", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-history-2",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        },
+      ],
+      liveRuns: [],
+      includeSucceededRunsWithoutOutput: true,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "run:run-history-2",
+      role: "system",
+      metadata: {
+        custom: {
+          kind: "run",
+          runId: "run-history-2",
+          runAgentName: "CodexCoder",
+          runStatus: "succeeded",
+        },
+      },
+    });
+  });
 });

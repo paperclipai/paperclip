@@ -32,6 +32,7 @@ export interface IssueChatLinkedRun {
   runId: string;
   status: string;
   agentId: string;
+  agentName?: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
@@ -372,7 +373,7 @@ function runDurationLabel(run: {
 }
 
 function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<string, Agent>) {
-  const agentName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
+  const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const message: ThreadSystemMessage = {
     id: `run:${run.runId}`,
     role: "system",
@@ -399,7 +400,7 @@ function createHistoricalTranscriptMessage(args: {
   agentMap?: Map<string, Agent>;
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
-  const agentName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
+  const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -639,6 +640,7 @@ export function buildIssueChatMessages(args: {
   activeRun?: ActiveRunForIssue | null;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
+  includeSucceededRunsWithoutOutput?: boolean;
   issueId?: string;
   companyId?: string | null;
   projectId?: string | null;
@@ -653,6 +655,7 @@ export function buildIssueChatMessages(args: {
     activeRun,
     transcriptsByRunId,
     hasOutputForRun,
+    includeSucceededRunsWithoutOutput = false,
     issueId,
     companyId,
     projectId,
@@ -694,7 +697,7 @@ export function buildIssueChatMessages(args: {
       });
       continue;
     }
-    if (run.status === "succeeded") continue;
+    if (run.status === "succeeded" && !includeSucceededRunsWithoutOutput) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),
       order: 2,
