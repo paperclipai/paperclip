@@ -49,6 +49,8 @@ import {
   Loader2,
   ListTree,
   X,
+  Eye,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -1177,64 +1179,6 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <InlineEntitySelector
-                value={reviewerValue}
-                options={assigneeOptions}
-                placeholder="Reviewer"
-                disablePortal
-                noneLabel="No reviewer"
-                searchPlaceholder="Search reviewers..."
-                emptyMessage="No reviewers found."
-                onChange={setReviewerValue}
-                renderTriggerValue={(option) =>
-                  option ? (
-                    <span className="truncate">{`Reviewer: ${option.label}`}</span>
-                  ) : (
-                    <span className="text-muted-foreground">Reviewer</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const reviewer = parseAssigneeValue(option.id).assigneeAgentId
-                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
-                    : null;
-                  return (
-                    <>
-                      {reviewer ? <AgentIcon icon={reviewer.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
-              <InlineEntitySelector
-                value={approverValue}
-                options={assigneeOptions}
-                placeholder="Approver"
-                disablePortal
-                noneLabel="No approver"
-                searchPlaceholder="Search approvers..."
-                emptyMessage="No approvers found."
-                onChange={setApproverValue}
-                renderTriggerValue={(option) =>
-                  option ? (
-                    <span className="truncate">{`Approver: ${option.label}`}</span>
-                  ) : (
-                    <span className="text-muted-foreground">Approver</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const approver = parseAssigneeValue(option.id).assigneeAgentId
-                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
-                    : null;
-                  return (
-                    <>
-                      {approver ? <AgentIcon icon={approver.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
             </div>
           </div>
         </div>
@@ -1538,13 +1482,87 @@ export function NewIssueDialog() {
             multiple
           />
           <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            className="bg-transparent font-normal text-xs text-muted-foreground"
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
             Upload
           </button>
+
+          <InlineEntitySelector
+            value={reviewerValue}
+            options={assigneeOptions}
+            placeholder="Reviewer"
+            disablePortal
+            noneLabel="No reviewer"
+            searchPlaceholder="Search reviewers..."
+            emptyMessage="No reviewers found."
+            onChange={setReviewerValue}
+            className="bg-transparent font-normal text-xs text-muted-foreground"
+            renderTriggerValue={(option) =>
+              option ? (
+                <>
+                  <Eye className="h-3 w-3" />
+                  <span className="truncate">{option.label}</span>
+                </>
+              ) : (
+                <>
+                  <Eye className="h-3 w-3" />
+                  <span>Reviewer</span>
+                </>
+              )
+            }
+            renderOption={(option) => {
+              if (!option.id) return <span className="truncate">{option.label}</span>;
+              const reviewer = parseAssigneeValue(option.id).assigneeAgentId
+                ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                : null;
+              return (
+                <>
+                  {reviewer ? <AgentIcon icon={reviewer.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                  <span className="truncate">{option.label}</span>
+                </>
+              );
+            }}
+          />
+
+          <InlineEntitySelector
+            value={approverValue}
+            options={assigneeOptions}
+            placeholder="Approver"
+            disablePortal
+            noneLabel="No approver"
+            searchPlaceholder="Search approvers..."
+            emptyMessage="No approvers found."
+            onChange={setApproverValue}
+            className="bg-transparent font-normal text-xs text-muted-foreground"
+            renderTriggerValue={(option) =>
+              option ? (
+                <>
+                  <ShieldCheck className="h-3 w-3" />
+                  <span className="truncate">{option.label}</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>Approver</span>
+                </>
+              )
+            }
+            renderOption={(option) => {
+              if (!option.id) return <span className="truncate">{option.label}</span>;
+              const approver = parseAssigneeValue(option.id).assigneeAgentId
+                ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                : null;
+              return (
+                <>
+                  {approver ? <AgentIcon icon={approver.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                  <span className="truncate">{option.label}</span>
+                </>
+              );
+            }}
+          />
 
           {/* More (dates) */}
           <Popover open={moreOpen} onOpenChange={setMoreOpen}>
