@@ -479,7 +479,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);
-    if (mcpConfigPaths.length > 0) args.push("--mcp-config", ...mcpConfigPaths);
+    for (const p of mcpConfigPaths) args.push("--mcp-config", p);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
