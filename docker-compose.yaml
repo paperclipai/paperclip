@@ -1,32 +1,40 @@
-version: '3.8'
-
 services:
-  paperclip:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "3100:3100"
     environment:
-      - DATABASE_URL=postgresql://paperclip:paperclip@db:5432/paperclip
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PORT=3100
-      - SERVE_UI=true
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-      - NEXTAUTH_URL=${NEXTAUTH_URL}
-      - NODE_ENV=production
-    depends_on:
-      - db
-
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_USER=paperclip
-      - POSTGRES_PASSWORD=paperclip
-      - POSTGRES_DB=paperclip
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - paperclip-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
-  postgres_data:
+  pgdata:
+  paperclip-data:
