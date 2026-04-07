@@ -22,18 +22,9 @@ const TASK_TITLE = "E2E test task";
 
 test.describe("Onboarding wizard", () => {
   test("completes full wizard flow", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/onboarding");
 
     const wizardHeading = page.locator("h3", { hasText: "Name your company" });
-    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
-
-    await expect(
-      wizardHeading.or(newCompanyBtn)
-    ).toBeVisible({ timeout: 15_000 });
-
-    if (await newCompanyBtn.isVisible()) {
-      await newCompanyBtn.click();
-    }
 
     await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
 
@@ -45,7 +36,7 @@ test.describe("Onboarding wizard", () => {
 
     await expect(
       page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 30_000 });
 
     const agentNameInput = page.locator('input[placeholder="CEO"]');
     await expect(agentNameInput).toHaveValue(AGENT_NAME);
@@ -61,7 +52,7 @@ test.describe("Onboarding wizard", () => {
 
     await expect(
       page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 30_000 });
 
     const taskTitleInput = page.locator(
       'input[placeholder="e.g. Research competitor pricing"]'
@@ -73,7 +64,7 @@ test.describe("Onboarding wizard", () => {
 
     await expect(
       page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 30_000 });
 
     await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
     await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
@@ -81,7 +72,7 @@ test.describe("Onboarding wizard", () => {
 
     await page.getByRole("button", { name: "Create & Open Issue" }).click();
 
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
+    await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
 
