@@ -5,38 +5,28 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: paperclip
     ports:
-      - "3100:3100"
+      - "3000:3000"
     environment:
+      - DATABASE_URL=postgresql://paperclip:paperclip@db:5432/paperclip
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PORT=3000
+      - SERVE_UI=true
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/paperclip
-      - PAPERCLIP_TELEMETRY_DISABLED=1
-    volumes:
-      - paperclip-data:/app/data
     depends_on:
       - db
-    restart: unless-stopped
-    networks:
-      - paperclip-network
 
   db:
     image: postgres:15-alpine
-    container_name: paperclip-db
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=paperclip
+      - POSTGRES_PASSWORD=paperclip
       - POSTGRES_DB=paperclip
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    networks:
-      - paperclip-network
 
 volumes:
-  paperclip-data:
   postgres_data:
-
-networks:
-  paperclip-network:
-    driver: bridge
