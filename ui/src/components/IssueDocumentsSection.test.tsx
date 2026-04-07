@@ -221,7 +221,7 @@ describe("IssueDocumentsSection", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    window.localStorage.clear();
+    window.localStorage?.clear?.();
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
   });
