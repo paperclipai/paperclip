@@ -1,0 +1,23 @@
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+index 93cddf8243271f5fb3ab101617f9114257e41328..c02ad87646a056ce6cf2c2a2398dd02d9cce4e95 100644
+--- a/dist/server/execute.js
++++ b/dist/server/execute.js
+@@ -248,7 +248,17 @@ export async function execute(ctx) {
+     const provider = cfgString(config.provider);
+     const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+     const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
+-    const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
++    // Known Hermes built-in toolset names. MCP server names must NOT be
++    // passed via -t; they auto-load from ~/.hermes/config.yaml.
++    const HERMES_BUILTIN_TOOLSETS = new Set([
++        "web", "browser", "terminal", "file", "code_execution", "vision",
++        "image_gen", "moa", "tts", "skills", "todo", "memory",
++        "session_search", "clarify", "delegation", "cronjob", "rl", "homeassistant",
++    ]);
++    const rawToolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
++    const toolsets = rawToolsets
++        ? rawToolsets.split(",").map(t => t.trim()).filter(t => HERMES_BUILTIN_TOOLSETS.has(t)).join(",") || undefined
++        : undefined;
+     const extraArgs = cfgStringArray(config.extraArgs);
+     const persistSession = cfgBoolean(config.persistSession) !== false;
+     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
