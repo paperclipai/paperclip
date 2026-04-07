@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
@@ -483,14 +484,24 @@ async function executeProcess(input: {
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const stdoutDec = new StringDecoder("utf8");
+    const stderrDec = new StringDecoder("utf8");
     child.stdout?.on("data", (chunk) => {
-      stdout.append(String(chunk));
+      const text = stdoutDec.write(chunk);
+      if (text) stdout.append(text);
     });
     child.stderr?.on("data", (chunk) => {
-      stderr.append(String(chunk));
+      const text = stderrDec.write(chunk);
+      if (text) stderr.append(text);
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("close", (code) => {
+      const stdoutTail = stdoutDec.end();
+      const stderrTail = stderrDec.end();
+      if (stdoutTail) stdout.append(stdoutTail);
+      if (stderrTail) stderr.append(stderrTail);
+      resolve({ stdout, stderr, code });
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -2048,13 +2059,17 @@ async function startLocalRuntimeService(input: {
   });
   let stderrExcerpt = "";
   let stdoutExcerpt = "";
+  const svcStdoutDec = new StringDecoder("utf8");
+  const svcStderrDec = new StringDecoder("utf8");
   child.stdout?.on("data", async (chunk) => {
-    const text = String(chunk);
+    const text = svcStdoutDec.write(chunk);
+    if (!text) return;
     stdoutExcerpt = (stdoutExcerpt + text).slice(-4096);
     if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${text}`);
   });
   child.stderr?.on("data", async (chunk) => {
-    const text = String(chunk);
+    const text = svcStderrDec.write(chunk);
+    if (!text) return;
     stderrExcerpt = (stderrExcerpt + text).slice(-4096);
     if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
   });
