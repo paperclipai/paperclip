@@ -104,7 +104,7 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">Selecione uma empresa para ver esta página.</p>
       </div>
     );
   }

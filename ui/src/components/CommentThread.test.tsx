@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
+import { formatRelativeTime } from "@/lib/locale";
 
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children, className }: { children: ReactNode; className?: string }) => (
@@ -109,7 +110,7 @@ describe("CommentThread", () => {
     expect(runRow?.className).not.toContain("border");
     expect(container.textContent).toContain("CodexCoder");
     expect(container.textContent).toContain("succeeded");
-    expect(container.textContent).toContain("2h ago");
+    expect(container.textContent).toContain(formatRelativeTime("2026-03-11T10:00:00.000Z"));
     expect(container.textContent).not.toContain("4h ago");
     const runLink = container.querySelector('a[href="/agents/agent-1/runs/run-12345678abcd"]') as HTMLAnchorElement | null;
     expect(runLink?.textContent).toContain("run-1234");

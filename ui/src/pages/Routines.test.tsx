@@ -293,6 +293,27 @@ async function flush() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
+function resetLocalStorage(storage: Storage | undefined) {
+  if (!storage) {
+    return;
+  }
+  if (typeof storage.clear === "function") {
+    storage.clear();
+    return;
+  }
+
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key) {
+      keys.push(key);
+    }
+  }
+  for (const key of keys) {
+    storage.removeItem(key);
+  }
+}
+
 describe("Routines page", () => {
   let container: HTMLDivElement;
 
@@ -304,7 +325,7 @@ describe("Routines page", () => {
     routinesListMock.mockReset();
     issuesListMock.mockReset();
     issuesListRenderMock.mockClear();
-    localStorage.clear();
+    resetLocalStorage(window.localStorage);
   });
 
   afterEach(() => {

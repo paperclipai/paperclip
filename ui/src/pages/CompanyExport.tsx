@@ -391,7 +391,7 @@ function FrontmatterCard({
 
 const ROLE_LABELS: Record<string, string> = {
   ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO", coo: "COO",
-  vp: "VP", manager: "Manager", engineer: "Engineer", agent: "Agent",
+  vp: "VP", manager: "Gerente", engineer: "Engenharia", agent: "Agente",
 };
 
 /**
@@ -423,24 +423,24 @@ function generateReadmeFromSelection(
   }
   // Org chart image (generated during export as images/org-chart.png)
   if (agents.length > 0) {
-    lines.push("![Org Chart](images/org-chart.png)");
+    lines.push("![Organograma](images/org-chart.png)");
     lines.push("");
   }
 
-  lines.push("## What's Inside");
+  lines.push("## Conteúdo");
   lines.push("");
-  lines.push("This is an [Agent Company](https://paperclip.ing) package.");
+  lines.push("Este é um pacote de [Agent Company](https://paperclip.ing).");
   lines.push("");
 
   const counts: Array<[string, number]> = [];
-  if (agents.length > 0) counts.push(["Agents", agents.length]);
-  if (projects.length > 0) counts.push(["Projects", projects.length]);
-  if (skills.length > 0) counts.push(["Skills", skills.length]);
-  if (tasks.length > 0) counts.push(["Tasks", tasks.length]);
+  if (agents.length > 0) counts.push(["Agentes", agents.length]);
+  if (projects.length > 0) counts.push(["Projetos", projects.length]);
+  if (skills.length > 0) counts.push(["Habilidades", skills.length]);
+  if (tasks.length > 0) counts.push(["Tarefas", tasks.length]);
 
   if (counts.length > 0) {
-    lines.push("| Content | Count |");
-    lines.push("|---------|-------|");
+    lines.push("| Conteúdo | Quantidade |");
+    lines.push("|----------|------------|");
     for (const [label, count] of counts) {
       lines.push(`| ${label} | ${count} |`);
     }
@@ -448,10 +448,10 @@ function generateReadmeFromSelection(
   }
 
   if (agents.length > 0) {
-    lines.push("### Agents");
+    lines.push("### Agentes");
     lines.push("");
-    lines.push("| Agent | Role | Reports To |");
-    lines.push("|-------|------|------------|");
+    lines.push("| Agente | Função | Reporta para |");
+    lines.push("|--------|--------|--------------|");
     for (const agent of agents) {
       const roleLabel = ROLE_LABELS[agent.role] ?? agent.role;
       const reportsTo = agent.reportsToSlug ?? "\u2014";
@@ -461,7 +461,7 @@ function generateReadmeFromSelection(
   }
 
   if (projects.length > 0) {
-    lines.push("### Projects");
+    lines.push("### Projetos");
     lines.push("");
     for (const project of projects) {
       const desc = project.description ? ` \u2014 ${project.description}` : "";
@@ -470,16 +470,16 @@ function generateReadmeFromSelection(
     lines.push("");
   }
 
-  lines.push("## Getting Started");
+  lines.push("## Primeiros passos");
   lines.push("");
   lines.push("```bash");
   lines.push("pnpm paperclipai company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
-  lines.push("See [Paperclip](https://paperclip.ing) for more information.");
+  lines.push("Veja [Paperclip](https://paperclip.ing) para mais informações.");
   lines.push("");
   lines.push("---");
-  lines.push(`Exported from [Paperclip](https://paperclip.ing) on ${new Date().toISOString().split("T")[0]}`);
+  lines.push(`Exportado do [Paperclip](https://paperclip.ing) em ${new Date().toISOString().split("T")[0]}`);
   lines.push("");
 
   return lines.join("\n");
@@ -500,7 +500,8 @@ function ExportPreviewPane({
 }) {
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message="Selecione um arquivo para visualizar o conteúdo." />
+      
     );
   }
 
@@ -672,8 +673,8 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
-      { label: "Export" },
+      { label: "Organograma", href: "/org" },
+      { label: "Exportar" },
     ]);
   }, [setBreadcrumbs]);
 
@@ -719,8 +720,8 @@ export function CompanyExport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to load export data.",
+        title: "Falha na exportação",
+        body: err instanceof Error ? err.message : "Falha ao carregar os dados de exportação.",
       });
     },
   });
@@ -737,15 +738,15 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
-        body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
+        title: "Exportação baixada",
+        body: `${resultCheckedFiles.size} arquivo${resultCheckedFiles.size === 1 ? "" : "s"} exportado${resultCheckedFiles.size === 1 ? "" : "s"} como ${result.rootPath}.zip`,
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        title: "Falha na exportação",
+        body: err instanceof Error ? err.message : "Falha ao montar o pacote de exportação.",
       });
     },
   });
@@ -789,7 +790,7 @@ export function CompanyExport() {
 
     // Regenerate README.md based on checked selection
     if (typeof exportData.files["README.md"] === "string") {
-      const companyName = exportData.manifest.company?.name ?? selectedCompany?.name ?? "Company";
+      const companyName = exportData.manifest.company?.name ?? selectedCompany?.name ?? "Empresa";
       const companyDescription = exportData.manifest.company?.description ?? null;
       filtered["README.md"] = generateReadmeFromSelection(
         exportData.manifest,
@@ -911,7 +912,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select a company to export." />;
+    return <EmptyState icon={Package} message="Selecione uma empresa para exportar." />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -919,7 +920,7 @@ export function CompanyExport() {
   }
 
   if (!exportData) {
-    return <EmptyState icon={Package} message="Loading export data..." />;
+    return <EmptyState icon={Package} message="Carregando dados de exportação..." />;
   }
 
   const previewContent = selectedFile
@@ -935,14 +936,14 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Company"} export
+              Exportação de {selectedCompany?.name ?? "Empresa"}
             </span>
             <span className="text-muted-foreground">
-              {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
+              {selectedCount} / {totalFiles} arquivo{totalFiles === 1 ? "" : "s"} selecionado{selectedCount === 1 ? "" : "s"}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                {warnings.length} aviso{warnings.length === 1 ? "" : "s"}
               </span>
             )}
           </div>
@@ -953,8 +954,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
+              ? "Montando exportação..."
+              : `Exportar ${selectedCount} arquivo${selectedCount === 1 ? "" : "s"}`}
           </Button>
         </div>
       </div>
@@ -973,6 +974,7 @@ export function CompanyExport() {
         <aside className="flex flex-col border-r border-border overflow-hidden">
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
+            
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -981,7 +983,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder="Buscar arquivos..."
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
@@ -1003,7 +1005,7 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more issues ({visibleTaskChildren} of {totalTaskChildren})
+                  Mostrar mais tarefas ({visibleTaskChildren} de {totalTaskChildren})
                 </button>
               </div>
             )}

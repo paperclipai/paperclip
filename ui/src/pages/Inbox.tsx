@@ -1523,7 +1523,7 @@ export function Inbox() {
   }, [selectedIndex]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState icon={InboxIcon} message="Selecione uma empresa para ver a caixa de entrada." />;
   }
 
   const hasRunFailures = failedRuns.length > 0;

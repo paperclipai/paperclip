@@ -127,7 +127,7 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
-    expect(document.body.textContent).toContain("Run routine");
+    expect(document.body.textContent).toContain("Executar rotina");
 
     await act(async () => {
       root.unmount();

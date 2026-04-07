@@ -545,7 +545,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message="Selecione uma empresa para ver as rotinas." />;
   }
 
   if (isLoading) {
@@ -905,7 +905,7 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No routines yet. Use Create routine to define the first recurring workflow."
+                message="Ainda não há rotinas. Use Criar rotina para definir o primeiro fluxo recorrente."
               />
             </div>
           ) : (

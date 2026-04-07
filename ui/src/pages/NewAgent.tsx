@@ -97,7 +97,7 @@ export function NewAgent() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
+      { label: "Novo agente" },
     ]);
   }, [setBreadcrumbs]);
 
@@ -202,7 +202,7 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
+        <h1 className="text-lg font-semibold">Novo agente</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Advanced agent configuration
         </p>
@@ -287,7 +287,7 @@ export function NewAgent() {
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
+                Ainda não há habilidades opcionais da empresa instaladas.
               </p>
             ) : (
               <div className="space-y-3">

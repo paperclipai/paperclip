@@ -45,8 +45,8 @@ function readIssueDetailBreadcrumbHrefFromSearch(search?: string): string | null
 }
 
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
-  if (source === "inbox") return { label: "Inbox", href: "/inbox" };
-  return { label: "Issues", href: "/issues" };
+  if (source === "inbox") return { label: "Caixa de entrada", href: "/inbox" };
+  return { label: "Tarefas", href: "/issues" };
 }
 
 export function createIssueDetailLocationState(

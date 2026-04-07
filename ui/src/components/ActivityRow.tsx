@@ -3,50 +3,51 @@ import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import { translatePriority, translateStatus, translateValueLabel } from "../lib/locale";
 
 const ACTION_VERBS: Record<string, string> = {
-  "issue.created": "created",
-  "issue.updated": "updated",
-  "issue.checked_out": "checked out",
-  "issue.released": "released",
-  "issue.comment_added": "commented on",
-  "issue.attachment_added": "attached file to",
-  "issue.attachment_removed": "removed attachment from",
-  "issue.document_created": "created document for",
-  "issue.document_updated": "updated document on",
-  "issue.document_deleted": "deleted document from",
-  "issue.commented": "commented on",
-  "issue.deleted": "deleted",
-  "agent.created": "created",
-  "agent.updated": "updated",
-  "agent.paused": "paused",
-  "agent.resumed": "resumed",
-  "agent.terminated": "terminated",
-  "agent.key_created": "created API key for",
-  "agent.budget_updated": "updated budget for",
-  "agent.runtime_session_reset": "reset session for",
-  "heartbeat.invoked": "invoked heartbeat for",
-  "heartbeat.cancelled": "cancelled heartbeat for",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-  "project.created": "created",
-  "project.updated": "updated",
-  "project.deleted": "deleted",
-  "goal.created": "created",
-  "goal.updated": "updated",
-  "goal.deleted": "deleted",
-  "cost.reported": "reported cost for",
-  "cost.recorded": "recorded cost for",
-  "company.created": "created company",
-  "company.updated": "updated company",
-  "company.archived": "archived",
-  "company.budget_updated": "updated budget for",
+  "issue.created": "criou",
+  "issue.updated": "atualizou",
+  "issue.checked_out": "assumiu",
+  "issue.released": "liberou",
+  "issue.comment_added": "comentou em",
+  "issue.attachment_added": "anexou arquivo em",
+  "issue.attachment_removed": "removeu anexo de",
+  "issue.document_created": "criou documento em",
+  "issue.document_updated": "atualizou documento em",
+  "issue.document_deleted": "removeu documento de",
+  "issue.commented": "comentou em",
+  "issue.deleted": "excluiu",
+  "agent.created": "criou",
+  "agent.updated": "atualizou",
+  "agent.paused": "pausou",
+  "agent.resumed": "retomou",
+  "agent.terminated": "encerrou",
+  "agent.key_created": "criou chave de API para",
+  "agent.budget_updated": "atualizou orçamento de",
+  "agent.runtime_session_reset": "reiniciou sessão de",
+  "heartbeat.invoked": "executou heartbeat de",
+  "heartbeat.cancelled": "cancelou heartbeat de",
+  "approval.created": "solicitou aprovação",
+  "approval.approved": "aprovou",
+  "approval.rejected": "rejeitou",
+  "project.created": "criou",
+  "project.updated": "atualizou",
+  "project.deleted": "excluiu",
+  "goal.created": "criou",
+  "goal.updated": "atualizou",
+  "goal.deleted": "excluiu",
+  "cost.reported": "reportou custo para",
+  "cost.recorded": "registrou custo para",
+  "company.created": "criou a empresa",
+  "company.updated": "atualizou a empresa",
+  "company.archived": "arquivou",
+  "company.budget_updated": "atualizou orçamento de",
 };
 
 function humanizeValue(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "none");
-  return value.replace(/_/g, " ");
+  if (typeof value !== "string") return String(value ?? "nenhum");
+  return translateValueLabel(value);
 }
 
 function formatVerb(action: string, details?: Record<string, unknown> | null): string {
@@ -55,14 +56,14 @@ function formatVerb(action: string, details?: Record<string, unknown> | null): s
     if (details.status !== undefined) {
       const from = previous.status;
       return from
-        ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
-        : `changed status to ${humanizeValue(details.status)} on`;
+        ? `alterou o status de ${translateStatus(String(from))} para ${translateStatus(String(details.status))} em`
+        : `alterou o status para ${translateStatus(String(details.status))} em`;
     }
     if (details.priority !== undefined) {
       const from = previous.priority;
       return from
-        ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
-        : `changed priority to ${humanizeValue(details.priority)} on`;
+        ? `alterou a prioridade de ${translatePriority(String(from))} para ${translatePriority(String(details.priority))} em`
+        : `alterou a prioridade para ${translatePriority(String(details.priority))} em`;
     }
   }
   return ACTION_VERBS[action] ?? action.replace(/[._]/g, " ");
@@ -106,7 +107,7 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
     : entityLink(event.entityType, event.entityId, name);
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : event.actorType === "user" ? "Board" : event.actorId || "Unknown");
+  const actorName = actor?.name ?? (event.actorType === "system" ? "Sistema" : event.actorType === "user" ? "Board" : event.actorId || "Desconhecido");
 
   const inner = (
     <div className="flex gap-3">

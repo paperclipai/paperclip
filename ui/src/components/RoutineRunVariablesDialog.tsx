@@ -195,9 +195,9 @@ export function RoutineRunVariablesDialog({
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Run routine</DialogTitle>
+          <DialogTitle>Executar rotina</DialogTitle>
           <DialogDescription>
-            Fill in the routine variables before starting the execution issue.
+            Preencha as variáveis da rotina antes de iniciar a tarefa de execução.
           </DialogDescription>
         </DialogHeader>
 
@@ -226,9 +226,9 @@ export function RoutineRunVariablesDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
-                    <SelectItem value="true">True</SelectItem>
-                    <SelectItem value="false">False</SelectItem>
+                    <SelectItem value="__unset__">Sem valor</SelectItem>
+                    <SelectItem value="true">Verdadeiro</SelectItem>
+                    <SelectItem value="false">Falso</SelectItem>
                   </SelectContent>
                 </Select>
               ) : variable.type === "select" ? (
@@ -240,10 +240,10 @@ export function RoutineRunVariablesDialog({
                   }))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Choose a value" />
+                    <SelectValue placeholder="Escolha um valor" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
+                    <SelectItem value="__unset__">Sem valor</SelectItem>
                     {variable.options.map((option) => (
                       <SelectItem key={option} value={option}>{option}</SelectItem>
                     ))}
@@ -275,17 +275,17 @@ export function RoutineRunVariablesDialog({
         <DialogFooter showCloseButton={false}>
           {missingRequired.length > 0 ? (
             <p className="mr-auto text-xs text-amber-600">
-              Missing: {missingRequired.join(", ")}
+              Faltando: {missingRequired.join(", ")}
             </p>
           ) : workspaceSelectionEnabled && !workspaceConfigValid ? (
             <p className="mr-auto text-xs text-amber-600">
-              Choose an existing workspace before running.
+              Escolha um workspace existente antes de executar.
             </p>
           ) : (
             <span className="mr-auto" />
           )}
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isPending}>
-            Cancel
+            Cancelar
           </Button>
           <Button
             onClick={() => {
@@ -313,9 +313,9 @@ export function RoutineRunVariablesDialog({
               });
             }}
             disabled={isPending || !canSubmit}
-          >
-            {isPending ? "Running..." : "Run routine"}
-          </Button>
+        >
+          {isPending ? "Executando..." : "Executar rotina"}
+        </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

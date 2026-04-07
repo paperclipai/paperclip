@@ -215,13 +215,58 @@ function createIssue(): Issue {
   };
 }
 
+function resetLocalStorage(storage: Storage | undefined) {
+  if (!storage) {
+    return;
+  }
+  if (typeof storage.clear === "function") {
+    storage.clear();
+    return;
+  }
+
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key) {
+      keys.push(key);
+    }
+  }
+  for (const key of keys) {
+    storage.removeItem(key);
+  }
+}
+
+function ensureLocalStorageMock() {
+  const storage = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+      clear: () => {
+        storage.clear();
+      },
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size;
+      },
+    } satisfies Storage,
+    configurable: true,
+  });
+}
+
 describe("IssueDocumentsSection", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    ensureLocalStorageMock();
     container = document.createElement("div");
     document.body.appendChild(container);
-    window.localStorage.clear();
+    resetLocalStorage(window.localStorage);
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
   });
