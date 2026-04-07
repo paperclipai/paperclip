@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
+import { initCommand } from "./commands/init.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
 import { configure } from "./commands/configure.js";
@@ -44,6 +45,16 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
   loadPaperclipEnvFile(options.config);
   initTelemetryFromConfigFile(options.config);
 });
+
+program
+  .command("init")
+  .description("Interview-first onboarding wizard — recommended for new installs")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-t, --template <name>", "Quickstart template (solo-dev)")
+  .option("-y, --yes", "Accept defaults without prompts", false)
+  .option("--run", "Start Paperclip immediately after setup", false)
+  .action(initCommand);
 
 program
   .command("onboard")
