@@ -69,7 +69,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const rawModel = asString(config.model, "");
+  // Normalize: claude-opus-4-6 → claude-opus-4.6 (dots in version, not hyphens)
+  const model = rawModel.replace(/(\d)-(\d)/g, "$1.$2");
   const trustAllTools = asBoolean(config.trustAllTools, true);
   const command = asString(config.command, "kiro-cli");
   const configuredCwd = asString(config.cwd, "");
