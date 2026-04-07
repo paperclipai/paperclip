@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
@@ -26,7 +26,7 @@ interface IssueRowProps {
   className?: string;
 }
 
-export function IssueRow({
+export const IssueRow = memo(function IssueRow({
   issue,
   issueLinkState,
   selected = false,
@@ -157,4 +157,4 @@ export function IssueRow({
       ) : null}
     </Link>
   );
-}
+});

@@ -56,6 +56,49 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
+  listPaginated: (
+    companyId: string,
+    filters?: {
+      status?: string;
+      projectId?: string;
+      assigneeAgentId?: string;
+      participantAgentId?: string;
+      assigneeUserId?: string;
+      touchedByUserId?: string;
+      inboxArchivedByUserId?: string;
+      unreadForUserId?: string;
+      labelId?: string;
+      executionWorkspaceId?: string;
+      originKind?: string;
+      originId?: string;
+      includeRoutineExecutions?: boolean;
+      q?: string;
+      limit?: number;
+      cursor?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+    if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
+    if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
+    if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+    if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
+    if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.cursor) params.set("cursor", filters.cursor);
+    const qs = params.toString();
+    return api.get<{ issues: Issue[]; hasMore: boolean; nextCursor: string | null }>(
+      `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`,
+    );
+  },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),

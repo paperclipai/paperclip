@@ -186,6 +186,9 @@ interface IssuesListProps {
   };
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  fetchNextPage?: () => void;
+  hasNextPage?: boolean;
+  isFetchingNextPage?: boolean;
 }
 
 export function IssuesList({
@@ -203,6 +206,9 @@ export function IssuesList({
   searchFilters,
   onSearchChange,
   onUpdateIssue,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -901,6 +907,17 @@ export function IssuesList({
             </CollapsibleContent>
           </Collapsible>
         ))
+      )}
+      {hasNextPage && (
+        <div className="flex justify-center py-3">
+          <button
+            onClick={() => fetchNextPage?.()}
+            disabled={isFetchingNextPage}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {isFetchingNextPage ? "Loading..." : "Load more"}
+          </button>
+        </div>
       )}
     </div>
   );
