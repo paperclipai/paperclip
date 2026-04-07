@@ -558,53 +558,14 @@ function IssueChatAssistantMessage() {
         </Avatar>
 
         <div className="min-w-0 flex-1">
-          <div className="mb-1.5 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
-                </span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
-                {message.createdAt ? formatShortDate(message.createdAt) : ""}
-              </a>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    className="text-muted-foreground hover:text-foreground"
-                    title="More actions"
-                    aria-label="More actions"
-                  >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => {
-                      const text = message.content
-                        .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                        .map((p) => p.text)
-                        .join("\n\n");
-                      void navigator.clipboard.writeText(text);
-                    }}
-                  >
-                    <Copy className="mr-2 h-3.5 w-3.5" />
-                    Copy message
-                  </DropdownMenuItem>
-                  {runHref ? (
-                    <DropdownMenuItem asChild>
-                      <Link to={runHref}>View run</Link>
-                    </DropdownMenuItem>
-                  ) : null}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-sm font-medium text-foreground">{authorName}</span>
+            {isRunning ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Running
+              </span>
+            ) : null}
           </div>
 
           <div className="space-y-3">
@@ -634,6 +595,12 @@ function IssueChatAssistantMessage() {
           </div>
 
           <div className="mt-2 flex items-center gap-1">
+            <a
+              href={anchorId ? `#${anchorId}` : undefined}
+              className="mr-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {message.createdAt ? formatShortDate(message.createdAt) : ""}
+            </a>
             <ActionBarPrimitive.Copy
               copiedDuration={2000}
               className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
@@ -651,6 +618,38 @@ function IssueChatAssistantMessage() {
                 onVote={handleVote}
               />
             ) : null}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-foreground"
+                  title="More actions"
+                  aria-label="More actions"
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => {
+                    const text = message.content
+                      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                      .map((p) => p.text)
+                      .join("\n\n");
+                    void navigator.clipboard.writeText(text);
+                  }}
+                >
+                  <Copy className="mr-2 h-3.5 w-3.5" />
+                  Copy message
+                </DropdownMenuItem>
+                {runHref ? (
+                  <DropdownMenuItem asChild>
+                    <Link to={runHref}>View run</Link>
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -920,7 +919,7 @@ function IssueChatSystemMessage() {
 
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Status
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
@@ -931,7 +930,7 @@ function IssueChatSystemMessage() {
 
         {assigneeChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Assignee
             </span>
             <span className="text-muted-foreground">
