@@ -822,13 +822,13 @@ export function createPluginWorkerHandle(
     attachStdioHandlers(child);
     startedAt = Date.now();
 
-    // Transform config.timeoutSec: 0 (requested infinite) to -1 (sent to worker)
-    // This truthy value bypasses the "val || default" bug in hermes-paperclip-adapter
-    // while still being handled as "no timeout" via > 0 check in server-utils.ts.
-    const effectiveConfig = { ...options.config };
-    if (typeof effectiveConfig.timeoutSec === "number" && effectiveConfig.timeoutSec === 0) {
-      effectiveConfig.timeoutSec = -1;
-    }
+      // Restore the 300s default for undefined values, but keep -1 for 0 (infinite)
+      const workerTimeoutSec = config.timeoutSec === 0 ? -1 : (config.timeoutSec ?? 300);
+
+      // Transform config.timeoutSec: 0 (requested infinite) to -1 (sent to worker)
+      // This truthy value bypasses the "val || default" bug in hermes-paperclip-adapter
+      // while still being handled as "no timeout" via > 0 check in server-utils.ts.
+      const effectiveConfig = { ...options.config, timeoutSec: workerTimeoutSec };
 
     // Send the initialize RPC call
     const initParams: InitializeParams = {
