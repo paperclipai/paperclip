@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  dagExecutorService,
   feedbackService,
   heartbeatService,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -617,7 +618,34 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Auto-reset agents stuck in "error" status after cooldown period
+      void heartbeat
+        .resetErrorAgents()
+        .then((result) => {
+          if (result.reset > 0) {
+            logger.info({ ...result }, "auto-reset error agents");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "error agent reset failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // DAG executor: sweep for idle issues and detect stalls every 30s
+    const dagExecutor = dagExecutorService({ db: db as any, heartbeat });
+    setInterval(() => {
+      void dagExecutor
+        .tick()
+        .then((result) => {
+          if (result.swept > 0 || result.stalls > 0) {
+            logger.info({ ...result }, "DAG executor tick");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "DAG executor tick failed");
+        });
+    }, 30_000);
   }
   
   if (config.databaseBackupEnabled) {
