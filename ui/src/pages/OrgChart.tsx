@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -131,6 +132,7 @@ const defaultDotColor = "#a3a3a3";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -154,7 +156,7 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("orgChart.breadcrumb", { defaultValue: "Org Chart" }) }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
@@ -247,7 +249,7 @@ export function OrgChart() {
   }, [zoom, pan]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("orgChart.selectCompany", { defaultValue: "Select a company to view the org chart." })} />;
   }
 
   if (isLoading) {
@@ -255,7 +257,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("orgChart.empty", { defaultValue: "No organizational hierarchy defined." })} />;
   }
 
   return (
@@ -264,13 +266,13 @@ export function OrgChart() {
       <Link to="/company/import">
         <Button variant="outline" size="sm">
           <Upload className="mr-1.5 h-3.5 w-3.5" />
-          Import company
+          {t("orgChart.importCompany", { defaultValue: "Import company" })}
         </Button>
       </Link>
       <Link to="/company/export">
         <Button variant="outline" size="sm">
           <Download className="mr-1.5 h-3.5 w-3.5" />
-          Export company
+          {t("orgChart.exportCompany", { defaultValue: "Export company" })}
         </Button>
       </Link>
     </div>
@@ -299,7 +301,7 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom in"
+          aria-label={t("orgChart.zoomIn", { defaultValue: "Zoom in" })}
         >
           +
         </button>
@@ -316,7 +318,7 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom out"
+          aria-label={t("orgChart.zoomOut", { defaultValue: "Zoom out" })}
         >
           &minus;
         </button>
@@ -334,10 +336,10 @@ export function OrgChart() {
             setZoom(fitZoom);
             setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
           }}
-          title="Fit to screen"
-          aria-label="Fit chart to screen"
+          title={t("orgChart.fitToScreen", { defaultValue: "Fit to screen" })}
+          aria-label={t("orgChart.fitChartToScreen", { defaultValue: "Fit chart to screen" })}
         >
-          Fit
+          {t("fit", { defaultValue: "Fit" })}
         </button>
       </div>
 

@@ -1,5 +1,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
 import { Check, ChevronDown, ChevronRight, Layers, MoreHorizontal, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
@@ -53,13 +55,13 @@ import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
-  always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
-  skip_if_active: "Drop new trigger occurrences while a run is still active.",
+  coalesce_if_active: i18n.t("policy.coalesce_if_active", { defaultValue: "If a run is already active, keep just one follow-up run queued.", ns: "routines" }),
+  always_enqueue: i18n.t("policy.always_enqueue", { defaultValue: "Queue every trigger occurrence, even if the routine is already running.", ns: "routines" }),
+  skip_if_active: i18n.t("policy.skip_if_active", { defaultValue: "Drop new trigger occurrences while a run is still active.", ns: "routines" }),
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
-  skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
+  skip_missed: i18n.t("policy.skip_missed", { defaultValue: "Ignore windows that were missed while the scheduler or routine was paused.", ns: "routines" }),
+  enqueue_missed_with_cap: i18n.t("policy.enqueue_missed_with_cap", { defaultValue: "Catch up missed schedule windows in capped batches after recovery.", ns: "routines" }),
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -69,7 +71,7 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
 }
 
 function formatLastRunTimestamp(value: Date | string | null | undefined) {
-  if (!value) return "Never";
+  if (!value) return i18n.t("never", { defaultValue: "Never", ns: "routines" });
   return new Date(value).toLocaleString();
 }
 
@@ -146,29 +148,33 @@ export function buildRoutineGroups(
 
   if (groupByValue === "project") {
     const groups = groupBy(routines, (routine) => routine.projectId ?? "__no_project");
+    const noProjectLabel = i18n.t("routines:groupNoProject", { defaultValue: "No project" });
+    const unknownProjectLabel = i18n.t("routines:groupUnknownProject", { defaultValue: "Unknown project" });
     return Object.keys(groups)
       .sort((left, right) => {
-        const leftLabel = left === "__no_project" ? "No project" : (projectById.get(left)?.name ?? "Unknown project");
-        const rightLabel = right === "__no_project" ? "No project" : (projectById.get(right)?.name ?? "Unknown project");
+        const leftLabel = left === "__no_project" ? noProjectLabel : (projectById.get(left)?.name ?? unknownProjectLabel);
+        const rightLabel = right === "__no_project" ? noProjectLabel : (projectById.get(right)?.name ?? unknownProjectLabel);
         return leftLabel.localeCompare(rightLabel);
       })
       .map((key) => ({
         key,
-        label: key === "__no_project" ? "No project" : (projectById.get(key)?.name ?? "Unknown project"),
+        label: key === "__no_project" ? noProjectLabel : (projectById.get(key)?.name ?? unknownProjectLabel),
         items: groups[key]!,
       }));
   }
 
   const groups = groupBy(routines, (routine) => routine.assigneeAgentId ?? "__unassigned");
+  const unassignedLabel = i18n.t("routines:groupUnassigned", { defaultValue: "Unassigned" });
+  const unknownAgentLabel = i18n.t("routines:groupUnknownAgent", { defaultValue: "Unknown agent" });
   return Object.keys(groups)
     .sort((left, right) => {
-      const leftLabel = left === "__unassigned" ? "Unassigned" : (agentById.get(left)?.name ?? "Unknown agent");
-      const rightLabel = right === "__unassigned" ? "Unassigned" : (agentById.get(right)?.name ?? "Unknown agent");
+      const leftLabel = left === "__unassigned" ? unassignedLabel : (agentById.get(left)?.name ?? unknownAgentLabel);
+      const rightLabel = right === "__unassigned" ? unassignedLabel : (agentById.get(right)?.name ?? unknownAgentLabel);
       return leftLabel.localeCompare(rightLabel);
     })
     .map((key) => ({
       key,
-      label: key === "__unassigned" ? "Unassigned" : (agentById.get(key)?.name ?? "Unknown agent"),
+      label: key === "__unassigned" ? unassignedLabel : (agentById.get(key)?.name ?? unknownAgentLabel),
       items: groups[key]!,
     }));
 }
@@ -198,6 +204,7 @@ function RoutineListRow({
   onToggleEnabled: (routine: RoutineListItem, enabled: boolean) => void;
   onToggleArchived: (routine: RoutineListItem) => void;
 }) {
+  const { t } = useTranslation("routines");
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
   const isStatusPending = statusMutationRoutineId === routine.id;
@@ -215,7 +222,7 @@ function RoutineListRow({
           <span className="truncate text-sm font-medium">{routine.title}</span>
           {(isArchived || routine.status === "paused" || isDraft) ? (
             <span className="text-xs text-muted-foreground">
-              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
+              {isArchived ? t("archived", { defaultValue: "archived" }) : isDraft ? t("draft", { defaultValue: "draft" }) : t("paused", { defaultValue: "paused" })}
             </span>
           ) : null}
         </div>
@@ -225,11 +232,11 @@ function RoutineListRow({
               className="h-2.5 w-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: project?.color ?? "#64748b" }}
             />
-            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
+            <span>{routine.projectId ? (project?.name ?? t("unknownProject", { defaultValue: "Unknown project" })) : t("noProject", { defaultValue: "No project" })}</span>
           </span>
           <span className="flex items-center gap-2">
             {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
-            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
+            <span>{routine.assigneeAgentId ? (agent?.name ?? t("unknownAgent", { defaultValue: "Unknown agent" })) : t("noDefaultAgent", { defaultValue: "No default agent" })}</span>
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
@@ -248,7 +255,7 @@ function RoutineListRow({
             aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
           />
           <span className="w-12 text-xs text-muted-foreground">
-            {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
+            {isArchived ? t("archived", { defaultValue: "Archived" }) : isDraft ? t("draft", { defaultValue: "Draft" }) : enabled ? t("on", { defaultValue: "On" }) : t("off", { defaultValue: "Off" })}
           </span>
         </div>
 
@@ -260,26 +267,26 @@ function RoutineListRow({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
-              <Link to={href}>Edit</Link>
+              <Link to={href}>{t("edit", { defaultValue: "Edit" })}</Link>
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={runningRoutineId === routine.id || isArchived}
               onClick={() => onRunNow(routine)}
             >
-              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+              {runningRoutineId === routine.id ? t("running", { defaultValue: "Running..." }) : t("runNow", { defaultValue: "Run now" })}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onToggleEnabled(routine, enabled)}
               disabled={isStatusPending || isArchived}
             >
-              {enabled ? "Pause" : "Enable"}
+              {enabled ? t("pause", { defaultValue: "Pause" }) : t("enable", { defaultValue: "Enable" })}
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => onToggleArchived(routine)}
               disabled={isStatusPending}
             >
-              {routine.status === "archived" ? "Restore" : "Archive"}
+              {routine.status === "archived" ? t("restore", { defaultValue: "Restore" }) : t("archive", { defaultValue: "Archive" })}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -289,6 +296,7 @@ function RoutineListRow({
 }
 
 export function Routines() {
+  const { t } = useTranslation("routines");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -330,7 +338,7 @@ export function Routines() {
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
+    setBreadcrumbs([{ label: t("breadcrumb", { defaultValue: "Routines" }) }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
@@ -386,10 +394,10 @@ export function Routines() {
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
-        title: "Routine created",
+        title: t("toastRoutineCreatedTitle", { defaultValue: "Routine created" }),
         body: routine.assigneeAgentId
-          ? "Add the first trigger to turn it into a live workflow."
-          : "Draft saved. Add a default agent before enabling automation.",
+          ? t("toastRoutineCreatedBody", { defaultValue: "Add the first trigger to turn it into a live workflow." })
+          : t("toastRoutineDraftBody", { defaultValue: "Draft saved. Add a default agent before enabling automation." }),
         tone: "success",
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
@@ -419,8 +427,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        title: t("toastUpdateFailedTitle", { defaultValue: "Failed to update routine" }),
+        body: mutationError instanceof Error ? mutationError.message : t("toastUpdateFailedBody", { defaultValue: "Paperclip could not update the routine." }),
         tone: "error",
       });
     },
@@ -454,8 +462,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        title: t("toastRunFailedTitle", { defaultValue: "Routine run failed" }),
+        body: mutationError instanceof Error ? mutationError.message : t("toastRunFailedBody", { defaultValue: "Paperclip could not start the routine run." }),
         tone: "error",
       });
     },
@@ -557,7 +565,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("selectCompany", { defaultValue: "Select a company to view routines." })} />;
   }
 
   if (isLoading) {
@@ -569,15 +577,15 @@ export function Routines() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Routines
+            {t("heading", { defaultValue: "Routines" })}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution issues.
+            {t("subtitle", { defaultValue: "Recurring work definitions that materialize into auditable execution issues." })}
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Create routine
+          {t("createRoutine", { defaultValue: "Create routine" })}
         </Button>
       </div>
 
@@ -587,8 +595,8 @@ export function Routines() {
           value={activeTab}
           onValueChange={handleTabChange}
           items={[
-            { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
+            { value: "routines", label: t("tabRoutines", { defaultValue: "Routines" }) },
+            { value: "runs", label: t("tabRecentRuns", { defaultValue: "Recent Runs" }) },
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
@@ -600,7 +608,7 @@ export function Routines() {
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Group</span>
+                  <span className="hidden sm:inline">{t("group", { defaultValue: "Group" })}</span>
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
@@ -657,9 +665,9 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("newRoutine", { defaultValue: "New routine" })}</p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Default project and agent are optional for draft routines.
+                {t("newRoutineHint", { defaultValue: "Define the recurring work first. Default project and agent are optional for draft routines." })}
               </p>
             </div>
             <Button
@@ -671,7 +679,7 @@ export function Routines() {
               }}
               disabled={createRoutine.isPending}
             >
-              Cancel
+              {t("cancel", { defaultValue: "Cancel" })}
             </Button>
           </div>
 
@@ -680,7 +688,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={t("routineTitlePlaceholder", { defaultValue: "Routine title" })}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -713,16 +721,16 @@ export function Routines() {
             <div className="px-5 pb-3">
               <div className="overflow-x-auto overscroll-x-contain">
                 <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-                  <span>For</span>
+                  <span>{t("composerFor", { defaultValue: "For" })}</span>
                   <InlineEntitySelector
                     ref={assigneeSelectorRef}
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
-                    placeholder="Assignee"
-                    noneLabel="No assignee"
-                    searchPlaceholder="Search assignees..."
-                    emptyMessage="No assignees found."
+                    placeholder={t("composerAssignee", { defaultValue: "Assignee" })}
+                    noneLabel={t("composerNoAssignee", { defaultValue: "No assignee" })}
+                    searchPlaceholder={t("composerSearchAssignees", { defaultValue: "Search assignees..." })}
+                    emptyMessage={t("composerNoAssigneesFound", { defaultValue: "No assignees found." })}
                     onChange={(assigneeAgentId) => {
                       if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
                       setDraft((current) => ({ ...current, assigneeAgentId }));
@@ -745,7 +753,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         )
                       ) : (
-                        <span className="text-muted-foreground">Assignee</span>
+                        <span className="text-muted-foreground">{t("composerAssignee", { defaultValue: "Assignee" })}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -765,10 +773,10 @@ export function Routines() {
                     value={draft.projectId}
                     options={projectOptions}
                     recentOptionIds={recentProjectIds}
-                    placeholder="Project"
-                    noneLabel="No project"
-                    searchPlaceholder="Search projects..."
-                    emptyMessage="No projects found."
+                    placeholder={t("composerProject", { defaultValue: "Project" })}
+                    noneLabel={t("composerNoProject", { defaultValue: "No project" })}
+                    searchPlaceholder={t("composerSearchProjects", { defaultValue: "Search projects..." })}
+                    emptyMessage={t("composerNoProjectsFound", { defaultValue: "No projects found." })}
                     onChange={(projectId) => {
                       if (projectId) trackRecentProject(projectId);
                       setDraft((current) => ({ ...current, projectId }));
@@ -784,7 +792,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Project</span>
+                        <span className="text-muted-foreground">{t("composerProject", { defaultValue: "Project" })}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -810,7 +818,7 @@ export function Routines() {
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
-                placeholder="Add instructions..."
+                placeholder={t("composerAddInstructions", { defaultValue: "Add instructions..." })}
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
                 onSubmit={() => {
@@ -825,15 +833,15 @@ export function Routines() {
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                   <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    <p className="text-sm font-medium">{t("advancedDelivery", { defaultValue: "Advanced delivery settings" })}</p>
+                    <p className="text-sm text-muted-foreground">{t("advancedDeliveryHint", { defaultValue: "Keep policy controls secondary to the work definition." })}</p>
                   </div>
                   {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t("concurrencyLabel", { defaultValue: "Concurrency" })}</p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -843,14 +851,14 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{t(`concurrencyPolicy.${value}`, { defaultValue: value.replaceAll("_", " ") })}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{t("catchUpLabel", { defaultValue: "Catch-up" })}</p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -860,7 +868,7 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {catchUpPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{t(`catchUpPolicy.${value}`, { defaultValue: value.replaceAll("_", " ") })}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -874,7 +882,7 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
+              {t("afterCreationHint", { defaultValue: "After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent." })}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -885,11 +893,11 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending ? t("creating", { defaultValue: "Creating..." }) : t("createRoutine", { defaultValue: "Create routine" })}
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  {createRoutine.error instanceof Error ? createRoutine.error.message : t("createRoutineError", { defaultValue: "Failed to create routine" })}
                 </p>
               ) : null}
             </div>
@@ -900,7 +908,7 @@ export function Routines() {
       {error ? (
         <Card>
           <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load routines"}
+            {error instanceof Error ? error.message : t("loadError", { defaultValue: "Failed to load routines" })}
           </CardContent>
         </Card>
       ) : null}
@@ -911,7 +919,7 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No routines yet. Use Create routine to define the first recurring workflow."
+                message={t("empty", { defaultValue: "No routines yet. Use Create routine to define the first recurring workflow." })}
               />
             </div>
           ) : (

@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import i18n from "@/i18n";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
@@ -46,7 +47,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorName = actor?.name ?? (event.actorType === "system" ? i18n.t("activity.actorSystem", { defaultValue: "System" }) : userProfile?.label ?? (event.actorType === "user" ? i18n.t("activity.actorBoard", { defaultValue: "Board" }) : event.actorId || i18n.t("activity.actorUnknown", { defaultValue: "Unknown" })));
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (

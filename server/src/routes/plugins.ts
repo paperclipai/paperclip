@@ -18,7 +18,7 @@
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
  */
 
-import { existsSync } from "node:fs";
+import fs, { existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -2517,6 +2517,103 @@ export function pluginRoutes(
       health,
       checkedAt: new Date().toISOString(),
     });
+  });
+
+  // ── Plugin Locale API ──────────────────────────────────────────────
+  // GET /api/plugins/languages — list available languages from plugin locales
+  // GET /api/plugins/locales/:language — consolidated locale bundle for a language
+
+  router.get("/languages", async (_req, res) => {
+    try {
+      const plugins = await registry.listByStatus("ready");
+      const languages = new Map<string, { code: string; source: string; pluginKey: string; namespaces: string[] }>();
+
+      // English is always available (Core)
+      languages.set("en", { code: "en", source: "core", pluginKey: "", namespaces: [] });
+
+      for (const plugin of plugins) {
+        const manifest = plugin.manifestJson;
+        if (!manifest?.locales) continue;
+        for (const locale of manifest.locales) {
+          if (!languages.has(locale.languageCode)) {
+            languages.set(locale.languageCode, {
+              code: locale.languageCode,
+              source: "plugin",
+              pluginKey: manifest.id,
+              namespaces: locale.namespaces,
+            });
+          }
+        }
+      }
+
+      res.json(Array.from(languages.values()).sort((a, b) => a.code.localeCompare(b.code)));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/locales/:language", async (req, res) => {
+    const { language } = req.params;
+    if (!/^[a-z]{2,3}(-[A-Z]{2,3})?$/.test(language)) {
+      res.status(400).json({ error: "Invalid language code" });
+      return;
+    }
+
+    try {
+      const plugins = await registry.listByStatus("ready");
+      const bundle: { language: string; version: string; core: Record<string, Record<string, string>>; custom: Record<string, Record<string, string>> } = {
+        language,
+        version: new Date().toISOString(),
+        core: {},
+        custom: {},
+      };
+
+      for (const plugin of plugins) {
+        const manifest = plugin.manifestJson;
+        if (!manifest?.locales) continue;
+
+        const matchingLocale = manifest.locales.find((l) => l.languageCode === language);
+        if (!matchingLocale) continue;
+
+        // Resolve plugin UI directory to find locale files
+        const uiEntrypoint = manifest.entrypoints?.ui;
+        if (!uiEntrypoint || !plugin.packagePath) continue;
+
+        const uiDir = path.resolve(plugin.packagePath, uiEntrypoint);
+        if (!fs.existsSync(uiDir)) continue;
+
+        // Determine if this is a locale-only plugin (contributing to Core namespaces)
+        const isLocaleOnly = (manifest.capabilities?.length ?? 0) === 0 && !manifest.entrypoints?.worker;
+        const coreNamespaces = new Set([
+          "common", "agents", "costs", "inbox", "dashboard", "issues",
+          "projects", "goals", "approvals", "routines", "settings",
+          "onboarding", "skills", "workspaces", "plugins",
+        ]);
+
+        for (const ns of matchingLocale.namespaces) {
+          const filePath = path.join(uiDir, "locales", language, `${ns}.json`);
+          try {
+            if (fs.existsSync(filePath)) {
+              const content = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+              if (isLocaleOnly && coreNamespaces.has(ns)) {
+                // Locale-only plugins contribute to Core namespaces directly
+                bundle.core[ns] = { ...bundle.core[ns], ...content };
+              } else {
+                // Standard plugins use plugin-scoped namespaces
+                const scopedKey = `plugin.${manifest.id}.${ns}`;
+                bundle.custom[scopedKey] = content;
+              }
+            }
+          } catch {
+            // Skip invalid locale files
+          }
+        }
+      }
+
+      res.json(bundle);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   return router;

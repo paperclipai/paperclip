@@ -411,6 +411,7 @@ export type {
   PluginLauncherRenderDeclaration,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherDeclaration,
+  PluginLocaleDeclaration,
   PluginMinimumHostVersion,
   PluginUiDeclaration,
   PluginDatabaseDeclaration,

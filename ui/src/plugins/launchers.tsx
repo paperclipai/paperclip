@@ -346,14 +346,16 @@ async function resolveLauncherComponent(
  */
 function PluginLauncherBridgeScope({
   pluginId,
+  pluginKey,
   hostContext,
   children,
 }: {
   pluginId: string;
+  pluginKey: string;
   hostContext: PluginHostContext;
   children: ReactNode;
 }) {
-  const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
+  const value = useMemo(() => ({ pluginId, pluginKey, hostContext }), [pluginId, pluginKey, hostContext]);
 
   return (
     <PluginBridgeContext.Provider value={value}>
@@ -450,7 +452,7 @@ function LauncherRenderContent({
 
   return (
     <LauncherErrorBoundary launcher={instance.launcher}>
-      <PluginLauncherBridgeScope pluginId={instance.launcher.pluginId} hostContext={hostContext}>
+      <PluginLauncherBridgeScope pluginId={instance.launcher.pluginId} pluginKey={instance.launcher.pluginKey} hostContext={hostContext}>
         {node}
       </PluginLauncherBridgeScope>
     </LauncherErrorBoundary>

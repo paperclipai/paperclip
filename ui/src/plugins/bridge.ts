@@ -122,6 +122,7 @@ export interface PluginRenderEnvironmentContext {
 
 export type PluginBridgeContextValue = {
   pluginId: string;
+  pluginKey: string;
   hostContext: PluginHostContext;
 };
 

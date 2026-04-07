@@ -279,9 +279,9 @@ export interface PaperclipPluginManifestV1 {
   capabilities: PluginCapability[];
   /** Entrypoint paths relative to the package root. */
   entrypoints: {
-    /** Path to the worker entrypoint (required). */
-    worker: string;
-    /** Path to the UI bundle directory (required when `ui.slots` is declared). */
+    /** Path to the worker entrypoint (required for standard plugins, optional for locale-only). */
+    worker?: string;
+    /** Path to the UI bundle directory (required when `ui.slots` or `locales` is declared). */
     ui?: string;
   };
   /** JSON Schema for operator-editable instance configuration. */
@@ -303,6 +303,25 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * Locale declarations for plugin i18n support.
+   *
+   * Plugins can declare translation bundles that the host loads on demand.
+   * Convention: locale JSON files live under `{entrypoints.ui}/locales/{lang}/{ns}.json`.
+   *
+   * @see docs/paperclip-analysis/15-i18n-architecture-design.md §3.5
+   */
+  locales?: PluginLocaleDeclaration[];
+}
+
+/**
+ * Declaration for a language pack contributed by a plugin.
+ */
+export interface PluginLocaleDeclaration {
+  /** BCP 47 language code (e.g., "ko", "ja", "es", "zh-CN"). */
+  languageCode: string;
+  /** Namespace names provided for this language (e.g., ["common", "messages"]). */
+  namespaces: string[];
 }
 
 // ---------------------------------------------------------------------------

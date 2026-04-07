@@ -1,6 +1,6 @@
 import * as React from "react"
 import { XIcon } from "lucide-react"
-import { Dialog as DialogPrimitive } from "radix-ui"
+import { Dialog as DialogPrimitive, VisuallyHidden } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -64,6 +64,11 @@ function DialogContent({
         )}
         {...props}
       >
+        {/* Ensure DialogTitle + DialogDescription exist for screen readers (Radix requirement) */}
+        <VisuallyHidden.Root>
+          <DialogPrimitive.Title>Dialog</DialogPrimitive.Title>
+          <DialogPrimitive.Description>Dialog content</DialogPrimitive.Description>
+        </VisuallyHidden.Root>
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
