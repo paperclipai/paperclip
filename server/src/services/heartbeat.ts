@@ -2101,6 +2101,36 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+
+    // --- BEGIN: Inject wake comment body into adapter context (#799, #2249) ---
+    const wakeCommentId = readNonEmptyString(context.wakeCommentId);
+    if (wakeCommentId) {
+      try {
+        const wakeComment = await issuesSvc.getComment(wakeCommentId);
+        if (wakeComment?.body) {
+          const authorLabel = wakeComment.authorUserId
+            ? `board user`
+            : wakeComment.authorAgentId
+              ? `agent`
+              : `unknown`;
+          context.paperclipWakeCommentMarkdown = [
+            `## Triggering Comment (from ${authorLabel})`,
+            ``,
+            wakeComment.body,
+            ``,
+            `---`,
+            `*You were woken because of this comment. Read and respond to it before doing anything else.*`,
+          ].join("\n");
+        }
+      } catch (err) {
+        logger.warn(
+          { runId: run.id, wakeCommentId, err },
+          "failed to fetch wake comment body for context injection",
+        );
+      }
+    }
+    // --- END: Inject wake comment body ---
+
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
