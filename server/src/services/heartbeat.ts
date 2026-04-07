@@ -850,6 +850,11 @@ export function mergeCoalescedContextSnapshot(
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
+  // forceFreshSession is sticky: once requested it must survive coalescing so
+  // the queued run still starts a fresh session even if later wakes omit it.
+  if (existing?.forceFreshSession === true || incoming?.forceFreshSession === true) {
+    merged.forceFreshSession = true;
+  }
   return merged;
 }
 
@@ -1575,6 +1580,40 @@ export function heartbeatService(db: Db) {
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
           workspaceHints,
           warnings: [],
+        };
+      }
+    }
+
+    const adapterCwd = readNonEmptyString(parseObject(agent.adapterConfig)?.cwd);
+    if (adapterCwd) {
+      const adapterCwdExists = await fs
+        .stat(adapterCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (adapterCwdExists) {
+        const warnings: string[] = [];
+        if (sessionCwd) {
+          warnings.push(
+            `Saved session workspace "${sessionCwd}" is not available. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        } else if (resolvedProjectId) {
+          warnings.push(
+            `No project workspace directory is currently available for this issue. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        } else {
+          warnings.push(
+            `No project or prior session workspace was available. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        }
+        return {
+          cwd: adapterCwd,
+          source: "agent_home" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
         };
       }
     }
@@ -3785,7 +3824,7 @@ export function heartbeatService(db: Db) {
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
-        contextSnapshot,
+        enrichedContextSnapshot,
       );
       const mergedRun = await db
         .update(heartbeatRuns)

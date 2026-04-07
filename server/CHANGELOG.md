@@ -1,5 +1,15 @@
 # @paperclipai/server
 
+## [Unreleased]
+
+### Features
+
+- Wake assignee agent when issue status transitions from `blocked` or `in_review` to an actionable state (`todo` or `in_progress`)
+
+### Bug Fixes
+
+- Fix `statusBecameActionable` condition to compare committed DB state (`issue.status`) rather than raw request body, preventing spurious wakeups when the service layer normalises status values
+
 ## 0.3.1
 
 ### Patch Changes

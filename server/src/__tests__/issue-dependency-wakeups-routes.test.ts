@@ -153,6 +153,87 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
+  describe("statusBecameActionable wakeups", () => {
+    const makeIssue = (status: string, assigneeAgentId: string | null = "agent-1") => ({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Test issue",
+      description: null,
+      status,
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+
+    it.each([
+      ["blocked", "todo"],
+      ["blocked", "in_progress"],
+      ["in_review", "todo"],
+      ["in_review", "in_progress"],
+    ])("wakes assignee when status changes from %s to %s", async (fromStatus, toStatus) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue(fromStatus));
+      mockIssueService.update.mockResolvedValue(makeIssue(toStatus));
+
+      const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: toStatus });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(res.status).toBe(200);
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          reason: "issue_status_changed",
+          payload: expect.objectContaining({ issueId: "issue-1", mutation: "update" }),
+        }),
+      );
+    });
+
+    it("does not wake assignee when blocked transitions to done (not actionable)", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+      mockIssueService.update.mockResolvedValue(makeIssue("done"));
+
+      const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(res.status).toBe(200);
+      expect(mockWakeup).not.toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    });
+
+    it("does not wake assignee when issue has no assigneeAgentId", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("blocked", null));
+      mockIssueService.update.mockResolvedValue(makeIssue("todo", null));
+
+      const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: "todo" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(res.status).toBe(200);
+      expect(mockWakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not fire status wakeup when status is unchanged (no-op update)", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+      mockIssueService.update.mockResolvedValue(makeIssue("blocked"));
+
+      const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: "blocked" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(res.status).toBe(200);
+      expect(mockWakeup).not.toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    });
+  });
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",

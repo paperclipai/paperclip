@@ -160,7 +160,7 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      const args = ["--print", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
       // Skip --model for Bedrock: Anthropic-style model IDs (e.g. "claude-opus-4-6") are not
