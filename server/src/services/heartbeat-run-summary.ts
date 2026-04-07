@@ -1,3 +1,13 @@
+export function extractSummaryText(
+  resultJson: Record<string, unknown> | null | undefined,
+  maxLength = 4000,
+): string | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return null;
+  const raw = resultJson["summary"] ?? resultJson["result"] ?? resultJson["message"];
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  return raw.length > maxLength ? raw.slice(0, maxLength) : raw;
+}
+
 function truncateSummaryText(value: unknown, maxLength = 500) {
   if (typeof value !== "string") return null;
   return value.length > maxLength ? value.slice(0, maxLength) : value;

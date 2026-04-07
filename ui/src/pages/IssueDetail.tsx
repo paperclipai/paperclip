@@ -34,6 +34,7 @@ import {
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
+import { MarkdownBody } from "../components/MarkdownBody";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
@@ -73,6 +74,75 @@ import {
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, FeedbackVote, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
+
+function isMarkdownAttachment(a: IssueAttachment) {
+  return (
+    a.contentType === "text/markdown" ||
+    a.contentType === "text/x-markdown" ||
+    (a.originalFilename?.endsWith(".md") ?? false)
+  );
+}
+
+function isPreviewableTextAttachment(a: IssueAttachment) {
+  return (
+    isMarkdownAttachment(a) ||
+    a.contentType === "text/plain" ||
+    a.contentType === "application/json" ||
+    /\.(txt|json|yaml|yml|toml|csv)$/.test(a.originalFilename ?? "")
+  );
+}
+
+function AttachmentTextPreview({ attachment }: { attachment: IssueAttachment }) {
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleToggle = async () => {
+    if (!open && content === null && !loading) {
+      setLoading(true);
+      try {
+        const res = await fetch(attachment.contentPath);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setContent(await res.text());
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        setLoading(false);
+      }
+    }
+    setOpen((v) => !v);
+  };
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2"
+      >
+        {open ? "Hide preview" : "Show preview"}
+      </button>
+      {open && (
+        <div className="mt-2">
+          {loading && <p className="text-[11px] text-muted-foreground">Loading…</p>}
+          {error && <p className="text-[11px] text-destructive">{error}</p>}
+          {content !== null && !loading && (
+            isMarkdownAttachment(attachment) ? (
+              <div className="rounded border border-border bg-background p-3 max-h-80 overflow-y-auto">
+                <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{content}</MarkdownBody>
+              </div>
+            ) : (
+              <pre className="rounded border border-border bg-muted/50 p-3 text-xs overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap">
+                {content}
+              </pre>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
@@ -1438,6 +1508,9 @@ export function IssueDetail() {
               <p className="text-[11px] text-muted-foreground">
                 {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
               </p>
+              {isPreviewableTextAttachment(attachment) && (
+                <AttachmentTextPreview attachment={attachment} />
+              )}
               {isImageAttachment(attachment) && (
                 <button
                   type="button"

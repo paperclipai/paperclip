@@ -22,6 +22,7 @@ export interface HeartbeatRun {
   signal: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
+  summaryText: string | null;
   sessionIdBefore: string | null;
   sessionIdAfter: string | null;
   logStore: string | null;

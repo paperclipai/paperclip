@@ -89,6 +89,7 @@ describe("FailedRunInboxRow", () => {
       signal: null,
       usageJson: null,
       resultJson: null,
+      summaryText: null,
       sessionIdBefore: null,
       sessionIdAfter: null,
       logStore: null,
