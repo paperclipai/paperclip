@@ -16,6 +16,15 @@ import {
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
 
+/** Per-segment cost/model info from smart model routing. */
+export interface ExecutionSegmentInfo {
+  phase: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+}
+
 interface RunTranscriptViewProps {
   entries: TranscriptEntry[];
   mode?: TranscriptMode;
@@ -26,6 +35,8 @@ interface RunTranscriptViewProps {
   emptyMessage?: string;
   className?: string;
   thinkingClassName?: string;
+  /** Per-segment breakdown from smart model routing (from run usageJson). */
+  executionSegments?: ExecutionSegmentInfo[];
 }
 
 type TranscriptBlock =
@@ -111,6 +122,8 @@ type TranscriptBlock =
       tone: "info" | "warn" | "error" | "neutral";
       text: string;
       detail?: string;
+      /** Per-segment breakdown (smart model routing). */
+      segments?: ExecutionSegmentInfo[];
     }
   | {
       type: "diff_group";
@@ -1132,6 +1145,20 @@ function TranscriptEventRow({
               {block.detail}
             </pre>
           )}
+          {block.segments && block.segments.length > 1 && (
+            <div className="mt-2 space-y-0.5">
+              {block.segments.map((seg, i) => (
+                <div key={i} className="flex items-baseline gap-2 font-mono text-[11px] text-foreground/60">
+                  <span className="font-semibold text-foreground/75 capitalize min-w-[68px]">{seg.phase}</span>
+                  {seg.model && <span className="text-muted-foreground">{seg.model}</span>}
+                  <span className="ml-auto tabular-nums">
+                    {formatTokens(seg.inputTokens ?? 0)} / {formatTokens(seg.outputTokens ?? 0)}
+                    {seg.costUsd != null && <> / ${seg.costUsd.toFixed(6)}</>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1395,8 +1422,22 @@ export function RunTranscriptView({
   emptyMessage = "No transcript yet.",
   className,
   thinkingClassName,
+  executionSegments,
 }: RunTranscriptViewProps) {
-  const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
+  const blocks = useMemo(() => {
+    const normalized = normalizeTranscript(entries, streaming);
+    // Attach execution segments to the result event block (if any)
+    if (executionSegments && executionSegments.length > 0) {
+      for (let i = normalized.length - 1; i >= 0; i--) {
+        const b = normalized[i];
+        if (b.type === "event" && b.label === "result") {
+          b.segments = executionSegments;
+          break;
+        }
+      }
+    }
+    return normalized;
+  }, [entries, streaming, executionSegments]);
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
 

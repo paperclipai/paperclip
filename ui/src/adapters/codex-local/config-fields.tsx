@@ -7,6 +7,7 @@ import {
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import { SmartModelRoutingFields } from "../smart-routing-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -87,6 +88,17 @@ export function CodexLocalConfigFields({
             ? set!({ search: v })
             : mark("adapterConfig", "search", v)
         }
+      />
+      <SmartModelRoutingFields
+        mode={mode}
+        isCreate={isCreate}
+        adapterType={adapterType}
+        values={values}
+        set={set}
+        config={config}
+        eff={eff}
+        mark={mark}
+        models={models}
       />
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}

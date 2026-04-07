@@ -76,7 +76,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import { RunTranscriptView, type TranscriptMode, type ExecutionSegmentInfo } from "../components/transcript/RunTranscriptView";
 import {
   isUuidLike,
   type Agent,
@@ -275,6 +275,21 @@ function runMetrics(run: HeartbeatRun) {
     provider,
     model,
   };
+}
+
+/** Extract execution segments from a run's usageJson (smart model routing). */
+function extractExecutionSegments(run: HeartbeatRun): ExecutionSegmentInfo[] | undefined {
+  const usage = asRecord(run.usageJson);
+  if (!usage) return undefined;
+  const raw = usage.executionSegments;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  return raw.map((seg: Record<string, unknown>) => ({
+    phase: String(seg.phase ?? "unknown"),
+    model: asNonEmptyString(seg.model) ?? undefined,
+    inputTokens: typeof seg.inputTokens === "number" ? seg.inputTokens : undefined,
+    outputTokens: typeof seg.outputTokens === "number" ? seg.outputTokens : undefined,
+    costUsd: typeof seg.costUsd === "number" ? seg.costUsd : undefined,
+  }));
 }
 
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
@@ -3867,6 +3882,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           mode={transcriptMode}
           streaming={isLive}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          executionSegments={extractExecutionSegments(run)}
         />
         {logError && (
           <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
