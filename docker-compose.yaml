@@ -7,9 +7,10 @@ services:
       POSTGRES_DB: paperclip
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
-      interval: 2s
-      timeout: 5s
-      retries: 30
+      interval: 10s        # Augmenter (était 2s)
+      timeout: 10s         # Augmenter (était 5s)
+      retries: 60          # Augmenter (était 30)
+      start_period: 60s    # Ajouter - délai avant premier check
     volumes:
       - pgdata:/var/lib/postgresql/data
 
