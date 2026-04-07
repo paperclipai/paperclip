@@ -58,7 +58,7 @@ export function SidebarSection({ label, children }: SidebarSectionProps) {
               open && "rotate-90",
             )}
           />
-          <span className="ml-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
             {label}
           </span>
         </CollapsibleTrigger>

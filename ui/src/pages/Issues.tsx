@@ -125,12 +125,12 @@ export function Issues() {
       {/* Consistent header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Issues</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Issues</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Track and manage tasks across your AI workforce.
           </p>
           {totalIssues > 0 && (
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
               {activeIssues} active · {doneIssues} done · {totalIssues} total
             </p>
           )}

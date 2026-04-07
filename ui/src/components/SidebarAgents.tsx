@@ -149,9 +149,9 @@ export function SidebarAgents() {
       <div
         key={agent.id}
         className={cn(
-          "group/agent-link flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          "group/agent-link relative flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium select-none transition-colors duration-150",
           isActive
-            ? "bg-accent text-foreground"
+            ? "bg-accent text-foreground before:absolute before:left-0 before:top-0.5 before:bottom-0.5 before:w-[3px] before:rounded-r-full before:bg-primary"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
         )}
       >

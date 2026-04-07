@@ -59,24 +59,24 @@ function QuickActionFAB({
   return (
     <div ref={ref} className="fixed bottom-6 right-6 z-40">
       {open && (
-        <div className="absolute bottom-14 right-0 flex flex-col gap-2 items-end animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="absolute bottom-16 right-0 flex flex-col gap-2.5 items-end animate-in fade-in slide-in-from-bottom-3 duration-200">
           <button
             onClick={() => { onCreateIssue(); setOpen(false); }}
-            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2 text-sm font-medium shadow-lg hover:bg-accent transition-colors whitespace-nowrap"
+            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2.5 text-sm font-medium shadow-xl hover:bg-accent hover:shadow-2xl hover:-translate-y-0.5 transition-all duration-150 whitespace-nowrap"
           >
             <CircleDot className="h-3.5 w-3.5" />
             Create Issue
           </button>
           <button
             onClick={() => { onInvokeAgent(); setOpen(false); }}
-            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2 text-sm font-medium shadow-lg hover:bg-accent transition-colors whitespace-nowrap"
+            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2.5 text-sm font-medium shadow-xl hover:bg-accent hover:shadow-2xl hover:-translate-y-0.5 transition-all duration-150 whitespace-nowrap"
           >
             <Play className="h-3.5 w-3.5" />
             Invoke Agent
           </button>
           <button
             onClick={() => { onRunPlaybook(); setOpen(false); }}
-            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2 text-sm font-medium shadow-lg hover:bg-accent transition-colors whitespace-nowrap"
+            className="flex items-center gap-2 rounded-full bg-background border border-border px-4 py-2.5 text-sm font-medium shadow-xl hover:bg-accent hover:shadow-2xl hover:-translate-y-0.5 transition-all duration-150 whitespace-nowrap"
           >
             <Zap className="h-3.5 w-3.5" />
             Run Playbook
@@ -86,10 +86,10 @@ function QuickActionFAB({
       <button
         onClick={() => setOpen(!open)}
         className={cn(
-          "flex items-center justify-center h-12 w-12 rounded-full shadow-lg transition-all duration-200",
+          "flex items-center justify-center h-12 w-12 rounded-full shadow-xl transition-all duration-200",
           open
-            ? "bg-foreground text-background rotate-45"
-            : "bg-foreground text-background hover:scale-105",
+            ? "bg-foreground text-background rotate-45 shadow-2xl"
+            : "bg-foreground text-background hover:scale-110 hover:shadow-2xl",
         )}
         aria-label="Quick actions"
       >
@@ -231,6 +231,21 @@ function VelocityChart({ weeks, onWeekClick }: { weeks: VelocityWeek[]; onWeekCl
   return (
     <div>
       <svg viewBox={`0 0 ${chartW} ${chartH + 24}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {/* Subtle gridlines */}
+        {[0.25, 0.5, 0.75, 1].map((frac) => (
+          <line
+            key={frac}
+            x1={0}
+            y1={chartH - chartH * frac}
+            x2={chartW}
+            y2={chartH - chartH * frac}
+            className="stroke-border/30"
+            strokeWidth={0.5}
+            strokeDasharray="4 4"
+          />
+        ))}
+        {/* Zero baseline */}
+        <line x1={0} y1={chartH} x2={chartW} y2={chartH} className="stroke-border/50" strokeWidth={0.5} />
         {weeks.map((w, i) => {
           const total = w.issuesCompleted + w.issuesCancelled;
           const totalH = (total / maxVal) * chartH;
@@ -874,7 +889,7 @@ export function Dashboard() {
   const hasNoAgents = agents !== undefined && agents.length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <QuickActionFAB
         onCreateIssue={() => openNewIssue()}
         onInvokeAgent={() => navigate("/agents")}
@@ -960,13 +975,14 @@ export function Dashboard() {
           )}
 
           {/* ── 2. STATS ROW ── */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 sm:gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             {headcount && (
               <MetricCard
                 icon={Users}
                 value={headcount.fte + headcount.contractor}
                 label="Headcount"
                 to="/agents"
+                accentColor="violet"
                 description={
                   <span className="flex items-center gap-2">
                     <span>{headcount.fte} Full-Time, {headcount.contractor} Contractors</span>
@@ -986,6 +1002,7 @@ export function Dashboard() {
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
               to="/agents"
+              accentColor="emerald"
               description={<span>{data.agents.running} running, {data.agents.paused} paused, {data.agents.error} errors</span>}
             />
             <MetricCard
@@ -993,6 +1010,7 @@ export function Dashboard() {
               value={data.tasks.inProgress}
               label="Tasks Active"
               to="/issues"
+              accentColor="blue"
               description={<span>{data.tasks.open} open, {data.tasks.blocked} blocked</span>}
             />
             <MetricCard
@@ -1000,6 +1018,7 @@ export function Dashboard() {
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
               to="/costs"
+              accentColor="amber"
               description={<span>{data.costs.monthBudgetCents > 0 ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget` : "Unlimited budget"}</span>}
             />
             <MetricCard
@@ -1007,23 +1026,27 @@ export function Dashboard() {
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
               to="/approvals"
+              accentColor="red"
               description={<span>{data.budgets.pendingApprovals > 0 ? `${data.budgets.pendingApprovals} budget overrides awaiting board review` : "Awaiting board review"}</span>}
             />
           </div>
 
           {/* ── 3. ATTENTION REQUIRED ── */}
           {needsAttention && (
-            <div className="rounded-xl border border-red-500/20 bg-red-500/[0.04] p-4 space-y-2">
-              <h3 className="text-sm font-semibold uppercase tracking-wide flex items-center gap-2 text-red-400">
+            <div className="rounded-xl border border-red-500/20 bg-red-500/[0.04] p-5 space-y-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-red-400 border-b border-red-500/10 pb-2">
                 <AlertTriangle className="h-4 w-4" aria-hidden="true" />
                 Attention Required
+                <span className="inline-flex items-center justify-center rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold min-w-[18px] px-1.5 py-0.5 ml-1">
+                  {visibleBlockedIssues.length + visibleFailedRuns.length}
+                </span>
               </h3>
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 {visibleBlockedIssues.slice(0, 5).map((issue) => (
-                  <div key={issue.id} className="flex items-center gap-1 rounded-lg border border-red-500/15 bg-red-500/[0.04] pr-1">
+                  <div key={issue.id} className="flex items-center gap-1 rounded-lg border-l-[3px] border-l-red-500 border border-red-500/15 bg-red-500/[0.04] pr-1">
                     <Link
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex items-center justify-between gap-2 flex-1 min-w-0 px-3 py-2 text-sm no-underline text-inherit hover:bg-red-500/10 transition-colors rounded-l-lg"
+                      className="flex items-center justify-between gap-2 flex-1 min-w-0 px-3 py-2.5 text-sm no-underline text-inherit hover:bg-red-500/10 transition-colors rounded-l-lg"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-500" aria-hidden="true">
@@ -1034,11 +1057,11 @@ export function Dashboard() {
                         <span className="font-mono text-sm text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                         <span className="truncate">{issue.title}</span>
                       </div>
-                      <span className="text-xs text-red-400 shrink-0">Blocked</span>
+                      <span className="text-xs text-red-400 font-medium shrink-0">Blocked</span>
                     </Link>
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissItem(`issue:${issue.id}`); }}
-                      className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                      className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground/50 hover:text-red-400 transition-colors shrink-0"
                       title="Dismiss"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -1046,10 +1069,10 @@ export function Dashboard() {
                   </div>
                 ))}
                 {visibleFailedRuns.slice(0, 3).map((run) => (
-                  <div key={run.id} className="flex items-center gap-1 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] pr-1">
+                  <div key={run.id} className="flex items-center gap-1 rounded-lg border-l-[3px] border-l-amber-500 border border-amber-500/15 bg-amber-500/[0.04] pr-1">
                     <Link
                       to={`/agents/${run.agentId}/runs/${run.id}`}
-                      className="flex items-center justify-between gap-2 flex-1 min-w-0 px-3 py-2 text-sm no-underline text-inherit hover:bg-amber-500/10 transition-colors rounded-l-lg"
+                      className="flex items-center justify-between gap-2 flex-1 min-w-0 px-3 py-2.5 text-sm no-underline text-inherit hover:bg-amber-500/10 transition-colors rounded-l-lg"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-amber-500" aria-hidden="true">
@@ -1060,11 +1083,11 @@ export function Dashboard() {
                         </span>
                         <span className="truncate">Run failed - {agentMap.get(run.agentId)?.name ?? "Agent"}</span>
                       </div>
-                      <span className="text-xs text-amber-400 shrink-0">View run</span>
+                      <span className="text-xs text-amber-400 font-medium shrink-0">View run</span>
                     </Link>
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissItem(`run:${run.id}`); }}
-                      className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                      className="p-1.5 rounded-md hover:bg-amber-500/10 text-muted-foreground/50 hover:text-amber-400 transition-colors shrink-0"
                       title="Dismiss"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -1132,7 +1155,7 @@ export function Dashboard() {
           )}
 
           {/* ── 4. METRICS ROW ── */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
             {/* Today's Spend */}
             <div className="rounded-xl border border-border p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -1345,7 +1368,7 @@ export function Dashboard() {
           )}
 
           {/* ── 5. PROGRESS ROW ── */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Goals Progress */}
             <div className="rounded-xl border border-border p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -1402,7 +1425,7 @@ export function Dashboard() {
           </div>
 
           {/* ── 5b. VELOCITY + DEPARTMENT ── */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Velocity Chart */}
             <div className="rounded-xl border border-border p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -1435,7 +1458,7 @@ export function Dashboard() {
           />
 
           {/* Quick Links + Recent Deliverables (12.58) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <QuickLinksWidget />
             <RecentDeliverablesWidget issues={issues ?? []} agents={agents ?? []} />
           </div>
@@ -1443,9 +1466,9 @@ export function Dashboard() {
           {/* ── 6. RECENT ACTIVITY ── */}
           {aggregatedActivity.length > 0 && (
             <div>
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between border-b border-border/50 pb-2 mb-4">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
                     Recent Activity
                   </h3>
                   <button
@@ -1474,7 +1497,7 @@ export function Dashboard() {
                   View all activity
                 </Link>
               </div>
-              <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
+              <div className="border border-border rounded-lg divide-y divide-border/50 overflow-hidden">
                 {aggregatedActivity.map((item) =>
                   isAggregated(item) ? (
                     <div key={item.key}>
@@ -1484,7 +1507,10 @@ export function Dashboard() {
                           if (next.has(item.key)) next.delete(item.key); else next.add(item.key);
                           return next;
                         })}
-                        className="w-full px-4 py-2.5 text-sm flex items-center justify-between hover:bg-accent/30 transition-colors text-left"
+                        className={cn(
+                          "w-full px-4 py-3 text-sm flex items-center justify-between hover:bg-accent/30 transition-all text-left",
+                          expandedAgg.has(item.key) && "bg-accent/10",
+                        )}
                       >
                         <div className="flex items-center gap-2 min-w-0">
                           {expandedAgg.has(item.key) ? (
@@ -1507,7 +1533,7 @@ export function Dashboard() {
                             )}
                           </span>
                         </div>
-                        <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                        <span className="text-xs text-muted-foreground/60 shrink-0 ml-2 tabular-nums font-mono min-w-[60px] text-right">
                           {new Date(item.latestEvent.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
                         </span>
                       </button>
@@ -1543,9 +1569,9 @@ export function Dashboard() {
         {/* ── 7. LIVE FEED ── */}
         {liveMode && (
           <div>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between border-b border-border/50 pb-2 mb-4">
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
                   Live Feed
                 </h3>
                 {liveConnected ? (

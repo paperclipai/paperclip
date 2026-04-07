@@ -3,11 +3,13 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 function Card({ className, ...props }: React.ComponentProps<"div">) {
+  const isInteractive = !!(props.onClick || (props as Record<string, unknown>).href);
   return (
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 border py-6 shadow-sm",
+        "bg-card text-card-foreground flex flex-col gap-6 border py-6 shadow-sm dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
+        isInteractive && "hover:-translate-y-0.5 hover:shadow-md cursor-pointer",
         className
       )}
       {...props}

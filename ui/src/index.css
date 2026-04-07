@@ -150,6 +150,34 @@
   }
 }
 
+/* ── Global Transition Defaults ── */
+@layer base {
+  /* Smooth transitions on all interactive elements */
+  a, button, [role="button"], input, select, textarea,
+  [data-slot="card"], [data-slot="select-trigger"] {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 200ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Active press feedback on all clickable elements */
+  button:active:not(:disabled), [role="button"]:active:not(:disabled),
+  a:active {
+    transform: scale(0.98);
+  }
+
+  /* Focus-visible ring for keyboard navigation */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Better selection color */
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 25%, transparent);
+  }
+}
+
 @media (pointer: coarse) {
   button,
   [role="button"],

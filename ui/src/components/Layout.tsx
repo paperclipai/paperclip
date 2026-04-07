@@ -413,7 +413,8 @@ export function Layout() {
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
           <header
             className={cn(
-              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+              "border-b border-border/50 backdrop-blur-sm bg-background/80",
+              isMobile && "sticky top-0 z-20",
               focusMode && !isMobile && "hidden",
             )}
             role="banner"
@@ -437,7 +438,7 @@ export function Layout() {
               id="main-content"
               tabIndex={-1}
               className={cn(
-                "flex-1 px-3 py-2 md:px-4 md:py-3",
+                "flex-1 p-6 scroll-smooth",
                 isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
               )}
             >

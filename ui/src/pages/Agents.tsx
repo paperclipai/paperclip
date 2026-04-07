@@ -569,7 +569,7 @@ export function Agents() {
 
       {/* Grid view */}
       {effectiveView === "grid" && filtered.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {filtered.map((agent) => {
             const isTerminated = agent.status === "terminated";
             const empType = ((agent as unknown as Record<string, unknown>).employmentType as string) ?? "full_time";
@@ -582,7 +582,7 @@ export function Agents() {
                 key={agent.id}
                 to={agentUrl(agent)}
                 className={cn(
-                  "flex flex-col gap-3 rounded-lg border border-border p-4 hover:bg-accent/30 transition-colors no-underline text-inherit",
+                  "flex flex-col gap-3 rounded-lg border border-border p-4 no-underline text-inherit transition-all duration-150 hover:bg-accent/30 hover:border-border/80 hover:shadow-sm",
                   isTerminated && "opacity-50",
                 )}
               >
@@ -602,6 +602,9 @@ export function Agents() {
                       <AgentIcon icon={agent.icon} className="h-4.5 w-4.5" />
                     </span>
                     <span className="relative flex h-2.5 w-2.5">
+                      {(agent.status === "active" || agent.status === "running") && (
+                        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-40 ${dotColor}`} />
+                      )}
                       <span className={`absolute inline-flex h-full w-full rounded-full ${dotColor}`} />
                     </span>
                   </div>

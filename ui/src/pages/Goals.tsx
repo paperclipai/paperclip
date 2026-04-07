@@ -45,16 +45,16 @@ import { Link } from "@/lib/router";
 function ProgressBar({ percent, size = "md" }: { percent: number; size?: "sm" | "md" }) {
   const clamped = Math.min(100, Math.max(0, percent));
   return (
-    <div className={cn("w-full bg-muted rounded-full overflow-hidden", size === "sm" ? "h-1.5" : "h-2")}>
+    <div className={cn("w-full bg-muted rounded-full overflow-hidden", size === "sm" ? "h-1.5" : "h-2.5")}>
       <div
         className={cn(
-          "h-full rounded-full transition-[width] duration-300",
+          "h-full rounded-full transition-[width] duration-500 ease-out",
           clamped === 100
-            ? "bg-emerald-500"
+            ? "bg-gradient-to-r from-emerald-500 to-emerald-400"
             : clamped > 50
-              ? "bg-blue-500"
+              ? "bg-gradient-to-r from-blue-600 to-blue-400"
               : clamped > 0
-                ? "bg-amber-500"
+                ? "bg-gradient-to-r from-amber-500 to-amber-400"
                 : "bg-muted",
         )}
         style={{ width: `${clamped}%` }}
@@ -150,7 +150,7 @@ function HealthBadge({ health }: { health: GoalHealth }) {
   if (health === "no_data") return null;
   const cfg = HEALTH_CONFIG[health];
   return (
-    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0", cfg.className)}>
+    <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0", cfg.className)}>
       {cfg.label}
     </span>
   );
@@ -262,14 +262,14 @@ function GoalCard({
   return (
     <Link
       to={`/goals/${goal.id}`}
-      className="block border border-border rounded-lg p-4 hover:bg-accent/30 transition-colors"
+      className="block border border-border rounded-lg p-4 transition-all duration-150 hover:bg-accent/30 hover:border-border/80 hover:shadow-sm"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <HealthBadge health={health} />
             <h3 className="text-sm font-semibold truncate">{goal.title}</h3>
             <StatusBadge status={goal.status} />
-            <HealthBadge health={health} />
             <ConfidenceIndicator confidence={goal.confidence} />
             {goal.targetDate && (
               <span className={cn(
@@ -294,8 +294,8 @@ function GoalCard({
         </div>
         {totalIssues > 0 && (
           <div className="text-right shrink-0">
-            <span className="text-lg font-semibold tabular-nums">{Math.round(percent)}%</span>
-            <div className="text-[10px] text-muted-foreground">{completed}/{totalIssues} done</div>
+            <span className="text-xl font-bold tabular-nums">{Math.round(percent)}%</span>
+            <div className="text-[10px] text-muted-foreground tabular-nums">{completed}/{totalIssues} done</div>
           </div>
         )}
       </div>
@@ -421,9 +421,9 @@ function GoalTreeNode({ goal, progress, childGoals, allGoals, progressMap, issue
           </div>
           {progress && progress.totalIssues > 0 && (
             <div className="mt-1.5 flex items-center gap-2">
-              <div className="flex-1 max-w-[200px] bg-muted rounded-full h-1.5 overflow-hidden">
+              <div className="flex-1 max-w-[200px] bg-muted rounded-full h-2 overflow-hidden">
                 <div
-                  className={cn("h-full rounded-full", progressBarColor(percent))}
+                  className={cn("h-full rounded-full transition-[width] duration-500 ease-out", progressBarColor(percent))}
                   style={{ width: `${Math.min(100, percent)}%` }}
                 />
               </div>
@@ -783,7 +783,7 @@ export function Goals() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Goals</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Goals</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Set objectives and track progress as your agents deliver results.
           </p>
