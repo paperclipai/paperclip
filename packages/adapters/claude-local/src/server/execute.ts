@@ -335,12 +335,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  const commandNotes = instructionsFilePath
-    ? [
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
-      ]
-    : [];
-
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
@@ -369,11 +363,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
 
+  const runtimeSessionParams = parseObject(runtime.sessionParams);
+  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const canResumeSession =
+    runtimeSessionId.length > 0 &&
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+  const sessionId = canResumeSession ? runtimeSessionId : null;
+  if (runtimeSessionId && !canResumeSession) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  }
+
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
+  // Skipped on resumed sessions — the instructions are already baked into the
+  // session cache and re-injecting them wastes tokens.
   let effectiveInstructionsFilePath: string | undefined = instructionsFilePath;
-  if (instructionsFilePath) {
+  if (instructionsFilePath && !canResumeSession) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
@@ -388,21 +398,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       effectiveInstructionsFilePath = undefined;
     }
+  } else if (canResumeSession) {
+    effectiveInstructionsFilePath = undefined;
   }
 
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
-    );
-  }
+  const commandNotes =
+    instructionsFilePath && !sessionId
+      ? [
+          `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+        ]
+      : [];
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,

@@ -117,6 +117,113 @@ describe("claude execute", () => {
     }
   });
 
+  /**
+   * Regression tests for commandNotes accuracy (Greptile P2).
+   *
+   * commandNotes should only claim instructions were injected when the flag
+   * was actually passed — i.e. on fresh sessions, not resumed ones.
+   */
+  it("commandNotes reports injection on a fresh session with instructionsFile", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-fresh-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    let capturedNotes: string[] = [];
+    try {
+      await execute({
+        runId: "run-notes-fresh",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
+      });
+      expect(capturedNotes.some((n) => n.includes("--append-system-prompt-file"))).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    let capturedNotes: string[] = ["sentinel"];
+    try {
+      await execute({
+        runId: "run-notes-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
+      });
+      expect(capturedNotes).toHaveLength(0);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression test for unnecessary file I/O on resumed sessions (Greptile P2).
+   *
+   * The combined agent-instructions.md temp file must NOT be written when
+   * resuming, since the instructions are already baked into the session cache.
+   */
+  it("does not write agent-instructions temp file on a resumed session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-io-resume-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    try {
+      await execute({
+        runId: "run-io-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      // The skills dir lives under HOME/.paperclip/skills — verify no combined
+      // agent-instructions.md was written anywhere under root on a resume.
+      const allFiles = await fs.readdir(root, { recursive: true });
+      const tempInstructionsWritten = (allFiles as string[]).some((f) =>
+        f.includes("agent-instructions.md"),
+      );
+      expect(tempInstructionsWritten).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
