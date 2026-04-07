@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -1814,11 +1814,18 @@ export function heartbeatService(db: Db) {
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    // Exponential backoff: retry 1 → 60s, retry 2 → 300s (5m), retry 3 → 900s (15m)
+    const RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
+    const nextRetryCount = (run.processLossRetryCount ?? 0) + 1;
+    const delayMs = RETRY_DELAYS_MS[Math.min(nextRetryCount - 1, RETRY_DELAYS_MS.length - 1)];
+    const notBefore = new Date(now.getTime() + delayMs).toISOString();
+
     const retryContextSnapshot = {
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
+      notBefore,
     };
 
     const queued = await db.transaction(async (tx) => {
@@ -2084,19 +2091,26 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const MAX_PROCESS_LOSS_RETRIES = 3;
+      const retryCount = run.processLossRetryCount ?? 0;
+      const shouldRetry = tracksLocalChild && !!run.processPid && retryCount < MAX_PROCESS_LOSS_RETRIES;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
+      const retryMessage = shouldRetry
+        ? `${baseMessage}; queuing retry ${retryCount + 1}/${MAX_PROCESS_LOSS_RETRIES}`
+        : retryCount >= MAX_PROCESS_LOSS_RETRIES
+          ? `${baseMessage}; all ${MAX_PROCESS_LOSS_RETRIES} retries exhausted — escalating`
+          : baseMessage;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: retryMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: retryMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -2109,6 +2123,21 @@ export function heartbeatService(db: Db) {
         }
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
+        // Escalate after max retries: pause agent and log critical event
+        if (retryCount >= MAX_PROCESS_LOSS_RETRIES) {
+          const agent = await getAgent(run.agentId);
+          if (agent) {
+            await db.update(agents).set({
+              status: "paused",
+              pauseReason: "system",
+              updatedAt: now,
+            }).where(eq(agents.id, run.agentId));
+            logger.error(
+              { agentId: run.agentId, agentName: agent.name, runId: run.id, retryCount },
+              `Agent crashed ${MAX_PROCESS_LOSS_RETRIES} times — auto-paused for investigation`,
+            );
+          }
+        }
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -2146,6 +2175,52 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  /**
+   * Auto-reset agents stuck in 'error' status after a 60-second cooldown.
+   * This prevents agents from staying permanently dead after transient failures.
+   */
+  async function resetErrorAgents() {
+    const ERROR_COOLDOWN_MS = 60_000;
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - ERROR_COOLDOWN_MS);
+
+    const errorAgents = await db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.status, "error"), lt(agents.updatedAt, cutoff)));
+
+    let resetCount = 0;
+    for (const agent of errorAgents) {
+      // Don't auto-reset if agent was paused by system (max retries exhausted)
+      if (agent.pauseReason === "system") continue;
+
+      await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: now })
+        .where(eq(agents.id, agent.id));
+
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: agent.id,
+          status: "idle",
+          lastHeartbeatAt: agent.lastHeartbeatAt
+            ? new Date(agent.lastHeartbeatAt).toISOString()
+            : null,
+          outcome: "auto_reset",
+        },
+      });
+
+      logger.info(
+        { agentId: agent.id, agentName: agent.name },
+        "Auto-reset agent from error to idle after cooldown",
+      );
+      resetCount += 1;
+    }
+    return { reset: resetCount };
   }
 
   async function updateRuntimeState(
@@ -2224,7 +2299,12 @@ export function heartbeatService(db: Db) {
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      const now = Date.now();
       for (const queuedRun of queuedRuns) {
+        // Respect notBefore delay for process-loss retries with exponential backoff
+        const ctx = parseObject(queuedRun.contextSnapshot);
+        const notBefore = typeof ctx.notBefore === "string" ? new Date(ctx.notBefore).getTime() : 0;
+        if (notBefore > now) continue;
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -4174,6 +4254,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     resumeQueuedRuns,
+
+    resetErrorAgents,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
