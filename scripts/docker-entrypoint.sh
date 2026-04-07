@@ -31,7 +31,9 @@ if [ "$(id -u)" = "0" ]; then
     # `docker exec` into the hermes-agent sidecar after privilege drop.
     DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)
     if [ -n "$DOCKER_SOCK_GID" ] && [ "$DOCKER_SOCK_GID" != "0" ]; then
-        usermod -aG "$DOCKER_SOCK_GID" node 2>/dev/null || true
+        if ! usermod -aG "$DOCKER_SOCK_GID" node 2>/dev/null; then
+            echo "Warning: Failed to add node user to Docker socket group (GID $DOCKER_SOCK_GID). hermes-bridge.sh may not be able to exec into hermes-agent sidecar." >&2
+        fi
     fi
 fi
 
