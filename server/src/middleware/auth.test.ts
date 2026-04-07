@@ -86,7 +86,7 @@ function makeMockDb(selectSetups: SelectSetup = []) {
 
 // Convenience: build the middleware with given mode and optional resolveSession
 function makeMiddleware(
-  deploymentMode: "local_trusted" | "authenticated" | "unauthenticated",
+  deploymentMode: string,
   resolveSession?: () => Promise<any>,
   db?: any,
 ) {
