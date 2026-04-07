@@ -247,6 +247,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      // Kiro CLI doesn't have a --format json for chat output.
+      // If exit code is 0, the run succeeded — use stripped text as summary.
+      if ((proc.exitCode ?? 0) === 0) {
+        const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g, "");
+        const summary = parsedOutput.summary || stripAnsi(proc.stdout).trim();
+        return {
+          exitCode: 0,
+          signal: proc.signal,
+          timedOut: false,
+          errorMessage: null,
+          summary,
+          sessionId: parsedOutput.sessionId,
+          sessionParams: parsedOutput.sessionId ? { sessionId: parsedOutput.sessionId, cwd } as Record<string, unknown> : null,
+          sessionDisplayId: parsedOutput.sessionId,
+          provider: "amazon",
+          model: parsedOutput.model || model,
+          billingType: "subscription_included" as const,
+          costUsd: parsedOutput.costUsd ?? 0,
+          resultJson: { stdout: proc.stdout, stderr: proc.stderr },
+          clearSession: false,
+        };
+      }
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
