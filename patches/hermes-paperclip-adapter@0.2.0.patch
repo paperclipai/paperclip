@@ -1,0 +1,31 @@
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+index 93cddf8243271f5fb3ab101617f9114257e41328..035586b1b0b37d6ef90eb01b81eb82bf15d1c96c 100644
+--- a/dist/server/execute.js
++++ b/dist/server/execute.js
+@@ -240,6 +240,14 @@ function parseHermesOutput(stdout, stderr) {
+ // ---------------------------------------------------------------------------
+ // Main execute
+ // ---------------------------------------------------------------------------
++// Known Hermes built-in toolset names. MCP server names must NOT be
++// passed via -t; they auto-load from ~/.hermes/config.yaml.
++const HERMES_BUILTIN_TOOLSETS = new Set([
++    "web", "browser", "terminal", "file", "code_execution", "vision",
++    "image_gen", "moa", "tts", "skills", "todo", "memory",
++    "session_search", "clarify", "delegation", "cronjob", "rl", "homeassistant",
++]);
++
+ export async function execute(ctx) {
+     const config = (ctx.agent?.adapterConfig ?? {});
+     // ── Resolve configuration ──────────────────────────────────────────────
+@@ -248,7 +256,10 @@ export async function execute(ctx) {
+     const provider = cfgString(config.provider);
+     const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+     const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
+-    const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
++    const rawToolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
++    const toolsets = rawToolsets
++        ? rawToolsets.split(",").map(t => t.trim()).filter(t => HERMES_BUILTIN_TOOLSETS.has(t)).join(",") || undefined
++        : undefined;
+     const extraArgs = cfgStringArray(config.extraArgs);
+     const persistSession = cfgBoolean(config.persistSession) !== false;
+     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
