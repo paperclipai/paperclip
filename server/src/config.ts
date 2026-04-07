@@ -1,7 +1,7 @@
 import { readConfigFile } from "./config-file.js";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { config as loadDotenv } from "dotenv";
+import { config as loadDotenv, parse as parseDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
@@ -35,6 +35,21 @@ const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PAT
   : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
 if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
+}
+
+// When running via `pnpm --filter @paperclipai/server dev:watch`, CWD is server/
+// but the user's .env may be at the repo root. Selectively load third-party API
+// keys that the server needs but that aren't part of Paperclip's own config.
+// We parse without applying to avoid overriding Paperclip's own config (e.g. DATABASE_URL).
+const REPO_ROOT_ENV_PATH = resolve(process.cwd(), "..", ".env");
+const REPO_ROOT_PASSTHROUGH_KEYS = ["OPENAI_API_KEY", "COPILOTKIT_MODEL"];
+if (existsSync(REPO_ROOT_ENV_PATH)) {
+  const parsed = parseDotenv(readFileSync(REPO_ROOT_ENV_PATH, "utf8"));
+  for (const key of REPO_ROOT_PASSTHROUGH_KEYS) {
+    if (parsed[key] && !process.env[key]) {
+      process.env[key] = parsed[key];
+    }
+  }
 }
 
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
