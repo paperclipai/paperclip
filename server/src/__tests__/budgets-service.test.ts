@@ -11,7 +11,18 @@ type SelectResult = unknown[];
 
 function createDbStub(selectResults: SelectResult[]) {
   const pendingSelects = [...selectResults];
-  const selectWhere = vi.fn(async () => pendingSelects.shift() ?? []);
+
+  // Returns a "thenable builder" — awaitable and chainable with .orderBy().
+  function makeResultChain(data: unknown[]) {
+    return {
+      then(resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) {
+        return Promise.resolve(data).then(resolve, reject);
+      },
+      orderBy: vi.fn(async () => data),
+    };
+  }
+
+  const selectWhere = vi.fn(() => makeResultChain(pendingSelects.shift() ?? []));
   const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve(pendingSelects.shift() ?? [])));
   const selectOrderBy = vi.fn(async () => pendingSelects.shift() ?? []);
   const selectFrom = vi.fn(() => ({
@@ -217,6 +228,135 @@ describe("budgetService", () => {
       scopeName: "Paperclip",
       reason: "Company is paused because its budget hard-stop was reached.",
     });
+  });
+
+  /**
+   * Regression tests for https://github.com/paperclipai/paperclip/issues/3060
+   *
+   * Deleting an agent should not leave orphaned budget_policies that crash
+   * /dashboard, /sidebar-badges, and /budgets/overview.
+   */
+  it("overview returns empty policies array when all agent-scoped policies are orphaned", async () => {
+    const orphanedPolicy = {
+      id: "policy-orphan",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-deleted",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+      createdByUserId: null,
+      updatedByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Queued in order: listPolicyRows, resolveScopeRecord (agent not found), listActiveIncidents
+    const dbStub = createDbStub([
+      [orphanedPolicy],
+      [],
+      [],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const overview = await service.overview("company-1");
+
+    expect(overview.policies).toHaveLength(0);
+    expect(overview.pausedAgentCount).toBe(0);
+  });
+
+  it("overview returns empty policies array when all project-scoped policies are orphaned", async () => {
+    const orphanedPolicy = {
+      id: "policy-orphan-proj",
+      companyId: "company-1",
+      scopeType: "project",
+      scopeId: "project-deleted",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+      createdByUserId: null,
+      updatedByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Queued in order: listPolicyRows, resolveScopeRecord (project not found), listActiveIncidents
+    const dbStub = createDbStub([
+      [orphanedPolicy],
+      [],
+      [],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const overview = await service.overview("company-1");
+
+    expect(overview.policies).toHaveLength(0);
+    expect(overview.pausedProjectCount).toBe(0);
+  });
+
+  it("overview preserves valid policies alongside orphaned ones", async () => {
+    const orphanedPolicy = {
+      id: "policy-orphan",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-deleted",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+      createdByUserId: null,
+      updatedByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const validPolicy = {
+      id: "policy-valid",
+      companyId: "company-1",
+      scopeType: "company",
+      scopeId: "company-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1000,
+      warnPercent: 80,
+      hardStopEnabled: false,
+      notifyEnabled: true,
+      isActive: true,
+      createdByUserId: null,
+      updatedByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Queued in order:
+    //  1. listPolicyRows → both policies
+    //  2. resolveScopeRecord for orphanedPolicy (agent) → [] (not found)
+    //  3. resolveScopeRecord for validPolicy (company) → [{ companyId, name, status... }]
+    //  4. computeObservedAmount for validPolicy → [{ total: 50 }]
+    //  5. listActiveIncidents → []
+    const dbStub = createDbStub([
+      [orphanedPolicy, validPolicy],
+      [],
+      [{ companyId: "company-1", name: "Acme", status: "active", pauseReason: null, pausedAt: null }],
+      [{ total: 50 }],
+      [],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const overview = await service.overview("company-1");
+
+    expect(overview.policies).toHaveLength(1);
+    expect(overview.policies[0]?.policyId).toBe("policy-valid");
   });
 
   it("uses live observed spend when raising a budget incident", async () => {
