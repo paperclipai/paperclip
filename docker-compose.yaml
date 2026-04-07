@@ -5,6 +5,9 @@ services:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip
       POSTGRES_DB: paperclip
+ports:
+      - "5433:5432"  # port externe 5433
+      
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
       interval: 10s        # Augmenter (était 2s)
