@@ -1482,7 +1482,7 @@ export function NewIssueDialog() {
             multiple
           />
           <button
-            className="bg-transparent font-normal text-xs text-muted-foreground"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
