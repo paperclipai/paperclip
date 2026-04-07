@@ -188,6 +188,7 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
 
   const config: ExecutionWorkspaceConfig = {
     provisionCommand: readNullableString(raw.provisionCommand),
+    syncCommand: readNullableString(raw.syncCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
@@ -210,6 +211,7 @@ export function mergeExecutionWorkspaceConfig(
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
     provisionCommand: null,
+    syncCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
     workspaceRuntime: null,
@@ -223,6 +225,7 @@ export function mergeExecutionWorkspaceConfig(
 
   const nextConfig: ExecutionWorkspaceConfig = {
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
+    syncCommand: patch.syncCommand !== undefined ? readNullableString(patch.syncCommand) : current.syncCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
     workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
