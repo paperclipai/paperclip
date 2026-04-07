@@ -260,6 +260,8 @@ const dashboard: DashboardSummary = {
     monthSpendCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+    dailyBurnRateCents: 30,
+    projectedMonthSpendCents: 930,
   },
   pendingApprovals: 1,
   budgets: {
