@@ -61,7 +61,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -661,7 +661,10 @@ function IssueChatAssistantMessage() {
                 </DropdownMenuItem>
                 {runHref ? (
                   <DropdownMenuItem asChild>
-                    <Link to={runHref}>View run</Link>
+                    <Link to={runHref} target="_blank" rel="noreferrer noopener">
+                      <Search className="mr-2 h-3.5 w-3.5" />
+                      View run
+                    </Link>
                   </DropdownMenuItem>
                 ) : null}
               </DropdownMenuContent>
