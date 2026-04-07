@@ -3190,10 +3190,7 @@ export function heartbeatService(db: Db) {
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
     const promotedRun = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
-      );
-
+      // First find the issue without locking
       const issue = await tx
         .select({
           id: issues.id,
@@ -3204,6 +3201,20 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!issue) return;
+
+      // Advisory lock on issue ID (serializes with wakeup enqueue, no row-level deadlock)
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${issue.id}))`,
+      );
+
+      // Re-verify after acquiring lock (issue state may have changed)
+      const stillLocked = await tx
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .then((rows) => rows[0]?.executionRunId === run.id);
+
+      if (!stillLocked) return;
 
       await tx
         .update(issues)
@@ -3449,8 +3460,9 @@ export function heartbeatService(db: Db) {
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
+        // Advisory lock instead of FOR UPDATE (prevents deadlock with releaseIssueExecutionAndPromote)
         await tx.execute(
-          sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
+          sql`SELECT pg_advisory_xact_lock(hashtext(${issueId}))`,
         );
 
         const issue = await tx
