@@ -151,6 +151,10 @@ function mergePartText(
     : `${previous.text}\n${next.text}`;
 }
 
+function formatDiffBlock(lines: string[]) {
+  return `\`\`\`diff\n${lines.join("\n")}\n\`\`\``;
+}
+
 function createAssistantMetadata(custom: Record<string, unknown>) {
   return {
     unstable_state: null,
@@ -297,6 +301,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "thinking" ||
       entry.kind === "tool_call" ||
       entry.kind === "tool_result" ||
+      entry.kind === "diff" ||
       (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
     const isText = entry.kind === "assistant" && !!entry.text;
 
@@ -434,8 +439,29 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
   const toolParts = new Map<string, ToolCallMessagePart<JsonObject, unknown>>();
   const toolIndices = new Map<string, number>();
   const notices: string[] = [];
+  let pendingDiffLines: string[] = [];
+  let pendingDiffParentId: string | undefined;
+
+  const flushPendingDiff = () => {
+    if (pendingDiffLines.length === 0) return;
+    orderedParts.push({
+      type: "text",
+      text: formatDiffBlock(pendingDiffLines),
+      parentId: pendingDiffParentId,
+    });
+    pendingDiffLines = [];
+    pendingDiffParentId = undefined;
+  };
 
   for (const [index, entry] of entries.entries()) {
+    if (entry.kind === "diff") {
+      pendingDiffParentId ??= `diff-group:${index}`;
+      pendingDiffLines.push(entry.text ?? "");
+      continue;
+    }
+
+    flushPendingDiff();
+
     if (entry.kind === "assistant" && entry.text) {
       orderedParts.push({ type: "text", text: entry.text });
       continue;
@@ -509,6 +535,8 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       continue;
     }
   }
+
+  flushPendingDiff();
 
   const mergedParts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>> = [];
   for (const part of orderedParts) {

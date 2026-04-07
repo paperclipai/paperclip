@@ -108,6 +108,12 @@ type WorktreeReseedOptions = {
   seed?: boolean;
 };
 
+type WorktreeReseedBackup = {
+  tempRoot: string;
+  repoConfigDirBackup: string | null;
+  instanceRootBackup: string | null;
+};
+
 type WorktreeEnvOptions = {
   config?: string;
   json?: boolean;
@@ -1109,6 +1115,48 @@ function resolveCurrentWorktreeReseedState(opts: { home?: string } = {}) {
   };
 }
 
+async function snapshotDirectory(sourcePath: string, targetPath: string): Promise<string | null> {
+  if (!existsSync(sourcePath)) {
+    return null;
+  }
+  await fsPromises.cp(sourcePath, targetPath, { recursive: true });
+  return targetPath;
+}
+
+async function snapshotWorktreeReseedState(target: {
+  repoConfigDir: string;
+  instanceRoot: string;
+}): Promise<WorktreeReseedBackup> {
+  const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-reseed-backup-"));
+  return {
+    tempRoot,
+    repoConfigDirBackup: await snapshotDirectory(
+      target.repoConfigDir,
+      path.resolve(tempRoot, "repo-config"),
+    ),
+    instanceRootBackup: await snapshotDirectory(
+      target.instanceRoot,
+      path.resolve(tempRoot, "instance-root"),
+    ),
+  };
+}
+
+async function restoreDirectoryBackup(backupPath: string | null, targetPath: string): Promise<void> {
+  rmSync(targetPath, { recursive: true, force: true });
+  if (!backupPath) {
+    return;
+  }
+  await fsPromises.cp(backupPath, targetPath, { recursive: true });
+}
+
+async function restoreWorktreeReseedState(
+  backup: WorktreeReseedBackup,
+  target: { repoConfigDir: string; instanceRoot: string },
+): Promise<void> {
+  await restoreDirectoryBackup(backup.repoConfigDirBackup, target.repoConfigDir);
+  await restoreDirectoryBackup(backup.instanceRootBackup, target.instanceRoot);
+}
+
 export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai worktree reseed ")));
@@ -1143,21 +1191,35 @@ export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promis
     return;
   }
 
-  await runWorktreeInit({
-    name: target.worktreeName,
-    color: target.worktreeColor,
-    instance: target.instanceId,
-    home: target.homeDir,
-    fromConfig: opts.fromConfig,
-    fromDataDir: opts.fromDataDir,
-    fromInstance: opts.fromInstance,
-    sourceConfigPathOverride: sourceConfigPath,
-    serverPort: target.serverPort,
-    dbPort: target.dbPort,
-    seed: opts.seed ?? true,
-    seedMode,
-    force: true,
+  const targetPaths = resolveWorktreeLocalPaths({
+    cwd: process.cwd(),
+    homeDir: target.homeDir,
+    instanceId: target.instanceId,
   });
+  const backup = await snapshotWorktreeReseedState(targetPaths);
+
+  try {
+    await runWorktreeInit({
+      name: target.worktreeName,
+      color: target.worktreeColor,
+      instance: target.instanceId,
+      home: target.homeDir,
+      fromConfig: opts.fromConfig,
+      fromDataDir: opts.fromDataDir,
+      fromInstance: opts.fromInstance,
+      sourceConfigPathOverride: sourceConfigPath,
+      serverPort: target.serverPort,
+      dbPort: target.dbPort,
+      seed: opts.seed ?? true,
+      seedMode,
+      force: true,
+    });
+  } catch (error) {
+    await restoreWorktreeReseedState(backup, targetPaths);
+    throw error;
+  } finally {
+    rmSync(backup.tempRoot, { recursive: true, force: true });
+  }
 }
 
 export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOptions): Promise<void> {
