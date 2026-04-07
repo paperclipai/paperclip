@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, principalPermissionGrants } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -44,7 +44,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertAgentLifecycleAccess, assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels, detectAdapterModel } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -862,6 +862,60 @@ export function agentRoutes(db: Db) {
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/agents/cross-company", async (req, res) => {
+    const companyIds = typeof req.query.companyIds === "string"
+      ? req.query.companyIds.split(",").filter(Boolean)
+      : [];
+
+    if (companyIds.length === 0) {
+      res.status(400).json({ error: "companyIds query parameter is required (comma-separated)" });
+      return;
+    }
+
+    if (req.actor.type === "board") {
+      // Board users can list agents in any company they have access to
+      const results = await Promise.all(companyIds.map((cid) => svc.list(cid)));
+      res.json(results.flat());
+      return;
+    }
+
+    if (req.actor.type !== "agent" || !req.actor.companyId || !req.actor.agentId) {
+      res.status(403).json({ error: "Unauthorized" });
+      return;
+    }
+
+    // For agents: verify cross-company grant for each requested company
+    const grants = await db
+      .select({ scope: principalPermissionGrants.scope })
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, req.actor.companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, req.actor.agentId),
+          eq(principalPermissionGrants.permissionKey, "agents:manage_cross_company"),
+        ),
+      );
+
+    const grant = grants[0];
+    if (!grant) {
+      res.status(403).json({ error: "No cross-company agent management permission" });
+      return;
+    }
+
+    const scope = grant.scope as { targetCompanyIds?: string[] } | null;
+    const allowedIds = scope?.targetCompanyIds ?? [];
+    const authorizedIds = companyIds.filter((cid) => allowedIds.includes(cid));
+
+    if (authorizedIds.length === 0) {
+      res.status(403).json({ error: "None of the requested companies are in authorized scope" });
+      return;
+    }
+
+    const results = await Promise.all(authorizedIds.map((cid) => svc.list(cid)));
+    res.json(results.flat().map((agent) => redactForRestrictedAgentView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -1838,8 +1892,14 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertAgentLifecycleAccess(req, existing, db);
+
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1848,42 +1908,66 @@ export function agentRoutes(db: Db) {
 
     await heartbeat.cancelActiveForAgent(id);
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
+      ...(req.actor.type === "agent" && req.actor.companyId !== agent.companyId
+        ? { details: { sourceCompanyId: req.actor.companyId } }
+        : {}),
     });
 
     res.json(agent);
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertAgentLifecycleAccess(req, existing, db);
+
     const agent = await svc.resume(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
+      ...(req.actor.type === "agent" && req.actor.companyId !== agent.companyId
+        ? { details: { sourceCompanyId: req.actor.companyId } }
+        : {}),
     });
 
     res.json(agent);
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertAgentLifecycleAccess(req, existing, db);
+
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1892,13 +1976,19 @@ export function agentRoutes(db: Db) {
 
     await heartbeat.cancelActiveForAgent(id);
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
+      ...(req.actor.type === "agent" && req.actor.companyId !== agent.companyId
+        ? { details: { sourceCompanyId: req.actor.companyId } }
+        : {}),
     });
 
     res.json(agent);
@@ -1971,12 +2061,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
-    }
+    await assertAgentLifecycleAccess(req, agent, db);
 
     const run = await heartbeat.wakeup(id, {
       source: req.body.source,

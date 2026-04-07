@@ -1,4 +1,7 @@
 import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { principalPermissionGrants } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertBoard(req: Request) {
@@ -49,4 +52,69 @@ export function getActorInfo(req: Request) {
     agentId: null,
     runId: req.actor.runId ?? null,
   };
+}
+
+/**
+ * Checks whether the current actor can perform lifecycle operations
+ * (pause, resume, terminate, wakeup) on a target agent.
+ *
+ * - Board users: always allowed (preserves existing assertBoard behavior).
+ * - Agents in the same company as the target: allowed.
+ * - Agents in a different company: allowed only if they hold an
+ *   `agents:manage_cross_company` grant whose scope includes the target
+ *   agent's company.
+ */
+export async function assertAgentLifecycleAccess(
+  req: Request,
+  targetAgent: { id: string; companyId: string },
+  db: Db,
+): Promise<void> {
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
+
+  // Board users can always manage any agent (existing assertBoard behavior)
+  if (req.actor.type === "board") {
+    return;
+  }
+
+  // Agent in the same company as the target: allow (self-management, manager ops, etc.)
+  if (req.actor.type === "agent" && req.actor.companyId === targetAgent.companyId) {
+    return;
+  }
+
+  // Agent in a different company: check for cross-company grant on the HOME company
+  if (req.actor.type === "agent" && req.actor.companyId !== targetAgent.companyId) {
+    const homeCompanyId = req.actor.companyId;
+    const agentId = req.actor.agentId;
+    if (!homeCompanyId || !agentId) {
+      throw forbidden("Agent identity incomplete");
+    }
+
+    const grants = await db
+      .select({ id: principalPermissionGrants.id, scope: principalPermissionGrants.scope })
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, homeCompanyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, agentId),
+          eq(principalPermissionGrants.permissionKey, "agents:manage_cross_company"),
+        ),
+      );
+
+    const grant = grants[0];
+    if (!grant) {
+      throw forbidden("No cross-company agent management permission");
+    }
+
+    const scope = grant.scope as { targetCompanyIds?: string[] } | null;
+    if (!scope?.targetCompanyIds?.includes(targetAgent.companyId)) {
+      throw forbidden("Target company not in authorized scope");
+    }
+
+    return;
+  }
+
+  throw forbidden("Unauthorized");
 }
