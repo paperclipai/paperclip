@@ -1,4 +1,4 @@
-name: Sync main from upstream
+name: Sync master from upstream
 
 on:
   schedule:
@@ -14,24 +14,24 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository != 'paperclipai/paperclip'
     steps:
-      - name: Checkout main
+      - name: Checkout master
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: master
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add upstream remote
         run: |
           git remote add upstream https://github.com/paperclipai/paperclip.git
-          git fetch upstream main
+          git fetch upstream master
 
       - name: Merge upstream changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git merge upstream/main --no-edit || true
+          git merge upstream/master --no-edit || true
 
       - name: Push updates
         run: |
-          git push origin main
+          git push origin master
