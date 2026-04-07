@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -94,6 +95,16 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+
+/**
+ * Deterministic jitter fraction (0..1) derived from an agent id.
+ * Same agent always gets the same jitter so the offset is stable
+ * across scheduler ticks (prevents starvation from unlucky rolls).
+ */
+function hashJitter(agentId: string): number {
+  const hash = createHash("sha256").update(agentId).digest();
+  return hash.readUInt32BE(0) / 0xffffffff;
+}
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -5331,6 +5342,10 @@ export function heartbeatService(db: Db) {
       let enqueued = 0;
       let skipped = 0;
 
+      // Collect agents eligible for heartbeat, then stagger enqueue to
+      // prevent thundering-herd when many agents share the same interval.
+      const eligible: typeof allAgents = [];
+
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -5339,8 +5354,24 @@ export function heartbeatService(db: Db) {
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+        // Apply per-agent jitter: up to 10% of the configured interval
+        // (seeded from agent id hash so the same agent gets the same
+        // jitter across ticks, avoiding starvation).
+        const jitterFraction = hashJitter(agent.id); // 0..1
+        const jitterMs = Math.floor(policy.intervalSec * 1000 * 0.10 * jitterFraction);
+        if (elapsedMs < policy.intervalSec * 1000 + jitterMs) continue;
 
+        eligible.push(agent);
+      }
+
+      // Shuffle eligible agents so enqueue order varies per tick,
+      // spreading lock contention when many agents fire together.
+      for (let i = eligible.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [eligible[i]!, eligible[j]!] = [eligible[j]!, eligible[i]!];
+      }
+
+      for (const agent of eligible) {
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",

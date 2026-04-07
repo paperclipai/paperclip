@@ -7,8 +7,8 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes — model list is static between heartbeats
+const MODELS_DISCOVERY_TIMEOUT_MS = 45_000; // 45s — 20s was too tight under concurrent load
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -100,6 +100,43 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
+const MODELS_DISCOVERY_MAX_RETRIES = 2;
+const MODELS_DISCOVERY_BACKOFF_BASE_MS = 2_000;
+
+async function discoverOpenCodeModelsOnce(input: {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+  runtimeEnv: Record<string, string>;
+}): Promise<AdapterModel[]> {
+  const result = await runChildProcess(
+    `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    input.command,
+    ["models"],
+    {
+      cwd: input.cwd,
+      env: input.runtimeEnv,
+      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+      graceSec: 3,
+      onLog: async () => {},
+    },
+  );
+
+  if (result.timedOut) {
+    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+  }
+  if ((result.exitCode ?? 1) !== 0) {
+    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
+    throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
+  }
+
+  return sortModels(parseModelsOutput(result.stdout));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function discoverOpenCodeModels(input: {
   command?: unknown;
   cwd?: unknown;
@@ -123,28 +160,19 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
-  const result = await runChildProcess(
-    `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["models"],
-    {
-      cwd,
-      env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
-      graceSec: 3,
-      onLog: async () => {},
-    },
-  );
-
-  if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= MODELS_DISCOVERY_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const backoffMs = MODELS_DISCOVERY_BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
+      await sleep(backoffMs);
+    }
+    try {
+      return await discoverOpenCodeModelsOnce({ command, cwd, env, runtimeEnv });
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
   }
-  if ((result.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
-  }
-
-  return sortModels(parseModelsOutput(result.stdout));
+  throw lastError!;
 }
 
 export async function discoverOpenCodeModelsCached(input: {
