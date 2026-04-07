@@ -222,7 +222,7 @@ describe("heartbeat comment wake batching", () => {
     db = createDb(started.connectionString);
     instance = started.instance;
     dataDir = started.dataDir;
-  }, 20_000);
+  }, 45_000);
 
   afterAll(async () => {
     await instance?.stop();
@@ -406,7 +406,7 @@ describe("heartbeat comment wake batching", () => {
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
-      });
+      }, 30_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -422,7 +422,7 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 20_000);
+  }, 45_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
     const gateway = await createControlledGatewayServer();

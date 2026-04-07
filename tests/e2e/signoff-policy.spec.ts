@@ -138,7 +138,16 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
   // Helper: create agent + API key + request context
   async function createAgent(name: string, role: string, title: string): Promise<AgentAuth> {
     const agentRes = await boardRequest.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
-      data: { name, role, title, adapterType: "process", adapterConfig: { command: "echo done" } },
+      data: {
+        name,
+        role,
+        title,
+        adapterType: "process",
+        adapterConfig: {
+          command: process.execPath,
+          args: ["-e", "process.stdout.write('done\\n')"],
+        },
+      },
     });
     expect(agentRes.ok()).toBe(true);
     const agent = await agentRes.json();
