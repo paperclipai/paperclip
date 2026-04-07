@@ -1,0 +1,13 @@
+{
+  "project": "ironworks",
+  "profile": "SaaS App",
+  "started": "2026-04-06T22:23:15Z",
+  "skills_completed": ["sec-ship", "perf"],
+  "skills_remaining": ["deps", "compliance", "a11y", "cleancode", "docs"],
+  "unique_domains_completed": [],
+  "unique_domains_remaining": ["content", "seo", "user-flow", "infrastructure", "payment"],
+  "scores": {
+    "sec-ship": { "score_before": 62, "score_after": 95, "delta": 33, "critical": 0, "warnings": 3, "fixed": 11, "deferred": 0, "report": ".security-reports/sec-ship-2026-04-06-002343.md" },
+    "perf": { "score_before": 55, "score_after": 82, "delta": 27, "critical": 0, "warnings": 2, "fixed": 12, "deferred": 3, "report": ".perf/perf-20260406-015606.md" }
+  }
+}

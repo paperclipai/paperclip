@@ -704,6 +704,48 @@ export async function startServer(): Promise<StartedServer> {
     logger.info("Goal snapshot scheduler armed (midnight CT daily)");
   }
 
+  // ── Daily quality drift check (REQ-08) ──
+  {
+    const { checkAllAgentDrift } = await import("./services/quality-drift.js");
+    const { findCompanyChannel, postMessage: postChannelMsg } = await import("./services/channels.js");
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+    const runDriftCheck = async () => {
+      try {
+        // Get all companies
+        const companyRows = await db.select({ id: companies.id }).from(companies);
+        for (const company of companyRows) {
+          const drifting = await checkAllAgentDrift(db, company.id);
+          if (drifting.length > 0) {
+            const channel = await findCompanyChannel(db, company.id);
+            if (channel) {
+              const agentList = drifting
+                .map((d) => `- ${d.agentName}: avg ${d.drift.averageScore}/10, trend: ${d.drift.trend}`)
+                .join("\n");
+              await postChannelMsg(db, {
+                channelId: channel.id,
+                companyId: company.id,
+                body: `**Quality Drift Alert**\n\nThe following agents show declining quality scores:\n${agentList}\n\nConsider reviewing their recent work and providing feedback.`,
+                messageType: "alert",
+              });
+            }
+            logger.warn({ companyId: company.id, count: drifting.length }, "quality drift detected for agents");
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, "Daily quality drift check failed");
+      }
+    };
+
+    // Run daily (first run after 1 hour, then every 24 hours)
+    setTimeout(() => {
+      void runDriftCheck();
+      setInterval(() => void runDriftCheck(), ONE_DAY_MS);
+    }, 60 * 60 * 1000);
+
+    logger.info("Quality drift checker armed (daily)");
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

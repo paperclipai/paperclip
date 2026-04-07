@@ -57,6 +57,8 @@ export const issues = pgTable(
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     /** Target completion date. Used for deadline urgency classification. */
     targetDate: timestamp("target_date", { withTimezone: true }),
+    /** JSONB spec template for spec enforcement (Nolan Integration REQ-01). */
+    specTemplate: jsonb("spec_template").$type<Record<string, unknown>>(),
     /** Array of issue IDs this issue depends on. All must be status='done' before this can go in_progress. */
     dependsOn: jsonb("depends_on").$type<string[]>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

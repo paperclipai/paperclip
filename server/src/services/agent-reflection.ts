@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
-import { agentMemoryEntries, agents, heartbeatRuns, issueLabels, issues, labels } from "@ironworksai/db";
+import { agentMemoryEntries, agents, approvals, heartbeatRuns, issueApprovals, issueLabels, issues, labels } from "@ironworksai/db";
 import { logger } from "../middleware/logger.js";
 import { createDecisionRecord, updateTechDebtRegister } from "./agent-workspace.js";
 
@@ -243,6 +243,70 @@ export async function performPostTaskReflection(
     } catch (err) {
       // Quality review is best-effort; don't fail the reflection
       logger.debug({ err, agentId: opts.agentId, issueId: opts.issueId }, "quality review failed");
+    }
+  }
+
+  // ── Quality gate lesson (REQ-11) ──
+  // If the issue had a quality gate approval, include the quality score
+  // and feedback in a "lesson" memory entry for the agent learning system.
+  if (opts.outcome === "completed") {
+    try {
+      const qualityApprovals = await db
+        .select({
+          status: approvals.status,
+          payload: approvals.payload,
+          decisionNote: approvals.decisionNote,
+        })
+        .from(approvals)
+        .innerJoin(issueApprovals, eq(approvals.id, issueApprovals.approvalId))
+        .where(
+          and(
+            eq(issueApprovals.issueId, opts.issueId),
+            eq(approvals.type, "quality_gate"),
+          ),
+        )
+        .orderBy(desc(approvals.createdAt))
+        .limit(1);
+
+      if (qualityApprovals.length > 0) {
+        const qa = qualityApprovals[0]!;
+        const payload = qa.payload as Record<string, unknown>;
+        const score = typeof payload.score === "number" ? payload.score : null;
+        const wasRejected = qa.status === "rejected";
+        const feedback = qa.decisionNote ?? (wasRejected ? "Rejected by quality gate" : null);
+
+        const lessonContent = JSON.stringify({
+          type: "lesson",
+          source: "quality_gate",
+          issueId: opts.issueId,
+          issueTitle: opts.issueTitle,
+          score,
+          feedback,
+          whatToImprove: wasRejected
+            ? `Quality gate rejected this task. ${feedback ?? "Review the feedback and adjust approach."}`
+            : score !== null && score < 7
+              ? `Quality score was ${score}/10. Focus on improving output quality.`
+              : null,
+        });
+
+        await db.insert(agentMemoryEntries).values({
+          agentId: opts.agentId,
+          companyId: opts.companyId,
+          memoryType: "episodic",
+          category: "lesson",
+          content: lessonContent,
+          sourceIssueId: opts.issueId,
+          confidence: wasRejected ? 90 : 75,
+          lastAccessedAt: now,
+        });
+
+        logger.info(
+          { agentId: opts.agentId, issueId: opts.issueId, score, wasRejected },
+          "created quality gate lesson from post-task reflection",
+        );
+      }
+    } catch (err) {
+      logger.debug({ err, agentId: opts.agentId, issueId: opts.issueId }, "quality gate lesson creation failed");
     }
   }
 

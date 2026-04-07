@@ -40,6 +40,8 @@ import { playbookExecutionService } from "../services/playbook-execution.js";
 import { recalculateGoalProgress } from "../services/goal-progress.js";
 import { performPostTaskReflection } from "../services/agent-reflection.js";
 import { findCompanyChannel, postMessage as postChannelMessage } from "../services/channels.js";
+import { validateSpec } from "../services/spec-validation.js";
+import { createQualityGateReview } from "../services/quality-gate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -889,11 +891,40 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+
+    // REQ-01: Spec enforcement - validate spec template if assignee + specTemplate present
+    if (req.body.assigneeAgentId && req.body.specTemplate) {
+      const assigneeAgent = await agentsSvc.getById(req.body.assigneeAgentId);
+      if (assigneeAgent) {
+        const specResult = validateSpec(companyId, assigneeAgent.role, req.body.specTemplate);
+        if (!specResult.valid) {
+          res.status(422).json({
+            error: "spec_incomplete",
+            missing_fields: specResult.missingFields,
+            agent_role: specResult.agentRole,
+          });
+          return;
+        }
+      }
+    }
+
     const issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    // REQ-01: If issue has assignee but no specTemplate, add a warning comment
+    if (req.body.assigneeAgentId && !req.body.specTemplate) {
+      void (async () => {
+        try {
+          await svc.addComment(issue.id, "Warning: This issue was assigned without a spec template. Consider adding a specTemplate for better quality control.", {
+            userId: undefined,
+            agentId: undefined,
+          });
+        } catch { /* non-fatal */ }
+      })();
+    }
 
     await logActivity(db, {
       companyId,
@@ -1233,6 +1264,43 @@ export function issueRoutes(db: Db, storage: StorageService) {
         recalculateGoalProgress(db, issue.goalId).catch((err) =>
           logger.warn({ err, goalId: issue.goalId }, "goal progress recalculation failed"),
         );
+      }
+
+      // REQ-02: COO Quality Gate - auto-create quality_gate approval when status -> in_review or done
+      if (
+        issue.assigneeAgentId &&
+        issue.status !== existing.status &&
+        (issue.status === "in_review" || issue.status === "done")
+      ) {
+        (async () => {
+          try {
+            // Skip quality gate for COO (Alexander Drake) and CEO (Marcus Cole)
+            const assignee = await agentsSvc.getById(issue.assigneeAgentId!);
+            const roleLower = (assignee?.role ?? "").toLowerCase();
+            const nameLower = (assignee?.name ?? "").toLowerCase();
+            const isCoo = roleLower === "coo" || nameLower.includes("alexander drake");
+            const isCeo = roleLower === "ceo" || nameLower.includes("marcus cole");
+            if (!isCoo && !isCeo) {
+              const { approvalId } = await createQualityGateReview(
+                db,
+                issue.companyId,
+                issue.id,
+                issue.assigneeAgentId!,
+              );
+              // Add comment about quality review submission
+              await svc.addComment(issue.id, "Submitted for quality review by Alexander Drake (COO)", {
+                userId: undefined,
+                agentId: undefined,
+              });
+              logger.info(
+                { issueId: issue.id, approvalId, agentId: issue.assigneeAgentId },
+                "[quality-gate] Auto-created quality gate review",
+              );
+            }
+          } catch (err) {
+            logger.warn({ err, issueId: issue.id }, "quality gate auto-creation failed");
+          }
+        })();
       }
 
       // Post-task reflection: when an issue transitions to done or cancelled
@@ -1575,6 +1643,44 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },
     });
+
+    // ── Quality rejection feedback (REQ-10) ──
+    // If comment contains [QUALITY_REJECTION] tag or request includes feedbackType: "quality_rejection",
+    // auto-create a "bad" quality example in the assigned agent's memory.
+    const commentBody = req.body.body as string;
+    const feedbackType = (req.body as Record<string, unknown>).feedbackType as string | undefined;
+    const isQualityRejection =
+      commentBody.includes("[QUALITY_REJECTION]") ||
+      feedbackType === "quality_rejection";
+
+    if (isQualityRejection && currentIssue.assigneeAgentId) {
+      void (async () => {
+        try {
+          const { agentMemoryEntries: memTable } = await import("@ironworksai/db");
+          const now = new Date();
+          await db.insert(memTable).values({
+            agentId: currentIssue.assigneeAgentId!,
+            companyId: currentIssue.companyId,
+            memoryType: "quality_example",
+            category: "bad",
+            content: JSON.stringify({
+              type: "bad",
+              issueId: currentIssue.id,
+              why: commentBody.replace("[QUALITY_REJECTION]", "").trim(),
+            }),
+            sourceIssueId: currentIssue.id,
+            confidence: 90,
+            lastAccessedAt: now,
+          });
+          logger.info(
+            { issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId },
+            "created quality rejection memory from issue comment",
+          );
+        } catch (err) {
+          logger.warn({ err, issueId: currentIssue.id }, "failed to create quality rejection memory");
+        }
+      })();
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {

@@ -51,3 +51,7 @@ export { executiveAnalyticsService, budgetForecast, systemHealthSummary, type Bu
 export { computeDORAMetrics, type DORAMetrics } from "./dora-metrics.js";
 export { computeGoalHealth, type HealthResult } from "./goal-health.js";
 export { snapshotGoal, snapshotAllGoals, snapshotAllCompanyGoals } from "./goal-snapshots.js";
+export { validateConfidenceTags, CONFIDENCE_TAGGING_PROMPT } from "./confidence-tags.js";
+export { validateSpec } from "./spec-validation.js";
+export { createQualityGateReview, evaluateQualityGate, resolveQualityGate, getQualityExamples, recordQualityExample } from "./quality-gate.js";
+export { getReviewRequirements, recordCompletion, promoteToRun } from "./workflow-maturity.js";

@@ -78,3 +78,5 @@ export { channelMessages } from "./channel_messages.js";
 export { channelMemberships } from "./channel_memberships.js";
 export { channelDeliberations, channelDeliberationPositions, channelDeliberationRebuttals } from "./channel_deliberations.js";
 export { bugReports } from "./bug_reports.js";
+export { workflowMaturity } from "./workflow_maturity.js";
+export { agentPromptVersions } from "./agent_prompt_versions.js";

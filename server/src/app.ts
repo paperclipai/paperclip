@@ -57,6 +57,7 @@ import { channelRoutes } from "./routes/channels.js";
 import { bugReportRoutes } from "./routes/bug-reports.js";
 import { deliverableRoutes } from "./routes/deliverables.js";
 import { expertiseMapRoutes } from "./routes/expertise-map.js";
+import { nolanIntegrationRoutes } from "./routes/nolan-integration.js";
 // Plugin system disabled — not needed for V1 productization
 // import { pluginRoutes } from "./routes/plugins.js";
 // import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -314,6 +315,7 @@ export async function createApp(
   api.use(bugReportRoutes(db));
   api.use(deliverableRoutes(db));
   api.use(expertiseMapRoutes(db));
+  api.use(nolanIntegrationRoutes(db));
   api.use(sseRoutes(db));
 
   // Start daily data retention cleanup

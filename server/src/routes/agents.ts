@@ -69,6 +69,7 @@ import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle,
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureLibraryAgentFolder } from "../services/playbook-execution.js";
 import { autoJoinAgentChannels, findCompanyChannel, postMessage as postChannelMessage } from "../services/channels.js";
+import { listVersions as listPromptVersions, rollback as rollbackPromptVersion, snapshotPromptVersion } from "../services/prompt-versions.js";
 import { runClaudeLogin } from "@ironworksai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -2208,6 +2209,27 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
     }
 
     const actor = getActorInfo(req);
+
+    // ── Prompt version snapshot (REQ-09) ──
+    // Before updating systemPrompt or agentInstructions, snapshot the current values.
+    const isPromptChange =
+      Object.prototype.hasOwnProperty.call(patchData, "systemPrompt") ||
+      Object.prototype.hasOwnProperty.call(patchData, "agentInstructions");
+    if (isPromptChange) {
+      try {
+        await snapshotPromptVersion(db, {
+          agentId: id,
+          companyId: existing.companyId,
+          currentSystemPrompt: existing.systemPrompt,
+          currentAgentInstructions: existing.agentInstructions,
+          changedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          changeSummary: null,
+        });
+      } catch (err) {
+        logger.warn({ err, agentId: id }, "failed to snapshot prompt version before update");
+      }
+    }
+
     const agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
@@ -3233,6 +3255,150 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       .then((rows) => rows[0] ?? null);
 
     res.json(existing ?? null);
+  });
+
+  // ── Prompt Version History (REQ-09) ──
+
+  // GET /agents/:agentId/prompt-versions
+  router.get("/agents/:agentId/prompt-versions", async (req, res) => {
+    const { agentId } = req.params;
+    const agentRow = await svc.getById(agentId);
+    if (!agentRow) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agentRow.companyId);
+
+    try {
+      const versions = await listPromptVersions(db, agentId);
+      res.json(versions);
+    } catch (err) {
+      logger.error({ err, agentId }, "failed to list prompt versions");
+      res.status(500).json({ error: "Failed to list prompt versions" });
+    }
+  });
+
+  // POST /agents/:agentId/prompt-versions/:version/rollback
+  router.post("/agents/:agentId/prompt-versions/:version/rollback", async (req, res) => {
+    const { agentId, version } = req.params;
+    const agentRow = await svc.getById(agentId);
+    if (!agentRow) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agentRow.companyId);
+    await assertCanWrite(req, agentRow.companyId, db);
+
+    const versionNumber = parseInt(version, 10);
+    if (isNaN(versionNumber) || versionNumber < 1) {
+      res.status(422).json({ error: "Invalid version number" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await rollbackPromptVersion(
+      db,
+      agentId,
+      versionNumber,
+      actor.actorType === "user" ? actor.actorId : undefined,
+    );
+
+    if (!result.success) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: agentRow.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.prompt_rollback",
+      entityType: "agent",
+      entityId: agentId,
+      details: { versionNumber },
+    });
+
+    res.json({ ok: true, restoredVersion: versionNumber });
+  });
+
+  // ── Structured Feedback (REQ-10) ──
+
+  // POST /companies/:companyId/agents/:agentId/feedback
+  router.post("/companies/:companyId/agents/:agentId/feedback", async (req, res) => {
+    const { companyId, agentId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const { issueId, feedbackType, content } = req.body as {
+      issueId?: string;
+      feedbackType?: "positive" | "negative" | "correction";
+      content?: string;
+    };
+
+    if (!feedbackType || !content) {
+      res.status(422).json({ error: "feedbackType and content are required" });
+      return;
+    }
+
+    if (!["positive", "negative", "correction"].includes(feedbackType)) {
+      res.status(422).json({ error: "feedbackType must be positive, negative, or correction" });
+      return;
+    }
+
+    const agentRow = await svc.getById(agentId);
+    if (!agentRow) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    try {
+      const now = new Date();
+
+      // Create feedback memory entry
+      await db.insert(agentMemoryEntries).values({
+        agentId,
+        companyId,
+        memoryType: "episodic",
+        category: "feedback",
+        content: `[${feedbackType}] ${content}`,
+        sourceIssueId: issueId ?? null,
+        confidence: feedbackType === "negative" ? 90 : 80,
+        lastAccessedAt: now,
+      });
+
+      // If negative feedback, also create a bad quality example
+      if (feedbackType === "negative") {
+        await db.insert(agentMemoryEntries).values({
+          agentId,
+          companyId,
+          memoryType: "procedural",
+          category: "quality_flag",
+          content: `Bad quality example: ${content}`,
+          sourceIssueId: issueId ?? null,
+          confidence: 85,
+          lastAccessedAt: now,
+        });
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.feedback_received",
+        entityType: "agent",
+        entityId: agentId,
+        details: { feedbackType, issueId: issueId ?? null },
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err, companyId, agentId }, "failed to process agent feedback");
+      res.status(500).json({ error: "Failed to process feedback" });
+    }
   });
 
   return router;

@@ -505,6 +505,13 @@
       "when": 1775959200007,
       "tag": "0077_comment_reply_threads",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1775959200008,
+      "tag": "0078_nolan_integration",
+      "breakpoints": true
     }
   ]
 }

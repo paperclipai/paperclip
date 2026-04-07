@@ -86,6 +86,8 @@ import {
   type CouncilConfig,
   type CouncilResult,
 } from "./model-council.js";
+import { CONFIDENCE_TAGGING_PROMPT } from "./confidence-tags.js";
+import { getQualityExamples } from "./quality-gate.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -3080,6 +3082,32 @@ export function heartbeatService(db: Db) {
     // Phase 8 - Feature 6: Private Scratchpad instruction.
     // Reinforce concise posting discipline in the context assembly.
     context.ironworksChannelPosting = "Think through your response privately before posting. Only post substantive messages.";
+
+    // Nolan Integration REQ-04: Inject confidence tagging instructions.
+    context.ironworksConfidenceTagging = CONFIDENCE_TAGGING_PROMPT;
+
+    // Nolan Integration REQ-03: Inject quality reference examples from agent memory.
+    try {
+      const qualityExamples = await getQualityExamples(db, agent.id);
+      if (qualityExamples.good.length > 0 || qualityExamples.bad.length > 0) {
+        const sections: string[] = ["## Quality Reference Examples"];
+        if (qualityExamples.good.length > 0) {
+          sections.push("### Good Examples (emulate these):");
+          for (const ex of qualityExamples.good) {
+            sections.push(`- ${ex}`);
+          }
+        }
+        if (qualityExamples.bad.length > 0) {
+          sections.push("### Bad Examples (avoid these patterns):");
+          for (const ex of qualityExamples.bad) {
+            sections.push(`- ${ex}`);
+          }
+        }
+        context.ironworksQualityExamples = sections.join("\n");
+      }
+    } catch (err) {
+      logger.debug({ err, agentId: agent.id }, "quality examples injection failed, skipping");
+    }
 
     // Phase 8 - Feature 8: Conversation Replay for Onboarding.
     // If the agent has never posted to any channel, inject a briefing of their
