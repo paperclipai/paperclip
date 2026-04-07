@@ -160,13 +160,29 @@ export function OnboardingWizard() {
   const [cloudSandboxEnabled, setCloudSandboxEnabled] = useState(false);
   const [managedInferenceEnabled, setManagedInferenceEnabled] = useState(false);
 
-  // Subscription eligibility (cloud mode only)
+  // Subscription eligibility (cloud mode only).
+  //
+  // We can't read this query at step 3 directly: completing step 1 inserts a
+  // membership row, which flips the server's `canCreateCompany` to false on
+  // the next refetch — so a first-time user creating their FIRST company would
+  // see "Subscribe & Launch" instead of "Launch". Instead, handleStep1Next
+  // fetches eligibility synchronously BEFORE creating the company and stashes
+  // the result in `eligibilitySnapshot`. Step 3 reads from the snapshot.
   const eligibilityQuery = useQuery({
     queryKey: queryKeys.billing.eligibility,
     queryFn: () => billingApi.checkCompanyCreationEligibility(),
     enabled: effectiveOnboardingOpen && !existingCompanyId,
     staleTime: 10_000,
   });
+  const [eligibilitySnapshot, setEligibilitySnapshot] =
+    useState<typeof eligibilityQuery.data>(undefined);
+  useEffect(() => {
+    // Reset the snapshot whenever the wizard closes so the next session
+    // starts from a clean slate.
+    if (!effectiveOnboardingOpen) {
+      setEligibilitySnapshot(undefined);
+    }
+  }, [effectiveOnboardingOpen]);
 
   const plansQuery = useQuery({
     queryKey: queryKeys.billing.plans,
@@ -512,6 +528,20 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      // Snapshot eligibility BEFORE creating the company. The membership row
+      // we're about to create would otherwise flip canCreateCompany to false
+      // on the next refetch and incorrectly gate the launch button at step 3.
+      // Soft-fail: if this fetch errors, the launch button falls back to the
+      // live (potentially stale) query value.
+      if (!existingCompanyId && eligibilitySnapshot === undefined) {
+        try {
+          const fresh = await billingApi.checkCompanyCreationEligibility();
+          setEligibilitySnapshot(fresh);
+        } catch {
+          // Intentionally ignored.
+        }
+      }
+
       const company = await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
@@ -1747,8 +1777,13 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 3 && (() => {
-                    const hasUnlimited = eligibilityQuery.data?.hasUnlimited === true;
-                    const needsPayment = eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && !hasUnlimited;
+                    // Prefer the pre-create snapshot captured in handleStep1Next.
+                    // The live query becomes wrong once a company has been created
+                    // in this wizard session. Falls back to live data only when
+                    // the snapshot was never captured (e.g. fetch failed).
+                    const eligibility = eligibilitySnapshot ?? eligibilityQuery.data;
+                    const hasUnlimited = eligibility?.hasUnlimited === true;
+                    const needsPayment = eligibility && !eligibility.canCreateCompany && !hasUnlimited;
                     const companyPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0 && p.scope === "company");
                     const accountPlan = plansQuery.data?.find((p) => p.scope === "account");
 
