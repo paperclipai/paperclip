@@ -136,10 +136,17 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   // Windows hosts running Docker Desktop or VPN software that intercept OS-level
   // name resolution and may return private/internal IP addresses for public
   // hostnames. dns.resolve4 bypasses the OS resolver cache and those shims.
-  // Fall back to dns.lookup if resolve4 fails (e.g. IPv6-only hosts).
+  // Fall back to dns.lookup only when resolve4 gets no A records (ENODATA/ESERVFAIL),
+  // which indicates an IPv6-only host or a DNS server that cannot answer. Do NOT fall
+  // back on ENOTFOUND — that means the hostname genuinely does not exist.
   const dnsPromise = dnsResolve4(originalHostname)
     .then((addrs): Array<{ address: string }> => addrs.map(addr => ({ address: addr })))
-    .catch(() => dnsLookup(originalHostname, { all: true }));
+    .catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENODATA" || err.code === "ESERVFAIL") {
+        return dnsLookup(originalHostname, { all: true });
+      }
+      throw err;
+    });
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
