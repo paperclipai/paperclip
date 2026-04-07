@@ -96,8 +96,8 @@ describe("CRLF normalization produces consistent hashes", () => {
 
     const crlfMigration = lfMigration.replace(/\n/g, "\r\n");
 
-    const hashLf = computeMigrationHash(normalizeMigrationContent(lfMigration));
-    const hashCrlf = computeMigrationHash(normalizeMigrationContent(crlfMigration));
+    const hashLf = computeMigrationHash(lfMigration);
+    const hashCrlf = computeMigrationHash(crlfMigration);
 
     expect(hashLf).toBe(hashCrlf);
   });
