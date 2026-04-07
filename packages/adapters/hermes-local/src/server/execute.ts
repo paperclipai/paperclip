@@ -388,16 +388,12 @@ export async function execute(
   const taskId = cfgString(ctx.config?.taskId);
   if (taskId) env.PAPERCLIP_TASK_ID = taskId;
 
-  // DEBUG: log what ctx.config.env actually contains at runtime
-  const _debugEnv = ctx.config?.env as Record<string, unknown> | undefined;
-  process.stderr.write(`[hermes-debug] ctx.config.env keys: ${JSON.stringify(Object.keys(_debugEnv ?? {}))}\n`);
-  process.stderr.write(`[hermes-debug] ANTHROPIC_API_KEY type: ${typeof (_debugEnv?.ANTHROPIC_API_KEY)}, value prefix: ${String(_debugEnv?.ANTHROPIC_API_KEY ?? "MISSING").slice(0, 15)}\n`);
-  process.stderr.write(`[hermes-debug] config.env keys: ${JSON.stringify(Object.keys((config.env as Record<string,unknown>) ?? {}))}\n`);
-
   // Prefer ctx.config.env (secrets already resolved to plain strings by the server)
-  // Fall back to config.env for backwards compatibility (may contain binding objects).
-  const resolvedEnv = ctx.config?.env as Record<string, unknown> | undefined;
-  const userEnv = resolvedEnv ?? (config.env as Record<string, unknown> | undefined);
+  // Merge with config.env for backwards compatibility (may contain binding objects).
+  // Use object spread so that an empty resolvedEnv ({}) doesn't silently drop config.env entries.
+  const resolvedEnv = (ctx.config?.env ?? {}) as Record<string, unknown>;
+  const configEnv = (config.env ?? {}) as Record<string, unknown>;
+  const userEnv: Record<string, unknown> = { ...configEnv, ...resolvedEnv };
   if (userEnv && typeof userEnv === "object") {
     for (const [k, v] of Object.entries(userEnv)) {
       // Handle un-resolved binding objects gracefully (e.g. {type:"plain",value:"..."})
