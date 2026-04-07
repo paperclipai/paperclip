@@ -19,8 +19,11 @@ const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
  * header is removed as well.
  */
 export function sanitizeConfigToml(content: string): string {
-  // In practice this key only appears under [windows] in Codex config; a
-  // full TOML-section-aware match would require a parser we don't carry.
+  // `sandbox` is a [windows]-specific key in Codex config.toml and does not
+  // appear as a meaningful top-level key in any other section.  A global
+  // match is therefore safe and avoids the complexity of a full TOML parser.
+  // If a future Codex version adds `sandbox` keys in other sections this
+  // function will need to become section-aware.
   const sandboxRe = /^[ \t]*sandbox\s*=\s*(?:"elevated"|'elevated'|elevated)[ \t]*\r?\n?/gm;
   let result = content.replace(sandboxRe, "");
 
@@ -30,6 +33,9 @@ export function sanitizeConfigToml(content: string): string {
     (_match, _header, blanks) => blanks,
   );
 
+  // Normalize CRLF to LF first so that consecutive \r\n sequences (where \r
+  // sits between the \n chars) are correctly collapsed to a single blank line.
+  result = result.replace(/\r\n/g, "\n");
   return result.replace(/\n{3,}/g, "\n\n");
 }
 
