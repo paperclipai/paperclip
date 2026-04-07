@@ -1,4 +1,5 @@
 const DEFAULT_CAPTURED_OUTPUT_BYTES = 256 * 1024;
+const DEFAULT_JSON_RESPONSE_BYTES = 64 * 1024;
 
 export type CapturedOutput = {
   text: string;
@@ -6,8 +7,12 @@ export type CapturedOutput = {
   totalBytes: number;
 };
 
+function normalizeByteLimit(maxBytes: number) {
+  return Math.max(1, Math.trunc(maxBytes));
+}
+
 export function createCapturedOutputBuffer(maxBytes = DEFAULT_CAPTURED_OUTPUT_BYTES) {
-  const limit = Math.max(1, Math.trunc(maxBytes));
+  const limit = normalizeByteLimit(maxBytes);
   const chunks: Buffer[] = [];
   let bufferedBytes = 0;
   let totalBytes = 0;
@@ -56,4 +61,42 @@ export function createCapturedOutputBuffer(maxBytes = DEFAULT_CAPTURED_OUTPUT_BY
       };
     },
   };
+}
+
+export async function parseJsonResponseWithLimit<T>(
+  response: Response,
+  maxBytes = DEFAULT_JSON_RESPONSE_BYTES,
+): Promise<T> {
+  const limit = normalizeByteLimit(maxBytes);
+  const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    throw new Error(`Response exceeds ${limit} bytes`);
+  }
+
+  if (!response.body) {
+    return JSON.parse("") as T;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limit) {
+        await reader.cancel("response too large");
+        throw new Error(`Response exceeds ${limit} bytes`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+
+  return JSON.parse(text) as T;
 }

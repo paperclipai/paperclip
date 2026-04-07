@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCapturedOutputBuffer } from "../../../scripts/dev-runner-output.mjs";
+import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "../../../scripts/dev-runner-output.mjs";
 
 describe("createCapturedOutputBuffer", () => {
   it("keeps small output unchanged", () => {
@@ -25,5 +25,21 @@ describe("createCapturedOutputBuffer", () => {
     expect(result.totalBytes).toBe(12);
     expect(result.text).toContain("total 12 bytes");
     expect(result.text.endsWith("efghijkl")).toBe(true);
+  });
+
+  it("parses bounded JSON responses", async () => {
+    const response = new Response(JSON.stringify({ ok: true }), {
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(parseJsonResponseWithLimit<{ ok: boolean }>(response, 64)).resolves.toEqual({ ok: true });
+  });
+
+  it("rejects oversized JSON responses before parsing them", async () => {
+    const response = new Response(JSON.stringify({ payload: "x".repeat(128) }), {
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(parseJsonResponseWithLimit(response, 32)).rejects.toThrow("Response exceeds 32 bytes");
   });
 });

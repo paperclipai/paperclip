@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { createCapturedOutputBuffer } from "./dev-runner-output.mjs";
+import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import {
@@ -487,7 +487,7 @@ async function getDevHealthPayload() {
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
-  return await response.json();
+  return await parseJsonResponseWithLimit<{ devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } }>(response);
 }
 
 async function waitForChildExit() {
