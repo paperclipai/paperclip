@@ -129,7 +129,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           filenamePrefix: "paperclip-test",
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql$/);
+        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(1024 * 1024);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
