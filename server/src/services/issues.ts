@@ -909,6 +909,29 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function clearStaleExecutionRun(input: {
+    issueId: string;
+    expectedExecutionRunId: string;
+  }) {
+    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedExecutionRunId);
+    if (!stale) return null;
+
+    const now = new Date();
+    const cleared = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(issues.id, input.issueId), eq(issues.executionRunId, input.expectedExecutionRunId)))
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+
+    return cleared;
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -1735,37 +1758,41 @@ export function issueService(db: Db) {
           or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
         )
         : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
-      const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
-        : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const tryCheckout = async () => {
+        const executionLockCondition = checkoutRunId
+          ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
+          : isNull(issues.executionRunId);
+        return db
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      };
+
+      let updated = await tryCheckout();
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
 
-      const current = await db
+      let current = await db
         .select({
           id: issues.id,
           status: issues.status,
@@ -1778,6 +1805,32 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (current.executionRunId && current.executionRunId !== checkoutRunId) {
+        const clearedExecution = await clearStaleExecutionRun({
+          issueId: id,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        if (clearedExecution) {
+          updated = await tryCheckout();
+          if (updated) {
+            const [enriched] = await withIssueLabels(db, [updated]);
+            return enriched;
+          }
+          current = await db
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+            })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows) => rows[0] ?? null);
+          if (!current) throw notFound("Issue not found");
+        }
+      }
 
       if (
         current.assigneeAgentId === agentId &&
