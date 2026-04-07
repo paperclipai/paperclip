@@ -495,7 +495,12 @@ describe("heartbeat comment wake batching", () => {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId))
           .orderBy(asc(heartbeatRuns.createdAt));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return (
+          runs.length === 2 &&
+          runs.every((run) => run.status === "succeeded") &&
+          runs[0]?.issueCommentStatus === "retry_queued" &&
+          runs[1]?.issueCommentStatus === "retry_exhausted"
+        );
       });
 
       const runs = await db
