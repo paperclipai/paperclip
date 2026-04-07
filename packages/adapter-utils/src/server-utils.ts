@@ -978,6 +978,7 @@ export async function runChildProcess(
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
 
+        // A timeoutSec of 0 explicitly disables the execution timeout completely, allowing the process to run indefinitely.
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
