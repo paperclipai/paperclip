@@ -1,6 +1,6 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import postgres from "postgres";
 
 export type RunDatabaseBackupOptions = {
@@ -140,6 +140,42 @@ function quoteQualifiedName(schemaName: string, objectName: string): string {
 
 function tableKey(schemaName: string, tableName: string): string {
   return `${schemaName}.${tableName}`;
+}
+
+async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
+  const stream = createReadStream(backupFile, { encoding: "utf8" });
+  const reader = createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+  let statementLines: string[] = [];
+
+  const flushStatement = () => {
+    const statement = statementLines.join("\n").trim();
+    statementLines = [];
+    return statement;
+  };
+
+  try {
+    for await (const line of reader) {
+      if (line === STATEMENT_BREAKPOINT) {
+        const statement = flushStatement();
+        if (statement.length > 0) {
+          yield statement;
+        }
+        continue;
+      }
+      statementLines.push(line);
+    }
+
+    const trailingStatement = flushStatement();
+    if (trailingStatement.length > 0) {
+      yield trailingStatement;
+    }
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
 }
 
 export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
@@ -626,13 +662,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 
   try {
     await sql`SELECT 1`;
-    const contents = await readFile(opts.backupFile, "utf8");
-    const statements = contents
-      .split(STATEMENT_BREAKPOINT)
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
-
-    for (const statement of statements) {
+    for await (const statement of readRestoreStatements(opts.backupFile)) {
       await sql.unsafe(statement).execute();
     }
   } catch (error) {

@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, workspaceOperationService, workProductService } from "../services/index.js";
+import { projectService, logActivity, secretService, workspaceOperationService, workProductService } from "../services/index.js";
 import { conflict } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
@@ -18,8 +18,10 @@ import { getTelemetryClient } from "../telemetry.js";
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const workProducts = workProductService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -83,6 +85,13 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    if (projectData.env !== undefined) {
+      projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
+        companyId,
+        projectData.env,
+        { strictMode: strictSecretsMode, fieldPath: "env" },
+      );
+    }
     const project = await svc.create(companyId, projectData);
     let createdWorkspaceId: string | null = null;
     if (workspace) {
@@ -108,6 +117,7 @@ export function projectRoutes(db: Db) {
       details: {
         name: project.name,
         workspaceId: createdWorkspaceId,
+        envKeys: project.env ? Object.keys(project.env).sort() : [],
       },
     });
     const telemetryClient = getTelemetryClient();
@@ -129,6 +139,12 @@ export function projectRoutes(db: Db) {
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
+    if (body.env !== undefined) {
+      body.env = await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, body.env, {
+        strictMode: strictSecretsMode,
+        fieldPath: "env",
+      });
+    }
     const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -144,7 +160,13 @@ export function projectRoutes(db: Db) {
       action: "project.updated",
       entityType: "project",
       entityId: project.id,
-      details: req.body,
+      details: {
+        changedKeys: Object.keys(req.body).sort(),
+        envKeys:
+          body.env && typeof body.env === "object" && !Array.isArray(body.env)
+            ? Object.keys(body.env as Record<string, unknown>).sort()
+            : undefined,
+      },
     });
 
     res.json(project);

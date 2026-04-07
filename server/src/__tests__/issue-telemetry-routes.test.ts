@@ -6,6 +6,8 @@ import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getWakeableParentAfterChildCompletion: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -35,6 +37,7 @@ vi.mock("../services/index.js", () => ({
   feedbackService: () => ({}),
   goalService: () => ({}),
   heartbeatService: () => ({
+    wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
   }),
   instanceSettingsService: () => ({}),
@@ -78,6 +81,8 @@ describe("issue telemetry routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("todo"),
       ...patch,

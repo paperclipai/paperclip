@@ -7,6 +7,7 @@ import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
@@ -19,6 +20,7 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
+import { EnvVarEditor } from "./EnvVarEditor";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -43,6 +45,7 @@ export type ProjectConfigFieldKey =
   | "description"
   | "status"
   | "goals"
+  | "env"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
   | "execution_workspace_base_ref"
@@ -244,6 +247,21 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
+  });
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      return secretsApi.create(selectedCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
   });
 
   const linkedGoalIds = project.goalIds.length > 0
@@ -494,6 +512,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <InlineEditor
               value={project.description ?? ""}
               onSave={(description) => commitField("description", { description })}
+              nullable
               as="p"
               className="text-sm text-muted-foreground"
               placeholder="Add a description..."
@@ -581,6 +600,26 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </PopoverContent>
             </Popover>
           )}
+        </PropertyRow>
+        <PropertyRow
+          label={<FieldLabel label="Env" state={fieldState("env")} />}
+          alignStart
+          valueClassName="space-y-2"
+        >
+          <div className="space-y-2">
+            <EnvVarEditor
+              value={project.env ?? {}}
+              secrets={availableSecrets}
+              onCreateSecret={async (name, value) => {
+                const created = await createSecret.mutateAsync({ name, value });
+                return created;
+              }}
+              onChange={(env) => commitField("env", { env: env ?? null })}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
+            </p>
+          </div>
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
           <span className="text-sm">{formatDate(project.createdAt)}</span>
