@@ -1,6 +1,6 @@
 # 2026-04-06 Smart Model Routing
 
-Status: UI config and run detail complete (Phases 1-3 + UI)
+Status: COMPLETE (all phases: contract, codex, claude, remaining adapters, UI)
 Date: 2026-04-06
 Audience: Product and engineering
 Related:
@@ -215,7 +215,7 @@ Success criteria:
 - existing adapters behave exactly as before
 - a routed adapter can report cheap plus primary usage without collapsing them into one fake model
 
-## 7.2 Phase 2: `codex_local` (COMPLETE)
+## 7.2 Phase 2: `codex_local` (COMPLETE, committed)
 
 Why first:
 
@@ -235,7 +235,7 @@ Important guardrail:
 
 - do not resume the cheap-model session as the primary session in V1
 
-## 7.3 Phase 3: `claude_local`
+## 7.3 Phase 3: `claude_local` (COMPLETE, committed)
 
 Implementation work is similar, but the session model-switch risk is even less attractive.
 
@@ -244,16 +244,19 @@ Same rule:
 - cheap preflight is ephemeral
 - primary Claude session remains canonical
 
-## 7.4 Phase 4: other adapters
+## 7.4 Phase 4: remaining local adapters (COMPLETE, committed)
 
-Candidates:
+Implemented for:
 
-- `cursor`
-- `gemini_local`
-- `opencode_local`
-- external plugin adapters through `createServerAdapter()`
+- `cursor_local` -- uses `-p`/stdin prompt, `--yolo` trust bypass, stream-json output
+- `gemini_local` -- uses `--prompt` flag, `--approval-mode yolo`, `--sandbox=none`
+- `opencode_local` -- validates cheap model via `ensureOpenCodeModelConfiguredAndAvailable`
+- `pi_local` -- uses `--mode json -p`, `--append-system-prompt`, ephemeral session with cleanup
 
-These should come later because each runtime has different session and model-switch semantics.
+Skipped:
+
+- `openclaw_gateway` -- WebSocket-based architecture, not applicable for V1 cheap preflight
+- external plugin adapters via `createServerAdapter()` -- deferred; plugins can implement their own routing internally
 
 ## 8. UI and Config Changes
 
