@@ -213,9 +213,12 @@ export function isClaudeRateLimitError(
  * Returns null when no value can be reliably detected.
  */
 export function extractRetryAfterSeconds(stderr: string): number | null {
-  // Match "retry after N seconds" / "Retry-After: N" / "retry_after_seconds: N"
-  const match = stderr.match(/retry.?after[:\s]+([0-9]+(?:\.[0-9]+)?)\s*s(?:ec(?:ond)?s?)?/i)
+  // Match "Retry-After: 45" (bare integer, standard HTTP header surfaced by SDK)
+  const bareHeader = stderr.match(/retry.?after[:\s]+([0-9]+(?:\.[0-9]+)?)(?:\s*$|\s*[^a-z])/im);
+  // Match "retry after 45 seconds" or "retry_after_seconds: 45"
+  const withUnit = stderr.match(/retry.?after[:\s]+([0-9]+(?:\.[0-9]+)?)\s*s(?:ec(?:ond)?s?)?/i)
     ?? stderr.match(/retry_after_seconds["']?\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const match = bareHeader ?? withUnit;
   if (!match) return null;
   const value = parseFloat(match[1] ?? "");
   return Number.isFinite(value) && value > 0 ? Math.ceil(value) : null;

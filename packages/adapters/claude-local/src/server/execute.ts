@@ -606,10 +606,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const BACKOFF_MAX_MS = 120_000;
   const BACKOFF_MAX_TOTAL_MS = 10 * 60 * 1_000; // 10 minutes per heartbeat
 
-  function nextBackoffMs(attempt: number, prevMs: number): number {
-    const exponential = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * Math.pow(2, attempt));
-    const jitter = Math.random() * BACKOFF_BASE_MS;
-    return Math.min(exponential + jitter, BACKOFF_MAX_MS);
+  // Decorrelated jitter (AWS-style): sleep = random(base, min(cap, prev * 3))
+  // Reference: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+  function nextBackoffMs(prevMs: number): number {
+    const maxSleep = Math.min(BACKOFF_MAX_MS, prevMs * 3);
+    return BACKOFF_BASE_MS + Math.random() * (maxSleep - BACKOFF_BASE_MS);
   }
 
   try {
@@ -641,7 +642,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Detect X-LLAP-Capacity-Pressure on a successful response and warn.
       const runSucceeded =
         !current.proc.timedOut && (current.proc.exitCode ?? 0) === 0 && !current.parsed?.is_error;
-      if (runSucceeded && detectCapacityPressure(current.proc.stderr)) {
+      if (runSucceeded && detectCapacityPressure(current.proc.stdout + current.proc.stderr)) {
         await onLog(
           "stderr",
           "[paperclip] X-LLAP-Capacity-Pressure: high detected — upstream LLM pool approaching exhaustion.\n",
@@ -662,7 +663,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const elapsedMs = Date.now() - retryStartMs;
       const retryAfterSec = extractRetryAfterSeconds(current.proc.stderr);
       const retryAfterMs = retryAfterSec != null ? retryAfterSec * 1_000 : null;
-      prevBackoffMs = nextBackoffMs(attempt, prevBackoffMs);
+      prevBackoffMs = nextBackoffMs(prevBackoffMs);
       const sleepMs = retryAfterMs != null ? Math.max(prevBackoffMs, retryAfterMs) : prevBackoffMs;
 
       if (elapsedMs + sleepMs >= BACKOFF_MAX_TOTAL_MS) {
