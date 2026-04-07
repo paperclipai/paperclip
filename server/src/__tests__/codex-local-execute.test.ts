@@ -14,6 +14,9 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
+  paperclipRunId: process.env.PAPERCLIP_RUN_ID || null,
+  paperclipTaskId: process.env.PAPERCLIP_TASK_ID || null,
+  paperclipWakeReason: process.env.PAPERCLIP_WAKE_REASON || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -34,6 +37,9 @@ type CapturePayload = {
   prompt: string;
   codexHome: string | null;
   paperclipWakePayloadJson: string | null;
+  paperclipRunId: string | null;
+  paperclipTaskId: string | null;
+  paperclipWakeReason: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -516,6 +522,63 @@ describe("codex execute", () => {
       expect(executorCapture.prompt).toContain("execution wake role: executor");
       expect(executorCapture.prompt).toContain("You are waking because changes were requested in the execution workflow.");
       expect(executorCapture.prompt).toContain("allowed actions: address_changes, resubmit");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to issueId when injecting PAPERCLIP_TASK_ID", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-task-fallback-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-task-fallback",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-only-1",
+          wakeReason: "issue_checked_out",
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipRunId).toBe("run-task-fallback");
+      expect(capture.paperclipTaskId).toBe("issue-only-1");
+      expect(capture.paperclipWakeReason).toBe("issue_checked_out");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
