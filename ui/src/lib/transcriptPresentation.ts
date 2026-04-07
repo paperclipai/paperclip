@@ -6,6 +6,12 @@ type TranscriptActivity = {
   status: "running" | "completed";
 };
 
+export interface ToolInputDetail {
+  label: string;
+  value: string;
+  tone?: "default" | "code";
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -137,13 +143,19 @@ export function summarizeToolInput(
     : typeof record.cmd === "string"
       ? record.cmd
       : null;
+  const humanDescription =
+    summarizeRecord(record, ["description", "summary", "reason", "goal", "intent", "action", "task"])
+    ?? null;
+  if (humanDescription) {
+    return truncate(humanDescription, compactMax);
+  }
   if (command && isCommandTool(name, record)) {
     return truncate(stripWrappedShell(command), compactMax);
   }
 
   const direct =
-    summarizeRecord(record, ["command", "cmd", "path", "filePath", "file_path", "query", "url", "prompt", "message"])
-    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool"])
+    summarizeRecord(record, ["path", "filePath", "file_path", "query", "url", "prompt", "message"])
+    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool", "command", "cmd"])
     ?? null;
   if (direct) return truncate(direct, compactMax);
 
@@ -158,6 +170,71 @@ export function summarizeToolInput(
   if (keys.length === 0) return `No ${name} input`;
   if (keys.length === 1) return truncate(`${keys[0]} payload`, compactMax);
   return truncate(`${keys.length} fields: ${keys.slice(0, 3).join(", ")}`, compactMax);
+}
+
+function readToolDetailValue(value: unknown, max = 200): string | null {
+  if (typeof value === "string") {
+    const normalized = compactWhitespace(value);
+    return normalized ? truncate(normalized, max) : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+export function describeToolInput(name: string, input: unknown): ToolInputDetail[] {
+  if (typeof input === "string") {
+    const summary = compactWhitespace(isCommandTool(name, input) ? stripWrappedShell(input) : input);
+    return summary ? [{ label: isCommandTool(name, input) ? "Command" : "Input", value: truncate(summary, 200), tone: "code" }] : [];
+  }
+
+  const record = asRecord(input);
+  if (!record) return [];
+
+  const details: ToolInputDetail[] = [];
+  const seen = new Set<string>();
+  const pushDetail = (label: string, value: string | null, tone: ToolInputDetail["tone"] = "default") => {
+    if (!value) return;
+    const key = `${label}:${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    details.push({ label, value, tone });
+  };
+
+  pushDetail(
+    "Intent",
+    summarizeRecord(record, ["description", "summary", "reason", "goal", "intent", "action", "task"]) ?? null,
+  );
+  pushDetail("Path", readToolDetailValue(record.path) ?? readToolDetailValue(record.filePath) ?? readToolDetailValue(record.file_path));
+  pushDetail("Directory", readToolDetailValue(record.cwd));
+  pushDetail("Query", readToolDetailValue(record.query));
+  pushDetail("Target", readToolDetailValue(record.url) ?? readToolDetailValue(record.target));
+  pushDetail("Prompt", readToolDetailValue(record.prompt) ?? readToolDetailValue(record.message));
+  pushDetail("Pattern", readToolDetailValue(record.pattern));
+  pushDetail("Name", readToolDetailValue(record.name) ?? readToolDetailValue(record.title));
+
+  if (Array.isArray(record.paths) && record.paths.length > 0) {
+    const paths = record.paths
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .slice(0, 3)
+      .join(", ");
+    if (paths) {
+      const suffix = record.paths.length > 3 ? `, +${record.paths.length - 3} more` : "";
+      pushDetail("Paths", `${paths}${suffix}`);
+    }
+  }
+
+  const command = typeof record.command === "string"
+    ? record.command
+    : typeof record.cmd === "string"
+      ? record.cmd
+      : null;
+  if (command && isCommandTool(name, record) && !details.some((detail) => detail.label === "Intent")) {
+    pushDetail("Command", truncate(stripWrappedShell(command), 200), "code");
+  }
+
+  return details;
 }
 
 export function summarizeToolResult(

@@ -2,15 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
-import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
+import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 
+export interface RunTranscriptSource {
+  id: string;
+  status: string;
+  adapterType: string;
+}
+
 interface UseLiveRunTranscriptsOptions {
-  runs: LiveRunForIssue[];
+  runs: RunTranscriptSource[];
   companyId?: string | null;
   maxChunksPerRun?: number;
 }
@@ -141,7 +147,7 @@ export function useLiveRunTranscripts({
 
     let cancelled = false;
 
-    const readRunLog = async (run: LiveRunForIssue) => {
+    const readRunLog = async (run: RunTranscriptSource) => {
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
@@ -166,13 +172,16 @@ export function useLiveRunTranscripts({
     };
 
     void readAll();
-    const interval = window.setInterval(() => {
-      void readAll();
-    }, LOG_POLL_INTERVAL_MS);
+    const activeRuns = runs.filter((run) => !isTerminalStatus(run.status));
+    const interval = activeRuns.length > 0
+      ? window.setInterval(() => {
+          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+        }, LOG_POLL_INTERVAL_MS)
+      : null;
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (interval !== null) window.clearInterval(interval);
     };
   }, [runIdsKey, runs]);
 

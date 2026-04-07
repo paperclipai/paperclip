@@ -50,6 +50,7 @@ import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
 import {
+  describeToolInput,
   displayToolName,
   formatToolPayload,
   parseToolPayload,
@@ -238,15 +239,33 @@ function runStatusClass(status: string) {
 }
 
 function IssueChatChainOfThought() {
+  const message = useMessage();
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const customLabel = typeof custom.chainOfThoughtLabel === "string" && custom.chainOfThoughtLabel.trim().length > 0
+    ? custom.chainOfThoughtLabel
+    : null;
+  const label = customLabel
+    ? customLabel
+    : "Chain of thought";
   return (
-    <ChainOfThoughtPrimitive.Root className="rounded-md bg-background/70">
-      <ChainOfThoughtPrimitive.AccordionTrigger className="group flex w-full items-center justify-between gap-3 rounded-sm px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/20 hover:text-foreground">
-        <span className="inline-flex items-center gap-2 uppercase tracking-[0.14em]">
-          Chain of thought
+    <ChainOfThoughtPrimitive.Root className="overflow-hidden rounded-2xl border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.82))] shadow-[0_10px_30px_rgba(15,23,42,0.04)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.62),rgba(15,23,42,0.4))]">
+      <ChainOfThoughtPrimitive.AccordionTrigger className="group flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/10">
+        <span className="inline-flex flex-col items-start gap-0.5">
+          <span className={cn(customLabel ? "text-sm font-medium normal-case tracking-normal text-foreground/90" : "uppercase tracking-[0.14em]")}>
+            {label}
+          </span>
+          {customLabel ? (
+            <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Chain of thought
+            </span>
+          ) : null}
         </span>
-        <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180" />
+        <span className="inline-flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          Details
+          <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180" />
+        </span>
       </ChainOfThoughtPrimitive.AccordionTrigger>
-      <div className="mr-2 border-r border-border/70 pr-3">
+      <div className="border-t border-border/60 bg-background/35 px-4 py-3">
         <ChainOfThoughtPrimitive.Parts
           components={{
             Reasoning: ({ text }) => <IssueChatReasoningPart text={text} />,
@@ -261,7 +280,7 @@ function IssueChatChainOfThought() {
                 />
               ),
             },
-            Layout: ({ children }) => <div className="space-y-2 pb-1 pl-1">{children}</div>,
+            Layout: ({ children }) => <div className="space-y-2.5">{children}</div>,
           }}
         />
       </div>
@@ -271,8 +290,12 @@ function IssueChatChainOfThought() {
 
 function IssueChatReasoningPart({ text }: { text: string }) {
   return (
-    <div className="rounded-sm bg-accent/20 px-3 py-2">
-      <MarkdownBody className="text-sm leading-6">{text}</MarkdownBody>
+    <div className="rounded-xl border border-border/60 bg-background/70 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+      <div className="mb-2 inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-cyan-500/70" />
+        Reasoning
+      </div>
+      <MarkdownBody className="text-sm leading-6 text-foreground/88">{text}</MarkdownBody>
     </div>
   );
 }
@@ -299,6 +322,7 @@ function IssueChatToolPart({
       : result === undefined
         ? ""
         : formatToolPayload(result);
+  const inputDetails = describeToolInput(toolName, parsedArgs);
   const displayName = displayToolName(toolName, parsedArgs);
   const summary =
     result === undefined
@@ -308,35 +332,37 @@ function IssueChatToolPart({
   return (
     <div
       className={cn(
-        "rounded-sm border px-3 py-2",
+        "rounded-xl border px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]",
         isError
-          ? "border-red-300/70 bg-red-50/70 dark:border-red-500/40 dark:bg-red-500/10"
-          : "border-border/70 bg-background/70",
+          ? "border-red-300/70 bg-[linear-gradient(180deg,rgba(254,242,242,0.95),rgba(254,242,242,0.72))] dark:border-red-500/40 dark:bg-red-500/10"
+          : "border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,250,252,0.78))] dark:bg-background/70",
       )}
     >
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-3 text-left"
+        className="flex w-full items-start justify-between gap-3 text-left"
         onClick={() => setOpen((current) => !current)}
       >
         <span className="min-w-0 flex-1">
-          <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            {displayName}
+          <span className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <span className={cn("h-1.5 w-1.5 rounded-full", result === undefined ? "bg-cyan-500/75" : isError ? "bg-red-500/75" : "bg-emerald-500/75")} />
+            Tool call
           </span>
-          <span className="mt-1 block text-sm text-foreground/80">{summary}</span>
+          <span className="mt-1 block text-sm font-medium text-foreground">{displayName}</span>
+          <span className="mt-1.5 block text-sm leading-6 text-foreground/72">{summary}</span>
         </span>
-        <span className="shrink-0 flex items-center gap-2">
+        <span className="shrink-0 flex items-center gap-2 pt-0.5">
           {result === undefined ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
               <Loader2 className="h-3 w-3 animate-spin" />
               Running
             </span>
           ) : isError ? (
-            <span className="inline-flex items-center rounded-full border border-red-400/50 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-red-700 dark:text-red-200">
+            <span className="inline-flex items-center rounded-full border border-red-400/45 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-red-700 dark:text-red-200">
               Error
             </span>
           ) : (
-            <span className="inline-flex items-center rounded-full border border-emerald-400/50 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
+            <span className="inline-flex items-center rounded-full border border-emerald-400/45 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
               Complete
             </span>
           )}
@@ -345,21 +371,39 @@ function IssueChatToolPart({
       </button>
 
       {open ? (
-        <div className="mt-3 space-y-3">
-          {rawArgsText ? (
+        <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+          {inputDetails.length > 0 ? (
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 Input
               </div>
-              <pre className="overflow-x-auto rounded-md bg-accent/40 p-2 text-xs text-foreground">{rawArgsText}</pre>
+              <dl className="space-y-2">
+                {inputDetails.map((detail) => (
+                  <div key={`${detail.label}:${detail.value}`} className="rounded-xl border border-border/60 bg-background/70 px-3 py-2.5">
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                      {detail.label}
+                    </dt>
+                    <dd className={cn("mt-1 text-sm leading-6 text-foreground/85", detail.tone === "code" && "font-mono text-[13px] leading-5")}>
+                      {detail.value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : rawArgsText ? (
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Input
+              </div>
+              <pre className="overflow-x-auto rounded-xl border border-border/60 bg-background/70 p-2.5 text-xs leading-5 text-foreground/85">{rawArgsText}</pre>
             </div>
           ) : null}
           {result !== undefined ? (
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 Result
               </div>
-              <pre className="overflow-x-auto rounded-md bg-accent/40 p-2 text-xs text-foreground">{resultText}</pre>
+              <pre className="overflow-x-auto rounded-xl border border-border/60 bg-background/70 p-2.5 text-xs leading-5 text-foreground/85">{resultText}</pre>
             </div>
           ) : null}
         </div>
@@ -1250,8 +1294,29 @@ export function IssueChatThread({
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [activeRun, liveRuns]);
+  const transcriptRuns = useMemo(() => {
+    const combined = new Map<string, { id: string; status: string; adapterType: string }>();
+    for (const run of displayLiveRuns) {
+      combined.set(run.id, {
+        id: run.id,
+        status: run.status,
+        adapterType: run.adapterType,
+      });
+    }
+    for (const run of linkedRuns) {
+      if (combined.has(run.runId)) continue;
+      const adapterType = agentMap?.get(run.agentId)?.adapterType;
+      if (!adapterType) continue;
+      combined.set(run.runId, {
+        id: run.runId,
+        status: run.status,
+        adapterType,
+      });
+    }
+    return [...combined.values()];
+  }, [agentMap, displayLiveRuns, linkedRuns]);
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
-    runs: enableLiveTranscriptPolling ? displayLiveRuns : [],
+    runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;

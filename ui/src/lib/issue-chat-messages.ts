@@ -281,6 +281,53 @@ function runTimestamp(run: IssueChatLinkedRun) {
   return run.finishedAt ?? run.startedAt ?? run.createdAt;
 }
 
+function formatDurationWords(ms: number | null) {
+  if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+  }
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function runDurationLabel(run: {
+  status: string;
+  createdAt: Date | string;
+  startedAt: Date | string | null;
+  finishedAt?: Date | string | null;
+}) {
+  const start = run.startedAt ?? run.createdAt;
+  const end = run.finishedAt ?? null;
+  const durationMs = end ? Math.max(0, toTimestamp(end) - toTimestamp(start)) : null;
+  const durationText = formatDurationWords(durationMs);
+  switch (run.status) {
+    case "succeeded":
+      return durationText ? `Worked for ${durationText}` : "Finished work";
+    case "failed":
+    case "error":
+      return durationText ? `Failed after ${durationText}` : "Run failed";
+    case "timed_out":
+      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+    case "cancelled":
+      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Working...";
+    default:
+      return formatStatusLabel(run.status);
+  }
+}
+
 function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<string, Agent>) {
   const agentName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const message: ThreadSystemMessage = {
@@ -298,6 +345,43 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runStatus: run.status,
       },
     },
+  };
+  return message;
+}
+
+function createHistoricalTranscriptMessage(args: {
+  run: IssueChatLinkedRun;
+  transcript: readonly IssueChatTranscriptEntry[];
+  hasOutput: boolean;
+  agentMap?: Map<string, Agent>;
+}) {
+  const { run, transcript, hasOutput, agentMap } = args;
+  const agentName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
+  const { parts, notices } = buildAssistantPartsFromTranscript(transcript);
+  const waitingText = hasOutput ? "" : "Run finished";
+  const content = parts.length > 0
+    ? parts
+    : waitingText
+      ? [{ type: "text", text: waitingText } satisfies TextMessagePart]
+      : [];
+
+  const message: ThreadAssistantMessage = {
+    id: `historical-run:${run.runId}`,
+    role: "assistant",
+    createdAt: toDate(run.startedAt ?? run.createdAt),
+    content,
+    status: { type: "complete", reason: "stop" },
+    metadata: createAssistantMetadata({
+      kind: "historical-run",
+      anchorId: `run-${run.runId}`,
+      runId: run.runId,
+      runAgentId: run.agentId,
+      runAgentName: agentName,
+      runStatus: run.status,
+      notices,
+      waitingText,
+      chainOfThoughtLabel: runDurationLabel(run),
+    }),
   };
   return message;
 }
@@ -495,6 +579,7 @@ function createLiveRunMessage(args: {
       adapterType: run.adapterType,
       notices,
       waitingText,
+      chainOfThoughtLabel: runDurationLabel(run),
     }),
   };
   return message;
@@ -548,6 +633,21 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+    const transcript = transcriptsByRunId?.get(run.runId) ?? [];
+    const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
+    if (hasRunOutput) {
+      orderedMessages.push({
+        createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
+        order: 2,
+        message: createHistoricalTranscriptMessage({
+          run,
+          transcript,
+          hasOutput: hasRunOutput,
+          agentMap,
+        }),
+      });
+      continue;
+    }
     if (run.status === "succeeded") continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),

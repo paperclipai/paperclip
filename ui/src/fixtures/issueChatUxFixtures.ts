@@ -195,6 +195,35 @@ export const issueChatUxLinkedRuns: IssueChatLinkedRun[] = [
 
 export const issueChatUxTranscriptsByRunId = new Map<string, readonly IssueChatTranscriptEntry[]>([
   [
+    "run-history-1",
+    [
+      {
+        kind: "thinking",
+        ts: "2026-04-06T11:58:03.000Z",
+        text: "Reviewing the issue thread to see where transcript noise still leaks into the conversation.",
+      },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T11:58:07.000Z",
+        name: "read_file",
+        toolUseId: "tool-history-1",
+        input: { path: "ui/src/lib/issue-chat-messages.ts" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T11:58:11.000Z",
+        toolUseId: "tool-history-1",
+        content: "Found the run projection path that decides whether transcript output survives after completion.",
+        isError: false,
+      },
+      {
+        kind: "assistant",
+        ts: "2026-04-06T11:59:24.000Z",
+        text: "Kept the completed run context attached to the chat timeline so the reasoning can stay folded instead of disappearing.",
+      },
+    ],
+  ],
+  [
     "run-live-1",
     [
       {

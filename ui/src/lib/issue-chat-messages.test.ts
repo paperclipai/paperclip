@@ -245,7 +245,7 @@ describe("buildIssueChatMessages", () => {
           [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text: "Streaming reply" }],
         ],
       ]),
-      hasOutputForRun: () => true,
+      hasOutputForRun: (runId) => runId === "run-live-1",
       companyId: "company-1",
       projectId: "project-1",
       agentMap,
@@ -268,5 +268,54 @@ describe("buildIssueChatMessages", () => {
       type: "text",
       text: "Streaming reply",
     });
+  });
+
+  it("keeps succeeded runs as assistant messages when transcript output exists", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-history-1",
+          status: "succeeded",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        [
+          "run-history-1",
+          [
+            { kind: "thinking", ts: "2026-04-06T12:01:10.000Z", text: "Checking the current issue thread." },
+            { kind: "assistant", ts: "2026-04-06T12:02:30.000Z", text: "Updated the thread renderer." },
+          ],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-history-1",
+      agentMap,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "historical-run:run-history-1",
+      role: "assistant",
+      status: { type: "complete", reason: "stop" },
+      metadata: {
+        custom: {
+          kind: "historical-run",
+          runId: "run-history-1",
+          chainOfThoughtLabel: "Worked for 2 minutes",
+        },
+      },
+    });
+    expect(messages[0]?.content).toMatchObject([
+      { type: "reasoning", text: "Checking the current issue thread." },
+      { type: "text", text: "Updated the thread renderer." },
+    ]);
   });
 });
