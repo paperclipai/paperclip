@@ -359,6 +359,10 @@ export function issueRoutes(
       return;
     }
 
+    const limitRaw = req.query.limit as string | undefined;
+    const limit = limitRaw != null ? Number(limitRaw) : undefined;
+    const cursor = req.query.cursor as string | undefined;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -376,6 +380,8 @@ export function issueRoutes(
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
+      limit: Number.isFinite(limit) ? limit : undefined,
+      cursor,
     });
     res.json(result);
   });

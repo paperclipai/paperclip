@@ -1087,7 +1087,7 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(
-      rows.map((issue) => ({
+      rows.map((issue: any) => ({
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
