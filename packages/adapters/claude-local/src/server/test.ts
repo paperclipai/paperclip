@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { isBedrockModelId } from "./models.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -163,10 +164,10 @@ export async function testEnvironment(
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
-      // Skip --model for Bedrock: Anthropic-style model IDs (e.g. "claude-opus-4-6") are not
-      // valid Bedrock model identifiers.  Let the CLI use whatever model is configured in its
-      // own settings when Bedrock auth is active.
-      if (model && !hasBedrock) args.push("--model", model);
+      // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
+      if (model && (!hasBedrock || isBedrockModelId(model))) {
+        args.push("--model", model);
+      }
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
