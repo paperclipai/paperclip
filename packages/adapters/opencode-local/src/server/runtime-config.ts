@@ -55,7 +55,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       recursive: true,
       force: true,
       errorOnExist: false,
-      dereference: false,
+      dereference: true,
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
@@ -74,6 +74,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       external_directory: "allow",
     },
   };
+  // The copied file may be read-only (e.g. from Nix store), so remove it before writing.
+  await fs.rm(runtimeConfigPath, { force: true });
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
