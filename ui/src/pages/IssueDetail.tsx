@@ -1730,13 +1730,6 @@ export function IssueDetail() {
             activeRun={activeRun}
             companyId={issue.companyId}
             projectId={issue.projectId}
-            onApproveApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "approve" });
-            }}
-            onRejectApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "reject" });
-            }}
-            pendingApprovalAction={pendingApprovalAction}
             issueStatus={issue.status}
             agentMap={agentMap}
             currentUserId={currentUserId}
