@@ -62,6 +62,10 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  agentStateGauge,
+  llmCallFailuresCounter,
+} from "./metrics.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2063,6 +2067,14 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+      // Emit Prometheus agent state gauge.
+      // State encoding: 0=idle, 1=running/in_progress, 2=paused/terminated, 3=error
+      const stateValue =
+        updated.status === "running" ? 1
+        : updated.status === "error" ? 3
+        : updated.status === "paused" || updated.status === "terminated" ? 2
+        : 0;
+      agentStateGauge.set({ agent_id: agentId }, stateValue);
     }
   }
 
@@ -2993,6 +3005,11 @@ export function heartbeatService(db: Db) {
         outcome = "succeeded";
       } else {
         outcome = "failed";
+        // Emit LLM call failure counter.
+        llmCallFailuresCounter.inc({
+          agent_id: agent.id,
+          status_code: adapterResult.errorCode ?? "adapter_failed",
+        });
       }
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
