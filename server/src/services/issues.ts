@@ -80,6 +80,10 @@ export interface IssueFilters {
   originId?: string;
   includeRoutineExecutions?: boolean;
   q?: string;
+  /** Max issues per page. When provided, response is `{ issues, hasMore, nextCursor }`. */
+  limit?: number;
+  /** Opaque cursor (issue ID) for keyset pagination. */
+  cursor?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -968,7 +972,10 @@ export function issueService(db: Db) {
           .select({ issueId: issueLabels.issueId })
           .from(issueLabels)
           .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
-        if (labeledIssueIds.length === 0) return [];
+        if (labeledIssueIds.length === 0) {
+          if (filters?.limit != null) return { issues: [], hasMore: false, nextCursor: null } as any;
+          return [];
+        }
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
       }
       if (hasSearch) {
@@ -999,7 +1006,56 @@ export function issueService(db: Db) {
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
-      const rows = await db
+
+      // Pagination support
+      const pageSize = filters?.limit != null
+        ? Math.max(1, Math.min(200, filters.limit))
+        : undefined;
+
+      if (filters?.cursor) {
+        // Keyset pagination: skip past the cursor issue using composite sort key.
+        // We use a sub-select to look up the cursor row's sort values.
+        const cursorPriority = sql`(SELECT CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END FROM ${issues} WHERE ${issues.id} = ${filters.cursor})`;
+        const cursorActivity = sql`(SELECT ${issueCanonicalLastActivityAtExpr(companyId)} FROM ${issues} WHERE ${issues.id} = ${filters.cursor})`;
+        const cursorUpdatedAt = sql`(SELECT ${issues.updatedAt} FROM ${issues} WHERE ${issues.id} = ${filters.cursor})`;
+
+        // For non-search: ORDER BY priorityOrder ASC, priorityOrder ASC, canonicalLastActivityAt DESC, updatedAt DESC
+        // Keyset condition: (priorityOrder, -canonicalLastActivityAt, -updatedAt, id) > (cursorPriority, -cursorActivity, -cursorUpdatedAt, cursorId)
+        if (hasSearch) {
+          const cursorCommentMatch = sql`EXISTS (
+            SELECT 1 FROM ${issueComments}
+            WHERE ${issueComments.issueId} = ${issues.id}
+              AND ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+          )`;
+          const cursorSearch = sql`(SELECT CASE
+            WHEN ${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\' THEN 0
+            WHEN ${issues.title} ILIKE ${containsPattern} ESCAPE '\\' THEN 1
+            WHEN ${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\' THEN 2
+            WHEN ${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\' THEN 3
+            WHEN ${issues.description} ILIKE ${containsPattern} ESCAPE '\\' THEN 4
+            WHEN ${cursorCommentMatch} THEN 5
+            ELSE 6
+          END FROM ${issues} WHERE ${issues.id} = ${filters.cursor})`;
+
+          conditions.push(sql`(
+            ${searchOrder} > ${cursorSearch}
+            OR (${searchOrder} = ${cursorSearch} AND ${priorityOrder} > ${cursorPriority})
+            OR (${searchOrder} = ${cursorSearch} AND ${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} < ${cursorActivity})
+            OR (${searchOrder} = ${cursorSearch} AND ${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} = ${cursorActivity} AND ${issues.updatedAt} < ${cursorUpdatedAt})
+            OR (${searchOrder} = ${cursorSearch} AND ${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} = ${cursorActivity} AND ${issues.updatedAt} = ${cursorUpdatedAt} AND ${issues.id} > ${filters.cursor})
+          )`);
+        } else {
+          conditions.push(sql`(
+            ${priorityOrder} > ${cursorPriority}
+            OR (${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} < ${cursorActivity})
+            OR (${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} = ${cursorActivity} AND ${issues.updatedAt} < ${cursorUpdatedAt})
+            OR (${priorityOrder} = ${cursorPriority} AND ${canonicalLastActivityAt} = ${cursorActivity} AND ${issues.updatedAt} = ${cursorUpdatedAt} AND ${issues.id} > ${filters.cursor})
+          )`);
+        }
+      }
+
+      let query = db
         .select()
         .from(issues)
         .where(and(...conditions))
@@ -1009,10 +1065,24 @@ export function issueService(db: Db) {
           desc(canonicalLastActivityAt),
           desc(issues.updatedAt),
         );
+
+      if (pageSize != null) {
+        query = query.limit(pageSize + 1) as typeof query;
+      }
+
+      const rows = await query;
+
+      let hasMore = false;
+      if (pageSize != null && rows.length > pageSize) {
+        hasMore = true;
+        rows.pop();
+      }
+
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
+        if (pageSize != null) return { issues: withRuns, hasMore: false, nextCursor: null } as any;
         return withRuns;
       }
 
@@ -1117,7 +1187,7 @@ export function issueService(db: Db) {
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
       if (!contextUserId) {
-        return withRuns.map((row) => {
+        const enriched = withRuns.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
           const lastActivityAt = latestIssueActivityAt(
             row.updatedAt,
@@ -1129,11 +1199,16 @@ export function issueService(db: Db) {
             lastActivityAt,
           };
         });
+        if (pageSize != null) {
+          const nextCursor = hasMore && enriched.length > 0 ? enriched[enriched.length - 1].id : null;
+          return { issues: enriched, hasMore, nextCursor } as any;
+        }
+        return enriched;
       }
 
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => {
+      const enriched = withRuns.map((row) => {
         const activity = lastActivityByIssueId.get(row.id);
         const lastActivityAt = latestIssueActivityAt(
           row.updatedAt,
@@ -1150,6 +1225,11 @@ export function issueService(db: Db) {
           }),
         };
       });
+      if (pageSize != null) {
+        const nextCursor = hasMore && enriched.length > 0 ? enriched[enriched.length - 1].id : null;
+        return { issues: enriched, hasMore, nextCursor } as any;
+      }
+      return enriched;
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
