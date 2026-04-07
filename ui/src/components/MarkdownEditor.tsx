@@ -62,6 +62,8 @@ interface MarkdownEditorProps {
   contentClassName?: string;
   onBlur?: () => void;
   imageUploadHandler?: (file: File) => Promise<string>;
+  /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
+  onDropFile?: (file: File) => Promise<void>;
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
@@ -108,9 +110,16 @@ interface MentionMenuViewport {
   height: number;
 }
 
+interface MentionMenuSize {
+  width: number;
+  height: number;
+}
+
 const MENTION_MENU_WIDTH = 188;
 const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
+const MENTION_MENU_ROW_HEIGHT = 34;
+const MENTION_MENU_CHROME_HEIGHT = 8;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -140,19 +149,10 @@ const FALLBACK_CODE_BLOCK_DESCRIPTOR: CodeBlockEditorDescriptor = {
   Editor: CodeMirrorEditor,
 };
 
-function detectMention(container: HTMLElement): MentionState | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-
-  const range = sel.getRangeAt(0);
-  const textNode = range.startContainer;
-  if (textNode.nodeType !== Node.TEXT_NODE) return null;
-  if (!container.contains(textNode)) return null;
-
-  const text = textNode.textContent ?? "";
-  const offset = range.startOffset;
-
-  // Walk backwards from cursor to find an autocomplete trigger.
+export function findMentionMatch(
+  text: string,
+  offset: number,
+): Pick<MentionState, "trigger" | "marker" | "query" | "atPos" | "endPos"> | null {
   let atPos = -1;
   let trigger: MentionState["trigger"] | null = null;
   let marker: MentionState["marker"] | null = null;
@@ -166,31 +166,54 @@ function detectMention(container: HTMLElement): MentionState | null {
       }
       break;
     }
-    if (/\s/.test(ch)) break;
+    if (ch === "\n" || ch === "\r") break;
   }
 
   if (atPos === -1) return null;
-
   const query = text.slice(atPos + 1, offset);
-
-  // Get position relative to container
-  const tempRange = document.createRange();
-  tempRange.setStart(textNode, atPos);
-  tempRange.setEnd(textNode, atPos + 1);
-  const rect = tempRange.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
+  if (trigger === "skill" && /\s/.test(query)) return null;
 
   return {
     trigger: trigger ?? "mention",
     marker: marker ?? "@",
     query,
+    atPos,
+    endPos: offset,
+  };
+}
+
+function detectMention(container: HTMLElement): MentionState | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+
+  const range = sel.getRangeAt(0);
+  const textNode = range.startContainer;
+  if (textNode.nodeType !== Node.TEXT_NODE) return null;
+  if (!container.contains(textNode)) return null;
+
+  const text = textNode.textContent ?? "";
+  const offset = range.startOffset;
+  const match = findMentionMatch(text, offset);
+  if (!match) return null;
+
+  // Get position relative to container
+  const tempRange = document.createRange();
+  tempRange.setStart(textNode, match.atPos);
+  tempRange.setEnd(textNode, match.atPos + 1);
+  const rect = tempRange.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+
+  return {
+    trigger: match.trigger,
+    marker: match.marker,
+    query: match.query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
     viewportTop: rect.bottom,
     viewportLeft: rect.left,
     textNode: textNode as Text,
-    atPos,
-    endPos: offset,
+    atPos: match.atPos,
+    endPos: match.endPos,
   };
 }
 
@@ -216,15 +239,27 @@ function getMentionMenuViewport(): MentionMenuViewport {
 export function computeMentionMenuPosition(
   anchor: Pick<MentionState, "viewportTop" | "viewportLeft">,
   viewport: MentionMenuViewport,
+  menuSize: MentionMenuSize = { width: MENTION_MENU_WIDTH, height: MENTION_MENU_HEIGHT },
 ) {
   const minLeft = viewport.offsetLeft + MENTION_MENU_PADDING;
-  const maxLeft = viewport.offsetLeft + viewport.width - MENTION_MENU_WIDTH;
+  const maxLeft = viewport.offsetLeft + viewport.width - menuSize.width;
   const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
-  const maxTop = viewport.offsetTop + viewport.height - MENTION_MENU_HEIGHT;
+  const maxTop = viewport.offsetTop + viewport.height - menuSize.height;
 
   return {
     top: Math.max(minTop, Math.min(viewport.offsetTop + anchor.viewportTop + 4, maxTop)),
     left: Math.max(minLeft, Math.min(viewport.offsetLeft + anchor.viewportLeft, maxLeft)),
+  };
+}
+
+function getMentionMenuSize(optionCount: number): MentionMenuSize {
+  const visibleRows = Math.max(1, Math.min(optionCount, 8));
+  return {
+    width: MENTION_MENU_WIDTH,
+    height: Math.min(
+      MENTION_MENU_HEIGHT,
+      visibleRows * MENTION_MENU_ROW_HEIGHT + MENTION_MENU_CHROME_HEIGHT,
+    ),
   };
 }
 
@@ -281,6 +316,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   contentClassName,
   onBlur,
   imageUploadHandler,
+  onDropFile,
   bordered = true,
   mentions,
   onSubmit,
@@ -635,6 +671,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const canDropFile = Boolean(imageUploadHandler || onDropFile);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -650,7 +687,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, []);
 
   const mentionMenuPosition = mentionState
-    ? computeMentionMenuPosition(mentionState, getMentionMenuViewport())
+    ? computeMentionMenuPosition(
+        mentionState,
+        getMentionMenuViewport(),
+        getMentionMenuSize(filteredMentions.length),
+      )
     : null;
 
   return (
@@ -673,8 +714,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
         // Mention keyboard handling
         if (mentionActive) {
-          // Space dismisses the popup (let the character be typed normally)
-          if (e.key === " ") {
+          if (e.key === " " && mentionStateRef.current?.trigger === "skill") {
             mentionStateRef.current = null;
             setMentionState(null);
             return;
@@ -711,23 +751,41 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
-        if (!canDropImage) return;
+        if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
-      onDrop={() => {
+      onDrop={(evt) => {
         dragDepthRef.current = 0;
         setIsDragOver(false);
+        if (!onDropFile) return;
+        const files = evt.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+        const allFiles = Array.from(files);
+        const nonImageFiles = allFiles.filter(
+          (f) => !f.type.startsWith("image/"),
+        );
+        if (nonImageFiles.length === 0) return;
+        // If all dropped files are non-image, prevent default so MDXEditor
+        // doesn't try to handle them. If mixed, let images flow through to
+        // the image plugin and only handle the non-image files ourselves.
+        if (nonImageFiles.length === allFiles.length) {
+          evt.preventDefault();
+          evt.stopPropagation();
+        }
+        for (const file of nonImageFiles) {
+          void onDropFile(file);
+        }
       }}
       onPasteCapture={handlePasteCapture}
     >
@@ -818,14 +876,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           document.body,
         )}
 
-      {isDragOver && canDropImage && (
+      {isDragOver && canDropFile && (
         <div
           className={cn(
             "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop image to upload
+          Drop {onDropFile ? "file" : "image"} to upload
         </div>
       )}
       {uploadError && (

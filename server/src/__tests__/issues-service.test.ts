@@ -249,6 +249,55 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
 
+  it("applies result limits to issue search", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const exactIdentifierId = randomUUID();
+    const titleMatchId = randomUUID();
+    const descriptionMatchId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: exactIdentifierId,
+        companyId,
+        issueNumber: 42,
+        identifier: "PAP-42",
+        title: "Completely unrelated",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: titleMatchId,
+        companyId,
+        title: "Search ranking issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: descriptionMatchId,
+        companyId,
+        title: "Another item",
+        description: "Contains the search keyword",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      q: "search",
+      limit: 2,
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
+  });
+
   it("accepts issue identifiers through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

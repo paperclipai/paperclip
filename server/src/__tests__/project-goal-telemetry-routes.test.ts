@@ -22,6 +22,9 @@ const mockGoalService = vi.hoisted(() => ({
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockSecretService = vi.hoisted(() => ({
+  normalizeEnvBindingsForPersistence: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackProjectCreated = vi.hoisted(() => vi.fn());
 const mockTrackGoalCreated = vi.hoisted(() => vi.fn());
@@ -46,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   goalService: () => mockGoalService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
+  secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
@@ -77,6 +81,7 @@ describe("project and goal telemetry routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
+    mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     mockProjectService.create.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",

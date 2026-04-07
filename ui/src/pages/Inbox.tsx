@@ -21,6 +21,7 @@ import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
   createIssueDetailPath,
+  rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
@@ -140,13 +141,14 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
 
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
-const trailingIssueColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "labels", "updated"];
+const trailingIssueColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 const inboxIssueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
+  parent: "Parent issue",
   labels: "Tags",
   updated: "Last updated",
 };
@@ -156,6 +158,7 @@ const inboxIssueColumnDescriptions: Record<InboxIssueColumn, string> = {
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the issue.",
+  parent: "Parent issue identifier and title.",
   labels: "Issue labels and tags.",
   updated: "Latest visible activity time.",
 };
@@ -223,8 +226,9 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "assignee") return "minmax(7.5rem, 9.5rem)";
       if (column === "project") return "minmax(6.5rem, 8.5rem)";
       if (column === "workspace") return "minmax(9rem, 12rem)";
+      if (column === "parent") return "minmax(5rem, 7rem)";
       if (column === "labels") return "minmax(8rem, 10rem)";
-      return "minmax(6rem, 7rem)";
+      return "minmax(4rem, 5.5rem)";
     })
     .join(" ");
 }
@@ -237,6 +241,8 @@ export function InboxIssueTrailingColumns({
   workspaceName,
   assigneeName,
   currentUserId,
+  parentIdentifier,
+  parentTitle,
 }: {
   issue: Issue;
   columns: InboxIssueColumn[];
@@ -245,6 +251,8 @@ export function InboxIssueTrailingColumns({
   workspaceName: string | null;
   assigneeName: string | null;
   currentUserId: string | null;
+  parentIdentifier: string | null;
+  parentTitle: string | null;
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
@@ -343,6 +351,22 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
               {workspaceName}
+            </span>
+          );
+        }
+
+        if (column === "parent") {
+          if (!issue.parentId) {
+            return <span key={column} className="min-w-0" aria-hidden="true" />;
+          }
+
+          return (
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground" title={parentTitle ?? undefined}>
+              {parentIdentifier ? (
+                <span className="font-mono">{parentIdentifier}</span>
+              ) : (
+                <span className="italic">Sub-issue</span>
+              )}
             </span>
           );
         }
@@ -1245,30 +1269,53 @@ export function Inbox() {
 
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
-    onMutate: (id) => {
+    onMutate: async (id) => {
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
+
+      // Cancel in-flight refetches so they don't overwrite our optimistic update
+      const queryKeys_ = [
+        queryKeys.issues.listMineByMe(selectedCompanyId!),
+        queryKeys.issues.listTouchedByMe(selectedCompanyId!),
+        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
+      ];
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+
+      // Snapshot previous data for rollback
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+
+      // Optimistically remove the issue from all inbox query caches
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.filter((issue: { id: string }) => issue.id !== id);
+        });
+      }
+
+      return { previousData };
     },
-    onSuccess: () => {
-      invalidateInboxIssueQueries();
-    },
-    onError: (err, id) => {
+    onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to archive issue");
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+      // Restore previous query data on failure
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
     },
     onSettled: (_data, error, id) => {
-      if (error) return;
-      window.setTimeout(() => {
-        setArchivingIssueIds((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      }, 500);
+      // Clean up archiving state and refetch to sync with server
+      setArchivingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      invalidateInboxIssueQueries();
     },
   });
 
@@ -1498,7 +1545,8 @@ export function Inbox() {
           if (item.kind === "issue") {
             const pathId = item.issue.identifier ?? item.issue.id;
             const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
-            act.navigate(createIssueDetailPath(pathId, detailState), { state: detailState });
+            rememberIssueDetailLocationState(pathId, detailState);
+            act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item.kind === "approval") {
             act.navigate(`/approvals/${item.approval.id}`);
           } else if (item.kind === "failed_run") {
@@ -1566,7 +1614,19 @@ export function Inbox() {
   const canMarkAllRead = unreadIssueIds.length > 0;
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-2">
+        {/* Search — full-width row on mobile, inline on desktop */}
+        <div className="relative sm:hidden">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search inbox…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 w-full pl-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
             items={[
@@ -1585,14 +1645,14 @@ export function Inbox() {
         </Tabs>
 
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative hidden sm:block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
               placeholder="Search inbox…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-8 w-[180px] pl-8 text-xs sm:w-[220px]"
+              className="h-8 w-[220px] pl-8 text-xs"
             />
           </div>
           <DropdownMenu>
@@ -1601,7 +1661,7 @@ export function Inbox() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                className="hidden h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground sm:inline-flex"
               >
                 <Columns3 className="mr-1 h-3.5 w-3.5" />
                 Show / hide columns
@@ -1684,6 +1744,7 @@ export function Inbox() {
               </Dialog>
             </>
           )}
+        </div>
         </div>
       </div>
 
@@ -1941,6 +2002,8 @@ export function Inbox() {
                           })}
                           assigneeName={agentName(issue.assigneeAgentId)}
                           currentUserId={currentUserId}
+                          parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
+                          parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}
                         />
                       ) : undefined
                     }

@@ -1,6 +1,6 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import postgres from "postgres";
 
 export type RunDatabaseBackupOptions = {
@@ -43,6 +43,11 @@ type SequenceDefinition = {
 type TableDefinition = {
   schema_name: string;
   tablename: string;
+};
+
+type ExtensionDefinition = {
+  extension_name: string;
+  schema_name: string;
 };
 
 const DRIZZLE_SCHEMA = "drizzle";
@@ -140,6 +145,42 @@ function quoteQualifiedName(schemaName: string, objectName: string): string {
 
 function tableKey(schemaName: string, tableName: string): string {
   return `${schemaName}.${tableName}`;
+}
+
+async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
+  const stream = createReadStream(backupFile, { encoding: "utf8" });
+  const reader = createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+  let statementLines: string[] = [];
+
+  const flushStatement = () => {
+    const statement = statementLines.join("\n").trim();
+    statementLines = [];
+    return statement;
+  };
+
+  try {
+    for await (const line of reader) {
+      if (line === STATEMENT_BREAKPOINT) {
+        const statement = flushStatement();
+        if (statement.length > 0) {
+          yield statement;
+        }
+        continue;
+      }
+      statementLines.push(line);
+    }
+
+    const trailingStatement = flushStatement();
+    if (trailingStatement.length > 0) {
+      yield trailingStatement;
+    }
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
 }
 
 export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
@@ -336,6 +377,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("-- Schemas");
       for (const schemaName of extraSchemas) {
         emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+      }
+      emit("");
+    }
+
+    const extensions = await sql<ExtensionDefinition[]>`
+      SELECT
+        e.extname AS extension_name,
+        n.nspname AS schema_name
+      FROM pg_extension e
+      JOIN pg_namespace n ON n.oid = e.extnamespace
+      WHERE e.extname <> 'plpgsql'
+      ORDER BY e.extname
+    `;
+    if (extensions.length > 0) {
+      emit("-- Extensions");
+      for (const extension of extensions) {
+        emitStatement(
+          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
+        );
       }
       emit("");
     }
@@ -626,13 +686,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 
   try {
     await sql`SELECT 1`;
-    const contents = await readFile(opts.backupFile, "utf8");
-    const statements = contents
-      .split(STATEMENT_BREAKPOINT)
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
-
-    for (const statement of statements) {
+    for await (const statement of readRestoreStatements(opts.backupFile)) {
       await sql.unsafe(statement).execute();
     }
   } catch (error) {

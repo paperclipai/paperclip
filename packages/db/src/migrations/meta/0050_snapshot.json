@@ -1,5 +1,5 @@
 {
-  "id": "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
+  "id": "536b076f-aa3e-4c85-bca3-0685df608c6d",
   "prevId": "08a85437-3008-49a3-af78-d7a1c10a0437",
   "version": "7",
   "dialect": "postgresql",
@@ -11163,6 +11163,12 @@
         "color": {
           "name": "color",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "env": {
+          "name": "env",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

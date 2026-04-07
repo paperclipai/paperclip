@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
@@ -19,8 +19,39 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+
+function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch { /* noop */ }
+  }, [value]);
+
+  return (
+    <div className="flex items-start gap-1.5 min-w-0 flex-1">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <span className="text-sm font-mono min-w-0 break-all">
+        {value}
+      </span>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+        onClick={handleCopy}
+        title={copied ? "Copied!" : "Copy"}
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
 
 function defaultProjectWorkspaceIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
@@ -42,6 +73,8 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
 
 interface IssuePropertiesProps {
   issue: Issue;
+  childIssues?: Issue[];
+  onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
 }
@@ -117,7 +150,13 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({
+  issue,
+  childIssues = [],
+  onAddSubIssue,
+  onUpdate,
+  inline,
+}: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -683,6 +722,34 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           )}
         </PropertyRow>
 
+        <PropertyRow label="Sub-issues">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {childIssues.length > 0 ? (
+              childIssues.map((child) => (
+                <Link
+                  key={child.id}
+                  to={`/issues/${child.identifier ?? child.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {child.identifier ?? child.title}
+                </Link>
+              ))
+            ) : (
+              <span className="text-sm text-muted-foreground">None</span>
+            )}
+            {onAddSubIssue ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={onAddSubIssue}
+              >
+                <Plus className="h-3 w-3" />
+                Add sub-issue
+              </button>
+            ) : null}
+          </div>
+        </PropertyRow>
+
         {issue.parentId && (
           <PropertyRow label="Parent">
             <Link
@@ -699,6 +766,30 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           </PropertyRow>
         )}
       </div>
+
+      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            {issue.currentExecutionWorkspace?.branchName && (
+              <PropertyRow label="Branch">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.branchName}
+                  icon={GitBranch}
+                />
+              </PropertyRow>
+            )}
+            {issue.currentExecutionWorkspace?.cwd && (
+              <PropertyRow label="Folder">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.cwd}
+                  icon={FolderOpen}
+                />
+              </PropertyRow>
+            )}
+          </div>
+        </>
+      ) : null}
 
       <Separator />
 

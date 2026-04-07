@@ -59,13 +59,20 @@ export function createOptimisticIssueComment(params: {
 }
 
 export function isQueuedIssueComment(params: {
-  comment: Pick<IssueTimelineComment, "createdAt"> & Partial<Pick<OptimisticIssueComment, "clientStatus">>;
+  comment: Pick<IssueTimelineComment, "createdAt"> &
+    Partial<Pick<OptimisticIssueComment, "clientStatus">> & {
+      authorAgentId?: string | null;
+    };
   activeRunStartedAt?: Date | string | null;
+  activeRunAgentId?: string | null;
   runId?: string | null;
   interruptedRunId?: string | null;
 }) {
   if (params.runId) return false;
   if (params.interruptedRunId) return false;
+  if (params.comment.authorAgentId && params.activeRunAgentId && params.comment.authorAgentId === params.activeRunAgentId) {
+    return false;
+  }
   if (params.comment.clientStatus === "queued") return true;
   if (!params.activeRunStartedAt) return false;
   return toTimestamp(params.comment.createdAt) >= toTimestamp(params.activeRunStartedAt);
