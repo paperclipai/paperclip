@@ -1,6 +1,6 @@
 # 2026-04-06 Smart Model Routing
 
-Status: Phase 1 complete (contract + server plumbing)
+Status: Phase 2 complete (codex_local cheap preflight)
 Date: 2026-04-06
 Audience: Product and engineering
 Related:
@@ -215,7 +215,7 @@ Success criteria:
 - existing adapters behave exactly as before
 - a routed adapter can report cheap plus primary usage without collapsing them into one fake model
 
-## 7.2 Phase 2: `codex_local`
+## 7.2 Phase 2: `codex_local` (COMPLETE)
 
 Why first:
 

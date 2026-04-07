@@ -103,5 +103,30 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // Smart model routing
+  const smartRouting = v.adapterSchemaValues?.smartModelRouting;
+  if (
+    typeof smartRouting === "object" &&
+    smartRouting !== null &&
+    !Array.isArray(smartRouting)
+  ) {
+    const smr = smartRouting as Record<string, unknown>;
+    if (smr.enabled === true && typeof smr.cheapModel === "string" && smr.cheapModel.trim().length > 0) {
+      const routing: Record<string, unknown> = {
+        enabled: true,
+        cheapModel: smr.cheapModel.trim(),
+      };
+      if (typeof smr.cheapThinkingEffort === "string" && smr.cheapThinkingEffort.trim().length > 0) {
+        routing.cheapThinkingEffort = smr.cheapThinkingEffort.trim();
+      }
+      if (typeof smr.maxPreflightTurns === "number" && smr.maxPreflightTurns > 0) {
+        routing.maxPreflightTurns = smr.maxPreflightTurns;
+      }
+      if (typeof smr.allowInitialProgressComment === "boolean") {
+        routing.allowInitialProgressComment = smr.allowInitialProgressComment;
+      }
+      ac.smartModelRouting = routing;
+    }
+  }
   return ac;
 }

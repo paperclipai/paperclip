@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult, type ExecutionSegment } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -53,6 +53,33 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+
+const PREFLIGHT_ORCHESTRATION_PROMPT = `You are a preflight orchestrator for a Paperclip agent.
+
+This is a BOUNDED ORCHESTRATION PASS — not the main task execution.
+
+Your responsibilities:
+1. Read the task context below and orient to what is being asked.
+2. Inspect the workspace at a shallow level if needed (ls, cat a few key files).
+3. Produce a compact handoff summary for the primary model that will do the real work.
+
+Hard constraints:
+- Do NOT make code changes or write files.
+- Do NOT run more than a few tool calls.
+- Do NOT attempt task completion.
+- Finish quickly — this is a triage pass only.
+
+End your response with a section titled "## Handoff Summary" containing:
+- What the task requires (1-3 sentences)
+- Key workspace observations relevant to the task
+- Recommended approach or starting point for the primary model`;
+
+function extractHandoffSection(summary: string): string {
+  const marker = summary.indexOf("## Handoff Summary");
+  if (marker === -1) return summary.trim();
+  return summary.slice(marker).trim();
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -232,6 +259,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
   );
+
+  // Smart model routing config
+  const smartRouting = parseObject(config.smartModelRouting);
+  const routingEnabled = asBoolean(smartRouting.enabled, false);
+  const cheapModel = asString(smartRouting.cheapModel, "");
+  const cheapThinkingEffort = asString(smartRouting.cheapThinkingEffort, "");
+  const maxPreflightTurns = asNumber(smartRouting.maxPreflightTurns, 2);
+  const allowPreflightProgressComment = asBoolean(smartRouting.allowInitialProgressComment, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -418,6 +453,106 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Smart model routing: cheap preflight phase
+  // ---------------------------------------------------------------------------
+  // Preflight runs only on fresh, issue-scoped sessions with routing enabled.
+  // It uses a cheap model for bounded orchestration work, then hands off to
+  // the primary model.  The preflight session is ephemeral — never persisted.
+  const shouldRunPreflight =
+    routingEnabled &&
+    cheapModel.length > 0 &&
+    !sessionId &&
+    Boolean(wakeTaskId);
+
+  let preflightSegment: ExecutionSegment | null = null;
+  let preflightHandoffNote = "";
+
+  if (shouldRunPreflight) {
+    const wakePromptForPreflight = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: false });
+    const preflightPromptSections = [
+      PREFLIGHT_ORCHESTRATION_PROMPT,
+      wakePromptForPreflight,
+      ...(allowPreflightProgressComment
+        ? []
+        : ["Do NOT post comments, leave status updates, or call the Paperclip API."]),
+    ];
+    const preflightPrompt = joinPromptSections(preflightPromptSections);
+
+    const preflightArgs: string[] = ["exec", "--json"];
+    if (bypass) preflightArgs.push("--dangerously-bypass-approvals-and-sandbox");
+    preflightArgs.push("--model", cheapModel);
+    if (cheapThinkingEffort) {
+      preflightArgs.push("-c", `model_reasoning_effort=${JSON.stringify(cheapThinkingEffort)}`);
+    }
+    preflightArgs.push("-");
+
+    await onLog("stdout", `[paperclip] Smart routing: running cheap preflight with model "${cheapModel}"...\n`);
+    if (onMeta) {
+      await onMeta({
+        adapterType: "codex_local",
+        command: resolvedCommand,
+        cwd,
+        commandNotes: ["Smart model routing: cheap preflight phase"],
+        commandArgs: preflightArgs.map((value, idx) => {
+          if (idx === preflightArgs.length - 1 && value === "-") return `<prompt ${preflightPrompt.length} chars>`;
+          return value;
+        }),
+        env: loggedEnv,
+        prompt: preflightPrompt,
+        promptMetrics: { promptChars: preflightPrompt.length },
+        context,
+      });
+    }
+
+    // Bounded timeout for preflight: 2 minutes max, or the configured timeout if shorter.
+    const preflightTimeoutSec = timeoutSec > 0 ? Math.min(timeoutSec, 120) : 120;
+
+    try {
+      const preflightProc = await runChildProcess(runId, command, preflightArgs, {
+        cwd,
+        env,
+        stdin: preflightPrompt,
+        timeoutSec: preflightTimeoutSec,
+        graceSec,
+        onSpawn,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") { await onLog(stream, chunk); return; }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          await onLog(stream, cleaned);
+        },
+      });
+
+      const preflightParsed = parseCodexJsonl(preflightProc.stdout);
+      const preflightOk = (preflightProc.exitCode ?? 0) === 0 && !preflightProc.timedOut;
+
+      preflightSegment = {
+        phase: "cheap_preflight",
+        provider: "openai",
+        biller: resolveCodexBiller(effectiveEnv, billingType),
+        model: cheapModel,
+        billingType,
+        usage: preflightParsed.usage,
+        costUsd: null,
+        summary: preflightOk ? (preflightParsed.summary || null) : null,
+      };
+
+      if (preflightOk && preflightParsed.summary) {
+        preflightHandoffNote = `## Preflight Summary (from ${cheapModel})\n\n${extractHandoffSection(preflightParsed.summary)}`;
+        await onLog("stdout", `[paperclip] Preflight complete. Proceeding with primary model "${model}".\n`);
+      } else {
+        const reason = preflightProc.timedOut
+          ? "timed out"
+          : (preflightParsed.errorMessage || `exit code ${preflightProc.exitCode}`);
+        await onLog("stdout", `[paperclip] Preflight did not produce a handoff (${reason}). Continuing with primary model only.\n`);
+      }
+    } catch (err) {
+      await onLog("stderr", `[paperclip] Preflight failed: ${err instanceof Error ? err.message : String(err)}. Continuing with primary model only.\n`);
+    }
+  }
+
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
@@ -488,6 +623,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
+    preflightHandoffNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -496,6 +632,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    preflightHandoffChars: preflightHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
@@ -630,5 +767,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toResult(retry, true);
   }
 
-  return toResult(initial);
+  const finalResult = toResult(initial);
+
+  // Attach segmented execution report when smart model routing ran a preflight.
+  if (preflightSegment) {
+    finalResult.executionSegments = [
+      preflightSegment,
+      {
+        phase: "primary",
+        provider: finalResult.provider ?? null,
+        biller: finalResult.biller ?? null,
+        model: finalResult.model ?? null,
+        billingType: finalResult.billingType ?? null,
+        usage: finalResult.usage,
+        costUsd: finalResult.costUsd ?? null,
+        summary: finalResult.summary ?? null,
+      },
+    ];
+  }
+
+  return finalResult;
 }

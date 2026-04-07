@@ -33,6 +33,7 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
+- smartModelRouting (object, optional): opt-in smart model routing for dual-model execution; shape: { enabled: boolean, cheapModel: string, cheapThinkingEffort?: string, maxPreflightTurns?: number, allowInitialProgressComment?: boolean }. When enabled, fresh issue-scoped runs use cheapModel for a bounded preflight orchestration pass before handing off to the primary model. Resumed sessions skip preflight.
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
