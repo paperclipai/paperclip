@@ -27,6 +27,12 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
+- smartModelRouting (object, optional): smart model routing configuration
+  - enabled (boolean): enable cheap preflight pass before primary execution
+  - cheapModel (string): model id for the preflight pass (e.g. "claude-haiku-4-5-20251001")
+  - cheapThinkingEffort (string, optional): reasoning effort for preflight (low|medium|high)
+  - maxPreflightTurns (number, optional, default 2): max tool-use turns during preflight
+  - allowInitialProgressComment (boolean, optional, default false): allow the preflight model to post progress comments
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds

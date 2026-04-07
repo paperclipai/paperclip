@@ -1,6 +1,6 @@
 # 2026-04-06 Smart Model Routing
 
-Status: Phase 2 complete (codex_local cheap preflight)
+Status: Phase 3 complete (claude_local cheap preflight)
 Date: 2026-04-06
 Audience: Product and engineering
 Related:
