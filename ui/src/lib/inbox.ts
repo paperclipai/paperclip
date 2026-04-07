@@ -1,4 +1,11 @@
-import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type {
+  Approval,
+  DashboardSummary,
+  HeartbeatRun,
+  InboxDismissal,
+  Issue,
+  JoinRequest,
+} from "@paperclipai/shared";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -43,21 +50,40 @@ export interface InboxBadgeData {
   alerts: number;
 }
 
-export function loadDismissedInboxItems(): Set<string> {
+export function loadDismissedInboxAlerts(): Set<string> {
   try {
     const raw = localStorage.getItem(DISMISSED_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((value): value is string => typeof value === "string" && value.startsWith("alert:")));
   } catch {
     return new Set();
   }
 }
 
-export function saveDismissedInboxItems(ids: Set<string>) {
+export function saveDismissedInboxAlerts(ids: Set<string>) {
   try {
     localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
   } catch {
     // Ignore localStorage failures.
   }
+}
+
+export function buildInboxDismissedAtByKey(dismissals: InboxDismissal[]): Map<string, number> {
+  return new Map(
+    dismissals.map((dismissal) => [dismissal.itemKey, normalizeTimestamp(dismissal.dismissedAt)]),
+  );
+}
+
+export function isInboxEntityDismissed(
+  dismissedAtByKey: ReadonlyMap<string, number>,
+  itemKey: string,
+  activityAt: string | Date | null | undefined,
+): boolean {
+  const dismissedAt = dismissedAtByKey.get(itemKey);
+  if (dismissedAt == null) return false;
+  return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
 export function loadReadInboxItems(): Set<string> {
@@ -342,25 +368,27 @@ export function computeInboxBadgeData({
   dashboard,
   heartbeatRuns,
   mineIssues,
-  dismissed,
+  dismissedAlerts,
+  dismissedAtByKey,
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
-  dismissed: Set<string>;
+  dismissedAlerts: Set<string>;
+  dismissedAtByKey: ReadonlyMap<string, number>;
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(
     (approval) =>
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
-      !dismissed.has(`approval:${approval.id}`),
+      !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
   const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !dismissed.has(`run:${run.id}`),
+    (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
   ).length;
   const visibleJoinRequests = joinRequests.filter(
-    (jr) => !dismissed.has(`join:${jr.id}`),
+    (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
@@ -369,11 +397,11 @@ export function computeInboxBadgeData({
   const showAggregateAgentError =
     agentErrorCount > 0 &&
     failedRuns === 0 &&
-    !dismissed.has("alert:agent-errors");
+    !dismissedAlerts.has("alert:agent-errors");
   const showBudgetAlert =
     monthBudgetCents > 0 &&
     monthUtilizationPercent >= 80 &&
-    !dismissed.has("alert:budget");
+    !dismissedAlerts.has("alert:budget");
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
 
   return {

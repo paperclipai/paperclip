@@ -12,6 +12,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
+  buildInboxDismissedAtByKey,
   computeInboxBadgeData,
   getAvailableInboxIssueColumns,
   getApprovalsForTab,
@@ -19,6 +20,7 @@ import {
   getInboxKeyboardSelectionIndex,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
+  isInboxEntityDismissed,
   isMineInboxTab,
   loadInboxIssueColumns,
   loadLastInboxTab,
@@ -286,7 +288,8 @@ describe("inbox helpers", () => {
         makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
       ],
       mineIssues: [makeIssue("1", true)],
-      dismissed: new Set<string>(),
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map<string, number>(),
     });
 
     expect(result).toEqual({
@@ -306,7 +309,8 @@ describe("inbox helpers", () => {
       dashboard,
       heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
       mineIssues: [],
-      dismissed: new Set<string>(["run:run-1", "alert:budget", "alert:agent-errors"]),
+      dismissedAlerts: new Set<string>(["alert:budget", "alert:agent-errors"]),
+      dismissedAtByKey: new Map<string, number>([["run:run-1", new Date("2026-03-11T00:00:00.000Z").getTime()]]),
     });
 
     expect(result).toEqual({
@@ -326,12 +330,41 @@ describe("inbox helpers", () => {
       dashboard,
       heartbeatRuns: [],
       mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
-      dismissed: new Set<string>(),
+      dismissedAtByKey: new Map(),
     });
 
     expect(result.mineIssues).toBe(1);
     // inbox = mineIssues(1) + agent-error alert(1) + budget alert(1)
     expect(result.inbox).toBe(3);
+  });
+
+  it("resurfaces non-issue items when they change after dismissal", () => {
+    const dismissedAtByKey = buildInboxDismissedAtByKey([
+      {
+        id: "dismissal-1",
+        companyId: "company-1",
+        userId: "user-1",
+        itemKey: "approval:approval-1",
+        dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      },
+    ]);
+
+    expect(
+      isInboxEntityDismissed(
+        dismissedAtByKey,
+        "approval:approval-1",
+        new Date("2026-03-11T00:30:00.000Z"),
+      ),
+    ).toBe(true);
+    expect(
+      isInboxEntityDismissed(
+        dismissedAtByKey,
+        "approval:approval-1",
+        new Date("2026-03-11T01:30:00.000Z"),
+      ),
+    ).toBe(false);
   });
 
   it("keeps read issues in the touched list but excludes them from unread counts", () => {

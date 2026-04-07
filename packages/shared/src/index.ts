@@ -288,6 +288,7 @@ export type {
   DashboardSummary,
   ActivityEvent,
   SidebarBadges,
+  InboxDismissal,
   CompanyMembership,
   PrincipalPermissionGrant,
   Invite,

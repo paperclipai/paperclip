@@ -86,6 +86,7 @@ import {
   getInboxKeyboardSelectionIndex,
   getLatestFailedRunsByAgent,
   getRecentTouchedIssues,
+  isInboxEntityDismissed,
   isMineInboxTab,
   loadInboxIssueColumns,
   normalizeInboxIssueColumns,
@@ -99,7 +100,7 @@ import {
   type InboxTab,
   type InboxWorkItem,
 } from "../lib/inbox";
-import { useDismissedInboxItems, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 
 type InboxCategoryFilter =
   | "everything"
@@ -826,7 +827,8 @@ export function Inbox() {
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
-  const { dismissed, dismiss } = useDismissedInboxItems();
+  const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
+  const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
@@ -1033,8 +1035,11 @@ export function Inbox() {
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
-    [heartbeatRuns, dismissed],
+    () =>
+      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
+        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
+      ),
+    [heartbeatRuns, dismissedAtByKey],
   );
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
@@ -1049,10 +1054,12 @@ export function Inbox() {
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter);
     if (tab === "mine") {
-      filtered = filtered.filter((a) => !dismissed.has(`approval:${a.id}`));
+      filtered = filtered.filter(
+        (a) => !isInboxEntityDismissed(dismissedAtByKey, `approval:${a.id}`, a.updatedAt),
+      );
     }
     return filtered;
-  }, [approvals, tab, allApprovalFilter, dismissed]);
+  }, [approvals, tab, allApprovalFilter, dismissedAtByKey]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -1069,9 +1076,13 @@ export function Inbox() {
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
-    if (tab === "mine") return joinRequests.filter((jr) => !dismissed.has(`join:${jr.id}`));
+    if (tab === "mine") {
+      return joinRequests.filter(
+        (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
+      );
+    }
     return joinRequests;
-  }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
+  }, [joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey]);
 
   const workItemsToRender = useMemo(
     () =>
@@ -1385,14 +1396,18 @@ export function Inbox() {
   const handleArchiveNonIssue = useCallback((key: string) => {
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
-      dismiss(key);
+      if (key.startsWith("alert:")) {
+        dismissAlert(key);
+      } else {
+        dismissInboxItem(key);
+      }
       setArchivingNonIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(key);
         return next;
       });
     }, 200);
-  }, [dismiss]);
+  }, [dismissAlert, dismissInboxItem]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1575,12 +1590,16 @@ export function Inbox() {
   }
 
   const hasRunFailures = failedRuns.length > 0;
-  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
+  const showAggregateAgentError =
+    !!dashboard &&
+    dashboard.agents.error > 0 &&
+    !hasRunFailures &&
+    !dismissedAlerts.has("alert:agent-errors");
   const showBudgetAlert =
     !!dashboard &&
     dashboard.costs.monthBudgetCents > 0 &&
     dashboard.costs.monthUtilizationPercent >= 80 &&
-    !dismissed.has("alert:budget");
+    !dismissedAlerts.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const showWorkItemsSection = filteredWorkItems.length > 0;
   const showAlertsSection = shouldShowInboxSection({
@@ -1891,7 +1910,7 @@ export function Inbox() {
                       issueById={issueById}
                       agentName={agentName(item.run.agentId)}
                       issueLinkState={issueLinkState}
-                      onDismiss={() => dismiss(runKey)}
+                      onDismiss={() => dismissInboxItem(runKey)}
                       onRetry={() => retryRunMutation.mutate(item.run)}
                       isRetrying={retryingRunIds.has(item.run.id)}
                       unreadState={nonIssueUnreadState(runKey)}
@@ -2049,7 +2068,7 @@ export function Inbox() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => dismiss("alert:agent-errors")}
+                    onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
@@ -2072,7 +2091,7 @@ export function Inbox() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => dismiss("alert:budget")}
+                    onClick={() => dismissAlert("alert:budget")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
