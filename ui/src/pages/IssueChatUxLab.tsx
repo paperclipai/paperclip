@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,7 +17,7 @@ import {
   issueChatUxTranscriptsByRunId,
 } from "../fixtures/issueChatUxFixtures";
 import { cn } from "../lib/utils";
-import { Bot, FlaskConical, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
+import { Bot, Brain, FlaskConical, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
 
 const noop = async () => {};
 
@@ -62,6 +62,70 @@ function LabSection({
       </div>
       {children}
     </section>
+  );
+}
+
+const DEMO_REASONING_LINES = [
+  "Analyzing the user's request about the animation smoothness...",
+  "The current implementation unmounts the old span instantly, causing a flash...",
+  "Looking at the CSS keyframes for cot-line-slide-up...",
+  "We need a paired exit animation so the old line slides out while the new one slides in...",
+  "Implementing a two-span ticker: exiting line goes up and out, entering line comes up from below...",
+  "Testing the 280ms cubic-bezier transition timing...",
+];
+
+function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
+  const [index, setIndex] = useState(0);
+  const prevRef = useRef(DEMO_REASONING_LINES[0]);
+  const [ticker, setTicker] = useState<{
+    key: number;
+    current: string;
+    exiting: string | null;
+  }>({ key: 0, current: DEMO_REASONING_LINES[0], exiting: null });
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setIndex((i) => (i + 1) % DEMO_REASONING_LINES.length);
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+
+  const currentLine = DEMO_REASONING_LINES[index];
+
+  useEffect(() => {
+    if (currentLine !== prevRef.current) {
+      const prev = prevRef.current;
+      prevRef.current = currentLine;
+      setTicker((t) => ({ key: t.key + 1, current: currentLine, exiting: prev }));
+    }
+  }, [currentLine]);
+
+  return (
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-0.5">
+        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+      </div>
+      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
+        {ticker.exiting !== null && (
+          <span
+            key={`out-${ticker.key}`}
+            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
+          >
+            {ticker.exiting}
+          </span>
+        )}
+        <span
+          key={`in-${ticker.key}`}
+          className={cn(
+            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            ticker.key > 0 && "cot-line-enter",
+          )}
+        >
+          {ticker.current}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -128,6 +192,29 @@ export function IssueChatUxLab() {
           </aside>
         </div>
       </div>
+
+      <LabSection
+        id="rotating-text"
+        eyebrow="Animation demo"
+        title="Rotating reasoning text"
+        description="Isolated ticker that cycles sample reasoning lines on a timer. The outgoing line slides up and fades out while the incoming line slides up from below. Runs in a loop so you can tune timing and easing without needing a live stream."
+        accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.06),transparent_28%),var(--background)]"
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Default interval (2.2s)
+            </div>
+            <RotatingReasoningDemo />
+          </div>
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Fast interval (1s) — stress test
+            </div>
+            <RotatingReasoningDemo intervalMs={1000} />
+          </div>
+        </div>
+      </LabSection>
 
       <LabSection
         id="live-execution"

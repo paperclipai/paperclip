@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread } from "./IssueChatThread";
+import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -205,5 +205,25 @@ describe("IssueChatThread", () => {
     act(() => {
       remount.unmount();
     });
+  });
+
+  it("folds chain-of-thought when the same message transitions from running to complete", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      previousMessageId: "message-1",
+      previousIsFoldable: false,
+    })).toBe(true);
+  });
+
+  it("preserves a manually opened completed message across rerenders", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      previousMessageId: "message-1",
+      previousIsFoldable: true,
+    })).toBe(false);
   });
 });

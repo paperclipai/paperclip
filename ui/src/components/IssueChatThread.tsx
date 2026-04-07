@@ -1,12 +1,13 @@
 import {
   AssistantRuntimeProvider,
   ActionBarPrimitive,
-  ChainOfThoughtPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
   useAui,
+  useAuiState,
   useMessage,
 } from "@assistant-ui/react";
+import type { ToolCallMessagePart } from "@assistant-ui/react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "@/lib/router";
 import type {
@@ -20,9 +21,11 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import {
   buildIssueChatMessages,
+  formatDurationWords,
   type IssueChatComment,
   type IssueChatLinkedRun,
   type IssueChatTranscriptEntry,
+  type SegmentTiming,
 } from "../lib/issue-chat-messages";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -53,6 +56,7 @@ import {
   describeToolInput,
   displayToolName,
   formatToolPayload,
+  isCommandTool,
   parseToolPayload,
   summarizeToolInput,
   summarizeToolResult,
@@ -61,7 +65,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -83,6 +87,57 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
 });
+
+export function resolveAssistantMessageFoldedState(args: {
+  messageId: string;
+  currentFolded: boolean;
+  isFoldable: boolean;
+  previousMessageId: string | null;
+  previousIsFoldable: boolean;
+}) {
+  const {
+    messageId,
+    currentFolded,
+    isFoldable,
+    previousMessageId,
+    previousIsFoldable,
+  } = args;
+
+  if (messageId !== previousMessageId) return isFoldable;
+  if (!isFoldable) return false;
+  if (!previousIsFoldable) return true;
+  return currentFolded;
+}
+
+function findCoTSegmentIndex(
+  messageParts: ReadonlyArray<{ type: string }>,
+  cotParts: ReadonlyArray<{ type: string }>,
+): number {
+  if (cotParts.length === 0) return -1;
+  const firstPart = cotParts[0];
+  let segIdx = -1;
+  let inCoT = false;
+  for (const part of messageParts) {
+    if (part.type === "reasoning" || part.type === "tool-call") {
+      if (!inCoT) { segIdx++; inCoT = true; }
+      if (part === firstPart) return segIdx;
+    } else {
+      inCoT = false;
+    }
+  }
+  return -1;
+}
+
+function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    if (!active || !startMs) return;
+    const interval = setInterval(() => rerender((n) => n + 1), 1000);
+    return () => clearInterval(interval);
+  }, [active, startMs]);
+  if (!active || !startMs) return null;
+  return formatDurationWords(Date.now() - startMs);
+}
 
 interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -186,8 +241,12 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
-function IssueChatTextPart({ text }: { text: string }) {
-  return <MarkdownBody className="text-sm leading-6">{text}</MarkdownBody>;
+function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
+  return (
+    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined}>
+      {text}
+    </MarkdownBody>
+  );
 }
 
 function humanizeValue(value: string | null) {
@@ -247,66 +306,282 @@ function runStatusClass(status: string) {
   }
 }
 
+function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
+  if (toolParts.length === 0) return null;
+  let commands = 0;
+  let other = 0;
+  for (const tool of toolParts) {
+    if (isCommandTool(tool.toolName, tool.args)) commands++;
+    else other++;
+  }
+  const parts: string[] = [];
+  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
+  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
+  return parts.join(", ");
+}
+
+function cleanToolDisplayText(tool: ToolCallMessagePart): string {
+  const name = displayToolName(tool.toolName, tool.args);
+  if (isCommandTool(tool.toolName, tool.args)) return name;
+  const summary = tool.result === undefined
+    ? summarizeToolInput(tool.toolName, tool.args)
+    : null;
+  return summary ? `${name} ${summary}` : name;
+}
+
 function IssueChatChainOfThought() {
+  const { agentMap } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
-  const customLabel = typeof custom.chainOfThoughtLabel === "string" && custom.chainOfThoughtLabel.trim().length > 0
-    ? custom.chainOfThoughtLabel
-    : null;
-  const label = customLabel
-    ? customLabel
-    : "Chain of thought";
+  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
+  const agentId = authorAgentId ?? runAgentId;
+  const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
+  const isMessageRunning = message.role === "assistant" && message.status?.type === "running";
+
+  const cotParts = useAuiState((s) => s.chainOfThought?.parts ?? []) as ReadonlyArray<{ type: string; text?: string; toolName?: string; toolCallId?: string; args?: unknown; argsText?: string; result?: unknown; isError?: boolean }>;
+
+  const myIndex = useMemo(
+    () => findCoTSegmentIndex(message.content, cotParts),
+    [message.content, cotParts],
+  );
+
+  const allReasoningText = cotParts
+    .filter((p): p is { type: "reasoning"; text: string } => p.type === "reasoning" && !!p.text)
+    .map((p) => p.text)
+    .join("\n");
+  const toolParts = cotParts.filter(
+    (p): p is ToolCallMessagePart => p.type === "tool-call",
+  );
+
+  const hasActiveTool = toolParts.some((t) => t.result === undefined);
+  const isActive = isMessageRunning && hasActiveTool;
+  const [expanded, setExpanded] = useState(isActive);
+
+  const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
+    ? (custom.chainOfThoughtSegments as SegmentTiming[])
+    : [];
+  const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
+  const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
+
+  useEffect(() => {
+    if (isActive) setExpanded(true);
+  }, [isActive]);
+
+  let headerVerb: string;
+  let headerSuffix: string | null = null;
+  if (isActive) {
+    headerVerb = "Working";
+    if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
+  } else if (segmentTiming) {
+    const durationMs = segmentTiming.endMs - segmentTiming.startMs;
+    const durationText = formatDurationWords(durationMs);
+    headerVerb = "Worked";
+    if (durationText) headerSuffix = `for ${durationText}`;
+  } else {
+    headerVerb = "Worked";
+  }
+
+  const toolSummary = toolCountSummary(toolParts);
+  const hasContent = allReasoningText.trim().length > 0 || toolParts.length > 0;
+
   return (
-    <ChainOfThoughtPrimitive.Root className="overflow-hidden rounded-2xl border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.82))] shadow-[0_10px_30px_rgba(15,23,42,0.04)] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.62),rgba(15,23,42,0.4))]">
-      <ChainOfThoughtPrimitive.AccordionTrigger className="group flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/10">
-        <span className="inline-flex flex-col items-start gap-0.5">
-          <span className={cn(customLabel ? "text-sm font-medium normal-case tracking-normal text-foreground/90" : "uppercase tracking-[0.14em]")}>
-            {label}
-          </span>
-          {customLabel ? (
-            <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-              Chain of thought
+    <div>
+      <button
+        type="button"
+        className="group flex w-full items-center gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
+        onClick={() => hasContent && setExpanded((v) => !v)}
+      >
+        <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+          {agentIcon ? (
+            <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+          ) : isActive ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
             </span>
-          ) : null}
+          )}
+          {isActive ? (
+            <span className="shimmer-text">{headerVerb}</span>
+          ) : (
+            headerVerb
+          )}
         </span>
-        <span className="inline-flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-          Details
-          <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180" />
-        </span>
-      </ChainOfThoughtPrimitive.AccordionTrigger>
-      <div className="border-t border-border/60 bg-background/35 px-4 py-3">
-        <ChainOfThoughtPrimitive.Parts
-          components={{
-            Reasoning: ({ text }) => <IssueChatReasoningPart text={text} />,
-            tools: {
-              Fallback: ({ toolName, args, argsText, result, isError }) => (
+        {headerSuffix ? (
+          <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
+        ) : null}
+        {toolSummary ? (
+          <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
+        ) : null}
+        {hasContent ? (
+          <ChevronDown className={cn("ml-auto h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
+        ) : null}
+      </button>
+      {expanded && hasContent ? (
+        <div className="space-y-1 py-1">
+          {isActive ? (
+            <>
+              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
+              {toolParts.length > 0 ? <IssueChatRollingToolPart toolParts={toolParts} /> : null}
+            </>
+          ) : (
+            <>
+              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
+              {toolParts.map((tool) => (
                 <IssueChatToolPart
-                  toolName={toolName}
-                  args={args}
-                  argsText={argsText}
-                  result={result}
-                  isError={isError}
+                  key={tool.toolCallId}
+                  toolName={tool.toolName}
+                  args={tool.args}
+                  argsText={tool.argsText}
+                  result={tool.result}
+                  isError={false}
                 />
-              ),
-            },
-            Layout: ({ children }) => <div className="space-y-2.5">{children}</div>,
-          }}
-        />
-      </div>
-    </ChainOfThoughtPrimitive.Root>
+              ))}
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 function IssueChatReasoningPart({ text }: { text: string }) {
+  const lines = text.split("\n").filter((l) => l.trim());
+  const lastLine = lines[lines.length - 1] ?? text.slice(-200);
+  const prevRef = useRef(lastLine);
+  const [ticker, setTicker] = useState<{
+    key: number;
+    current: string;
+    exiting: string | null;
+  }>({ key: 0, current: lastLine, exiting: null });
+
+  useEffect(() => {
+    if (lastLine !== prevRef.current) {
+      const prev = prevRef.current;
+      prevRef.current = lastLine;
+      setTicker((t) => ({ key: t.key + 1, current: lastLine, exiting: prev }));
+    }
+  }, [lastLine]);
+
   return (
-    <div className="rounded-xl border border-border/60 bg-background/70 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
-      <div className="mb-2 inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-        <span className="h-1.5 w-1.5 rounded-full bg-cyan-500/70" />
-        Reasoning
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-0.5">
+        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
       </div>
-      <MarkdownBody className="text-sm leading-6 text-foreground/88">{text}</MarkdownBody>
+      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
+        {ticker.exiting !== null && (
+          <span
+            key={`out-${ticker.key}`}
+            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
+          >
+            {ticker.exiting}
+          </span>
+        )}
+        <span
+          key={`in-${ticker.key}`}
+          className={cn(
+            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            ticker.key > 0 && "cot-line-enter",
+          )}
+        >
+          {ticker.current}
+        </span>
+      </div>
     </div>
   );
+}
+
+function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePart[] }) {
+  const latest = toolParts[toolParts.length - 1];
+  if (!latest) return null;
+
+  const fullText = cleanToolDisplayText(latest);
+
+  const prevRef = useRef(fullText);
+  const [ticker, setTicker] = useState<{
+    key: number;
+    current: string;
+    exiting: string | null;
+  }>({ key: 0, current: fullText, exiting: null });
+
+  useEffect(() => {
+    if (fullText !== prevRef.current) {
+      const prev = prevRef.current;
+      prevRef.current = fullText;
+      setTicker((t) => ({ key: t.key + 1, current: fullText, exiting: prev }));
+    }
+  }, [fullText]);
+
+  const ToolIcon = getToolIcon(latest.toolName);
+  const isRunning = latest.result === undefined;
+
+  return (
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-0.5">
+        {isRunning ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground/50" />
+        ) : (
+          <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+        )}
+      </div>
+      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
+        {ticker.exiting !== null && (
+          <span
+            key={`out-${ticker.key}`}
+            className="cot-line-exit absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70"
+            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
+          >
+            {ticker.exiting}
+          </span>
+        )}
+        <span
+          key={`in-${ticker.key}`}
+          className={cn(
+            "absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70",
+            ticker.key > 0 && "cot-line-enter",
+          )}
+        >
+          {ticker.current}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="group/pre relative">
+      <pre className={className}>{children}</pre>
+      <button
+        type="button"
+        className={cn(
+          "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground group-hover/pre:opacity-100",
+          copied && "opacity-100",
+        )}
+        title="Copy"
+        aria-label="Copy"
+        onClick={() => {
+          void navigator.clipboard.writeText(children).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          });
+        }}
+      >
+        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
+
+const TOOL_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  // Extend with specific tool icons as they become known
+};
+
+function getToolIcon(toolName: string): React.ComponentType<{ className?: string }> {
+  return TOOL_ICON_MAP[toolName] ?? Hammer;
 }
 
 function IssueChatToolPart({
@@ -322,7 +597,7 @@ function IssueChatToolPart({
   result?: unknown;
   isError?: boolean;
 }) {
-  const [open, setOpen] = useState(Boolean(isError));
+  const [open, setOpen] = useState(false);
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
   const resultText =
@@ -333,90 +608,80 @@ function IssueChatToolPart({
         : formatToolPayload(result);
   const inputDetails = describeToolInput(toolName, parsedArgs);
   const displayName = displayToolName(toolName, parsedArgs);
-  const summary =
-    result === undefined
+  const isCommand = isCommandTool(toolName, parsedArgs);
+  const summary = isCommand
+    ? null
+    : result === undefined
       ? summarizeToolInput(toolName, parsedArgs)
-      : summarizeToolResult(resultText, isError);
+      : summarizeToolResult(resultText, false);
+  const ToolIcon = getToolIcon(toolName);
+
+  const intentDetail = inputDetails.find((d) => d.label === "Intent");
+  const title = intentDetail?.value ?? displayName;
+  const nonIntentDetails = inputDetails.filter((d) => d.label !== "Intent");
 
   return (
-    <div
-      className={cn(
-        "rounded-xl border px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]",
-        isError
-          ? "border-red-300/70 bg-[linear-gradient(180deg,rgba(254,242,242,0.95),rgba(254,242,242,0.72))] dark:border-red-500/40 dark:bg-red-500/10"
-          : "border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,250,252,0.78))] dark:bg-background/70",
-      )}
-    >
-      <button
-        type="button"
-        className="flex w-full items-start justify-between gap-3 text-left"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="min-w-0 flex-1">
-          <span className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            <span className={cn("h-1.5 w-1.5 rounded-full", result === undefined ? "bg-cyan-500/75" : isError ? "bg-red-500/75" : "bg-emerald-500/75")} />
-            Tool call
-          </span>
-          <span className="mt-1 block text-sm font-medium text-foreground">{displayName}</span>
-          <span className="mt-1.5 block text-sm leading-6 text-foreground/72">{summary}</span>
-        </span>
-        <span className="shrink-0 flex items-center gap-2 pt-0.5">
-          {result === undefined ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Running
-            </span>
-          ) : isError ? (
-            <span className="inline-flex items-center rounded-full border border-red-400/45 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-red-700 dark:text-red-200">
-              Error
-            </span>
-          ) : (
-            <span className="inline-flex items-center rounded-full border border-emerald-400/45 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
-              Complete
-            </span>
-          )}
-          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")} />
-        </span>
-      </button>
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-1">
+        <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+        {open ? <div className="mt-1 w-px flex-1 bg-border/40" /> : null}
+      </div>
 
-      {open ? (
-        <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
-          {inputDetails.length > 0 ? (
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Input
-              </div>
-              <dl className="space-y-2">
-                {inputDetails.map((detail) => (
-                  <div key={`${detail.label}:${detail.value}`} className="rounded-xl border border-border/60 bg-background/70 px-3 py-2.5">
-                    <dt className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                      {detail.label}
-                    </dt>
-                    <dd className={cn("mt-1 text-sm leading-6 text-foreground/85", detail.tone === "code" && "font-mono text-[13px] leading-5")}>
-                      {detail.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          ) : rawArgsText ? (
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Input
-              </div>
-              <pre className="overflow-x-auto rounded-xl border border-border/60 bg-background/70 p-2.5 text-xs leading-5 text-foreground/85">{rawArgsText}</pre>
-            </div>
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors hover:bg-accent/5"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground/80">
+            {title}
+            {!intentDetail && summary ? <span className="ml-1.5 text-muted-foreground/50">{summary}</span> : null}
+          </span>
+          {result === undefined ? (
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground/50" />
           ) : null}
-          {result !== undefined ? (
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Result
+          <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+        </button>
+
+        {open ? (
+          <div className="mt-1 space-y-2 pb-1">
+            {nonIntentDetails.length > 0 ? (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                  Input
+                </div>
+                <dl className="space-y-1.5">
+                  {nonIntentDetails.map((detail) => (
+                    <div key={`${detail.label}:${detail.value}`}>
+                      <dt className="text-[10px] font-medium text-muted-foreground/60">
+                        {detail.label}
+                      </dt>
+                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-[11px]")}>
+                        {detail.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
               </div>
-              <pre className="overflow-x-auto rounded-xl border border-border/60 bg-background/70 p-2.5 text-xs leading-5 text-foreground/85">{resultText}</pre>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+            ) : rawArgsText ? (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                  Input
+                </div>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
+              </div>
+            ) : null}
+            {result !== undefined ? (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                  Result
+                </div>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -437,7 +702,7 @@ function IssueChatUserMessage() {
         <div className="flex min-w-0 max-w-[85%] flex-col items-end">
           <div
             className={cn(
-              "min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
+              "min-w-0 break-all rounded-2xl px-4 py-2.5",
               queued
                 ? "bg-amber-50/80 dark:bg-amber-500/10"
                 : "bg-muted",
@@ -544,6 +809,27 @@ function IssueChatAssistantMessage() {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
+  const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
+  const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
+  const isFoldable = !isRunning && hasCoT && !!chainOfThoughtLabel;
+  const [folded, setFolded] = useState(isFoldable);
+  const previousMessageIdRef = useRef<string | null>(message.id);
+  const previousIsFoldableRef = useRef(isFoldable);
+
+  useEffect(() => {
+    const nextFolded = resolveAssistantMessageFoldedState({
+      messageId: message.id,
+      currentFolded: folded,
+      isFoldable,
+      previousMessageId: previousMessageIdRef.current,
+      previousIsFoldable: previousIsFoldableRef.current,
+    });
+    previousMessageIdRef.current = message.id;
+    previousIsFoldableRef.current = isFoldable;
+    if (nextFolded !== folded) {
+      setFolded(nextFolded);
+    }
+  }, [folded, isFoldable, message.id]);
 
   const handleVote = async (
     vote: FeedbackVoteValue,
@@ -567,109 +853,132 @@ function IssueChatAssistantMessage() {
         </Avatar>
 
         <div className="min-w-0 flex-1">
-          <div className="mb-1.5 flex items-center gap-2">
-            <span className="text-sm font-medium text-foreground">{authorName}</span>
-            {isRunning ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                Running
-              </span>
-            ) : null}
-          </div>
-
-          <div className="space-y-3">
-            <MessagePrimitive.Parts
-              components={{
-                Text: ({ text }) => <IssueChatTextPart text={text} />,
-                ChainOfThought: IssueChatChainOfThought,
-              }}
-            />
-            {message.content.length === 0 && waitingText ? (
-              <div className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-                {waitingText}
-              </div>
-            ) : null}
-            {notices.length > 0 ? (
-              <div className="space-y-2">
-                {notices.map((notice, index) => (
-                  <div
-                    key={`${message.id}:notice:${index}`}
-                    className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
-                  >
-                    {notice}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-2 flex items-center gap-1">
-            <ActionBarPrimitive.Copy
-              copiedDuration={2000}
-              className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
-              title="Copy message"
-              aria-label="Copy message"
+          {isFoldable ? (
+            <button
+              type="button"
+              className="group flex w-full items-center gap-2 py-0.5 text-left"
+              onClick={() => setFolded((v) => !v)}
             >
-              <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
-              <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
-            </ActionBarPrimitive.Copy>
-            {commentId && onVote ? (
-              <IssueChatFeedbackButtons
-                activeVote={activeVote}
-                sharingPreference={feedbackDataSharingPreference}
-                termsUrl={feedbackTermsUrl ?? null}
-                onVote={handleVote}
-              />
-            ) : null}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <a
-                  href={anchorId ? `#${anchorId}` : undefined}
-                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                </a>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {message.createdAt ? formatDateTime(message.createdAt) : ""}
-              </TooltipContent>
-            </Tooltip>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="text-muted-foreground hover:text-foreground"
-                  title="More actions"
-                  aria-label="More actions"
-                >
-                  <MoreHorizontal className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => {
-                    const text = message.content
-                      .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                      .map((p) => p.text)
-                      .join("\n\n");
-                    void navigator.clipboard.writeText(text);
-                  }}
-                >
-                  <Copy className="mr-2 h-3.5 w-3.5" />
-                  Copy message
-                </DropdownMenuItem>
-                {runHref ? (
-                  <DropdownMenuItem asChild>
-                    <Link to={runHref} target="_blank" rel="noreferrer noopener">
-                      <Search className="mr-2 h-3.5 w-3.5" />
-                      View run
-                    </Link>
-                  </DropdownMenuItem>
+              <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
+              <span className="ml-auto flex items-center gap-1.5">
+                {message.createdAt ? (
+                  <span className="text-[11px] text-muted-foreground/50">
+                    {commentDateLabel(message.createdAt)}
+                  </span>
                 ) : null}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+                <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", !folded && "rotate-180")} />
+              </span>
+            </button>
+          ) : (
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="text-sm font-medium text-foreground">{authorName}</span>
+              {isRunning ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Running
+                </span>
+              ) : null}
+            </div>
+          )}
+
+          {!folded ? (
+            <>
+              <div className="space-y-3">
+                <MessagePrimitive.Parts
+                  components={{
+                    Text: ({ text }) => <IssueChatTextPart text={text} recessed={hasCoT} />,
+                    ChainOfThought: IssueChatChainOfThought,
+                  }}
+                />
+                {message.content.length === 0 && waitingText ? (
+                  <div className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
+                    {waitingText}
+                  </div>
+                ) : null}
+                {notices.length > 0 ? (
+                  <div className="space-y-2">
+                    {notices.map((notice, index) => (
+                      <div
+                        key={`${message.id}:notice:${index}`}
+                        className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
+                      >
+                        {notice}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-2 flex items-center gap-1">
+                <ActionBarPrimitive.Copy
+                  copiedDuration={2000}
+                  className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
+                  title="Copy message"
+                  aria-label="Copy message"
+                >
+                  <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
+                  <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
+                </ActionBarPrimitive.Copy>
+                {commentId && onVote ? (
+                  <IssueChatFeedbackButtons
+                    activeVote={activeVote}
+                    sharingPreference={feedbackDataSharingPreference}
+                    termsUrl={feedbackTermsUrl ?? null}
+                    onVote={handleVote}
+                  />
+                ) : null}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <a
+                      href={anchorId ? `#${anchorId}` : undefined}
+                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                    </a>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
+                  </TooltipContent>
+                </Tooltip>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground hover:text-foreground"
+                      title="More actions"
+                      aria-label="More actions"
+                    >
+                      <MoreHorizontal className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const text = message.content
+                          .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                          .map((p) => p.text)
+                          .join("\n\n");
+                        void navigator.clipboard.writeText(text);
+                      }}
+                    >
+                      <Copy className="mr-2 h-3.5 w-3.5" />
+                      Copy message
+                    </DropdownMenuItem>
+                    {runHref ? (
+                      <DropdownMenuItem asChild>
+                        <Link to={runHref} target="_blank" rel="noreferrer noopener">
+                          <Search className="mr-2 h-3.5 w-3.5" />
+                          View run
+                        </Link>
+                      </DropdownMenuItem>
+                    ) : null}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </MessagePrimitive.Root>

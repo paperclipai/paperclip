@@ -12,8 +12,6 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import {
-  parseSystemActivity,
-  shouldHideNiceModeStderr,
   summarizeNotice,
 } from "./transcriptPresentation";
 
@@ -281,7 +279,47 @@ function runTimestamp(run: IssueChatLinkedRun) {
   return run.finishedAt ?? run.startedAt ?? run.createdAt;
 }
 
-function formatDurationWords(ms: number | null) {
+export interface SegmentTiming {
+  startMs: number;
+  endMs: number;
+}
+
+function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): SegmentTiming[] {
+  const timings: SegmentTiming[] = [];
+  let inSegment = false;
+  let segStart = 0;
+  let segEnd = 0;
+
+  for (const entry of entries) {
+    const ts = new Date(entry.ts).getTime();
+
+    const isCoT =
+      entry.kind === "thinking" ||
+      entry.kind === "tool_call" ||
+      entry.kind === "tool_result" ||
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+    const isText = entry.kind === "assistant" && !!entry.text;
+
+    if (isCoT) {
+      if (!inSegment) {
+        inSegment = true;
+        segStart = ts;
+      }
+      segEnd = ts;
+    } else if (isText && inSegment) {
+      timings.push({ startMs: segStart, endMs: segEnd });
+      inSegment = false;
+    }
+  }
+
+  if (inSegment) {
+    timings.push({ startMs: segStart, endMs: segEnd });
+  }
+
+  return timings;
+}
+
+export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   if (totalSeconds < 60) {
@@ -357,7 +395,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const { parts, notices } = buildAssistantPartsFromTranscript(transcript);
+  const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
     ? parts
@@ -381,12 +419,17 @@ function createHistoricalTranscriptMessage(args: {
       notices,
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
+      chainOfThoughtSegments: segments,
     }),
   };
   return message;
 }
 
-export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTranscriptEntry[]) {
+export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTranscriptEntry[]): {
+  parts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>>;
+  notices: string[];
+  segments: SegmentTiming[];
+} {
   const orderedParts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>> = [];
   const toolParts = new Map<string, ToolCallMessagePart<JsonObject, unknown>>();
   const toolIndices = new Map<string, number>();
@@ -446,33 +489,10 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       toolParts.set(toolCallId, nextPart);
       continue;
     }
-    if (entry.kind === "init" && entry.model) {
-      const sessionSuffix = entry.sessionId ? ` session ${entry.sessionId}` : "";
-      orderedParts.push({ type: "reasoning", text: `Started ${entry.model}${sessionSuffix}.` });
-      continue;
-    }
-    if (entry.kind === "stderr" && entry.text) {
-      if (!shouldHideNiceModeStderr(entry.text)) {
-        orderedParts.push({ type: "reasoning", text: `Background: ${summarizeNotice(entry.text)}` });
-      }
-      continue;
-    }
-    if (entry.kind === "system" && entry.text) {
-      const normalized = entry.text.trim().toLowerCase();
-      if (normalized === "turn started") continue;
-      const activity = parseSystemActivity(entry.text);
-      if (activity) {
-        orderedParts.push({
-          type: "reasoning",
-          text: activity.status === "running"
-            ? `Working on ${activity.name.toLowerCase()}.`
-            : `Completed ${activity.name.toLowerCase()}.`,
-        });
-      } else {
-        orderedParts.push({ type: "reasoning", text: `System: ${summarizeNotice(entry.text)}` });
-      }
-      continue;
-    }
+    if (entry.kind === "init") continue;
+    if (entry.kind === "stderr") continue;
+    if (entry.kind === "stdout") continue;
+    if (entry.kind === "system") continue;
     if (entry.kind === "result") {
       if (entry.isError && entry.errors?.length) {
         for (const error of entry.errors) {
@@ -483,13 +503,9 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
           type: "reasoning",
           text: entry.isError
             ? `Run error: ${summarizeNotice(entry.text)}`
-            : `Run update: ${summarizeNotice(entry.text)}`,
+            : summarizeNotice(entry.text),
         });
       }
-      continue;
-    }
-    if (entry.kind === "stdout" && entry.text) {
-      orderedParts.push({ type: "reasoning", text: `Log: ${summarizeNotice(entry.text)}` });
       continue;
     }
   }
@@ -514,6 +530,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
   return {
     parts: mergedParts,
     notices,
+    segments: computeSegmentTimings(entries),
   };
 }
 
@@ -550,7 +567,7 @@ function createLiveRunMessage(args: {
   hasOutput: boolean;
 }) {
   const { run, transcript, hasOutput } = args;
-  const { parts, notices } = buildAssistantPartsFromTranscript(transcript);
+  const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
   const waitingText =
     run.status === "queued"
       ? "Queued..."
@@ -580,6 +597,7 @@ function createLiveRunMessage(args: {
       notices,
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
+      chainOfThoughtSegments: segments,
     }),
   };
   return message;
