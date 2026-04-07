@@ -95,6 +95,20 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(result!.mode).toBe("normal");
   });
 
+  it("rejects approvalsNeeded values above 1", () => {
+    expect(() =>
+      normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            type: "review",
+            approvalsNeeded: 2,
+            participants: [{ type: "agent", agentId: qaAgentId }],
+          },
+        ],
+      }),
+    ).toThrow("Invalid execution policy");
+  });
+
   it("throws for invalid input", () => {
     expect(() => normalizeIssueExecutionPolicy({ stages: [{ type: "invalid_type" }] })).toThrow();
   });

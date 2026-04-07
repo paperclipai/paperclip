@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -1210,15 +1211,57 @@ export function issueRoutes(
       },
       commentBody,
     });
+    const decisionId = transition.decision ? randomUUID() : null;
+    if (decisionId) {
+      const nextExecutionState = transition.patch.executionState;
+      if (!nextExecutionState || typeof nextExecutionState !== "object") {
+        throw new Error("Execution policy decision patch is missing executionState");
+      }
+      transition.patch.executionState = {
+        ...nextExecutionState,
+        lastDecisionId: decisionId,
+      };
+    }
     Object.assign(updateFields, transition.patch);
 
     let issue;
     try {
-      issue = await svc.update(id, {
-        ...updateFields,
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      if (transition.decision && decisionId) {
+        const decision = transition.decision;
+        issue = await db.transaction(async (tx) => {
+          const updated = await svc.update(
+            id,
+            {
+              ...updateFields,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updated) return null;
+
+          await tx.insert(issueExecutionDecisions).values({
+            id: decisionId,
+            companyId: updated.companyId,
+            issueId: updated.id,
+            stageId: decision.stageId,
+            stageType: decision.stageType,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            outcome: decision.outcome,
+            body: decision.body,
+            createdByRunId: actor.runId ?? null,
+          });
+
+          return updated;
+        });
+      } else {
+        issue = await svc.update(id, {
+          ...updateFields,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -1365,21 +1408,6 @@ export function issueRoutes(
       });
 
     }
-
-    if (transition.decision) {
-      await db.insert(issueExecutionDecisions).values({
-        companyId: issue.companyId,
-        issueId: issue.id,
-        stageId: transition.decision.stageId,
-        stageType: transition.decision.stageType,
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        outcome: transition.decision.outcome,
-        body: transition.decision.body,
-        createdByRunId: actor.runId ?? null,
-      });
-    }
-
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
     const statusChangedFromBacklog =

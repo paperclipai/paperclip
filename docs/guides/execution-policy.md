@@ -28,7 +28,7 @@ interface IssueExecutionPolicy {
 interface IssueExecutionStage {
   id: string;                                 // auto-generated UUID
   type: "review" | "approval";                // stage kind
-  approvalsNeeded: number;                    // currently always 1
+  approvalsNeeded: 1;                         // multi-approval is not supported yet
   participants: IssueExecutionStageParticipant[];
 }
 

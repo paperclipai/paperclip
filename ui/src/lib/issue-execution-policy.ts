@@ -61,7 +61,7 @@ export function buildExecutionPolicy(input: {
   approverValues: string[];
 }): IssueExecutionPolicy | null {
   const mode = input.existingPolicy?.mode ?? "normal";
-  const stages = [];
+  const stages: IssueExecutionPolicy["stages"] = [];
 
   const existingReviewStage = input.existingPolicy?.stages.find((stage) => stage.type === "review");
   const reviewParticipants = mergeParticipants(existingReviewStage?.participants, input.reviewerValues);
@@ -69,7 +69,7 @@ export function buildExecutionPolicy(input: {
     stages.push({
       id: existingReviewStage?.id ?? newId(),
       type: "review" as const,
-      approvalsNeeded: 1,
+      approvalsNeeded: 1 as const,
       participants: reviewParticipants,
     });
   }
@@ -80,7 +80,7 @@ export function buildExecutionPolicy(input: {
     stages.push({
       id: existingApprovalStage?.id ?? newId(),
       type: "approval" as const,
-      approvalsNeeded: 1,
+      approvalsNeeded: 1 as const,
       participants: approvalParticipants,
     });
   }

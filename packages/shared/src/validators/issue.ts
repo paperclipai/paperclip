@@ -91,7 +91,7 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
 export const issueExecutionStageSchema = z.object({
   id: z.string().uuid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
-  approvalsNeeded: z.number().int().positive().optional().default(1),
+  approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
 });
 

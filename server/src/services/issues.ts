@@ -1562,12 +1562,13 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
       },
+      dbOrTx: any = db,
     ) => {
-      const existing = await db
+      const existing = await dbOrTx
         .select()
         .from(issues)
         .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
 
       const {
@@ -1639,7 +1640,7 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      return db.transaction(async (tx) => {
+      const runUpdate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -1663,7 +1664,7 @@ export function issueService(db: Db) {
           .set(patch)
           .where(eq(issues.id, id))
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
@@ -1682,7 +1683,9 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;
-      });
+      };
+
+      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
     },
 
     remove: (id: string) =>

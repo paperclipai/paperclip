@@ -39,7 +39,6 @@ type TransitionResult = {
 };
 
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
-const IDLE_STATUS: IssueExecutionState["status"] = "idle";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
 
@@ -74,7 +73,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       return {
         id: stage.id ?? randomUUID(),
         type: stage.type,
-        approvalsNeeded: 1,
+        approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
       };
     })

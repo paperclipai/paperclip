@@ -3,12 +3,15 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(),
+  getWakeableParentAfterChildCompletion: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -29,6 +32,14 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues })));
+const mockTx = vi.hoisted(() => ({
+  insert: mockTxInsert,
+}));
+const mockDb = vi.hoisted(() => ({
+  transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -74,7 +85,7 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -106,6 +117,8 @@ describe("issue comment reopen routes", () => {
       authorUserId: "local-board",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
@@ -209,6 +222,75 @@ describe("issue comment reopen routes", () => {
           source: "issue_comment_interrupt",
           issueId: "11111111-1111-4111-8111-111111111111",
         }),
+      }),
+    );
+  });
+
+  it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      executionState: patch.executionState,
+      status: "done",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Approved for ship" });
+
+    expect(res.status).toBe(200);
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        executionState: expect.objectContaining({
+          status: "completed",
+          lastDecisionId: expect.any(String),
+          lastDecisionOutcome: "approved",
+        }),
+      }),
+      mockTx,
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+    const decisionId = updatePatch.executionState.lastDecisionId;
+    expect(mockTxInsert).toHaveBeenCalledTimes(1);
+    expect(mockTxInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: decisionId,
+        issueId: "11111111-1111-4111-8111-111111111111",
+        outcome: "approved",
+        body: "Approved for ship",
       }),
     );
   });
