@@ -14,11 +14,10 @@
   },
   "type": "module",
   "scripts": {
-    "preflight:workspace-links": "tsx ../scripts/ensure-workspace-package-links.ts",
-    "dev": "pnpm run preflight:workspace-links && vite",
-    "build": "pnpm run preflight:workspace-links && tsc -b && vite build",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "pnpm run preflight:workspace-links && tsc -b",
+    "typecheck": "tsc -b",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
