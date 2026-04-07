@@ -1,13 +1,5 @@
 import type { AdapterModel } from "@paperclipai/adapter-utils";
-
-/** Anthropic direct API model IDs — used when Bedrock is not active. */
-const DIRECT_MODELS: AdapterModel[] = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
-  { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-];
+import { models as DIRECT_MODELS } from "../index.js";
 
 /** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
 const BEDROCK_MODELS: AdapterModel[] = [
@@ -35,6 +27,7 @@ export async function listClaudeModels(): Promise<AdapterModel[]> {
 }
 
 /** Check whether a model ID is a Bedrock-native identifier (not an Anthropic API short name). */
+/** Bedrock model IDs use region-qualified prefixes (e.g. us.anthropic.*, eu.anthropic.*) or ARNs. */
 export function isBedrockModelId(model: string): boolean {
-  return model.startsWith("us.anthropic.") || model.startsWith("arn:aws:bedrock:");
+  return /^\w+\.anthropic\./.test(model) || model.startsWith("arn:aws:bedrock:");
 }
