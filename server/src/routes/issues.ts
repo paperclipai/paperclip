@@ -1368,7 +1368,8 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && (statusChangedFromBacklog || statusBecameActionable) && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusBecameActionable) && issue.assigneeAgentId
+          && !(actor.actorType === "agent" && actor.actorId === issue.assigneeAgentId)) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
