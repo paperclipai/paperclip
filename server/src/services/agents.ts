@@ -25,6 +25,13 @@ function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
 
+export function isKeyHashUniqueViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === "agent_api_keys_key_hash_idx";
+}
+
 const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
@@ -573,16 +580,24 @@ export function agentService(db: Db) {
 
       const token = createToken();
       const keyHash = hashToken(token);
-      const created = await db
-        .insert(agentApiKeys)
-        .values({
-          agentId: id,
-          companyId: existing.companyId,
-          name,
-          keyHash,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      let created;
+      try {
+        created = await db
+          .insert(agentApiKeys)
+          .values({
+            agentId: id,
+            companyId: existing.companyId,
+            name,
+            keyHash,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      } catch (error: unknown) {
+        if (isKeyHashUniqueViolation(error)) {
+          throw conflict("API key hash already exists — please retry to generate a new key");
+        }
+        throw error;
+      }
 
       return {
         id: created.id,
