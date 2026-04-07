@@ -117,6 +117,23 @@ function resolveWorktreeRuntimeContext(
   if (env.PAPERCLIP_IN_WORKTREE !== "true") return null;
 
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
+
+  // Guard: if the config path resolved to the paperclip home directory (either
+  // the env-overridden one or the hardcoded default), the worktree is
+  // misconfigured (no worktree-local .paperclip/config.json was found).
+  // Bail to prevent rewriting a shared instance config with worktree-isolated
+  // paths, which would poison it for all other consumers.
+  const envHome = resolveHomeAwarePath(
+    nonEmpty(env.PAPERCLIP_HOME) ?? "~/.paperclip",
+  );
+  if (isPathInside(configPath, envHome)) {
+    return null;
+  }
+  const defaultHome = path.resolve(os.homedir(), ".paperclip");
+  if (defaultHome !== envHome && isPathInside(configPath, defaultHome)) {
+    return null;
+  }
+
   const envPath = resolvePaperclipEnvPath(configPath);
   const worktreeRoot = path.resolve(path.dirname(configPath), "..");
   const worktreeName = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? path.basename(worktreeRoot);

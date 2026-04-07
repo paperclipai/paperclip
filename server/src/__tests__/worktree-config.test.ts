@@ -410,6 +410,46 @@ describe("worktree config repair", () => {
     expect(writtenConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:3103/");
   });
 
+  it("refuses to repair when config resolves to default home instance (no worktree-local config)", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-poison-"));
+    const worktreeRoot = path.join(tempRoot, "worktrees", "PAP-999-feature");
+    const defaultInstanceRoot = path.join(tempRoot, "home", ".paperclip", "instances", "default");
+    const defaultConfigPath = path.join(defaultInstanceRoot, "config.json");
+    const defaultEnvPath = path.join(defaultInstanceRoot, ".env");
+
+    // Create a worktree directory WITHOUT .paperclip/config.json
+    await fs.mkdir(worktreeRoot, { recursive: true });
+
+    // Create the default instance config (the one that should NOT be rewritten)
+    await fs.mkdir(defaultInstanceRoot, { recursive: true });
+    const originalConfig = buildLegacyConfig(defaultInstanceRoot);
+    await fs.writeFile(defaultConfigPath, JSON.stringify(originalConfig, null, 2) + "\n", "utf8");
+    await fs.writeFile(defaultEnvPath, "# Default instance env\n", "utf8");
+
+    // Simulate worktree context: PAPERCLIP_IN_WORKTREE=true, but no local config
+    // so resolvePaperclipConfigPath falls back to the default instance config
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-999-feature";
+    process.env.PAPERCLIP_HOME = path.join(tempRoot, "home", ".paperclip");
+    process.env.PAPERCLIP_CONFIG = defaultConfigPath;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_WORKTREES_DIR;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+
+    // Should bail — not repair
+    expect(result).toEqual({ repairedConfig: false, repairedEnv: false });
+
+    // Default config should be untouched
+    const configAfter = JSON.parse(await fs.readFile(defaultConfigPath, "utf8"));
+    expect(configAfter).toEqual(originalConfig);
+
+    // Default .env should be untouched
+    const envAfter = await fs.readFile(defaultEnvPath, "utf8");
+    expect(envAfter).toBe("# Default instance env\n");
+  });
+
   it("can update the in-memory config without rewriting env-driven ports", () => {
     const { config, changed } = applyRuntimePortSelectionToConfig(buildLegacyConfig("/tmp/shared"), {
       serverPort: 3104,
