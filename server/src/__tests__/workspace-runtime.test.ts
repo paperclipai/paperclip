@@ -3133,9 +3133,16 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
 });
 
 describe("buildSafeDirectoryEnv (safe.directory injection)", () => {
-  const originalGitConfigCount = process.env.GIT_CONFIG_COUNT;
-  const originalGitConfigKey0 = process.env.GIT_CONFIG_KEY_0;
-  const originalGitConfigValue0 = process.env.GIT_CONFIG_VALUE_0;
+  let originalGitConfigEnv: Record<string, string> = {};
+
+  beforeEach(() => {
+    originalGitConfigEnv = {};
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("GIT_CONFIG_")) {
+        originalGitConfigEnv[key] = process.env[key] as string;
+      }
+    }
+  });
 
   afterEach(() => {
     for (const key of Object.keys(process.env)) {
@@ -3143,9 +3150,9 @@ describe("buildSafeDirectoryEnv (safe.directory injection)", () => {
         delete process.env[key];
       }
     }
-    if (originalGitConfigCount !== undefined) process.env.GIT_CONFIG_COUNT = originalGitConfigCount;
-    if (originalGitConfigKey0 !== undefined) process.env.GIT_CONFIG_KEY_0 = originalGitConfigKey0;
-    if (originalGitConfigValue0 !== undefined) process.env.GIT_CONFIG_VALUE_0 = originalGitConfigValue0;
+    for (const [key, value] of Object.entries(originalGitConfigEnv)) {
+      process.env[key] = value;
+    }
   });
 
   it("sets GIT_CONFIG_COUNT, KEY, and VALUE for safe.directory when no prior config exists", () => {
@@ -3169,6 +3176,8 @@ describe("buildSafeDirectoryEnv (safe.directory injection)", () => {
     expect(env.GIT_CONFIG_VALUE_2).toBe("/workspace/project");
     expect(env.GIT_CONFIG_KEY_0).toBe("core.autocrlf");
     expect(env.GIT_CONFIG_VALUE_0).toBe("false");
+    expect(env.GIT_CONFIG_KEY_1).toBe("user.email");
+    expect(env.GIT_CONFIG_VALUE_1).toBe("test@example.com");
   });
 
   it("guards against non-numeric GIT_CONFIG_COUNT by treating it as 0", () => {
