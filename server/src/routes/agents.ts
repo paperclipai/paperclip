@@ -117,6 +117,12 @@ export function agentRoutes(db: Db) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  /** Returns true if callerAgentId is an ancestor manager of targetAgentId. */
+  async function isManagerOf(callerAgentId: string, targetAgentId: string): Promise<boolean> {
+    const chain = await svc.getChainOfCommand(targetAgentId);
+    return chain.some((mgr) => mgr.id === callerAgentId);
+  }
+
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
     const membership = await access.getMembership(agent.companyId, "agent", agent.id);
     const grants = membership
@@ -309,6 +315,7 @@ export function agentRoutes(db: Db) {
 
     if (actorAgent.id === targetAgent.id) return;
     if (actorAgent.role === "ceo") return;
+    if (await isManagerOf(actorAgent.id, targetAgent.id)) return;
     const allowedByGrant = await access.hasPermission(
       targetAgent.companyId,
       "agent",
@@ -316,7 +323,7 @@ export function agentRoutes(db: Db) {
       "agents:create",
     );
     if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CEO or agent creators can modify other agents");
+    throw forbidden("Only CEO, managers, or agent creators can modify other agents");
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
@@ -2080,8 +2087,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      if (!req.actor.agentId || !(await isManagerOf(req.actor.agentId, id))) {
+        res.status(403).json({ error: "Agent can only wake itself or its reports" });
+        return;
+      }
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -2130,8 +2139,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      if (!req.actor.agentId || !(await isManagerOf(req.actor.agentId, id))) {
+        res.status(403).json({ error: "Agent can only invoke itself or its reports" });
+        return;
+      }
     }
 
     const run = await heartbeat.invoke(

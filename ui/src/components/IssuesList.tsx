@@ -21,9 +21,10 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, ListTree, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
+import { IssueTree } from "./IssueTree";
 import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
@@ -46,7 +47,7 @@ export type IssueViewState = {
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
-  viewMode: "list" | "board";
+  viewMode: "list" | "board" | "tree";
   collapsedGroups: string[];
   collapsedParents: string[];
 };
@@ -382,6 +383,13 @@ export function IssuesList({
               <List className="h-3.5 w-3.5" />
             </button>
             <button
+              className={`p-1.5 transition-colors ${viewState.viewMode === "tree" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => updateView({ viewMode: "tree" })}
+              title="Tree view"
+            >
+              <ListTree className="h-3.5 w-3.5" />
+            </button>
+            <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
@@ -657,6 +665,13 @@ export function IssuesList({
           agents={agents}
           liveIssueIds={liveIssueIds}
           onUpdateIssue={onUpdateIssue}
+        />
+      ) : viewState.viewMode === "tree" ? (
+        <IssueTree
+          issues={filtered}
+          agents={agents}
+          issueLinkState={issueLinkState}
+          onStatusChange={(id, status) => onUpdateIssue(id, { status })}
         />
       ) : (
         groupedContent.map((group) => (

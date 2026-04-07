@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent 
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type IssueDependencyRecord } from "../api/issues";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -46,6 +46,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
+import { IssueTree } from "../components/IssueTree";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
@@ -484,6 +485,37 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+
+  // Fetch dependencies for the current issue itself
+  const { data: issueDeps } = useQuery({
+    queryKey: queryKeys.issues.dependencies(issueId!),
+    queryFn: () => issuesApi.listDependencies(issueId!),
+    enabled: !!issueId,
+  });
+
+  // Build a dependency map for child issues (fetch each child's deps)
+  const { data: childDepsList } = useQuery({
+    queryKey: [...queryKeys.issues.dependencies(issueId!), "children"],
+    queryFn: async () => {
+      const results = await Promise.all(
+        childIssues.map(async (child) => {
+          const deps = await issuesApi.listDependencies(child.id);
+          return { issueId: child.id, deps };
+        }),
+      );
+      return results;
+    },
+    enabled: childIssues.length > 0,
+  });
+
+  const childDependenciesMap = useMemo(() => {
+    const map = new Map<string, IssueDependencyRecord[]>();
+    if (issueDeps) map.set(issueId!, issueDeps);
+    for (const entry of childDepsList ?? []) {
+      map.set(entry.issueId, entry.deps);
+    }
+    return map;
+  }, [issueId, issueDeps, childDepsList]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -1489,6 +1521,31 @@ export function IssueDetail() {
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
+      {/* Dependency indicators */}
+      {issueDeps && issueDeps.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-1 py-2">
+          <span className="text-xs text-muted-foreground">Dependencies:</span>
+          {issueDeps.map((dep) => {
+            const resolved = dep.blockedByIssue.status === "done" || dep.blockedByIssue.status === "cancelled";
+            return (
+              <Link
+                key={dep.id}
+                to={createIssueDetailPath(dep.blockedByIssue.identifier ?? dep.blockedByIssueId, location.state)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium no-underline transition-colors",
+                  resolved
+                    ? "bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-500/20"
+                    : "bg-orange-500/10 text-orange-600 dark:text-orange-400 hover:bg-orange-500/20",
+                )}
+              >
+                <StatusIcon status={dep.blockedByIssue.status} className="h-3 w-3" />
+                {dep.blockedByIssue.identifier ?? dep.blockedByIssueId.slice(0, 6)}
+              </Link>
+            );
+          })}
+        </div>
+      )}
+
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
@@ -1500,6 +1557,11 @@ export function IssueDetail() {
           <TabsTrigger value="subissues" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
             Sub-issues
+            {childIssues.length > 0 && (
+              <span className="ml-0.5 text-[10px] text-muted-foreground tabular-nums">
+                {childIssues.filter((c) => c.status === "done" || c.status === "cancelled").length}/{childIssues.length}
+              </span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
@@ -1569,31 +1631,20 @@ export function IssueDetail() {
           {childIssues.length === 0 ? (
             <p className="text-xs text-muted-foreground">No sub-issues.</p>
           ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}
-                  state={location.state}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
-                    </span>
-                    <span className="truncate">{child.title}</span>
-                  </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
-                </Link>
-              ))}
-            </div>
+            <IssueTree
+              issues={childIssues}
+              dependenciesByIssue={childDependenciesMap}
+              agents={agents}
+              issueLinkState={location.state}
+              onStatusChange={(id, status) => {
+                issuesApi.update(id, { status }).then(() => {
+                  invalidateIssue();
+                  if (selectedCompanyId) {
+                    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+                  }
+                });
+              }}
+            />
           )}
         </TabsContent>
 

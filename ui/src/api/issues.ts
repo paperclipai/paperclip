@@ -144,4 +144,40 @@ export const issuesApi = {
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  listDependencies: (id: string) =>
+    api.get<IssueDependencyRecord[]>(`/issues/${id}/dependencies`),
+  listDependents: (id: string) =>
+    api.get<IssueDependentRecord[]>(`/issues/${id}/dependents`),
+  addDependency: (id: string, blockedByIssueId: string) =>
+    api.post<{ id: string }>(`/issues/${id}/dependencies`, { blockedByIssueId }),
+  removeDependency: (id: string, blockedByIssueId: string) =>
+    api.delete<{ ok: true }>(`/issues/${id}/dependencies/${blockedByIssueId}`),
 };
+
+export interface IssueDependencyRecord {
+  id: string;
+  companyId: string;
+  dependentIssueId: string;
+  blockedByIssueId: string;
+  createdAt: Date;
+  blockedByIssue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  };
+}
+
+export interface IssueDependentRecord {
+  id: string;
+  companyId: string;
+  dependentIssueId: string;
+  blockedByIssueId: string;
+  createdAt: Date;
+  dependentIssue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  };
+}
