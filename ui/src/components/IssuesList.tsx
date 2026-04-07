@@ -145,18 +145,6 @@ function countActiveFilters(state: IssueViewState): number {
   return count;
 }
 
-function matchesIssueSearch(issue: Issue, normalizedSearch: string): boolean {
-  if (!normalizedSearch) return true;
-
-  return [
-    issue.identifier,
-    issue.title,
-    issue.description,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .some((value) => value.toLowerCase().includes(normalizedSearch));
-}
-
 /* ── Component ── */
 
 interface Agent {
@@ -278,12 +266,10 @@ export function IssuesList({
   }, [agents]);
 
   const filtered = useMemo(() => {
-    const sourceIssues = normalizedIssueSearch.length > 0
-      ? issues.filter((issue) => matchesIssueSearch(issue, normalizedIssueSearch))
-      : issues;
+    const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState, currentUserId);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, viewState, normalizedIssueSearch, currentUserId]);
+  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),

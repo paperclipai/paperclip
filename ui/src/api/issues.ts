@@ -36,6 +36,7 @@ export const issuesApi = {
       originId?: string;
       includeRoutineExecutions?: boolean;
       q?: string;
+      limit?: number;
     },
   ) => {
     const params = new URLSearchParams();
@@ -53,6 +54,7 @@ export const issuesApi = {
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
+    if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },

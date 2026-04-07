@@ -346,6 +346,9 @@ export function issueRoutes(
       unreadForUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : unreadForUserFilterRaw;
+    const rawLimit = req.query.limit as string | undefined;
+    const parsedLimit = rawLimit ? Number.parseInt(rawLimit, 10) : null;
+    const limit = parsedLimit ?? undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -361,6 +364,10 @@ export function issueRoutes(
     }
     if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
+      return;
+    }
+    if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+      res.status(400).json({ error: "limit must be a positive integer" });
       return;
     }
 
@@ -381,6 +388,7 @@ export function issueRoutes(
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
+      limit,
     });
     res.json(result);
   });

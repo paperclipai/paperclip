@@ -45,6 +45,11 @@ type TableDefinition = {
   tablename: string;
 };
 
+type ExtensionDefinition = {
+  extension_name: string;
+  schema_name: string;
+};
+
 const DRIZZLE_SCHEMA = "drizzle";
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
@@ -336,6 +341,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("-- Schemas");
       for (const schemaName of extraSchemas) {
         emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+      }
+      emit("");
+    }
+
+    const extensions = await sql<ExtensionDefinition[]>`
+      SELECT
+        e.extname AS extension_name,
+        n.nspname AS schema_name
+      FROM pg_extension e
+      JOIN pg_namespace n ON n.oid = e.extnamespace
+      WHERE e.extname <> 'plpgsql'
+      ORDER BY e.extname
+    `;
+    if (extensions.length > 0) {
+      emit("-- Extensions");
+      for (const extension of extensions) {
+        emitStatement(
+          `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
+        );
       }
       emit("");
     }

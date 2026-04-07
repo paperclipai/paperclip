@@ -30,8 +30,8 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
-    search: (companyId: string, q: string, projectId?: string) =>
-      ["issues", companyId, "search", q, projectId ?? "__all-projects__"] as const,
+    search: (companyId: string, q: string, projectId?: string, limit?: number) =>
+      ["issues", companyId, "search", q, projectId ?? "__all-projects__", limit ?? "__no-limit__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,
     listMineByMe: (companyId: string) => ["issues", companyId, "mine-by-me"] as const,
     listTouchedByMe: (companyId: string) => ["issues", companyId, "touched-by-me"] as const,

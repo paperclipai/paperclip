@@ -31,5 +31,6 @@ export const issueComments = pgTable(
       table.issueId,
       table.createdAt,
     ),
+    bodySearchIdx: index("issue_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
   }),
 );
