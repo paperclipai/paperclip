@@ -122,15 +122,22 @@ async function buildCopilotRuntimeConfig(input: {
   // like para-memory-files resolve $AGENT_HOME/life/, $AGENT_HOME/memory/ etc.
   // to the agent's own persistent directory inside the company folder.
   //
-  // The company folder is auto-derived from instructionsRootPath by walking up
-  // past agents/{agentId}/instructions/ to companies/{companyId}/ — this grants
-  // every agent sandbox access to the full company workspace.
-  // Path structure: <instanceRoot>/companies/<companyId>/agents/<agentId>/instructions
   const instructionsRootPath = asString(config.instructionsRootPath, "").trim();
   const effectiveAgentHome = instructionsRootPath || agentHome;
-  const companyFolder = instructionsRootPath
-    ? path.resolve(instructionsRootPath, "..", "..", "..")
-    : "";
+
+  // Derive the company folder from well-known Paperclip env vars rather than
+  // counting path segments from instructionsRootPath, which is fragile if the
+  // directory structure ever changes.
+  // Structure: <PAPERCLIP_HOME>/instances/<PAPERCLIP_INSTANCE_ID>/companies/<companyId>
+  const paperclipHome = (() => {
+    const raw = process.env.PAPERCLIP_HOME?.trim() ?? "";
+    if (!raw) return path.resolve(os.homedir(), ".paperclip");
+    if (raw === "~") return os.homedir();
+    if (raw.startsWith("~/")) return path.resolve(os.homedir(), raw.slice(2));
+    return path.resolve(raw);
+  })();
+  const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  const companyFolder = path.resolve(paperclipHome, "instances", instanceId, "companies", agent.companyId);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
