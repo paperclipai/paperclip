@@ -19,18 +19,20 @@ import type {
  * on Windows, which traverses the entire process tree and force-terminates
  * every descendant before they can be re-parented by the OS.
  *
- * `child.kill(signal)` is always called regardless of platform so that
- * `child.killed` is set to `true` for downstream state-tracking checks.
+ * On Windows the `child.kill(signal)` call is deferred until after taskkill
+ * finishes, avoiding a race where TerminateProcess() exits the direct child
+ * before taskkill can enumerate grandchildren.
  */
 export function killChildProcess(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {
   if (process.platform === "win32" && typeof child.pid === "number" && child.pid > 0) {
-    // Kill the entire process tree first, while the children are still
-    // traceable via their parent PID, then let child.kill() handle the
-    // direct process and set child.killed for state tracking.
-    spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
+    // Kill the entire process tree first via taskkill, then call child.kill()
+    // only after taskkill closes so the direct child stays alive long enough
+    // for taskkill to enumerate and terminate all grandchildren.
+    const tk = spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
       stdio: "ignore",
-      detached: true,
-    }).unref();
+    });
+    tk.on("close", () => child.kill(signal));
+    return;
   }
   child.kill(signal);
 }

@@ -386,10 +386,11 @@ export function sanitizeBranchName(
       truncated.lastIndexOf("-"),
       truncated.lastIndexOf("."),
       truncated.lastIndexOf("/"),
+      truncated.lastIndexOf("_"),
     );
     sanitized =
       lastSep > maxLength / 2 ? truncated.slice(0, lastSep) : truncated;
-    sanitized = sanitized.replace(/[-/.]+$/, "");
+    sanitized = sanitized.replace(/[-/._]+$/, "");
   }
 
   return sanitized || "paperclip-work";
