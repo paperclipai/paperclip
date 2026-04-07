@@ -13,6 +13,7 @@ export interface CompanyPortabilityEnvInput {
   key: string;
   description: string | null;
   agentSlug: string | null;
+  projectSlug: string | null;
   kind: "secret" | "plain";
   requirement: "required" | "optional";
   defaultValue: string | null;

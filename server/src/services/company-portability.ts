@@ -394,6 +394,83 @@ function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
   return parsed.success ? parsed.data : null;
 }
 
+function extractPortableScopedEnvInputs(
+  scope: {
+    label: string;
+    warningPrefix: string;
+    agentSlug: string | null;
+    projectSlug: string | null;
+  },
+  envValue: unknown,
+  warnings: string[],
+): CompanyPortabilityEnvInput[] {
+  if (!isPlainRecord(envValue)) return [];
+  const env = envValue as Record<string, unknown>;
+  const inputs: CompanyPortabilityEnvInput[] = [];
+
+  for (const [key, binding] of Object.entries(env)) {
+    if (key.toUpperCase() === "PATH") {
+      warnings.push(`${scope.warningPrefix} PATH override was omitted from export because it is system-dependent.`);
+      continue;
+    }
+
+    if (isPlainRecord(binding) && binding.type === "secret_ref") {
+      inputs.push({
+        key,
+        description: `Provide ${key} for ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: "secret",
+        requirement: "optional",
+        defaultValue: "",
+        portability: "portable",
+      });
+      continue;
+    }
+
+    if (isPlainRecord(binding) && binding.type === "plain") {
+      const defaultValue = asString(binding.value);
+      const isSensitive = isSensitiveEnvKey(key);
+      const portability = defaultValue && isAbsoluteCommand(defaultValue)
+        ? "system_dependent"
+        : "portable";
+      if (portability === "system_dependent") {
+        warnings.push(`${scope.warningPrefix} env ${key} default was exported as system-dependent.`);
+      }
+      inputs.push({
+        key,
+        description: `Optional default for ${key} on ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: isSensitive ? "secret" : "plain",
+        requirement: "optional",
+        defaultValue: isSensitive ? "" : defaultValue ?? "",
+        portability,
+      });
+      continue;
+    }
+
+    if (typeof binding === "string") {
+      const portability = isAbsoluteCommand(binding) ? "system_dependent" : "portable";
+      if (portability === "system_dependent") {
+        warnings.push(`${scope.warningPrefix} env ${key} default was exported as system-dependent.`);
+      }
+      inputs.push({
+        key,
+        description: `Optional default for ${key} on ${scope.label}`,
+        agentSlug: scope.agentSlug,
+        projectSlug: scope.projectSlug,
+        kind: isSensitiveEnvKey(key) ? "secret" : "plain",
+        requirement: "optional",
+        defaultValue: isSensitiveEnvKey(key) ? "" : binding,
+        portability,
+      });
+    }
+  }
+
+  return inputs;
+}
+
 type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -1536,68 +1613,33 @@ function extractPortableEnvInputs(
   envValue: unknown,
   warnings: string[],
 ): CompanyPortabilityEnvInput[] {
-  if (!isPlainRecord(envValue)) return [];
-  const env = envValue as Record<string, unknown>;
-  const inputs: CompanyPortabilityEnvInput[] = [];
+  return extractPortableScopedEnvInputs(
+    {
+      label: `agent ${agentSlug}`,
+      warningPrefix: `Agent ${agentSlug}`,
+      agentSlug,
+      projectSlug: null,
+    },
+    envValue,
+    warnings,
+  );
+}
 
-  for (const [key, binding] of Object.entries(env)) {
-    if (key.toUpperCase() === "PATH") {
-      warnings.push(`Agent ${agentSlug} PATH override was omitted from export because it is system-dependent.`);
-      continue;
-    }
-
-    if (isPlainRecord(binding) && binding.type === "secret_ref") {
-      inputs.push({
-        key,
-        description: `Provide ${key} for agent ${agentSlug}`,
-        agentSlug,
-        kind: "secret",
-        requirement: "optional",
-        defaultValue: "",
-        portability: "portable",
-      });
-      continue;
-    }
-
-    if (isPlainRecord(binding) && binding.type === "plain") {
-      const defaultValue = asString(binding.value);
-      const isSensitive = isSensitiveEnvKey(key);
-      const portability = defaultValue && isAbsoluteCommand(defaultValue)
-        ? "system_dependent"
-        : "portable";
-      if (portability === "system_dependent") {
-        warnings.push(`Agent ${agentSlug} env ${key} default was exported as system-dependent.`);
-      }
-      inputs.push({
-        key,
-        description: `Optional default for ${key} on agent ${agentSlug}`,
-        agentSlug,
-        kind: isSensitive ? "secret" : "plain",
-        requirement: "optional",
-        defaultValue: isSensitive ? "" : defaultValue ?? "",
-        portability,
-      });
-      continue;
-    }
-
-    if (typeof binding === "string") {
-      const portability = isAbsoluteCommand(binding) ? "system_dependent" : "portable";
-      if (portability === "system_dependent") {
-        warnings.push(`Agent ${agentSlug} env ${key} default was exported as system-dependent.`);
-      }
-      inputs.push({
-        key,
-        description: `Optional default for ${key} on agent ${agentSlug}`,
-        agentSlug,
-        kind: isSensitiveEnvKey(key) ? "secret" : "plain",
-        requirement: "optional",
-        defaultValue: binding,
-        portability,
-      });
-    }
-  }
-
-  return inputs;
+function extractPortableProjectEnvInputs(
+  projectSlug: string,
+  envValue: unknown,
+  warnings: string[],
+): CompanyPortabilityEnvInput[] {
+  return extractPortableScopedEnvInputs(
+    {
+      label: `project ${projectSlug}`,
+      warningPrefix: `Project ${projectSlug}`,
+      agentSlug: null,
+      projectSlug,
+    },
+    envValue,
+    warnings,
+  );
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -2183,7 +2225,7 @@ function dedupeEnvInputs(values: CompanyPortabilityManifest["envInputs"]) {
   const seen = new Set<string>();
   const out: CompanyPortabilityManifest["envInputs"] = [];
   for (const value of values) {
-    const key = `${value.agentSlug ?? ""}:${value.key.toUpperCase()}`;
+    const key = `${value.agentSlug ?? ""}:${value.projectSlug ?? ""}:${value.key.toUpperCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(value);
@@ -2240,6 +2282,31 @@ function readAgentEnvInputs(
       key,
       description: asString(record.description) ?? null,
       agentSlug,
+      projectSlug: null,
+      kind: record.kind === "plain" ? "plain" : "secret",
+      requirement: record.requirement === "required" ? "required" : "optional",
+      defaultValue: typeof record.default === "string" ? record.default : null,
+      portability: record.portability === "system_dependent" ? "system_dependent" : "portable",
+    }];
+  });
+}
+
+function readProjectEnvInputs(
+  extension: Record<string, unknown>,
+  projectSlug: string,
+): CompanyPortabilityManifest["envInputs"] {
+  const inputs = isPlainRecord(extension.inputs) ? extension.inputs : null;
+  const env = inputs && isPlainRecord(inputs.env) ? inputs.env : null;
+  if (!env) return [];
+
+  return Object.entries(env).flatMap(([key, value]) => {
+    if (!isPlainRecord(value)) return [];
+    const record = value as EnvInputRecord;
+    return [{
+      key,
+      description: asString(record.description) ?? null,
+      agentSlug: null,
+      projectSlug,
       kind: record.kind === "plain" ? "plain" : "secret",
       requirement: record.requirement === "required" ? "required" : "optional",
       defaultValue: typeof record.default === "string" ? record.default : null,
@@ -2546,6 +2613,7 @@ function buildManifestFromPackageFiles(
       workspaces,
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
+    manifest.envInputs.push(...readProjectEnvInputs(extension, slug));
     if (frontmatter.kind && frontmatter.kind !== "project") {
       warnings.push(`Project markdown ${projectPath} does not declare kind: project in frontmatter.`);
     }
@@ -3153,6 +3221,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const project of selectedProjectRows) {
       const slug = projectSlugById.get(project.id)!;
       const projectPath = `projects/${slug}/PROJECT.md`;
+      const envInputsStart = envInputs.length;
+      const exportedEnvInputs = extractPortableProjectEnvInputs(slug, project.env, warnings);
+      envInputs.push(...exportedEnvInputs);
+      const projectEnvInputs = dedupeEnvInputs(
+        envInputs
+          .slice(envInputsStart)
+          .filter((inputValue) => inputValue.projectSlug === slug),
+      );
       const portableWorkspaces = await buildPortableProjectWorkspaces(slug, project.workspaces, warnings);
       projectWorkspaceKeyByProjectId.set(project.id, portableWorkspaces.workspaceKeyById);
       files[projectPath] = buildMarkdown(
@@ -3168,7 +3244,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
         status: project.status,
-        env: normalizePortableProjectEnv(project.env) ?? undefined,
         executionWorkspacePolicy: exportPortableProjectExecutionWorkspacePolicy(
           slug,
           project.executionWorkspacePolicy,
@@ -3177,6 +3252,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         ) ?? undefined,
         workspaces: portableWorkspaces.extension,
       });
+      if (isPlainRecord(extension) && projectEnvInputs.length > 0) {
+        extension.inputs = {
+          env: buildEnvInputMap(projectEnvInputs),
+        };
+      }
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
@@ -3516,7 +3596,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     for (const envInput of manifest.envInputs) {
       if (envInput.portability === "system_dependent") {
-        warnings.push(`Environment input ${envInput.key}${envInput.agentSlug ? ` for ${envInput.agentSlug}` : ""} is system-dependent and may need manual adjustment after import.`);
+        const scope = envInput.agentSlug
+          ? ` for agent ${envInput.agentSlug}`
+          : envInput.projectSlug
+            ? ` for project ${envInput.projectSlug}`
+            : "";
+        warnings.push(`Environment input ${envInput.key}${scope} is system-dependent and may need manual adjustment after import.`);
       }
     }
 
