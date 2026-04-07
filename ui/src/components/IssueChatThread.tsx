@@ -177,6 +177,15 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
   return null;
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function commentDateLabel(date: Date | string | undefined): string {
+  if (!date) return "";
+  const then = new Date(date).getTime();
+  if (Date.now() - then < WEEK_MS) return timeAgo(date);
+  return formatShortDate(date);
+}
+
 function IssueChatTextPart({ text }: { text: string }) {
   return <MarkdownBody className="text-sm leading-6">{text}</MarkdownBody>;
 }
@@ -471,7 +480,7 @@ function IssueChatUserMessage() {
                   href={anchorId ? `#${anchorId}` : undefined}
                   className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
                 >
-                  {message.createdAt ? formatShortDate(message.createdAt) : ""}
+                  {message.createdAt ? commentDateLabel(message.createdAt) : ""}
                 </a>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
@@ -595,12 +604,6 @@ function IssueChatAssistantMessage() {
           </div>
 
           <div className="mt-2 flex items-center gap-1">
-            <a
-              href={anchorId ? `#${anchorId}` : undefined}
-              className="mr-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-            >
-              {message.createdAt ? formatShortDate(message.createdAt) : ""}
-            </a>
             <ActionBarPrimitive.Copy
               copiedDuration={2000}
               className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
@@ -618,6 +621,19 @@ function IssueChatAssistantMessage() {
                 onVote={handleVote}
               />
             ) : null}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href={anchorId ? `#${anchorId}` : undefined}
+                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                </a>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {message.createdAt ? formatDateTime(message.createdAt) : ""}
+              </TooltipContent>
+            </Tooltip>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
