@@ -194,7 +194,7 @@ interface PendingRequest {
   /** Resolve the promise with the response. */
   resolve: (response: JsonRpcResponse) => void;
   /** Timeout timer handle. */
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   /** Timestamp when the request was sent. */
   sentAt: number;
 }
@@ -822,10 +822,18 @@ export function createPluginWorkerHandle(
     attachStdioHandlers(child);
     startedAt = Date.now();
 
+    // Transform config.timeoutSec: 0 (requested infinite) to -1 (sent to worker)
+    // This truthy value bypasses the "val || default" bug in hermes-paperclip-adapter
+    // while still being handled as "no timeout" via > 0 check in server-utils.ts.
+    const effectiveConfig = { ...options.config };
+    if (typeof effectiveConfig.timeoutSec === "number" && effectiveConfig.timeoutSec === 0) {
+      effectiveConfig.timeoutSec = -1;
+    }
+
     // Send the initialize RPC call
     const initParams: InitializeParams = {
       manifest: options.manifest,
-      config: options.config,
+      config: effectiveConfig as any,
       instanceInfo: options.instanceInfo,
       apiVersion: options.apiVersion,
     };
@@ -1014,7 +1022,8 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
+      // Explicit timeoutMs overrides defaults, and 0 means no timeout.
+      const timeout = timeoutMs !== undefined ? timeoutMs : Math.min(rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1025,20 +1034,23 @@ export function createPluginWorkerHandle(
       const settle = <T>(fn: (value: T) => void, value: T): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         pendingRequests.delete(id);
         fn(value);
       };
 
-      const timer = setTimeout(() => {
-        settle(
-          reject,
-          new JsonRpcCallError({
-            code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
-            message: `RPC call "${method}" timed out after ${timeout}ms`,
-          }),
-        );
-      }, timeout);
+      let timer: NodeJS.Timeout | undefined;
+      if (timeout !== 0) {
+        timer = setTimeout(() => {
+          settle(
+            reject,
+            new JsonRpcCallError({
+              code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
+              message: `RPC call "${method}" timed out after ${timeout}ms`,
+            }),
+          );
+        }, timeout);
+      }
 
       const pending: PendingRequest = {
         id,
