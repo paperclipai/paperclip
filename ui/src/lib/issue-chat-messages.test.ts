@@ -51,7 +51,7 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
 }
 
 describe("buildAssistantPartsFromTranscript", () => {
-  it("maps assistant text, reasoning, tool calls, and tool results", () => {
+  it("maps assistant text, reasoning, and tool activity while omitting noisy stderr", () => {
     const result = buildAssistantPartsFromTranscript([
       { kind: "assistant", ts: "2026-04-06T12:00:00.000Z", text: "Working on it. " },
       { kind: "assistant", ts: "2026-04-06T12:00:01.000Z", text: "Done." },
@@ -73,7 +73,7 @@ describe("buildAssistantPartsFromTranscript", () => {
       { kind: "stderr", ts: "2026-04-06T12:00:05.000Z", text: "warn: noisy setup output" },
     ]);
 
-    expect(result.parts).toHaveLength(4);
+    expect(result.parts).toHaveLength(3);
     expect(result.parts[0]).toMatchObject({ type: "text", text: "Working on it. Done." });
     expect(result.parts[1]).toMatchObject({ type: "reasoning", text: "Need to inspect files." });
     expect(result.parts[2]).toMatchObject({
@@ -82,10 +82,6 @@ describe("buildAssistantPartsFromTranscript", () => {
       toolName: "read_file",
       result: "file contents",
       isError: false,
-    });
-    expect(result.parts[3]).toMatchObject({
-      type: "reasoning",
-      text: "Background: warn: noisy setup output",
     });
     expect(result.notices).toEqual([]);
   });
@@ -134,7 +130,7 @@ describe("buildAssistantPartsFromTranscript", () => {
     ]);
   });
 
-  it("projects init, system activity, and errors into reasoning parts", () => {
+  it("keeps run errors while suppressing init and system transcript noise", () => {
     const result = buildAssistantPartsFromTranscript([
       {
         kind: "init",
@@ -169,12 +165,7 @@ describe("buildAssistantPartsFromTranscript", () => {
     expect(result.parts).toMatchObject([
       {
         type: "reasoning",
-        text: [
-          "Started gpt-5.4 session session-123.",
-          "Working on planning step.",
-          "Completed planning step.",
-          "Run error: ENOENT: missing file",
-        ].join("\n"),
+        text: "Run error: ENOENT: missing file",
       },
     ]);
     expect(result.notices).toEqual([]);
