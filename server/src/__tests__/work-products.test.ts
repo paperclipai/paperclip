@@ -106,6 +106,8 @@ describe("workProductService", () => {
     const result = await svc.listForProject("project-1", "company-1");
 
     expect(db.select).toHaveBeenCalledTimes(1);
+    expect(selectWhere).toHaveBeenCalledTimes(1);
+    expect(selectOrderBy).toHaveBeenCalledTimes(1);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("work-product-1");
   });
