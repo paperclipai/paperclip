@@ -68,6 +68,58 @@ const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Global safety-net timeout for heartbeat executions.
+ * If an adapter.execute() call runs longer than this, we abort the run and
+ * mark it failed so the agent doesn't stay stuck in "running" forever.
+ * Individual adapters can still set shorter timeouts via their own timeoutSec config.
+ */
+const HEARTBEAT_EXECUTION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+/**
+ * Per-agent circuit breaker for heartbeat executions.
+ * After CB_FAILURE_THRESHOLD consecutive failures, the agent's heartbeat
+ * interval is multiplied by an exponentially growing factor (up to
+ * CB_MAX_BACKOFF_MULTIPLIER) to avoid burning tokens against a broken backend.
+ * Resets to normal on the first successful run.
+ * State is stored in agentRuntimeState.stateJson (JSONB) — no migration needed.
+ */
+const CB_FAILURE_THRESHOLD = 3;
+const CB_MAX_BACKOFF_MULTIPLIER = 8;
+
+interface CircuitBreakerState {
+  consecutiveFailures: number;
+  lastFailureAt: string | null;
+  backoffMultiplier: number;
+  trippedAt: string | null;
+}
+
+const CB_DEFAULTS: CircuitBreakerState = {
+  consecutiveFailures: 0,
+  lastFailureAt: null,
+  backoffMultiplier: 1,
+  trippedAt: null,
+};
+
+function getCircuitBreakerState(stateJson: Record<string, unknown> | null): CircuitBreakerState {
+  if (!stateJson || typeof stateJson.circuitBreaker !== "object" || !stateJson.circuitBreaker) {
+    return { ...CB_DEFAULTS };
+  }
+  const cb = stateJson.circuitBreaker as Record<string, unknown>;
+  return {
+    consecutiveFailures: typeof cb.consecutiveFailures === "number" ? cb.consecutiveFailures : 0,
+    lastFailureAt: typeof cb.lastFailureAt === "string" ? cb.lastFailureAt : null,
+    backoffMultiplier: typeof cb.backoffMultiplier === "number" ? cb.backoffMultiplier : 1,
+    trippedAt: typeof cb.trippedAt === "string" ? cb.trippedAt : null,
+  };
+}
+
+function computeEffectiveIntervalSec(baseIntervalSec: number, cbState: CircuitBreakerState): number {
+  if (cbState.consecutiveFailures < CB_FAILURE_THRESHOLD) return baseIntervalSec;
+  return baseIntervalSec * Math.min(cbState.backoffMultiplier, CB_MAX_BACKOFF_MULTIPLIER);
+}
+
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -918,6 +970,43 @@ export function heartbeatService(db: Db) {
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function updateCircuitBreaker(agentId: string, succeeded: boolean): Promise<void> {
+    try {
+      const runtime = await getRuntimeState(agentId);
+      if (!runtime) return;
+      const stateJson = (runtime.stateJson ?? {}) as Record<string, unknown>;
+      const current = getCircuitBreakerState(stateJson);
+
+      let next: CircuitBreakerState;
+      if (succeeded) {
+        if (current.consecutiveFailures === 0) return; // nothing to reset
+        next = { consecutiveFailures: 0, lastFailureAt: current.lastFailureAt, backoffMultiplier: 1, trippedAt: null };
+        logger.info({ agentId, previousFailures: current.consecutiveFailures }, "circuit breaker RESET after successful run");
+      } else {
+        const newCount = current.consecutiveFailures + 1;
+        const isTripping = newCount === CB_FAILURE_THRESHOLD;
+        next = {
+          consecutiveFailures: newCount,
+          lastFailureAt: new Date().toISOString(),
+          backoffMultiplier: newCount >= CB_FAILURE_THRESHOLD
+            ? Math.min((current.backoffMultiplier || 1) * 2, CB_MAX_BACKOFF_MULTIPLIER)
+            : 1,
+          trippedAt: isTripping ? new Date().toISOString() : current.trippedAt,
+        };
+        if (isTripping) {
+          logger.warn({ agentId, consecutiveFailures: newCount }, "circuit breaker TRIPPED — heartbeat interval will back off");
+        }
+      }
+
+      await db
+        .update(agentRuntimeState)
+        .set({ stateJson: { ...stateJson, circuitBreaker: next }, updatedAt: new Date() })
+        .where(eq(agentRuntimeState.agentId, agentId));
+    } catch (err) {
+      logger.warn({ err, agentId }, "failed to update circuit breaker state");
+    }
   }
 
   async function getTaskSession(
@@ -2654,19 +2743,27 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
-        },
-        authToken: authToken ?? undefined,
-      });
+      const adapterResult = await Promise.race([
+        adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: runtimeConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, meta);
+          },
+          authToken: authToken ?? undefined,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Heartbeat execution timed out after ${HEARTBEAT_EXECUTION_TIMEOUT_MS / 1000}s`)),
+            HEARTBEAT_EXECUTION_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -2857,6 +2954,7 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+      await updateCircuitBreaker(agent.id, outcome === "succeeded");
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -2900,7 +2998,7 @@ export function heartbeatService(db: Db) {
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
           signal: null,
-          timedOut: false,
+          timedOut: message.includes("timed out"),
           errorMessage: message,
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
@@ -2921,6 +3019,7 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+      await updateCircuitBreaker(agent.id, false);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -2951,6 +3050,7 @@ export function heartbeatService(db: Db) {
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await updateCircuitBreaker(run.agentId, false).catch(() => undefined);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
@@ -3951,6 +4051,10 @@ export function heartbeatService(db: Db) {
       let enqueued = 0;
       let skipped = 0;
 
+      // Batch-load circuit breaker state for all agents to avoid N+1 queries
+      const allRuntimeStates = await db.select().from(agentRuntimeState);
+      const runtimeStateByAgent = new Map(allRuntimeStates.map((rs) => [rs.agentId, rs]));
+
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -3959,7 +4063,16 @@ export function heartbeatService(db: Db) {
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Apply circuit breaker backoff to the interval
+        const rs = runtimeStateByAgent.get(agent.id);
+        const cbState = getCircuitBreakerState((rs?.stateJson ?? null) as Record<string, unknown> | null);
+        const effectiveIntervalSec = computeEffectiveIntervalSec(policy.intervalSec, cbState);
+
+        if (elapsedMs < effectiveIntervalSec * 1000) {
+          if (cbState.consecutiveFailures >= CB_FAILURE_THRESHOLD) skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -3969,8 +4082,9 @@ export function heartbeatService(db: Db) {
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {
             source: "scheduler",
-            reason: "interval_elapsed",
+            reason: cbState.consecutiveFailures >= CB_FAILURE_THRESHOLD ? "interval_elapsed_after_backoff" : "interval_elapsed",
             now: now.toISOString(),
+            ...(cbState.consecutiveFailures > 0 ? { circuitBreakerFailures: cbState.consecutiveFailures } : {}),
           },
         });
         if (run) enqueued += 1;
