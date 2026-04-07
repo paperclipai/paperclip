@@ -1554,6 +1554,40 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const adapterCwd = readNonEmptyString(parseObject(agent.adapterConfig)?.cwd);
+    if (adapterCwd) {
+      const adapterCwdExists = await fs
+        .stat(adapterCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (adapterCwdExists) {
+        const warnings: string[] = [];
+        if (sessionCwd) {
+          warnings.push(
+            `Saved session workspace "${sessionCwd}" is not available. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        } else if (resolvedProjectId) {
+          warnings.push(
+            `No project workspace directory is currently available for this issue. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        } else {
+          warnings.push(
+            `No project or prior session workspace was available. Using agent cwd "${adapterCwd}" for this run.`,
+          );
+        }
+        return {
+          cwd: adapterCwd,
+          source: "agent_home" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
