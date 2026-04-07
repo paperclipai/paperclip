@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { sanitizeConfigToml } from "@paperclipai/adapter-codex-local/server";
-import { prepareManagedCodexHome } from "@paperclipai/adapter-codex-local/server";
+import { sanitizeConfigToml, prepareManagedCodexHome } from "@paperclipai/adapter-codex-local/server";
 
 describe("sanitizeConfigToml", () => {
   it("removes sandbox = \"elevated\" from [windows] section", () => {
