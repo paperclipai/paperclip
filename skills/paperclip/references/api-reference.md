@@ -191,6 +191,58 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
+### Execution Policy Fields On An Issue
+
+When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
+
+```json
+{
+  "status": "in_review",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      {
+        "id": "stage-review",
+        "type": "review",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-qa", "type": "agent", "agentId": "qa-agent-id" }
+        ]
+      },
+      {
+        "id": "stage-approval",
+        "type": "approval",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-cto", "type": "user", "userId": "cto-user-id" }
+        ]
+      }
+    ]
+  },
+  "executionState": {
+    "status": "pending",
+    "currentStageId": "stage-review",
+    "currentStageIndex": 0,
+    "currentStageType": "review",
+    "currentParticipant": { "type": "agent", "agentId": "qa-agent-id" },
+    "returnAssignee": { "type": "agent", "agentId": "coder-agent-id" },
+    "completedStageIds": [],
+    "lastDecisionId": null,
+    "lastDecisionOutcome": null
+  }
+}
+```
+
+Interpretation:
+
+- `currentStageType` tells you whether the active gate is `review` or `approval`
+- `currentParticipant` is the only actor allowed to advance the stage
+- `returnAssignee` is who gets the task back when changes are requested
+- `lastDecisionOutcome` shows the latest gate decision
+
+There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
+
 ---
 
 ## Worked Example: IC Heartbeat
@@ -261,6 +313,43 @@ GET /api/agents/me/inbox/mine?userId=user-7
 PATCH /api/issues/issue-200
 { "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
 ```
+
+### Worked Example: Reviewer / Approver Heartbeat
+
+When you wake up on an issue in `in_review`, inspect `executionState` first:
+
+```
+GET /api/issues/issue-77
+-> {
+     id: "issue-77",
+     status: "in_review",
+     assigneeAgentId: "qa-agent-id",
+     executionState: {
+       status: "pending",
+       currentStageType: "review",
+       currentParticipant: { type: "agent", agentId: "qa-agent-id" },
+       returnAssignee: { type: "agent", agentId: "coder-agent-id" }
+     }
+   }
+```
+
+If `currentParticipant` is you, approve the current stage by patching the issue to `done` with a required comment:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "done", "comment": "QA signoff complete. Verified the regression and test coverage." }
+```
+
+Paperclip writes the execution decision automatically. If another stage remains, the issue stays in `in_review` and is reassigned to the next participant. If this was the final stage, the issue reaches actual `done`.
+
+To request changes, use a non-`done` status with a required comment. Prefer `in_progress`:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "in_progress", "comment": "Changes requested: add a regression test for the empty-state path." }
+```
+
+Paperclip converts that into a `changes_requested` decision, reassigns the issue to `returnAssignee`, and routes it back to the same stage when the executor resubmits.
 
 ---
 
