@@ -59,10 +59,10 @@ export function AskAIHeaderButton({ onClick }: { onClick: () => void }) {
     <button
       onClick={onClick}
       className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-      title="Ask AI Assistant"
+      title="Chat with Iris"
     >
       <Bot className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">Ask AI</span>
+      <span className="hidden sm:inline">Iris</span>
     </button>
   );
 }
@@ -94,7 +94,7 @@ export function AskAIPanel({ open, onClose }: { open: boolean; onClose: () => vo
       setMessages([{
         id: "welcome",
         role: "assistant",
-        content: `Hi! I can help you with the ${pageContext} page. What would you like to know?`,
+        content: `Hi, I'm Iris. I can help you with the ${pageContext} page. What would you like to know?`,
       }]);
     }
   }, [open, pageContext, messages.length]);
@@ -143,10 +143,11 @@ export function AskAIPanel({ open, onClose }: { open: boolean; onClose: () => vo
     <div
       ref={panelRef}
       className={cn(
-        "absolute top-full right-0 mt-1 z-50",
+        "fixed right-4 top-14 z-[100]",
         "w-80 sm:w-96 h-[28rem]",
         "rounded-xl border border-border bg-card shadow-2xl",
         "flex flex-col overflow-hidden",
+        "animate-in fade-in slide-in-from-top-2 duration-200",
       )}
     >
       {/* Header */}
@@ -154,7 +155,7 @@ export function AskAIPanel({ open, onClose }: { open: boolean; onClose: () => vo
         <div className="flex items-center gap-2 min-w-0">
           <Bot className="h-4 w-4 text-primary shrink-0" />
           <div className="min-w-0">
-            <div className="text-sm font-semibold">AI Assistant</div>
+            <div className="text-sm font-semibold">Iris</div>
             <div className="text-[10px] text-muted-foreground truncate">Context: {pageContext}</div>
           </div>
         </div>
