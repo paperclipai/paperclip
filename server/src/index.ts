@@ -4,7 +4,8 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname } from "node:path";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
@@ -48,14 +49,30 @@ import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
 /**
  * Bundled plugins that should be auto-installed on startup.
- * These are npm packages that get installed if not already present.
+ *
+ * String entries are npm package names. Object entries with `isLocalPath: true`
+ * point at a directory on disk (used for plugins that live as sibling
+ * submodules in the lucitra-dev monorepo and aren't published to npm).
  */
-const BUNDLED_PLUGINS = [
+type BundledPlugin =
+  | string
+  | { packageName: string; isLocalPath: true; pluginKey: string };
+
+const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
+
+const BUNDLED_PLUGINS: BundledPlugin[] = [
   "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-secrets",
   "@lucitra/paperclip-plugin-updater",
   "paperclip-plugin-slack",
+  // Lucitra Capital — Kalshi event-market broker. Lives as a sibling
+  // submodule in lucitra-dev; private repo, not published to npm.
+  {
+    packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-kalshi"),
+    isLocalPath: true,
+    pluginKey: "paperclip-plugin-kalshi",
+  },
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
@@ -63,21 +80,28 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
   const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  // Install npm-based bundled plugins
-  for (const pkg of BUNDLED_PLUGINS) {
+  // Install bundled plugins
+  for (const entry of BUNDLED_PLUGINS) {
+    const isLocalPath = typeof entry !== "string" && entry.isLocalPath === true;
+    const pkg = typeof entry === "string" ? entry : entry.packageName;
+    const lookupKey = typeof entry === "string" ? entry : entry.pluginKey;
     try {
       const listRes = await fetch(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
         const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
-        const existing = plugins.find((p) => p.packageName === pkg || p.pluginKey === pkg);
+        const existing = plugins.find(
+          (p) => p.packageName === pkg || p.pluginKey === lookupKey,
+        );
         if (existing && existing.status === "ready") continue;
       }
 
-      logger.info({ package: pkg }, "auto-installing bundled plugin via API");
+      logger.info({ package: pkg, isLocalPath }, "auto-installing bundled plugin via API");
       const installRes = await fetch(`${baseUrl}/api/plugins/install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ packageName: pkg }),
+        body: JSON.stringify(
+          isLocalPath ? { packageName: pkg, isLocalPath: true } : { packageName: pkg },
+        ),
       });
 
       if (installRes.ok) {
