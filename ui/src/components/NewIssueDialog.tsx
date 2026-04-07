@@ -46,6 +46,7 @@ import {
   Paperclip,
   FileText,
   Loader2,
+  ListTree,
   X,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -297,6 +298,11 @@ export function NewIssueDialog() {
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
+  const isSubIssueMode = Boolean(newIssueDefaults.parentId);
+  const parentIssueLabel = newIssueDefaults.parentIdentifier
+    ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
+  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
+  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -510,7 +516,28 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
-    if (newIssueDefaults.title) {
+    if (newIssueDefaults.parentId) {
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
+        ?? defaultProjectWorkspaceIdForProject(defaultProject);
+      const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
+        ? "reuse_existing"
+        : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
+      setTitle(newIssueDefaults.title ?? "");
+      setDescription(newIssueDefaults.description ?? "");
+      setStatus(newIssueDefaults.status ?? "todo");
+      setPriority(newIssueDefaults.priority ?? "");
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(defaultProjectWorkspaceId);
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeModelOverride("");
+      setAssigneeThinkingEffort("");
+      setAssigneeChrome(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+    } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
@@ -616,6 +643,7 @@ export function NewIssueDialog() {
   }
 
   function handleCompanyChange(companyId: string) {
+    if (isSubIssueMode) return;
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
     setAssigneeValue("");
@@ -666,6 +694,8 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
+      ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
+      ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
@@ -774,6 +804,13 @@ export function NewIssueDialog() {
   const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
+  const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
+    ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
+    : false;
+  const showParentWorkspaceWarning = isSubIssueMode
+    && currentProjectSupportsExecutionWorkspace
+    && Boolean(parentExecutionWorkspaceId)
+    && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -908,6 +945,7 @@ export function NewIssueDialog() {
                     "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
                     !dialogCompany?.brandColor && "bg-muted",
                   )}
+                  disabled={isSubIssueMode}
                   style={
                     dialogCompany?.brandColor
                       ? {
@@ -955,7 +993,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1119,6 +1157,23 @@ export function NewIssueDialog() {
           </div>
         </div>
 
+        {isSubIssueMode ? (
+          <div className="px-4 pb-2 shrink-0">
+            <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <ListTree className="h-3.5 w-3.5 shrink-0" />
+                <span className="shrink-0">Sub-issue of</span>
+                <span className="font-medium text-foreground">{parentIssueLabel}</span>
+              </div>
+              {newIssueDefaults.parentTitle ? (
+                <div className="pl-5 text-foreground/80 truncate">
+                  {newIssueDefaults.parentTitle}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {currentProject && currentProjectSupportsExecutionWorkspace && (
           <div className="px-4 py-3 shrink-0 space-y-2">
             <div className="space-y-1.5">
@@ -1161,6 +1216,11 @@ export function NewIssueDialog() {
                   Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
                 </div>
               )}
+              {showParentWorkspaceWarning ? (
+                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                </div>
+              ) : null}
             </div>
           </div>
         )}
@@ -1455,7 +1515,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
+                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
               </span>
             </Button>
           </div>

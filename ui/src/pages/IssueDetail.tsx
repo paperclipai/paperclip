@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { approvalsApi } from "../api/approvals";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -10,6 +11,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -17,8 +19,11 @@ import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../li
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  hasLegacyIssueDetailQuery,
   createIssueDetailPath,
+  readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
+  rememberIssueDetailLocationState,
   shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
@@ -33,6 +38,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -44,21 +50,18 @@ import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
-import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity as ActivityIcon,
   Check,
-  ChevronDown,
   ChevronRight,
   Copy,
   EyeOff,
@@ -287,6 +290,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { openNewIssue } = useDialog();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -297,9 +301,11 @@ export function IssueDetail() {
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
-  const [secondaryOpen, setSecondaryOpen] = useState({
-    approvals: false,
-  });
+  const [pendingApprovalAction, setPendingApprovalAction] = useState<{
+    approvalId: string;
+    action: "approve" | "reject";
+  } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -375,9 +381,13 @@ export function IssueDetail() {
     ),
     [activeRun, liveRuns],
   );
+  const resolvedIssueDetailState = useMemo(
+    () => readIssueDetailLocationState(issueId, location.state, location.search),
+    [issueId, location.state, location.search],
+  );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [location.state, location.search],
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    [issueId, location.state, location.search],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -484,6 +494,45 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+  const childIssuesPanelKey = useMemo(
+    () => childIssues.map((child) => `${child.id}:${String(child.updatedAt)}`).join("|"),
+    [childIssues],
+  );
+  const issuePanelKey = issue
+    ? `${issue.id}:${String(issue.updatedAt)}:${childIssuesPanelKey}`
+    : "";
+  const openNewSubIssue = useCallback(() => {
+    if (!issue) return;
+    openNewIssue({
+      parentId: issue.id,
+      parentIdentifier: issue.identifier ?? undefined,
+      parentTitle: issue.title,
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      goalId: issue.goalId ?? undefined,
+      executionWorkspaceId: issue.executionWorkspaceId ?? undefined,
+      executionWorkspaceMode: issue.executionWorkspaceId ? "reuse_existing" : issue.executionWorkspacePreference ?? undefined,
+      parentExecutionWorkspaceLabel:
+        issue.currentExecutionWorkspace?.name
+          ?? issue.currentExecutionWorkspace?.branchName
+          ?? issue.currentExecutionWorkspace?.cwd
+          ?? issue.executionWorkspaceId
+          ?? undefined,
+    });
+  }, [
+    issue?.currentExecutionWorkspace?.branchName,
+    issue?.currentExecutionWorkspace?.cwd,
+    issue?.currentExecutionWorkspace?.name,
+    issue?.executionWorkspaceId,
+    issue?.executionWorkspacePreference,
+    issue?.goalId,
+    issue?.id,
+    issue?.identifier,
+    issue?.projectId,
+    issue?.projectWorkspaceId,
+    issue?.title,
+    openNewIssue,
+  ]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -546,6 +595,7 @@ export function IssueDetail() {
         isQueuedIssueComment({
           comment: nextComment,
           activeRunStartedAt,
+          activeRunAgentId: runningIssueRun?.agentId ?? null,
           runId: meta?.runId ?? nextComment.runId ?? null,
           interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
         })
@@ -648,6 +698,42 @@ export function IssueDetail() {
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: () => {
       invalidateIssue();
+    },
+  });
+  const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
+    updateIssue.mutate(data);
+  }, [updateIssue.mutate]);
+
+  const approvalDecision = useMutation({
+    mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
+      if (action === "approve") {
+        return approvalsApi.approve(approvalId);
+      }
+      return approvalsApi.reject(approvalId);
+    },
+    onMutate: ({ approvalId, action }) => {
+      setPendingApprovalAction({ approvalId, action });
+    },
+    onSuccess: (_approval, variables) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(variables.approvalId) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
+      }
+      pushToast({
+        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        tone: "success",
+      });
+    },
+    onError: (err, variables) => {
+      pushToast({
+        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
+        body: err instanceof Error ? err.message : "Unable to update approval",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      setPendingApprovalAction(null);
     },
   });
 
@@ -967,13 +1053,24 @@ export function IssueDetail() {
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
+    const nextState = resolvedIssueDetailState ?? location.state;
     if (issue?.identifier && issueId !== issue.identifier) {
-      navigate(createIssueDetailPath(issue.identifier, location.state, location.search), {
+      rememberIssueDetailLocationState(issue.identifier, nextState, location.search);
+      navigate(createIssueDetailPath(issue.identifier), {
         replace: true,
-        state: location.state,
+        state: nextState,
+      });
+      return;
+    }
+
+    if (issueId && hasLegacyIssueDetailQuery(location.search)) {
+      rememberIssueDetailLocationState(issueId, nextState, location.search);
+      navigate(createIssueDetailPath(issueId), {
+        replace: true,
+        state: nextState,
       });
     }
-  }, [issue, issueId, navigate, location.state, location.search]);
+  }, [issue, issueId, navigate, location.state, location.search, resolvedIssueDetailState]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -983,13 +1080,20 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (issue) {
-      openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
-      );
+    if (!issue) {
+      closePanel();
+      return;
     }
+    openPanel(
+      <IssueProperties
+        issue={issue}
+        childIssues={childIssues}
+        onAddSubIssue={openNewSubIssue}
+        onUpdate={handleIssuePropertiesUpdate}
+      />
+    );
     return () => closePanel();
-  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
@@ -1115,13 +1219,13 @@ export function IssueDetail() {
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
+  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
   const hasAttachments = attachmentList.length > 0;
   const attachmentUploadButton = (
     <>
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown"
         className="hidden"
         onChange={handleFilePicked}
         multiple
@@ -1156,8 +1260,14 @@ export function IssueDetail() {
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
               <Link
-                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id, location.state, location.search)}
-                state={location.state}
+                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
+                state={resolvedIssueDetailState ?? location.state}
+                onClickCapture={() =>
+                  rememberIssueDetailLocationState(
+                    ancestor.identifier ?? ancestor.id,
+                    resolvedIssueDetailState ?? location.state,
+                    location.search,
+                  )}
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
               >
@@ -1330,6 +1440,9 @@ export function IssueDetail() {
             const attachment = await uploadAttachment.mutateAsync(file);
             return attachment.contentPath;
           }}
+          onDropFile={async (file) => {
+            await uploadAttachment.mutateAsync(file);
+          }}
         />
       </div>
 
@@ -1374,6 +1487,50 @@ export function IssueDetail() {
         missingBehavior="placeholder"
       />
 
+      {childIssues.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
+              <ListTree className="h-3.5 w-3.5 mr-1.5" />
+              <span className="hidden sm:inline">Add sub-issue</span>
+              <span className="sm:hidden">Sub-issue</span>
+            </Button>
+          </div>
+          <div className="border border-border rounded-lg divide-y divide-border">
+            {childIssues.map((child) => (
+              <Link
+                key={child.id}
+                to={createIssueDetailPath(child.identifier ?? child.id)}
+                state={resolvedIssueDetailState ?? location.state}
+                onClickCapture={() =>
+                  rememberIssueDetailLocationState(
+                    child.identifier ?? child.id,
+                    resolvedIssueDetailState ?? location.state,
+                    location.search,
+                  )}
+                className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <StatusIcon status={child.status} />
+                  <PriorityIcon priority={child.priority} />
+                  <span className="font-mono text-muted-foreground shrink-0">
+                    {child.identifier ?? child.id.slice(0, 8)}
+                  </span>
+                  <span className="truncate">{child.title}</span>
+                </div>
+                {child.assigneeAgentId && (() => {
+                  const name = agentMap.get(child.assigneeAgentId)?.name;
+                  return name
+                    ? <Identity name={name} size="sm" />
+                    : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                })()}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -1395,7 +1552,18 @@ export function IssueDetail() {
             sharingPreferenceAtSubmit: feedbackDataSharingPreference,
           });
         }}
-        extraActions={!hasAttachments ? attachmentUploadButton : undefined}
+        extraActions={
+          <>
+            {!hasAttachments && attachmentUploadButton}
+            {childIssues.length === 0 && (
+              <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
+                <ListTree className="h-3.5 w-3.5 mr-1.5" />
+                <span className="hidden sm:inline">Add sub-issue</span>
+                <span className="sm:hidden">Sub-issue</span>
+              </Button>
+            )}
+          </>
+        }
       />
 
       {hasAttachments ? (
@@ -1426,53 +1594,105 @@ export function IssueDetail() {
           <p className="text-xs text-destructive">{attachmentError}</p>
         )}
 
-        <div className="space-y-2">
-          {attachmentList.map((attachment) => (
-            <div key={attachment.id} className="border border-border rounded-md p-2">
-              <div className="flex items-center justify-between gap-2">
-                <a
-                  href={attachment.contentPath}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs hover:underline truncate"
-                  title={attachment.originalFilename ?? attachment.id}
-                >
-                  {attachment.originalFilename ?? attachment.id}
-                </a>
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-destructive"
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
-                  disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+        {imageAttachments.length > 0 && (
+          <div className="grid grid-cols-4 gap-2">
+            {imageAttachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-accent/10 cursor-pointer"
+                onClick={() => {
+                  const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+                  setGalleryIndex(idx >= 0 ? idx : 0);
+                  setGalleryOpen(true);
+                }}
+              >
+                <img
+                  src={attachment.contentPath}
+                  alt={attachment.originalFilename ?? "attachment"}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
+                {confirmDeleteId === attachment.id ? (
+                  <div
+                    className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="text-xs text-white font-medium">Delete?</p>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        className="rounded bg-destructive px-2 py-0.5 text-xs text-white hover:bg-destructive/80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteAttachment.mutate(attachment.id);
+                          setConfirmDeleteId(null);
+                        }}
+                        disabled={deleteAttachment.isPending}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(null);
+                        }}
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteId(attachment.id);
+                    }}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-              </p>
-              {isImageAttachment(attachment) && (
-                <button
-                  type="button"
-                  className="block w-full text-left"
-                  onClick={() => {
-                    const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
-                    setGalleryIndex(idx >= 0 ? idx : 0);
-                    setGalleryOpen(true);
-                  }}
-                >
-                  <img
-                    src={attachment.contentPath}
-                    alt={attachment.originalFilename ?? "attachment"}
-                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10 cursor-pointer hover:opacity-80 transition-opacity"
-                    loading="lazy"
-                  />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {nonImageAttachments.length > 0 && (
+          <div className="space-y-2">
+            {nonImageAttachments.map((attachment) => (
+              <div key={attachment.id} className="border border-border rounded-md p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <a
+                    href={attachment.contentPath}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs hover:underline truncate"
+                    title={attachment.originalFilename ?? attachment.id}
+                  >
+                    {attachment.originalFilename ?? attachment.id}
+                  </a>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                    disabled={deleteAttachment.isPending}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
         </div>
       ) : null}
 
@@ -1497,10 +1717,6 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Comments
           </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -1516,6 +1732,7 @@ export function IssueDetail() {
           <CommentThread
             comments={timelineComments}
             queuedComments={queuedComments}
+            linkedApprovals={linkedApprovals}
             feedbackVotes={feedbackVotes}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={FEEDBACK_TERMS_URL}
@@ -1523,6 +1740,13 @@ export function IssueDetail() {
             timelineEvents={timelineEvents}
             companyId={issue.companyId}
             projectId={issue.projectId}
+            onApproveApproval={async (approvalId) => {
+              await approvalDecision.mutateAsync({ approvalId, action: "approve" });
+            }}
+            onRejectApproval={async (approvalId) => {
+              await approvalDecision.mutateAsync({ approvalId, action: "reject" });
+            }}
+            pendingApprovalAction={pendingApprovalAction}
             issueStatus={issue.status}
             agentMap={agentMap}
             currentUserId={currentUserId}
@@ -1565,39 +1789,27 @@ export function IssueDetail() {
           />
         </TabsContent>
 
-        <TabsContent value="subissues">
-          {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
-          ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}
-                  state={location.state}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
-                    </span>
-                    <span className="truncate">{child.title}</span>
-                  </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
-                </Link>
+        <TabsContent value="activity">
+          {linkedApprovals && linkedApprovals.length > 0 && (
+            <div className="mb-3 space-y-3">
+              {linkedApprovals.map((approval) => (
+                <ApprovalCard
+                  key={approval.id}
+                  approval={approval}
+                  requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
+                  onApprove={() => approvalDecision.mutate({ approvalId: approval.id, action: "approve" })}
+                  onReject={() => approvalDecision.mutate({ approvalId: approval.id, action: "reject" })}
+                  detailLink={`/approvals/${approval.id}`}
+                  isPending={pendingApprovalAction?.approvalId === approval.id}
+                  pendingAction={
+                    pendingApprovalAction?.approvalId === approval.id
+                      ? pendingApprovalAction.action
+                      : null
+                  }
+                />
               ))}
             </div>
           )}
-        </TabsContent>
-
-        <TabsContent value="activity">
           {linkedRuns && linkedRuns.length > 0 && (
             <div className="mb-3 px-3 py-2 rounded-lg border border-border">
               <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1653,43 +1865,6 @@ export function IssueDetail() {
         )}
       </Tabs>
 
-      {linkedApprovals && linkedApprovals.length > 0 && (
-        <Collapsible
-          open={secondaryOpen.approvals}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, approvals: open }))}
-          className="rounded-lg border border-border"
-        >
-          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
-            <span className="text-sm font-medium text-muted-foreground">
-              Linked Approvals ({linkedApprovals.length})
-            </span>
-            <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
-            />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border-t border-border divide-y divide-border">
-              {linkedApprovals.map((approval) => (
-                <Link
-                  key={approval.id}
-                  to={`/approvals/${approval.id}`}
-                  className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={approval.status} />
-                    <span className="font-medium">
-                      {approval.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                    </span>
-                    <span className="font-mono text-muted-foreground">{approval.id.slice(0, 8)}</span>
-                  </div>
-                  <span className="text-muted-foreground">{relativeTime(approval.createdAt)}</span>
-                </Link>
-              ))}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
-
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
@@ -1699,7 +1874,13 @@ export function IssueDetail() {
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              <IssueProperties
+                issue={issue}
+                childIssues={childIssues}
+                onAddSubIssue={openNewSubIssue}
+                onUpdate={(data) => updateIssue.mutate(data)}
+                inline
+              />
             </div>
           </ScrollArea>
         </SheetContent>

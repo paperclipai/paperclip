@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
@@ -19,8 +19,39 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+
+function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch { /* noop */ }
+  }, [value]);
+
+  return (
+    <div className="flex items-start gap-1.5 min-w-0 flex-1">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <span className="text-sm font-mono min-w-0 break-all">
+        {value}
+      </span>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+        onClick={handleCopy}
+        title={copied ? "Copied!" : "Copy"}
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
 
 function defaultProjectWorkspaceIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
@@ -42,6 +73,8 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
 
 interface IssuePropertiesProps {
   issue: Issue;
+  childIssues?: Issue[];
+  onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
 }
@@ -117,7 +150,13 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({
+  issue,
+  childIssues = [],
+  onAddSubIssue,
+  onUpdate,
+  inline,
+}: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -125,6 +164,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [blockedByOpen, setBlockedByOpen] = useState(false);
+  const [blockedBySearch, setBlockedBySearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -161,6 +202,12 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryKey: queryKeys.issues.labels(companyId!),
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
+  });
+
+  const { data: allIssues } = useQuery({
+    queryKey: queryKeys.issues.list(companyId!),
+    queryFn: () => issuesApi.list(companyId!),
+    enabled: !!companyId && blockedByOpen,
   });
 
   const createLabel = useMutation({
@@ -488,6 +535,88 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     </>
   );
 
+  const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const blockedByTrigger = blockedByIds.length > 0 ? (
+    <div className="flex items-center gap-1 flex-wrap min-w-0">
+      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
+        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
+          <span className="truncate">{relation.identifier ?? relation.title}</span>
+        </span>
+      ))}
+      {(issue.blockedBy ?? []).length > 2 && (
+        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
+      )}
+    </div>
+  ) : (
+    <span className="text-sm text-muted-foreground">No blockers</span>
+  );
+
+  const blockingIssues = issue.blocks ?? [];
+  const blockerOptions = (allIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id)
+    .filter((candidate) => {
+      if (!blockedBySearch.trim()) return true;
+      const query = blockedBySearch.toLowerCase();
+      return (
+        (candidate.identifier ?? "").toLowerCase().includes(query) ||
+        candidate.title.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
+      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
+      return aLabel.localeCompare(bLabel);
+    });
+
+  const toggleBlockedBy = (blockedByIssueId: string) => {
+    const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
+      ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
+      : [...blockedByIds, blockedByIssueId];
+    onUpdate({ blockedByIssueIds: nextBlockedByIds });
+  };
+
+  const blockedByContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search issues..."
+        value={blockedBySearch}
+        onChange={(e) => setBlockedBySearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            blockedByIds.length === 0 && "bg-accent",
+          )}
+          onClick={() => onUpdate({ blockedByIssueIds: [] })}
+        >
+          No blockers
+        </button>
+        {blockerOptions.map((candidate) => {
+          const selected = blockedByIds.includes(candidate.id);
+          return (
+            <button
+              key={candidate.id}
+              className={cn(
+                "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+                selected && "bg-accent",
+              )}
+              onClick={() => toggleBlockedBy(candidate.id)}
+            >
+              <StatusIcon status={candidate.status} />
+              <span className="truncate">
+                {candidate.identifier ? `${candidate.identifier} ` : ""}
+                {candidate.title}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -560,6 +689,67 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
+        <PropertyPicker
+          inline={inline}
+          label="Blocked by"
+          open={blockedByOpen}
+          onOpenChange={(open) => {
+            setBlockedByOpen(open);
+            if (!open) setBlockedBySearch("");
+          }}
+          triggerContent={blockedByTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+        >
+          {blockedByContent}
+        </PropertyPicker>
+
+        <PropertyRow label="Blocking">
+          {blockingIssues.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {blockingIssues.map((relation) => (
+                <Link
+                  key={relation.id}
+                  to={`/issues/${relation.identifier ?? relation.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {relation.identifier ?? relation.title}
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-muted-foreground">None</span>
+          )}
+        </PropertyRow>
+
+        <PropertyRow label="Sub-issues">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {childIssues.length > 0 ? (
+              childIssues.map((child) => (
+                <Link
+                  key={child.id}
+                  to={`/issues/${child.identifier ?? child.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {child.identifier ?? child.title}
+                </Link>
+              ))
+            ) : (
+              <span className="text-sm text-muted-foreground">None</span>
+            )}
+            {onAddSubIssue ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={onAddSubIssue}
+              >
+                <Plus className="h-3 w-3" />
+                Add sub-issue
+              </button>
+            ) : null}
+          </div>
+        </PropertyRow>
+
         {issue.parentId && (
           <PropertyRow label="Parent">
             <Link
@@ -570,13 +760,36 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             </Link>
           </PropertyRow>
         )}
-
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
       </div>
+
+      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            {issue.currentExecutionWorkspace?.branchName && (
+              <PropertyRow label="Branch">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.branchName}
+                  icon={GitBranch}
+                />
+              </PropertyRow>
+            )}
+            {issue.currentExecutionWorkspace?.cwd && (
+              <PropertyRow label="Folder">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.cwd}
+                  icon={FolderOpen}
+                />
+              </PropertyRow>
+            )}
+          </div>
+        </>
+      ) : null}
 
       <Separator />
 

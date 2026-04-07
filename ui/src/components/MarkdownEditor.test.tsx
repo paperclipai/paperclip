@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { computeMentionMenuPosition, MarkdownEditor } from "./MarkdownEditor";
+import { computeMentionMenuPosition, findMentionMatch, MarkdownEditor } from "./MarkdownEditor";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -185,5 +185,32 @@ describe("MarkdownEditor", () => {
       top: 12,
       left: 92,
     });
+  });
+
+  it("keeps a short mention menu on the same line when it fits below the caret", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 160, viewportLeft: 120 },
+        { offsetLeft: 0, offsetTop: 0, width: 320, height: 220 },
+        { width: 188, height: 42 },
+      ),
+    ).toEqual({
+      top: 164,
+      left: 120,
+    });
+  });
+
+  it("keeps mention queries active across spaces", () => {
+    expect(findMentionMatch("Ping @Paperclip App", "Ping @Paperclip App".length)).toEqual({
+      trigger: "mention",
+      marker: "@",
+      query: "Paperclip App",
+      atPos: 5,
+      endPos: "Ping @Paperclip App".length,
+    });
+  });
+
+  it("still rejects slash commands once spaces are typed", () => {
+    expect(findMentionMatch("/open issue", "/open issue".length)).toBeNull();
   });
 });

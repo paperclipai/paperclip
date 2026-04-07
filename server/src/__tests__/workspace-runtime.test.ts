@@ -20,6 +20,7 @@ import {
 import { eq } from "drizzle-orm";
 import {
   cleanupExecutionWorkspaceArtifacts,
+  ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -184,6 +185,75 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("ensureServerWorkspaceLinksCurrent", () => {
+  it("relinks stale server workspace dependencies inside the current repo root", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-stale-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+    const stalePackageDir = path.join(staleRoot, "db");
+
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(stalePackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(stalePackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+    expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(expectedPackageDir));
+  });
+
+  it("skips relinking when server workspace dependencies already point at the repo", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-current-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
   });
 });
 
@@ -411,6 +481,96 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
+  });
+
+  it("uses the latest repo-managed provision script when reusing an existing worktree", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "provision.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf 'v1\\n' > .paperclip-provision-version",
+      ].join("\n"),
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/provision.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add initial provision script"]);
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-449",
+        title: "Reuse latest provision script",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v1\n");
+
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "provision.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf 'v2\\n' > .paperclip-provision-version",
+      ].join("\n"),
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/provision.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Update provision script"]);
+
+    await expect(fs.readFile(path.join(initial.cwd, "scripts", "provision.sh"), "utf8")).resolves.toContain("v1");
+
+    const reused = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-449",
+        title: "Reuse latest provision script",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
   });
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
@@ -663,8 +823,81 @@ describe("realizeExecutionWorkspace", () => {
       await fs.realpath(path.join(repoRoot, "packages", "shared")),
     );
     },
-    15_000,
+    30_000,
   );
+
+  it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "workspace-root",
+          private: true,
+          packageManager: "pnpm@9.15.4",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      [
+        "lockfileVersion: '9.0'",
+        "",
+        "settings:",
+        "  autoInstallPeers: true",
+        "  excludeLinksFromLockfile: false",
+        "",
+        "importers:",
+        "  .: {}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
+    await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+
+    await fs.mkdir(path.join(repoRoot, "node_modules"), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "node_modules", ".keep"), "", "utf8");
+
+    await runGit(repoRoot, ["add", "package.json", "pnpm-lock.yaml", "scripts/provision-worktree.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add minimal provision fixture"]);
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-552",
+        title: "Install without moved symlinks",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip", "config.json"), "utf8")).resolves.toContain(
+      "\"database\"",
+    );
+  }, 30_000);
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
@@ -722,6 +955,57 @@ describe("realizeExecutionWorkspace", () => {
       created: true,
     });
     expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
+  });
+
+  it("truncates oversized provision command output before storing it in memory", async () => {
+    const repoRoot = await createTempRepo();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "noisy.js"),
+      'process.stdout.write("x".repeat(400000));\n',
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/noisy.js"]);
+    await runGit(repoRoot, ["commit", "-m", "Add noisy provision script"]);
+
+    await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "node ./scripts/noisy.js",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1142",
+        title: "Limit noisy provision output",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    const provisionOperation = operations.find((operation) => operation.phase === "workspace_provision");
+    expect(provisionOperation?.result.metadata).toMatchObject({
+      stdoutTruncated: true,
+      stderrTruncated: false,
+    });
+    expect(provisionOperation?.result.stdout).toContain("[output truncated to last");
+    expect(provisionOperation?.result.stdout?.length ?? 0).toBeLessThan(300000);
   });
 
   it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {

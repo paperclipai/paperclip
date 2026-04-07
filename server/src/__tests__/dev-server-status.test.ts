@@ -63,4 +63,14 @@ describe("dev server status helpers", () => {
       waitingForIdle: true,
     });
   });
+
+  it("ignores oversized persisted status files", () => {
+    const filePath = createTempStatusFile({
+      dirty: true,
+      changedPathsSample: ["x".repeat(70 * 1024)],
+      pendingMigrations: [],
+    });
+
+    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toBeNull();
+  });
 });
