@@ -12,9 +12,18 @@ describe("routine variable helpers", () => {
     ).toEqual(["repo", "priority"]);
   });
 
+  it("deduplicates placeholder names across the routine title and description", () => {
+    expect(
+      extractRoutineVariableNames([
+        "Triage {{repo}}",
+        "Review {{repo}} for {{priority}} bugs",
+      ]),
+    ).toEqual(["repo", "priority"]);
+  });
+
   it("preserves existing metadata when syncing variables from a template", () => {
     expect(
-      syncRoutineVariablesWithTemplate("Review {{repo}} and {{priority}}", [
+      syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{priority}}"], [
         { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
       ]),
     ).toEqual([

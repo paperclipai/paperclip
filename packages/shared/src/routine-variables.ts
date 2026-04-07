@@ -1,18 +1,25 @@
 import type { RoutineVariable } from "./types/routine.js";
 
 const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+type RoutineTemplateInput = string | null | undefined | Array<string | null | undefined>;
 
 export function isValidRoutineVariableName(name: string): boolean {
   return /^[A-Za-z][A-Za-z0-9_]*$/.test(name);
 }
 
-export function extractRoutineVariableNames(template: string | null | undefined): string[] {
-  if (!template) return [];
+function normalizeRoutineTemplateInput(input: RoutineTemplateInput): string[] {
+  const templates = Array.isArray(input) ? input : [input];
+  return templates.filter((template): template is string => typeof template === "string" && template.length > 0);
+}
+
+export function extractRoutineVariableNames(template: RoutineTemplateInput): string[] {
   const found = new Set<string>();
-  for (const match of template.matchAll(ROUTINE_VARIABLE_MATCHER)) {
-    const name = match[1];
-    if (name && !found.has(name)) {
-      found.add(name);
+  for (const source of normalizeRoutineTemplateInput(template)) {
+    for (const match of source.matchAll(ROUTINE_VARIABLE_MATCHER)) {
+      const name = match[1];
+      if (name && !found.has(name)) {
+        found.add(name);
+      }
     }
   }
   return [...found];
@@ -30,7 +37,7 @@ function defaultRoutineVariable(name: string): RoutineVariable {
 }
 
 export function syncRoutineVariablesWithTemplate(
-  template: string | null | undefined,
+  template: RoutineTemplateInput,
   existing: RoutineVariable[] | null | undefined,
 ): RoutineVariable[] {
   const names = extractRoutineVariableNames(template);

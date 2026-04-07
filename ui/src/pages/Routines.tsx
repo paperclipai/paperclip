@@ -806,6 +806,7 @@ export function Routines() {
               <div className="mt-3 space-y-3">
                 <RoutineVariablesHint />
                 <RoutineVariablesEditor
+                  title={draft.title}
                   description={draft.description}
                   value={draft.variables}
                   onChange={(variables) => setDraft((current) => ({ ...current, variables }))}

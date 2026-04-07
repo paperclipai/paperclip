@@ -675,6 +675,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     executionWorkspaceSettings?: Record<string, unknown> | null;
   }) {
     const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
+    const title = interpolateRoutineTemplate(input.routine.title, resolvedVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, resolvedVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
     const run = await db.transaction(async (tx) => {
@@ -748,7 +749,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             projectId: input.routine.projectId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
-            title: input.routine.title,
+            title,
             description,
             status: "todo",
             priority: input.routine.priority,
@@ -996,7 +997,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const variables = syncRoutineVariablesWithTemplate(
-        input.description,
+        [input.title, input.description],
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
@@ -1029,9 +1030,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!existing) return null;
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
+      const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
       const nextVariables = syncRoutineVariablesWithTemplate(
-        nextDescription,
+        [nextTitle, nextDescription],
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
@@ -1060,7 +1062,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           projectId: nextProjectId,
           goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
-          title: patch.title ?? existing.title,
+          title: nextTitle,
           description: nextDescription,
           assigneeAgentId: nextAssigneeAgentId,
           priority: patch.priority ?? existing.priority,
