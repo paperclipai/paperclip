@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
-import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { relativeTime } from "../lib/utils";
@@ -26,6 +25,96 @@ function getRevisionLabel(revision: DocumentRevision) {
       ? "agent"
       : "system";
   return `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)} • ${actor}`;
+}
+
+type DiffRow = {
+  kind: "context" | "removed" | "added";
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  text: string;
+};
+
+function buildLineDiff(oldText: string, newText: string): DiffRow[] {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const oldCount = oldLines.length;
+  const newCount = newLines.length;
+  const dp = Array.from({ length: oldCount + 1 }, () => Array<number>(newCount + 1).fill(0));
+
+  for (let i = oldCount - 1; i >= 0; i -= 1) {
+    for (let j = newCount - 1; j >= 0; j -= 1) {
+      dp[i][j] = oldLines[i] === newLines[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const rows: DiffRow[] = [];
+  let i = 0;
+  let j = 0;
+  let oldLineNumber = 1;
+  let newLineNumber = 1;
+
+  while (i < oldCount && j < newCount) {
+    if (oldLines[i] === newLines[j]) {
+      rows.push({
+        kind: "context",
+        oldLineNumber,
+        newLineNumber,
+        text: oldLines[i],
+      });
+      i += 1;
+      j += 1;
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      continue;
+    }
+
+    if (dp[i + 1][j] >= dp[i][j + 1]) {
+      rows.push({
+        kind: "removed",
+        oldLineNumber,
+        newLineNumber: null,
+        text: oldLines[i],
+      });
+      i += 1;
+      oldLineNumber += 1;
+      continue;
+    }
+
+    rows.push({
+      kind: "added",
+      oldLineNumber: null,
+      newLineNumber,
+      text: newLines[j],
+    });
+    j += 1;
+    newLineNumber += 1;
+  }
+
+  while (i < oldCount) {
+    rows.push({
+      kind: "removed",
+      oldLineNumber,
+      newLineNumber: null,
+      text: oldLines[i],
+    });
+    i += 1;
+    oldLineNumber += 1;
+  }
+
+  while (j < newCount) {
+    rows.push({
+      kind: "added",
+      oldLineNumber: null,
+      newLineNumber,
+      text: newLines[j],
+    });
+    j += 1;
+    newLineNumber += 1;
+  }
+
+  return rows;
 }
 
 export function DocumentDiffModal({
@@ -69,6 +158,19 @@ export function DocumentDiffModal({
 
   const leftBody = leftRevision?.body ?? "";
   const rightBody = rightRevision?.body ?? "";
+  const diffRows = useMemo(() => buildLineDiff(leftBody, rightBody), [leftBody, rightBody]);
+
+  const lineClassesByKind: Record<DiffRow["kind"], string> = {
+    context: "bg-transparent",
+    removed: "bg-red-500/10 text-red-100",
+    added: "bg-green-500/10 text-green-100",
+  };
+
+  const markerByKind: Record<DiffRow["kind"], string> = {
+    context: " ",
+    removed: "-",
+    added: "+",
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -128,50 +230,33 @@ export function DocumentDiffModal({
           ) : leftRevision.id === rightRevision.id ? (
             <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
           ) : (
-            <ReactDiffViewer
-              oldValue={leftBody}
-              newValue={rightBody}
-              splitView={false}
-              compareMethod={DiffMethod.WORDS}
-              useDarkTheme
-              leftTitle={`rev ${leftRevision.revisionNumber}`}
-              rightTitle={`rev ${rightRevision.revisionNumber}`}
-              styles={{
-                variables: {
-                  dark: {
-                    diffViewerBackground: "transparent",
-                    gutterBackground: "hsl(var(--muted) / 0.3)",
-                    addedBackground: "hsl(142 70% 25% / 0.3)",
-                    addedGutterBackground: "hsl(142 70% 25% / 0.4)",
-                    removedBackground: "hsl(0 70% 30% / 0.3)",
-                    removedGutterBackground: "hsl(0 70% 30% / 0.4)",
-                    wordAddedBackground: "hsl(142 70% 35% / 0.5)",
-                    wordRemovedBackground: "hsl(0 70% 40% / 0.5)",
-                    addedGutterColor: "hsl(var(--foreground))",
-                    removedGutterColor: "hsl(var(--foreground))",
-                    gutterColor: "hsl(var(--muted-foreground))",
-                    codeFoldGutterBackground: "hsl(var(--muted) / 0.2)",
-                    codeFoldBackground: "hsl(var(--muted) / 0.1)",
-                    emptyLineBackground: "transparent",
-                    codeFoldContentColor: "hsl(var(--muted-foreground))",
-                  },
-                },
-                contentText: {
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-                  fontSize: "12px",
-                  lineHeight: "1.5",
-                  wordBreak: "break-word" as const,
-                  whiteSpace: "pre-wrap" as const,
-                },
-                gutter: {
-                  minWidth: "40px",
-                  whiteSpace: "nowrap" as const,
-                },
-                line: {
-                  wordBreak: "break-word" as const,
-                },
-              }}
-            />
+            <div className="font-mono text-[12px] leading-6">
+              <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                <span>Old</span>
+                <span>New</span>
+                <span />
+                <span>Content</span>
+              </div>
+              {diffRows.map((row, index) => (
+                <div
+                  key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
+                  className={`grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
+                >
+                  <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">
+                    {row.oldLineNumber ?? ""}
+                  </span>
+                  <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">
+                    {row.newLineNumber ?? ""}
+                  </span>
+                  <span className="select-none px-3 text-center text-muted-foreground">
+                    {markerByKind[row.kind]}
+                  </span>
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">
+                    {row.text.length > 0 ? row.text : " "}
+                  </pre>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </DialogContent>
