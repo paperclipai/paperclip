@@ -101,6 +101,22 @@ async function flush() {
   });
 }
 
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
+}
+
 function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
@@ -158,12 +174,11 @@ describe("IssuesList", () => {
       container,
     );
 
-    await flush();
-    await flush();
-
-    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", { q: "server", projectId: undefined });
-    expect(container.textContent).toContain("Server result");
-    expect(container.textContent).not.toContain("Local issue");
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", { q: "server", projectId: undefined });
+      expect(container.textContent).toContain("Server result");
+      expect(container.textContent).not.toContain("Local issue");
+    });
 
     act(() => {
       root.unmount();
