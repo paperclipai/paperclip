@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# Rebase dev and all feature branches onto the latest upstream/master.
+# Rebase master and all feature branches onto the latest upstream/master.
 #
 # Usage:
 #   ./scripts/rebase-upstream.sh [--dry-run]
 #
 # What it does:
 #   1. Fetches upstream/master
-#   2. Rebases dev onto upstream/master
-#   3. Rebases each feature branch onto dev
+#   2. Rebases local master onto upstream/master
+#   3. Rebases each feature branch onto master
 #   4. Reports status of each branch
+#   5. Returns to master when done
 #
 # If conflicts occur during any rebase, the script pauses and tells you
 # which branch failed. Resolve conflicts, run `git rebase --continue`,
@@ -34,7 +35,6 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
 fi
 
-ORIGINAL_BRANCH=$(git branch --show-current)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -45,9 +45,7 @@ warn()  { echo -e "${YELLOW}[rebase]${NC} $*"; }
 error() { echo -e "${RED}[rebase]${NC} $*"; }
 
 cleanup() {
-  if [[ -n "${ORIGINAL_BRANCH:-}" ]]; then
-    git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
-  fi
+  git checkout master 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -65,30 +63,30 @@ else
   git fetch upstream
 fi
 
-# 2. Rebase dev onto upstream/master
+# 2. Rebase master onto upstream/master
 info ""
-info "=== Rebasing dev onto upstream/master ==="
+info "=== Rebasing master onto upstream/master ==="
 if $DRY_RUN; then
-  BEHIND=$(git rev-list --count dev..upstream/master 2>/dev/null || echo "?")
-  info "(dry-run) dev is $BEHIND commits behind upstream/master"
+  BEHIND=$(git rev-list --count master..upstream/master 2>/dev/null || echo "?")
+  info "(dry-run) master is $BEHIND commits behind upstream/master"
 else
-  git checkout dev
+  git checkout master
 
   if ! git rebase upstream/master; then
     error ""
-    error "Conflicts during dev rebase onto upstream/master."
+    error "Conflicts during master rebase onto upstream/master."
     error "Resolve conflicts, then run:"
     error "  git rebase --continue"
     error ""
-    error "Once dev is clean, re-run this script to rebase feature branches."
+    error "Once master is clean, re-run this script to rebase feature branches."
     exit 1
   fi
-  info "dev rebased successfully"
+  info "master rebased successfully"
 fi
 
-# 3. Rebase each feature branch onto dev
+# 3. Rebase each feature branch onto master
 info ""
-info "=== Rebasing feature branches onto dev ==="
+info "=== Rebasing feature branches onto master ==="
 
 SUCCEEDED=()
 FAILED=()
@@ -102,9 +100,9 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
   fi
 
   if $DRY_RUN; then
-    BEHIND=$(git rev-list --count "$branch..dev" 2>/dev/null || echo "?")
-    AHEAD=$(git rev-list --count "dev..$branch" 2>/dev/null || echo "?")
-    info "  $branch — $AHEAD ahead, $BEHIND behind dev"
+    BEHIND=$(git rev-list --count "$branch..master" 2>/dev/null || echo "?")
+    AHEAD=$(git rev-list --count "master..$branch" 2>/dev/null || echo "?")
+    info "  $branch — $AHEAD ahead, $BEHIND behind master"
     SUCCEEDED+=("$branch")
     continue
   fi
@@ -112,7 +110,7 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
   info "  Rebasing $branch..."
   git checkout "$branch"
 
-  if git rebase dev; then
+  if git rebase master; then
     info "  $branch — OK"
     SUCCEEDED+=("$branch")
   else
@@ -120,7 +118,7 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
     error ""
     error "  Resolve conflicts, then run:"
     error "    git rebase --continue"
-    error "    git checkout dev"
+    error "    git checkout master"
     error ""
     error "  Then re-run this script to continue with remaining branches."
     FAILED+=("$branch")
@@ -130,9 +128,9 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
   fi
 done
 
-# 4. Return to original branch
+# 4. Return to master
 if ! $DRY_RUN; then
-  git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout dev
+  git checkout master
 fi
 
 # 5. Summary
@@ -157,8 +155,8 @@ if ! $DRY_RUN; then
   read -p "Push all rebased branches to origin? (y/N) " -n 1 -r
   echo
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    info "Pushing dev..."
-    git push origin dev --force-with-lease
+    info "Pushing master..."
+    git push origin master --force-with-lease
 
     for branch in "${SUCCEEDED[@]}"; do
       info "Pushing $branch..."
