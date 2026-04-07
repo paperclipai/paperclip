@@ -91,13 +91,18 @@ function mapHermesCommandForRuntimeConfig(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
   if (adapterType !== "hermes_local") return config;
-  if (!Object.hasOwn(config, "command")) return config;
-  if (Object.hasOwn(config, "hermesCommand")) return config;
 
-  return {
+  const effectiveCommand = config.hermesCommand ?? config.command;
+  if (!effectiveCommand) {
+    return config;
+  }
+
+  const newConfig = {
     ...config,
-    hermesCommand: config.command,
+    command: effectiveCommand,
+    hermesCommand: effectiveCommand,
   };
+  return newConfig;
 }
 
 function stripPostgresTextNullBytes(value: string): string {
@@ -3194,9 +3199,9 @@ export function heartbeatService(db: Db) {
         ? persistedExecutionWorkspaceMode
         : requestedExecutionWorkspaceMode;
     const workspaceManagedConfig = shouldReuseExisting
-      ? { ...config }
+      ? { ...mappedAgentAdapterConfig }
       : buildExecutionWorkspaceAdapterConfig({
-          agentConfig: config,
+          agentConfig: mappedAgentAdapterConfig,
           projectPolicy: projectExecutionWorkspacePolicy,
           issueSettings: issueExecutionWorkspaceSettings,
           mode: requestedExecutionWorkspaceMode,

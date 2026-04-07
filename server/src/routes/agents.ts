@@ -408,12 +408,13 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     if (adapterType !== "hermes_local") return adapterConfig;
-    if (!Object.hasOwn(adapterConfig, "command")) return adapterConfig;
-    if (Object.hasOwn(adapterConfig, "hermesCommand")) return adapterConfig;
+    const effectCommand = adapterConfig.command ?? adapterConfig.hermesCommand;
+    if (!effectCommand) return adapterConfig;
 
     return {
       ...adapterConfig,
-      hermesCommand: adapterConfig.command,
+      hermesCommand: effectCommand,
+      command: effectCommand,
     };
   }
 

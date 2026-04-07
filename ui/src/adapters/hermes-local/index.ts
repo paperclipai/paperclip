@@ -9,9 +9,10 @@ export const hermesLocalUIAdapter: UIAdapterModule = {
   ConfigFields: SchemaConfigFields,
   buildAdapterConfig: (values) => {
     const config = buildSchemaAdapterConfig(values);
-    if (config.command) {
-      config.hermesCommand = config.command;
-      delete config.command;
+    const effectCommand = config.command ?? config.hermesCommand;
+    if (effectCommand) {
+      config.hermesCommand = effectCommand;
+      config.command = effectCommand;
     }
     return config;
   },
