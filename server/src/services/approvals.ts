@@ -18,12 +18,13 @@ export function approvalService(db: Db) {
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
 
   function mapHermesCommandForAdapterConfig(adapterConfig: Record<string, unknown>): Record<string, unknown> {
-    if (!Object.hasOwn(adapterConfig, "command")) return adapterConfig;
-    if (Object.hasOwn(adapterConfig, "hermesCommand")) return adapterConfig;
+    const effectiveCommand = adapterConfig.hermesCommand ?? adapterConfig.command;
+    if (!effectiveCommand) return adapterConfig;
 
     return {
       ...adapterConfig,
-      hermesCommand: adapterConfig.command,
+      command: effectiveCommand,
+      hermesCommand: effectiveCommand,
     };
   }
 

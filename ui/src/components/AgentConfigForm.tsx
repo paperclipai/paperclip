@@ -279,6 +279,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
       patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
     }
+
+    if (patch.adapterConfig && adapterType === "hermes_local") {
+      const effectCommand = (patch.adapterConfig as Record<string, unknown>).command ?? (patch.adapterConfig as Record<string, unknown>).hermesCommand;
+      if (effectCommand) {
+        (patch.adapterConfig as Record<string, unknown>).hermesCommand = effectCommand;
+        (patch.adapterConfig as Record<string, unknown>).command = effectCommand;
+      }
+    }
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
@@ -391,8 +399,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     const base = config as Record<string, unknown>;
     const combined = { ...base, ...overlay.adapterConfig };
-    if (adapterType === "hermes_local" && combined.command) {
-      combined.hermesCommand = combined.command;
+    if (adapterType === "hermes_local") {
+      const effectCommand = combined.command ?? combined.hermesCommand;
+      if (effectCommand) {
+        combined.hermesCommand = effectCommand;
+        combined.command = effectCommand;
+      }
     }
     return combined;
   }
