@@ -41,4 +41,9 @@ describe("isKeyHashUniqueViolation", () => {
   it("returns false for non-object", () => {
     expect(isKeyHashUniqueViolation("some string")).toBe(false);
   });
+
+  it("returns false when constraint fields are absent", () => {
+    const error = { code: "23505" };
+    expect(isKeyHashUniqueViolation(error)).toBe(false);
+  });
 });
