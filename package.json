@@ -50,6 +50,7 @@
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
+    "autoInstallPeers": true,
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     }

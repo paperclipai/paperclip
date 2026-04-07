@@ -6,6 +6,3 @@ packages:
   - server
   - ui
   - cli
-
-# pnpm-only (npm ignores this file; avoids npm warnings from .npmrc peer settings)
-autoInstallPeers: true
