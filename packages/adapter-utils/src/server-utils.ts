@@ -23,7 +23,13 @@ const BLOCKED_ENV_KEYS = new Set([
   "PYTHONPATH",
   "PYTHONSTARTUP",
   "RUBYOPT",
+  "RUBYLIB",
   "PERL5OPT",
+  "PERL5LIB",
+  // Java agent injection
+  "JAVA_TOOL_OPTIONS",
+  "JDK_JAVA_OPTIONS",
+  "_JAVA_OPTIONS",
 ]);
 
 /**
@@ -32,10 +38,18 @@ const BLOCKED_ENV_KEYS = new Set([
  */
 export function filterDangerousEnvKeys(env: Record<string, string>): Record<string, string> {
   const filtered: Record<string, string> = {};
+  const stripped: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (!BLOCKED_ENV_KEYS.has(key)) {
+    if (BLOCKED_ENV_KEYS.has(key)) {
+      stripped.push(key);
+    } else {
       filtered[key] = value;
     }
+  }
+  if (stripped.length > 0) {
+    console.warn(
+      `[paperclip] filterDangerousEnvKeys: stripped potentially dangerous env keys: ${stripped.join(", ")}`,
+    );
   }
   return filtered;
 }

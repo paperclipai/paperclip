@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { filterDangerousEnvKeys } from "../server-utils.js";
 
 describe("filterDangerousEnvKeys", () => {
@@ -29,7 +29,12 @@ describe("filterDangerousEnvKeys", () => {
       PYTHONPATH: "j",
       PYTHONSTARTUP: "k",
       RUBYOPT: "l",
-      PERL5OPT: "m",
+      RUBYLIB: "m",
+      PERL5OPT: "n",
+      PERL5LIB: "o",
+      JAVA_TOOL_OPTIONS: "p",
+      JDK_JAVA_OPTIONS: "q",
+      _JAVA_OPTIONS: "r",
       SAFE_KEY: "keep",
     };
     const result = filterDangerousEnvKeys(input);
@@ -56,5 +61,21 @@ describe("filterDangerousEnvKeys", () => {
     const input = { LD_PRELOAD: "a", NODE_OPTIONS: "b" };
     const result = filterDangerousEnvKeys(input);
     expect(result).toEqual({});
+  });
+
+  it("logs a warning when keys are stripped", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    filterDangerousEnvKeys({ LD_PRELOAD: "/evil.so", SAFE: "ok" });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("LD_PRELOAD"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("does not log when no keys are stripped", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    filterDangerousEnvKeys({ SAFE: "ok" });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
