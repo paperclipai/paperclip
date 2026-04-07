@@ -48,7 +48,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { detectGitType, ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -2499,25 +2499,30 @@ function buildManifestFromPackageFiles(
     }
     const skillDoc = parseFrontmatterMarkdown(markdownRaw);
     const frontmatter = skillDoc.frontmatter;
-    const skillDir = path.posix.dirname(skillPath);
-    const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(skillDir)) ?? "skill";
+    const rawSkillDir = path.posix.dirname(skillPath);
+    // Normalise "." (root-level SKILL.md) to "" so sibling-file path arithmetic works.
+    const skillDir = rawSkillDir === "." ? "" : rawSkillDir;
+    const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(skillDir || path.posix.dirname(skillPath))) ?? "skill";
     const slug = asString(frontmatter.slug) ?? normalizeAgentUrlKey(asString(frontmatter.name) ?? "") ?? fallbackSlug;
     const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
-      .map((entry) => ({
-        path: entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-        kind: entry === skillPath
-          ? "skill"
-          : entry.startsWith(`${skillDir}/references/`)
-            ? "reference"
-            : entry.startsWith(`${skillDir}/scripts/`)
-              ? "script"
-              : entry.startsWith(`${skillDir}/assets/`)
-                ? "asset"
-                : entry.endsWith(".md")
-                  ? "markdown"
-                  : "other",
-      }));
+      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : true))
+      .map((entry) => {
+        const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
+        return {
+          path: relative,
+          kind: entry === skillPath
+            ? "skill"
+            : (skillDir ? entry.startsWith(`${skillDir}/references/`) : relative.startsWith("references/"))
+              ? "reference"
+              : (skillDir ? entry.startsWith(`${skillDir}/scripts/`) : relative.startsWith("scripts/"))
+                ? "script"
+                : (skillDir ? entry.startsWith(`${skillDir}/assets/`) : relative.startsWith("assets/"))
+                  ? "asset"
+                  : entry.endsWith(".md")
+                    ? "markdown"
+                    : "other",
+        };
+      });
     const metadata = isPlainRecord(frontmatter.metadata) ? frontmatter.metadata : null;
     const sources = metadata && Array.isArray(metadata.sources) ? metadata.sources : [];
     const primarySource = sources.find((entry) => isPlainRecord(entry)) as Record<string, unknown> | undefined;
@@ -2756,6 +2761,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const parsed = parseGitHubSourceUrl(source.url);
+    const gitType = await detectGitType(parsed.hostname);
     let ref = parsed.ref;
     const warnings: string[] = [];
     const companyRelativePath = parsed.companyPath === "COMPANY.md"
@@ -2764,14 +2770,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     let companyMarkdown: string | null = null;
     try {
       companyMarkdown = await fetchOptionalText(
-        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath, gitType),
       );
     } catch (err) {
       if (ref === "main") {
         ref = "master";
         warnings.push("GitHub ref main not found; falling back to master.");
         companyMarkdown = await fetchOptionalText(
-          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
+          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath, gitType),
         );
       } else {
         throw err;
@@ -2810,7 +2816,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const relativePath = basePrefix ? repoPath.slice(basePrefix.length) : repoPath;
       if (files[relativePath] !== undefined) continue;
       files[normalizePortablePath(relativePath)] = await fetchText(
-        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath, gitType),
       );
     }
     const companyDoc = parseFrontmatterMarkdown(companyMarkdown);
@@ -2821,7 +2827,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (files[relativePath] !== undefined) continue;
       if (!(repoPath.endsWith(".md") || repoPath.endsWith(".yaml") || repoPath.endsWith(".yml"))) continue;
       files[relativePath] = await fetchText(
-        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath, gitType),
       );
     }
 
@@ -2831,7 +2837,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const repoPath = [parsed.basePath, companyLogoPath].filter(Boolean).join("/");
       try {
         const binary = await fetchBinary(
-          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
+          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath, gitType),
         );
         resolved.files[companyLogoPath] = bufferToPortableBinaryFile(binary, inferContentTypeFromPath(companyLogoPath));
       } catch (err) {

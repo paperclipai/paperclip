@@ -30,7 +30,7 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { detectGitType, ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -743,9 +743,9 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
     const slug = deriveImportedSkillSlug(parsed.frontmatter, slugFallback);
     const source = deriveImportedSkillSource(parsed.frontmatter, slug);
     const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : false))
+      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : true))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -995,6 +995,7 @@ async function readUrlSkillImports(
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
+    const gitType = await detectGitType(parsed.hostname);
     const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed);
     let ref = pinnedRef;
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
@@ -1025,10 +1026,13 @@ async function readUrlSkillImports(
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath));
+      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath, gitType));
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
-      const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
+      // When SKILL.md is at the repo root, dirname returns ".". Normalise to ""
+      // so that sibling-file path arithmetic works correctly throughout.
+      const normalizedSkillDir = skillDir === "." ? "" : skillDir;
+      const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(normalizedSkillDir || path.posix.dirname(relativeSkillPath)));
       const skillKey = readCanonicalSkillKey(
         parsedMarkdown.frontmatter,
         isPlainRecord(parsedMarkdown.frontmatter.metadata) ? parsedMarkdown.frontmatter.metadata : null,
@@ -1045,16 +1049,19 @@ async function readUrlSkillImports(
         ref,
         trackingRef,
         repoSkillDir: normalizeGitHubSkillDirectory(
-          basePrefix ? `${basePrefix}${skillDir}` : skillDir,
+          basePrefix ? `${basePrefix}${normalizedSkillDir}` : normalizedSkillDir,
           slug,
         ),
       };
       const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
+        .filter((entry) => entry === relativeSkillPath || (normalizedSkillDir ? entry.startsWith(`${normalizedSkillDir}/`) : true))
+        .map((entry) => {
+          const relative = entry === relativeSkillPath ? "SKILL.md" : (normalizedSkillDir ? entry.slice(normalizedSkillDir.length + 1) : entry);
+          return {
+            path: relative,
+            kind: classifyInventoryKind(relative),
+          };
+        })
         .sort((left, right) => left.path.localeCompare(right.path));
       skills.push({
         key: deriveCanonicalSkillKey(companyId, {
@@ -1701,7 +1708,8 @@ export function companySkillService(db: Db) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+      const gitType = await detectGitType(hostname);
+      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath, gitType));
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
