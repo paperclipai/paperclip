@@ -107,6 +107,32 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("creates approvals with the expected company-scoped payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "approval-1" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateApproval");
+    await tool.execute({
+      type: "hire_agent",
+      payload: { branch: "pap-1167" },
+      issueIds: ["44444444-4444-4444-4444-444444444444"],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      type: "hire_agent",
+      payload: { branch: "pap-1167" },
+      issueIds: ["44444444-4444-4444-4444-444444444444"],
+    });
+  });
+
   it("rejects invalid generic request paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
 
@@ -117,5 +143,17 @@ describe("paperclip MCP tools", () => {
     });
 
     expect(response.content[0]?.text).toContain("path must start with /");
+  });
+
+  it("rejects generic request paths that escape /api", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "GET",
+      path: "/../../secret",
+    });
+
+    expect(response.content[0]?.text).toContain("must not contain '..'");
   });
 });

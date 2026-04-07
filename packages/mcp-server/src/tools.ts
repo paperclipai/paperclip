@@ -415,8 +415,8 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
       async ({ method, path, jsonBody }) => {
-        if (!path.startsWith("/")) {
-          throw new Error("path must start with / and be relative to /api");
+        if (!path.startsWith("/") || path.includes("..")) {
+          throw new Error("path must start with / and be relative to /api, and must not contain '..'");
         }
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),

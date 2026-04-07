@@ -63,6 +63,7 @@ Write tools:
 - `paperclipAddComment`
 - `paperclipUpsertIssueDocument`
 - `paperclipRestoreIssueDocumentRevision`
+- `paperclipCreateApproval`
 - `paperclipLinkIssueApproval`
 - `paperclipUnlinkIssueApproval`
 - `paperclipApprovalDecision`
