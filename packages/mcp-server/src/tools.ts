@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   addIssueCommentSchema,
   checkoutIssueSchema,
+  createApprovalSchema,
   createIssueSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
@@ -112,6 +113,10 @@ const approvalDecisionSchema = z.object({
   decisionNote: z.string().optional(),
   payloadJson: z.string().optional(),
 });
+
+const createApprovalToolSchema = z.object({
+  companyId: companyIdOptional,
+}).merge(createApprovalSchema);
 
 const apiRequestSchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
@@ -262,6 +267,15 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         const qs = status ? `?status=${encodeURIComponent(status)}` : "";
         return client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/approvals${qs}`);
       },
+    ),
+    makeTool(
+      "paperclipCreateApproval",
+      "Create a board approval request, optionally linked to one or more issues",
+      createApprovalToolSchema,
+      async ({ companyId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+          body,
+        }),
     ),
     makeTool(
       "paperclipGetApproval",
