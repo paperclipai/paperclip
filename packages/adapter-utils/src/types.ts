@@ -190,6 +190,35 @@ export interface AdapterSkillSnapshot {
   warnings: string[];
 }
 
+export interface AdapterRuntimeSkillCatalogItem {
+  /** Runtime directory key/id for the discovered skill. */
+  name: string;
+  /** Optional display title extracted from skill metadata. */
+  title?: string | null;
+  description?: string | null;
+  /** True when this name also exists in Paperclip-managed runtime skills. */
+  isPaperclipManaged?: boolean;
+}
+
+export interface AdapterRuntimeInfoSection {
+  /** Stable machine key for this read-only section. */
+  key: string;
+  /** Human readable section title (for example "Enabled plugins"). */
+  label: string;
+  /** Read-only values surfaced by the adapter runtime. */
+  items: string[];
+}
+
+export interface AdapterRuntimeSkillCatalog {
+  adapterType: string;
+  label: string;
+  readOnly: boolean;
+  locationLabel?: string | null;
+  skills: AdapterRuntimeSkillCatalogItem[];
+  sections?: AdapterRuntimeInfoSection[];
+  warnings?: string[];
+}
+
 export interface AdapterSkillContext {
   agentId: string;
   companyId: string;
@@ -295,6 +324,8 @@ export interface ServerAdapterModule {
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
+  /** Optional read-only runtime catalog shown on the company Skills page. */
+  listRuntimeSkillCatalog?: () => Promise<AdapterRuntimeSkillCatalog | null>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
