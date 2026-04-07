@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, type ComponentType } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -14,6 +14,11 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowLeft,
   Bot,
+  Code,
+  Gem,
+  MousePointer2,
+  Sparkles,
+  Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { listUIAdapters } from "../adapters";
