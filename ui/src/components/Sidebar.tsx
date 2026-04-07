@@ -18,6 +18,7 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
+import { useTranslation } from "react-i18next";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -29,6 +30,7 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -77,12 +79,12 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">{t("issues:new_issue_label", { defaultValue: "New Issue" })}</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label={t("nav.dashboard", { defaultValue: "Dashboard" })} icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label={t("nav.inbox", { defaultValue: "Inbox" })}
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -97,12 +99,12 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+        <SidebarSection label={t("nav.work", { defaultValue: "Work" })}>
+          <SidebarNavItem to="/issues" label={t("nav.issues", { defaultValue: "Issues" })} icon={CircleDot} />
+          <SidebarNavItem to="/routines" label={t("nav.routines", { defaultValue: "Routines" })} icon={Repeat} />
+          <SidebarNavItem to="/goals" label={t("nav.goals", { defaultValue: "Goals" })} icon={Target} />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label={t("nav.workspaces", { defaultValue: "Workspaces" })} icon={GitBranch} />
           ) : null}
         </SidebarSection>
 
@@ -110,12 +112,12 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection label={t("nav.company", { defaultValue: "Company" })}>
+          <SidebarNavItem to="/org" label={t("nav.org", { defaultValue: "Org" })} icon={Network} />
+          <SidebarNavItem to="/skills" label={t("nav.skills", { defaultValue: "Skills" })} icon={Boxes} />
+          <SidebarNavItem to="/costs" label={t("nav.costs", { defaultValue: "Costs" })} icon={DollarSign} />
+          <SidebarNavItem to="/activity" label={t("nav.activity", { defaultValue: "Activity" })} icon={History} />
+          <SidebarNavItem to="/company/settings" label={t("nav.settings", { defaultValue: "Settings" })} icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet

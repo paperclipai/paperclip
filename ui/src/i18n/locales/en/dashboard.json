@@ -1,0 +1,21 @@
+{
+  "breadcrumb": "Dashboard",
+  "empty.welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+  "empty.get_started": "Get Started",
+  "empty.select_company": "Create or select a company to view the dashboard.",
+  "empty.no_agents": "You have no agents.",
+  "empty.create_agent": "Create one here",
+  "open_budgets": "Open budgets",
+  "metrics.agents_enabled": "Agents Enabled",
+  "metrics.tasks_in_progress": "Tasks In Progress",
+  "metrics.month_spend": "Month Spend",
+  "metrics.pending_approvals": "Pending Approvals",
+  "charts.run_activity": "Run Activity",
+  "charts.last_14_days": "Last 14 days",
+  "charts.issues_by_priority": "Issues by Priority",
+  "charts.issues_by_status": "Issues by Status",
+  "charts.success_rate": "Success Rate",
+  "sections.recent_activity": "Recent Activity",
+  "sections.recent_tasks": "Recent Tasks",
+  "empty.no_tasks": "No tasks yet."
+}

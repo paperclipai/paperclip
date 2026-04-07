@@ -1,5 +1,6 @@
 import { cn } from "../lib/utils";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
+import { statusLabel } from "@/i18n/formatters";
 
 export function StatusBadge({ status }: { status: string }) {
   return (
@@ -9,7 +10,7 @@ export function StatusBadge({ status }: { status: string }) {
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {status.replace("_", " ")}
+      {statusLabel(status)}
     </span>
   );
 }

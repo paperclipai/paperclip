@@ -1,0 +1,21 @@
+{
+  "breadcrumb": "대시보드",
+  "empty.welcome": "Paperclip에 오신 것을 환영해요. 첫 번째 회사와 에이전트를 설정해서 시작하세요.",
+  "empty.get_started": "시작하기",
+  "empty.select_company": "대시보드를 보려면 회사를 생성하거나 선택하세요.",
+  "empty.no_agents": "에이전트가 없어요.",
+  "empty.create_agent": "여기서 생성하세요",
+  "open_budgets": "예산 열기",
+  "metrics.agents_enabled": "활성화된 에이전트",
+  "metrics.tasks_in_progress": "진행 중인 작업",
+  "metrics.month_spend": "이번 달 지출",
+  "metrics.pending_approvals": "대기 중인 승인",
+  "charts.run_activity": "실행 활동",
+  "charts.last_14_days": "최근 14일",
+  "charts.issues_by_priority": "우선순위별 이슈",
+  "charts.issues_by_status": "상태별 이슈",
+  "charts.success_rate": "성공률",
+  "sections.recent_activity": "최근 활동",
+  "sections.recent_tasks": "최근 작업",
+  "empty.no_tasks": "아직 작업이 없어요."
+}

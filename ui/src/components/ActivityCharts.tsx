@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { statusLabel } from "@/i18n/formatters";
 
 /* ---- Utilities ---- */
 
@@ -184,15 +185,7 @@ const statusColors: Record<string, string> = {
   backlog: "#64748b",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
+// statusLabels replaced by statusLabel() from @/i18n/formatters
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
   const days = getLast14Days();
@@ -236,7 +229,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabel(s) }))} />
     </div>
   );
 }

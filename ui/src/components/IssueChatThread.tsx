@@ -24,6 +24,7 @@ import {
   type Ref,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
@@ -341,15 +342,16 @@ function IssueChatFallbackThread({
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
+  const { t } = useTranslation("issues");
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">{t("chat.renderer_error", { defaultValue: "Chat renderer hit an internal state error." })}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              {t("chat.renderer_fallback", { defaultValue: "Showing a safe fallback transcript instead of crashing the issues page." })}
             </p>
           </div>
         </div>
@@ -382,7 +384,7 @@ function IssueChatFallbackThread({
                   {lines.length > 0 ? lines.map((line, index) => (
                     <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
                   )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                    <p className="text-sm text-muted-foreground">{t("chat.no_message_content", { defaultValue: "No message content." })}</p>
                   )}
                 </div>
               </div>
@@ -801,6 +803,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 }
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
+  const { t } = useTranslation("issues");
   const [copied, setCopied] = useState(false);
   return (
     <div className="group/pre relative">
@@ -811,8 +814,8 @@ function CopyablePreBlock({ children, className }: { children: string; className
           "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground group-hover/pre:opacity-100",
           copied && "opacity-100",
         )}
-        title="Copy"
-        aria-label="Copy"
+        title={t("chat.copy", { defaultValue: "Copy" })}
+        aria-label={t("chat.copy", { defaultValue: "Copy" })}
         onClick={() => {
           void navigator.clipboard.writeText(children).then(() => {
             setCopied(true);
@@ -1033,6 +1036,7 @@ function IssueChatAssistantParts({
 }
 
 function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
+  const { t } = useTranslation("issues");
   const {
     onInterruptQueued,
     onCancelQueued,
@@ -1082,7 +1086,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              Queued
+              {t("chat.queued", { defaultValue: "Queued" })}
             </span>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
@@ -1092,7 +1096,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 disabled={interruptingQueuedRunId === queueTargetRunId}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queueTargetRunId ? t("chat.interrupting", { defaultValue: "Interrupting..." }) : t("chat.interrupt", { defaultValue: "Interrupt" })}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1102,7 +1106,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
                 className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
-                Cancel
+                {t("chat.cancel", { defaultValue: "Cancel" })}
               </Button>
             ) : null}
           </div>
@@ -1114,7 +1118,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
 
       {pending ? (
         <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
-          Sending...
+          {t("chat.sending", { defaultValue: "Sending..." })}
         </div>
       ) : (
         <div
@@ -1139,8 +1143,8 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
+            title={t("chat.copy_message", { defaultValue: "Copy message" })}
+            aria-label={t("chat.copy_message", { defaultValue: "Copy message" })}
             onClick={() => {
               const text = message.content
                 .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -1179,6 +1183,7 @@ function IssueChatUserMessage({ message }: { message: ThreadMessage }) {
 }
 
 function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
+  const { t } = useTranslation("issues");
   const {
     feedbackVoteByTargetId,
     feedbackDataSharingPreference,
@@ -1280,7 +1285,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
+                  {t("chat.running", { defaultValue: "Running" })}
                 </span>
               ) : null}
             </div>
@@ -1320,8 +1325,8 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="Copy message"
-                  aria-label="Copy message"
+                  title={t("chat.copy_message", { defaultValue: "Copy message" })}
+                  aria-label={t("chat.copy_message", { defaultValue: "Copy message" })}
                   onClick={() => {
                     void navigator.clipboard.writeText(copyText).then(() => {
                       setCopied(true);
@@ -1358,8 +1363,8 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
+                      title={t("chat.more_actions", { defaultValue: "More actions" })}
+                      aria-label={t("chat.more_actions", { defaultValue: "More actions" })}
                     >
                       <MoreHorizontal className="h-3.5 w-3.5" />
                     </Button>
@@ -1371,7 +1376,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
-                      Copy message
+                      {t("chat.copy_message", { defaultValue: "Copy message" })}
                     </DropdownMenuItem>
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
@@ -1382,7 +1387,7 @@ function IssueChatAssistantMessage({ message }: { message: ThreadMessage }) {
                         }}
                       >
                         <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                        {stoppingRunId === runId ? t("chat.stopping", { defaultValue: "Stopping…" }) : t("chat.stopRun", { defaultValue: "Stop run" })}
                       </DropdownMenuItem>
                     ) : null}
                     {runHref ? (
@@ -1415,6 +1420,7 @@ function IssueChatFeedbackButtons({
   termsUrl: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
 }) {
+  const { t } = useTranslation("issues");
   const [isSaving, setIsSaving] = useState(false);
   const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -1494,8 +1500,8 @@ function IssueChatFeedbackButtons({
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
-        title="Helpful"
-        aria-label="Helpful"
+        title={t("chat.helpful", { defaultValue: "Helpful" })}
+        aria-label={t("chat.helpful", { defaultValue: "Helpful" })}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -1511,19 +1517,19 @@ function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={t("chat.needs_work", { defaultValue: "Needs work" })}
+            aria-label={t("chat.needs_work", { defaultValue: "Needs work" })}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("chat.what_better", { defaultValue: "What could have been better?" })}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("chat.add_note", { defaultValue: "Add a short note" })}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -1538,7 +1544,7 @@ function IssueChatFeedbackButtons({
                 setDownvoteReason("");
               }}
             >
-              Dismiss
+              {t("chat.dismiss", { defaultValue: "Dismiss" })}
             </Button>
             <Button
               type="button"
@@ -1546,7 +1552,7 @@ function IssueChatFeedbackButtons({
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("chat.saving", { defaultValue: "Saving..." }) : t("chat.save_note", { defaultValue: "Save note" })}
             </Button>
           </div>
         </PopoverContent>
@@ -1563,21 +1569,18 @@ function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("chat.sharing_title", { defaultValue: "Save your feedback sharing preference" })}</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
+              {t("chat.sharing_description", { defaultValue: "Choose whether voted AI outputs can be shared with Paperclip Labs. This answer becomes the default for future thumbs up and thumbs down votes." })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
+            <p>{t("chat.vote_saved_locally", { defaultValue: "This vote is always saved locally." })}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              {t("chat.sharing_explanation_prefix", { defaultValue: "Choose" })} <span className="font-medium text-foreground">{t("chat.always_allow", { defaultValue: "Always allow" })}</span> {t("chat.sharing_explanation_allow", { defaultValue: "to share this vote and future voted AI outputs. Choose" })}{" "}
+              <span className="font-medium text-foreground">{t("chat.dont_allow", { defaultValue: "Don't allow" })}</span> {t("chat.sharing_explanation_deny", { defaultValue: "to keep this vote and future votes local." })}
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>{t("chat.change_later", { defaultValue: "You can change this later in Instance Settings > General." })}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -1602,7 +1605,7 @@ function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("chat.saving", { defaultValue: "Saving..." }) : t("chat.dont_allow", { defaultValue: "Don't allow" })}
             </Button>
             <Button
               type="button"
@@ -1615,7 +1618,7 @@ function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("chat.saving", { defaultValue: "Saving..." }) : t("chat.always_allow", { defaultValue: "Always allow" })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1777,6 +1780,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   composerDisabledReason = null,
   issueStatus,
 }, forwardedRef) {
+  const { t } = useTranslation("issues");
   const api = useAui();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1925,7 +1929,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Reply"
+        placeholder={t("chat.reply", { defaultValue: "Reply" })}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
@@ -1948,7 +1952,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               size="icon-sm"
               onClick={() => attachInputRef.current?.click()}
               disabled={attaching}
-              title="Attach image"
+              title={t("chat.attach_image", { defaultValue: "Attach image" })}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -1959,14 +1963,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           <InlineEntitySelector
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder={t("chat.assignee", { defaultValue: "Assignee" })}
+            noneLabel={t("chat.no_assignee", { defaultValue: "No assignee" })}
+            searchPlaceholder={t("chat.search_assignees", { defaultValue: "Search assignees..." })}
+            emptyMessage={t("chat.no_assignees_found", { defaultValue: "No assignees found." })}
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">{t("chat.assignee", { defaultValue: "Assignee" })}</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -1995,7 +1999,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ) : null}
 
         <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
+          {submitting ? t("comments.posting", { defaultValue: "Posting..." }) : t("chat.send", { defaultValue: "Send" })}
         </Button>
       </div>
     </div>

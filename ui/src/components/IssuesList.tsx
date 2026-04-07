@@ -1,4 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialog } from "../context/DialogContext";
@@ -204,6 +206,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  const { t } = useTranslation("issues");
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -250,9 +253,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={t("list.searchPlaceholder", { defaultValue: "Search issues..." })}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={t("list.searchIssues", { defaultValue: "Search issues" })}
         data-page-search-target="true"
       />
     </div>
@@ -278,6 +281,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
+  const { t } = useTranslation("issues");
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { data: session } = useQuery({
@@ -587,7 +591,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? i18n.t("issues:list.noWorkspace", { defaultValue: "No Workspace" }) : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -602,7 +606,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? i18n.t("issues:list.noParent", { defaultValue: "No Parent" }) : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -615,9 +619,9 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? i18n.t("issues:list.unassigned", { defaultValue: "Unassigned" })
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? i18n.t("issues:list.user", { defaultValue: "User" }))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
@@ -662,8 +666,8 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel ? t("list.createLabel", { defaultValue: "Create {{label}}", label: createIssueLabel }) : t("list.createIssue", { defaultValue: "Create Issue" });
+  const createButtonLabel = createIssueLabel ? t("list.newLabel", { defaultValue: "New {{label}}", label: createIssueLabel }) : t("list.newIssue", { defaultValue: "New Issue" });
   const openCreateIssueDialog = useCallback((groupKey?: string) => {
     openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);
@@ -718,14 +722,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("list.listView", { defaultValue: "List view" })}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("list.boardView", { defaultValue: "Board view" })}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -749,7 +753,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={t("list.chooseVisibleColumns", { defaultValue: "Choose which issue columns stay visible" })}
             iconOnly
           />
 
@@ -771,19 +775,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("list.sort", { defaultValue: "Sort" })}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                    ["status", t("list.status", { defaultValue: "Status" })],
+                    ["priority", t("list.priority", { defaultValue: "Priority" })],
+                    ["title", t("list.title", { defaultValue: "Title" })],
+                    ["created", t("list.created", { defaultValue: "Created" })],
+                    ["updated", t("list.updated", { defaultValue: "Updated" })],
+                  ] as [IssueViewState["sortField"], string][]).map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -814,19 +818,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("list.group", { defaultValue: "Group" })}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
-                    ["none", "None"],
+                    ["status", t("list.status", { defaultValue: "Status" })],
+                    ["priority", t("list.priority", { defaultValue: "Priority" })],
+                    ["assignee", t("list.assignee", { defaultValue: "Assignee" })],
+                    ["workspace", t("list.workspace", { defaultValue: "Workspace" })],
+                    ["parent", t("list.parentIssue", { defaultValue: "Parent Issue" })],
+                    ["none", t("list.none", { defaultValue: "None" })],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -850,13 +854,13 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("list.searchLimitHint", { defaultValue: "Showing up to {{limit}} matches. Refine the search to narrow further.", limit: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={t("list.emptyMessage", { defaultValue: "No issues match the current filters or search." })}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1040,7 +1044,7 @@ export function IssuesList({
                                         <Identity name={agentName(issue.assigneeAgentId)!} size="sm" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
-                                          name={assigneeUserLabel ?? "User"}
+                                          name={assigneeUserLabel ?? t("list.user", { defaultValue: "User" })}
                                           avatarUrl={assigneeUserProfile?.image ?? null}
                                           size="sm"
                                           className="min-w-0"
@@ -1063,7 +1067,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={t("list.searchAssignees", { defaultValue: "Search assignees..." })}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus

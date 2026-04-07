@@ -442,9 +442,9 @@ export const pluginManifestV1Schema = z.object({
     /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
-  capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)),
   entrypoints: z.object({
-    worker: z.string().min(1),
+    worker: z.string().min(1).optional(),
     ui: z.string().min(1).optional(),
   }),
   instanceConfigSchema: jsonSchemaSchema.optional(),
@@ -454,11 +454,61 @@ export const pluginManifestV1Schema = z.object({
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
+  locales: z.array(z.object({
+    languageCode: z.string().min(1).regex(/^[a-z]{2,3}(-[A-Z]{2,3})?$/, {
+      message: "languageCode must be a valid BCP 47 tag (e.g., \"ko\", \"ja\", \"zh-CN\")",
+    }),
+    namespaces: z.array(z.string().min(1)).min(1),
+  })).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
+  // ── Locale-only vs standard plugin validation ──────────────────────
+  const isLocaleOnly = (manifest.locales?.length ?? 0) > 0
+    && (manifest.capabilities?.length ?? 0) === 0
+    && !manifest.entrypoints.worker;
+
+  if (!isLocaleOnly) {
+    // Standard plugins require at least one capability and a worker entrypoint
+    if (!manifest.capabilities || manifest.capabilities.length < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "capabilities must have at least 1 item (locale-only plugins are exempt)",
+        path: ["capabilities"],
+      });
+    }
+    if (!manifest.entrypoints.worker) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "entrypoints.worker is required (locale-only plugins are exempt)",
+        path: ["entrypoints", "worker"],
+      });
+    }
+  }
+
+  // ── Locale declaration consistency ──────────────────────────────────
+  if (manifest.locales && manifest.locales.length > 0) {
+    const langCodes = manifest.locales.map((l) => l.languageCode);
+    const duplicates = langCodes.filter((code, i) => langCodes.indexOf(code) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate language codes in locales: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["locales"],
+      });
+    }
+    // Locales require a UI entrypoint (locale files served from UI directory)
+    if (!manifest.entrypoints.ui) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "entrypoints.ui is required when locales are declared (locale files are served from the UI directory)",
+        path: ["entrypoints", "ui"],
+      });
+    }
+  }
+
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
   // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).

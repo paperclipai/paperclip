@@ -51,7 +51,10 @@ export {
   useHostContext,
   usePluginStream,
   usePluginToast,
+  usePluginTranslation,
 } from "./hooks.js";
+
+export type { PluginTranslationResult } from "./hooks.js";
 
 // Bridge error and host context types
 export type {

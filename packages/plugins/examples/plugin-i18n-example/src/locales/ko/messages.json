@@ -1,0 +1,6 @@
+{
+  "widget.title": "i18n 예제 위젯",
+  "widget.description": "이 위젯은 usePluginTranslation()을 사용한 플러그인 다국어 지원을 보여줍니다.",
+  "widget.currentLanguage": "현재 언어: {{lang}}",
+  "widget.companyId": "회사: {{id}}"
+}

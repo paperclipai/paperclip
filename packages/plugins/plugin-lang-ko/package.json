@@ -1,0 +1,27 @@
+{
+  "name": "@paperclipai/plugin-lang-ko",
+  "version": "0.1.0",
+  "description": "Korean (한국어) language pack for Paperclip",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc && mkdir -p dist/ui/locales/ko && cp locales/core/*.json dist/ui/locales/ko/",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}

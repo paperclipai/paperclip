@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import i18n from "@/i18n";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
+const PRESET_KEYS: { value: SchedulePreset; i18nKey: string; defaultLabel: string }[] = [
+  { value: "every_minute", i18nKey: "routines:schedule.preset_every_minute", defaultLabel: "Every minute" },
+  { value: "every_hour", i18nKey: "routines:schedule.preset_every_hour", defaultLabel: "Every hour" },
+  { value: "every_day", i18nKey: "routines:schedule.preset_every_day", defaultLabel: "Every day" },
+  { value: "weekdays", i18nKey: "routines:schedule.preset_weekdays", defaultLabel: "Weekdays" },
+  { value: "weekly", i18nKey: "routines:schedule.preset_weekly", defaultLabel: "Weekly" },
+  { value: "monthly", i18nKey: "routines:schedule.preset_monthly", defaultLabel: "Monthly" },
+  { value: "custom", i18nKey: "routines:schedule.preset_custom", defaultLabel: "Custom (cron)" },
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
@@ -26,14 +28,14 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => ({
   label: String(i * 5).padStart(2, "0"),
 }));
 
-const DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
+const DAY_OF_WEEK_KEYS = [
+  { value: "1", i18nKey: "routines:schedule.day_mon", defaultLabel: "Mon" },
+  { value: "2", i18nKey: "routines:schedule.day_tue", defaultLabel: "Tue" },
+  { value: "3", i18nKey: "routines:schedule.day_wed", defaultLabel: "Wed" },
+  { value: "4", i18nKey: "routines:schedule.day_thu", defaultLabel: "Thu" },
+  { value: "5", i18nKey: "routines:schedule.day_fri", defaultLabel: "Fri" },
+  { value: "6", i18nKey: "routines:schedule.day_sat", defaultLabel: "Sat" },
+  { value: "0", i18nKey: "routines:schedule.day_sun", defaultLabel: "Sun" },
 ];
 
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
@@ -120,21 +122,22 @@ function describeSchedule(cron: string): string {
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return i18n.t("routines:schedule.preset_every_minute", { defaultValue: "Every minute" });
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return i18n.t("routines:schedule.describe_every_hour", { defaultValue: "Every hour at :{{minute}}", minute: minute.padStart(2, "0") });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return i18n.t("routines:schedule.describe_every_day", { defaultValue: "Every day at {{time}}", time: timeStr });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return i18n.t("routines:schedule.describe_weekdays", { defaultValue: "Weekdays at {{time}}", time: timeStr });
     case "weekly": {
-      const day = DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      const dayEntry = DAY_OF_WEEK_KEYS.find((d) => d.value === dayOfWeek);
+      const day = dayEntry ? i18n.t(dayEntry.i18nKey, { defaultValue: dayEntry.defaultLabel }) : dayOfWeek;
+      return i18n.t("routines:schedule.describe_weekly", { defaultValue: "Every {{day}} at {{time}}", day, time: timeStr });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return i18n.t("routines:schedule.describe_monthly", { defaultValue: "Monthly on the {{dayOfMonth}}{{suffix}} at {{time}}", dayOfMonth, suffix: ordinalSuffix(Number(dayOfMonth)), time: timeStr });
     case "custom":
-      return cron || "No schedule set";
+      return cron || i18n.t("routines:schedule.no_schedule_set", { defaultValue: "No schedule set" });
   }
 }
 
@@ -153,6 +156,7 @@ export function ScheduleEditor({
   value: string;
   onChange: (cron: string) => void;
 }) {
+  const { t } = useTranslation("routines");
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -196,12 +200,12 @@ export function ScheduleEditor({
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="Choose frequency..." />
+          <SelectValue placeholder={t("schedule.choose_frequency", { defaultValue: "Choose frequency..." })} />
         </SelectTrigger>
         <SelectContent>
-          {PRESETS.map((p) => (
+          {PRESET_KEYS.map((p) => (
             <SelectItem key={p.value} value={p.value}>
-              {p.label}
+              {t(p.i18nKey, { defaultValue: p.defaultLabel })}
             </SelectItem>
           ))}
         </SelectContent>
@@ -219,14 +223,14 @@ export function ScheduleEditor({
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {t("schedule.cron_help", { defaultValue: "Five fields: minute hour day-of-month month day-of-week" })}
           </p>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{t("schedule.at", { defaultValue: "at" })}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -269,7 +273,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("schedule.at_minute", { defaultValue: "at minute" })}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -293,9 +297,9 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{t("schedule.on", { defaultValue: "on" })}</span>
               <div className="flex gap-1">
-                {DAYS_OF_WEEK.map((d) => (
+                {DAY_OF_WEEK_KEYS.map((d) => (
                   <Button
                     key={d.value}
                     type="button"
@@ -307,7 +311,7 @@ export function ScheduleEditor({
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
                     }}
                   >
-                    {d.label}
+                    {t(d.i18nKey, { defaultValue: d.defaultLabel })}
                   </Button>
                 ))}
               </div>
@@ -316,7 +320,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("schedule.on_day", { defaultValue: "on day" })}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {
