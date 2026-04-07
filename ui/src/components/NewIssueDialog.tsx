@@ -1100,7 +1100,7 @@ export function NewIssueDialog() {
         <div className="px-4 pb-2 shrink-0">
           <div className="overflow-x-auto overscroll-x-contain">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span>For</span>
+              <span className="w-6 shrink-0 text-center">For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeValue}
@@ -1241,7 +1241,7 @@ export function NewIssueDialog() {
           {/* Reviewer row */}
           {showReviewerRow && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-              <Eye className="h-3.5 w-3.5 shrink-0" />
+              <span className="w-6 shrink-0 flex items-center justify-center"><Eye className="h-3.5 w-3.5" /></span>
               <InlineEntitySelector
                 value={reviewerValue}
                 options={assigneeOptions}
@@ -1285,7 +1285,7 @@ export function NewIssueDialog() {
           {/* Approver row */}
           {showApproverRow && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span className="w-6 shrink-0 flex items-center justify-center"><ShieldCheck className="h-3.5 w-3.5" /></span>
               <InlineEntitySelector
                 value={approverValue}
                 options={assigneeOptions}
