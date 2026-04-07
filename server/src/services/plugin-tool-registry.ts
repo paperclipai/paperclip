@@ -422,7 +422,7 @@ export function createPluginToolRegistry(
         runContext,
       };
 
-      const result = await workerManager.call(dbId, "executeTool", rpcParams);
+      const result = await workerManager.call(dbId, "executeTool", rpcParams, 0);
 
       log.debug(
         {
