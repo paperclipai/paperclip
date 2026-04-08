@@ -4,6 +4,23 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-claude-local/server";
 
+async function writeSilentFailureClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: true,
+  session_id: "claude-session-1",
+  result: "No credits remaining.",
+  usage: { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+  total_cost_usd: 0,
+}));
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_BEDROCK = process.env.CLAUDE_CODE_USE_BEDROCK;
 const ORIGINAL_BEDROCK_URL = process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -179,5 +196,43 @@ describe("claude_local environment diagnostics", () => {
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+  });
+
+  it("returns status=fail when probe exits 0 but reports is_error: true (silent failure)", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-claude-silent-fail-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const commandPath = path.join(binDir, "claude");
+
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
+    await writeSilentFailureClaudeCommand(commandPath);
+
+    try {
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          command: commandPath,
+          cwd,
+        },
+      });
+
+      expect(result.status).toBe("fail");
+      const silentCheck = result.checks.find(
+        (check) => check.code === "claude_hello_probe_silent_failure",
+      );
+      expect(silentCheck).toBeDefined();
+      expect(silentCheck?.level).toBe("error");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

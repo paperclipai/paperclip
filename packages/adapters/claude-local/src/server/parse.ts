@@ -177,3 +177,14 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
 }
+
+/**
+ * Returns true when Claude exits with code 0 but the result JSON has is_error: true.
+ * This occurs on credit exhaustion, silent permission denial, or other pre-execution
+ * failures that Claude Code does not surface via a non-zero exit code.
+ * @see https://github.com/paperclipai/paperclip/issues/3148
+ */
+export function isClaudeSilentFailure(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  return parsed.is_error === true;
+}

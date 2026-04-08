@@ -15,7 +15,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { detectClaudeLoginRequired, isClaudeSilentFailure, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -211,6 +211,14 @@ export async function testEnvironment(
           hint: loginMeta.loginUrl
             ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
             : "Run `claude login` in this environment, then retry the probe.",
+        });
+      } else if ((probe.exitCode ?? 1) === 0 && isClaudeSilentFailure(parsed)) {
+        checks.push({
+          code: "claude_hello_probe_silent_failure",
+          level: "error",
+          message: "Claude probe exited successfully but reported is_error: true — likely a credit or permission issue.",
+          ...(detail ? { detail } : {}),
+          hint: "Check your Claude credit balance and verify --dangerously-skip-permissions is supported by your Claude Code version.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();

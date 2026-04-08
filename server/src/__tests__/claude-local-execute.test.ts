@@ -70,6 +70,26 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeSilentFailureClaudeCommand(
+  commandPath: string,
+  opts: { result: string; isError: boolean; subtype?: string },
+): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({
+  type: "result",
+  subtype: ${JSON.stringify(opts.subtype ?? "success")},
+  is_error: ${opts.isError},
+  session_id: "claude-session-1",
+  result: ${JSON.stringify(opts.result)},
+  usage: { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+  total_cost_usd: 0,
+}));
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -327,6 +347,93 @@ describe("claude execute", () => {
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(result.sessionId).toBe("claude-session-2");
       expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression tests for https://github.com/paperclipai/paperclip/issues/3148
+   *
+   * When Claude Code exits with code 0 but reports is_error: true (credit
+   * exhaustion, silent permission denial), the run must be classified as
+   * failed — not succeeded.
+   */
+  it("classifies run as failed when Claude exits 0 but reports is_error:true with credit exhaustion message", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-credit-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (p) => writeSilentFailureClaudeCommand(p, {
+        result: "Credit balance is too low",
+        isError: true,
+        subtype: "success",
+      }),
+    });
+    try {
+      const result = await execute({
+        runId: "run-credit",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, env: {}, promptTemplate: "Do work." },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.errorMessage).toBeTruthy();
+      expect(result.errorMessage).toContain("Credit balance is too low");
+      expect(result.errorCode).toBe("claude_silent_failure");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies run as failed when Claude exits 0 but reports is_error:true with permission denial", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-perm-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (p) => writeSilentFailureClaudeCommand(p, {
+        result: "Permission denied",
+        isError: true,
+        subtype: "error",
+      }),
+    });
+    try {
+      const result = await execute({
+        runId: "run-perm",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, env: {}, promptTemplate: "Do work." },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.errorMessage).toBeTruthy();
+      expect(result.errorMessage).toContain("Permission denied");
+      expect(result.errorCode).toBe("claude_silent_failure");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag a genuine success as a silent failure", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-genuine-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    try {
+      const result = await execute({
+        runId: "run-genuine",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, env: {}, promptTemplate: "Do work." },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      expect(result.errorMessage).toBeFalsy();
+      expect(result.errorCode).toBeFalsy();
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
