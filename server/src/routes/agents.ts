@@ -403,6 +403,25 @@ export function agentRoutes(db: Db) {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  function deriveHeartbeatRunIssueId(run: { contextSnapshot: unknown }): string | null {
+    const context = asRecord(run.contextSnapshot);
+    return asNonEmptyString(context?.issueId);
+  }
+
+  async function serializeHeartbeatRun(
+    run: Record<string, unknown> & { contextSnapshot: unknown },
+    currentUserRedactionOptions?: Awaited<ReturnType<typeof getCurrentUserRedactionOptions>>,
+    extraFields?: Record<string, unknown>,
+  ) {
+    const redactionOptions = currentUserRedactionOptions ?? await getCurrentUserRedactionOptions();
+    const redactedRun = redactCurrentUserValue(run, redactionOptions);
+    return {
+      ...redactedRun,
+      issueId: deriveHeartbeatRunIssueId(run),
+      ...(extraFields ?? {}),
+    };
+  }
+
   function preserveInstructionsBundleConfig(
     existingAdapterConfig: Record<string, unknown>,
     nextAdapterConfig: Record<string, unknown>,
@@ -2207,7 +2226,8 @@ export function agentRoutes(db: Db) {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
-    res.json(runs);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    res.json(await Promise.all(runs.map((run) => serializeHeartbeatRun(run, currentUserRedactionOptions))));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
@@ -2274,7 +2294,7 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    res.json(redactCurrentUserValue(run, await getCurrentUserRedactionOptions()));
+    res.json(await serializeHeartbeatRun(run));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
@@ -2330,6 +2350,15 @@ export function agentRoutes(db: Db) {
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
+    if (!run.logStore || !run.logRef) {
+      res.json({
+        runId,
+        store: run.logStore ?? null,
+        logRef: run.logRef ?? null,
+        content: "",
+      });
+      return;
+    }
     const result = await heartbeat.readLog(runId, {
       offset: Number.isFinite(offset) ? offset : 0,
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
@@ -2445,12 +2474,11 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    res.json({
-      ...redactCurrentUserValue(run, await getCurrentUserRedactionOptions()),
+    res.json(await serializeHeartbeatRun(run, undefined, {
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
-    });
+    }));
   });
 
   return router;

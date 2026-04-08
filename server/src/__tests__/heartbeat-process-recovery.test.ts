@@ -228,6 +228,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("cancels a queued process-loss retry when the linked issue is already cancelled", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "paused",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows.find((row) => row.id !== runId) ?? null);
+    expect(retryRun?.status).toBe("queued");
+
+    await db
+      .update(issues)
+      .set({
+        status: "cancelled",
+        updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(agents)
+      .set({
+        status: "idle",
+        updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      })
+      .where(eq(agents.id, agentId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const cancelledRetry = retryRun ? await heartbeat.getRun(retryRun.id) : null;
+    expect(cancelledRetry?.status).toBe("cancelled");
+    expect(cancelledRetry?.error).toBe("Cancelled because the linked issue is cancelled");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
+  });
+
   it("does not queue a second retry after the first process-loss retry was already used", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
