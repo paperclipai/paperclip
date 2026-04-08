@@ -249,6 +249,19 @@ export {
 } from "./room.js";
 
 export {
+  LEADER_PROCESS_STATUSES,
+  leaderProcessStatusSchema,
+  stopLeaderProcessSchema,
+  startLeaderProcessSchema,
+  leaderProcessLogQuerySchema,
+  type LeaderProcessStatus,
+  type StopLeaderProcess,
+  type StartLeaderProcess,
+  type LeaderProcessLogQuery,
+  type LeaderProcessResponse,
+} from "./leader-process.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

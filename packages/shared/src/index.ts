@@ -675,6 +675,16 @@ export {
   type UpdateActionStatus,
   type LinkRoomIssue,
   type RoomAttachment,
+  LEADER_PROCESS_STATUSES,
+  leaderProcessStatusSchema,
+  stopLeaderProcessSchema,
+  startLeaderProcessSchema,
+  leaderProcessLogQuerySchema,
+  type LeaderProcessStatus,
+  type StopLeaderProcess,
+  type StartLeaderProcess,
+  type LeaderProcessLogQuery,
+  type LeaderProcessResponse,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

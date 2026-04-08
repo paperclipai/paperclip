@@ -449,6 +449,20 @@
       "when": 1775809000000,
       "tag": "0063_cos_action_execution",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1775809100000,
+      "tag": "0064_cos_leader_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1775809200000,
+      "tag": "0065_cos_agent_sessions",
+      "breakpoints": true
     }
   ]
 }

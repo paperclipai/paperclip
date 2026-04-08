@@ -72,3 +72,5 @@ export { rooms } from "./rooms.js";
 export { roomParticipants } from "./room_participants.js";
 export { roomMessages } from "./room_messages.js";
 export { roomIssues } from "./room_issues.js";
+export { leaderProcesses } from "./leader_processes.js";
+export { agentSessions } from "./agent_sessions.js";
