@@ -325,6 +325,22 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+
+  // Fetch workspaces for the selected project
+  const { data: projectWorkspaces } = useQuery({
+    queryKey: queryKeys.projects.detail(projectId),
+    queryFn: () => projectsApi.get(projectId),
+    enabled: !!projectId && newIssueOpen,
+  });
+  const workspaceOptions = useMemo(
+    () => (projectWorkspaces?.workspaces ?? []).map((w) => ({
+      id: w.id,
+      label: w.isPrimary ? `★ ${w.name}` : w.name,
+      searchText: w.description ?? undefined,
+    })),
+    [projectWorkspaces?.workspaces],
+  );
+
   const { data: reusableExecutionWorkspaces } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
       projectId,
@@ -1153,6 +1169,30 @@ export function NewIssueDialog() {
                   );
                 }}
               />
+              {workspaceOptions.length > 1 && (
+                <>
+                  <span>→</span>
+                  <InlineEntitySelector
+                    value={projectWorkspaceId}
+                    options={workspaceOptions}
+                    placeholder="Workspace"
+                    disablePortal
+                    noneLabel="Default workspace"
+                    searchPlaceholder="Search workspaces..."
+                    emptyMessage="No workspaces found."
+                    onChange={(id) => {
+                      setProjectWorkspaceId(id);
+                      setSelectedExecutionWorkspaceId("");
+                    }}
+                    renderTriggerValue={(option) => (
+                      <span className="truncate">{option?.label ?? "Workspace"}</span>
+                    )}
+                    renderOption={(option) => (
+                      <span className="truncate">{option.label}</span>
+                    )}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>

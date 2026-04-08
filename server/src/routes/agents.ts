@@ -1857,9 +1857,10 @@ export function agentRoutes(db: Db) {
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    let changingAdapterType = false;
     if (touchesAdapterConfiguration) {
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
-      const changingAdapterType =
+      changingAdapterType =
         typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
       const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
@@ -1926,6 +1927,13 @@ export function agentRoutes(db: Db) {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    if (changingAdapterType) {
+      // Adapter session formats are adapter-specific. Clear any saved runtime
+      // state and task sessions so a newly selected adapter does not try to
+      // resume an incompatible session from the previous adapter.
+      await heartbeat.resetRuntimeSession(id);
     }
 
     await logActivity(db, {

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(github.com)",
+      "WebFetch(qwenlm.github.io)",
+      "Bash(pnpm *)",
+      "Bash(ls *)",
+      "Bash(git commit *)",
+      "Bash(npx *)",
+      "Bash(git add *)",
+      "Bash(git push)"
+    ]
+  },
+  "$version": 3
+}

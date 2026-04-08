@@ -25,6 +25,9 @@ concurrency:
   group: release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   verify_canary:
     if: github.event_name == 'push'

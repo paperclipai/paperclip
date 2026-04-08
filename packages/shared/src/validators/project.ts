@@ -38,6 +38,7 @@ const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
 
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
+  description: z.string().optional().nullable(),
   sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
   repoUrl: z.string().url().optional().nullable(),

@@ -18,6 +18,7 @@ export const projectWorkspaces = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    description: text("description"),
     sourceType: text("source_type").notNull().default("local_path"),
     cwd: text("cwd"),
     repoUrl: text("repo_url"),

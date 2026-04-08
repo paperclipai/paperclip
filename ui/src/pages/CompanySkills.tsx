@@ -52,6 +52,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Trash2,
 } from "lucide-react";
 
 type SkillTreeNode = {
@@ -505,6 +506,8 @@ function SkillPane({
   installUpdatePending,
   onSave,
   savePending,
+  onDelete,
+  deletePending,
 }: {
   loading: boolean;
   detail: CompanySkillDetail | null | undefined;
@@ -524,6 +527,8 @@ function SkillPane({
   installUpdatePending: boolean;
   onSave: () => void;
   savePending: boolean;
+  onDelete?: () => void;
+  deletePending?: boolean;
 }) {
   const { pushToast } = useToast();
 
@@ -569,6 +574,16 @@ function SkillPane({
             </button>
           ) : (
             <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
+          )}
+          {onDelete && detail.sourceBadge !== "paperclip" && (
+            <button
+              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-destructive transition-colors"
+              onClick={onDelete}
+              disabled={deletePending}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deletePending ? "Removing..." : "Remove"}
+            </button>
           )}
         </div>
 
@@ -987,6 +1002,25 @@ export function CompanySkills() {
     },
   });
 
+  const removeSkill = useMutation({
+    mutationFn: () => companySkillsApi.remove(selectedCompanyId!, selectedSkillId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      navigate(`/skills`);
+      pushToast({
+        tone: "success",
+        title: "Skill removed",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Delete failed",
+        body: error instanceof Error ? error.message : "Failed to delete skill.",
+      });
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
   }
@@ -1162,6 +1196,12 @@ export function CompanySkills() {
             installUpdatePending={installUpdate.isPending}
             onSave={() => saveFile.mutate()}
             savePending={saveFile.isPending}
+            onDelete={() => {
+              if (confirm(`Remove skill "${activeDetail?.name}"? This cannot be undone.`)) {
+                removeSkill.mutate();
+              }
+            }}
+            deletePending={removeSkill.isPending}
           />
         </div>
       </div>

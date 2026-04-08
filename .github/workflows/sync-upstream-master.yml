@@ -6,11 +6,14 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch: # Allow manual trigger
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
 
 jobs:
-  sync-main:
+  sync-master:
     runs-on: ubuntu-latest
     if: github.repository != 'paperclipai/paperclip'
     steps:
