@@ -130,6 +130,43 @@ describe("buildAssistantPartsFromTranscript", () => {
     ]);
   });
 
+  it("treats a completed tool-only segment as resolved once a tool_result arrives", () => {
+    const result = buildAssistantPartsFromTranscript([
+      { kind: "thinking", ts: "2026-04-06T12:00:00.000Z", text: "Checking the task." },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T12:00:01.000Z",
+        name: "search",
+        toolUseId: "tool-1",
+        input: { query: "paperclip" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T12:00:02.000Z",
+        toolUseId: "tool-1",
+        content: "search completed",
+        isError: false,
+      },
+      { kind: "assistant", ts: "2026-04-06T12:00:03.000Z", text: "Found the relevant code." },
+    ]);
+
+    expect(result.parts).toMatchObject([
+      { type: "reasoning", text: "Checking the task." },
+      {
+        type: "tool-call",
+        toolCallId: "tool-1",
+        toolName: "search",
+        result: "search completed",
+        isError: false,
+      },
+      { type: "text", text: "Found the relevant code." },
+    ]);
+    expect(result.segments).toEqual([{
+      startMs: new Date("2026-04-06T12:00:00.000Z").getTime(),
+      endMs: new Date("2026-04-06T12:00:02.000Z").getTime(),
+    }]);
+  });
+
   it("keeps run errors while suppressing init and system transcript noise", () => {
     const result = buildAssistantPartsFromTranscript([
       {
