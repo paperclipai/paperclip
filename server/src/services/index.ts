@@ -15,6 +15,22 @@ export { teamDocumentService } from "./team-documents.js";
 export { projectExtrasService } from "./project-extras.js";
 export { roomService } from "./rooms.js";
 export { createAgentSessionService, type AgentSessionService, type AgentSessionRecord } from "./agent-sessions.js";
+export {
+  createLeaderProcessService,
+  type LeaderProcessService,
+  type LeaderProcessStatusDetail,
+  type LeaderWorkspaceProvisioner,
+  type WorkspaceSpec,
+} from "./leader-processes.js";
+export type {
+  ProcessBackend,
+  ProcessSpec,
+  ProcessHandle,
+  ProcessInfo,
+} from "./process-backend.js";
+export { createFakeProcessBackend } from "./process-backend-fake.js";
+export { createPm2Backend, ensureLogRotateInstalled } from "./process-backend-pm2.js";
+export { createWorkspaceProvisioner } from "./workspace-provisioner.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
