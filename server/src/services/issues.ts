@@ -21,6 +21,8 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  teams,
+  teamWorkflowStatuses,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
 import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
@@ -73,6 +75,7 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  teamId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
   labelId?: string;
@@ -961,6 +964,9 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.teamId && filters.teamId.length > 0) {
+        conditions.push(eq(issues.teamId, filters.teamId));
+      }
       if (filters?.executionWorkspaceId) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
@@ -1487,24 +1493,98 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
-        const [maxRow] = await tx
-          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
-          .from(issues)
-          .where(eq(issues.companyId, companyId));
-        const currentMax = maxRow?.maxNum ?? 0;
+        // Team-aware identifier generation:
+        //  - if teamId is set, use team.identifier + team.issue_counter
+        //  - else fall back to company.issuePrefix + company.issueCounter (legacy)
+        const inputTeamId = (issueData as Record<string, unknown>).teamId as string | null | undefined;
+        let issueNumber: number;
+        let identifier: string;
+        let resolvedTeamId: string | null = null;
+        let resolvedTeamDefaultStatusSlug: string | null = null;
 
-        const [company] = await tx
-          .update(companies)
-          .set({
-            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
-          })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        if (inputTeamId) {
+          const [team] = await tx
+            .select({
+              id: teams.id,
+              identifier: teams.identifier,
+              companyId: teams.companyId,
+            })
+            .from(teams)
+            .where(and(eq(teams.id, inputTeamId), eq(teams.companyId, companyId)));
+          if (!team) {
+            throw notFound(`Team ${inputTeamId} not found in company ${companyId}`);
+          }
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+          // Self-correcting per-team counter
+          const [maxRow] = await tx
+            .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), eq(issues.teamId, team.id)));
+          const currentMax = maxRow?.maxNum ?? 0;
+
+          const [updatedTeam] = await tx
+            .update(teams)
+            .set({
+              issueCounter: sql`greatest(${teams.issueCounter}, ${currentMax}) + 1`,
+              updatedAt: new Date(),
+            })
+            .where(eq(teams.id, team.id))
+            .returning({ issueCounter: teams.issueCounter, identifier: teams.identifier });
+
+          issueNumber = updatedTeam.issueCounter;
+          identifier = `${updatedTeam.identifier}-${issueNumber}`;
+          resolvedTeamId = team.id;
+
+          // Resolve default status slug for the team
+          const [defaultStatus] = await tx
+            .select({ slug: teamWorkflowStatuses.slug })
+            .from(teamWorkflowStatuses)
+            .where(
+              and(
+                eq(teamWorkflowStatuses.teamId, team.id),
+                eq(teamWorkflowStatuses.isDefault, true),
+              ),
+            )
+            .limit(1);
+          resolvedTeamDefaultStatusSlug = defaultStatus?.slug ?? null;
+
+          // Validate explicit status against team workflow statuses
+          if (issueData.status) {
+            const [valid] = await tx
+              .select({ slug: teamWorkflowStatuses.slug })
+              .from(teamWorkflowStatuses)
+              .where(
+                and(
+                  eq(teamWorkflowStatuses.teamId, team.id),
+                  eq(teamWorkflowStatuses.slug, issueData.status),
+                ),
+              )
+              .limit(1);
+            if (!valid) {
+              throw unprocessable(
+                `Status "${issueData.status}" not allowed for this team's workflow`,
+              );
+            }
+          }
+        } else {
+          // Legacy company-wide counter
+          const [maxRow] = await tx
+            .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+            .from(issues)
+            .where(eq(issues.companyId, companyId));
+          const currentMax = maxRow?.maxNum ?? 0;
+
+          const [company] = await tx
+            .update(companies)
+            .set({
+              issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
+            })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+
+          issueNumber = company.issueCounter;
+          identifier = `${company.issuePrefix}-${issueNumber}`;
+        }
 
         const values = {
           ...issueData,
@@ -1519,10 +1599,15 @@ export function issueService(db: Db) {
           ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
           ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+          ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
           companyId,
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        // For team issues with no explicit status, use the team's default status slug
+        if (resolvedTeamId && resolvedTeamDefaultStatusSlug && !issueData.status) {
+          values.status = resolvedTeamDefaultStatusSlug;
+        }
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -2000,13 +2085,21 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .then((rows) => rows[0] ?? null),
 
-    createLabel: async (companyId: string, data: Pick<typeof labels.$inferInsert, "name" | "color">) => {
+    createLabel: async (
+      companyId: string,
+      data: Pick<typeof labels.$inferInsert, "name" | "color"> & {
+        teamId?: string | null;
+        parentId?: string | null;
+      },
+    ) => {
       const [created] = await db
         .insert(labels)
         .values({
           companyId,
           name: data.name.trim(),
           color: data.color,
+          teamId: data.teamId ?? null,
+          parentId: data.parentId ?? null,
         })
         .returning();
       return created;

@@ -614,6 +614,27 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
+export {
+  TEAM_STATUSES,
+  createTeamSchema,
+  updateTeamSchema,
+  addTeamMemberSchema,
+  type CreateTeam,
+  type UpdateTeam,
+  type AddTeamMember,
+} from "./validators/index.js";
+
+export {
+  WORKFLOW_STATUS_CATEGORIES,
+  createWorkflowStatusSchema,
+  updateWorkflowStatusSchema,
+  slugifyWorkflowStatusName,
+  DEFAULT_WORKFLOW_STATUSES,
+  type WorkflowStatusCategory,
+  type CreateWorkflowStatus,
+  type UpdateWorkflowStatus,
+} from "./validators/index.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";

@@ -118,11 +118,15 @@ export const createIssueSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  teamId: z.string().uuid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  // Status accepts either legacy ISSUE_STATUSES or team workflow status slugs.
+  // Service layer validates against team workflow if teamId is provided.
+  status: z.string().min(1).optional(),
+  estimate: z.number().int().nonnegative().optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -141,6 +145,8 @@ export type CreateIssue = z.infer<typeof createIssueSchema>;
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
+  teamId: z.string().uuid().optional().nullable(),
+  parentId: z.string().uuid().optional().nullable(),
 });
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;

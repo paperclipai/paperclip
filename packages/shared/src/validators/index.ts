@@ -186,6 +186,27 @@ export {
 } from "./goal.js";
 
 export {
+  TEAM_STATUSES,
+  createTeamSchema,
+  updateTeamSchema,
+  addTeamMemberSchema,
+  type CreateTeam,
+  type UpdateTeam,
+  type AddTeamMember,
+} from "./team.js";
+
+export {
+  WORKFLOW_STATUS_CATEGORIES,
+  createWorkflowStatusSchema,
+  updateWorkflowStatusSchema,
+  slugifyWorkflowStatusName,
+  DEFAULT_WORKFLOW_STATUSES,
+  type WorkflowStatusCategory,
+  type CreateWorkflowStatus,
+  type UpdateWorkflowStatus,
+} from "./workflow-status.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

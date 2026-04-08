@@ -372,6 +372,34 @@
       "when": 1775571715162,
       "tag": "0052_mushy_trauma",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1775808000000,
+      "tag": "0053_cos_teams",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775808100000,
+      "tag": "0054_cos_workflow_statuses",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1775808200000,
+      "tag": "0055_cos_issue_team",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1775808300000,
+      "tag": "0056_cos_labels_relations_estimates",
+      "breakpoints": true
     }
   ]
 }
