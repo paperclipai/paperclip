@@ -82,30 +82,19 @@ function TeamBranch({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="flex items-center">
-        <CollapsibleTrigger
-          className="shrink-0 h-6 w-6 flex items-center justify-center text-muted-foreground/70 hover:text-foreground"
-          aria-label={open ? `Collapse ${team.name}` : `Expand ${team.name}`}
-          style={{ marginLeft: `${depth * 14}px` }}
-        >
-          <ChevronRight
-            className={cn(
-              "h-3 w-3 transition-transform",
-              open && "rotate-90",
-            )}
-          />
-        </CollapsibleTrigger>
+      <div className="group/branch flex items-center">
         <NavLink
           to={`/teams/${team.id}`}
           onMouseEnter={() => onHoverPrefetch(team.id)}
           className={({ isActive }) =>
             cn(
-              "flex-1 flex items-center gap-2.5 pl-1 pr-3 py-1.5 text-[13px] font-semibold transition-colors min-w-0",
+              "flex-1 flex items-center gap-2.5 pr-1 py-1.5 text-[13px] font-semibold transition-colors min-w-0",
               isActive
                 ? "bg-accent text-foreground"
                 : "text-foreground/90 hover:bg-accent/50 hover:text-foreground",
             )
           }
+          style={{ paddingLeft: `${12 + depth * 14}px` }}
         >
           <span
             className="shrink-0 h-3.5 w-3.5 rounded-sm flex items-center justify-center text-[9px] font-bold text-white"
@@ -115,6 +104,17 @@ function TeamBranch({
           </span>
           <span className="flex-1 truncate">{team.name}</span>
         </NavLink>
+        <CollapsibleTrigger
+          className="shrink-0 h-6 w-6 mr-2 flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 rounded"
+          aria-label={open ? `Collapse ${team.name}` : `Expand ${team.name}`}
+        >
+          <ChevronRight
+            className={cn(
+              "h-3 w-3 transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        </CollapsibleTrigger>
       </div>
       <CollapsibleContent>
         {team.children.map((child) =>
