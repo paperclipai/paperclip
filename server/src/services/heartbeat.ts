@@ -686,6 +686,41 @@ export function heartbeatService(db: Db) {
     return rows[0]?.agent ?? null;
   }
 
+  /**
+   * Run a DeerFlow research pre-flight for a claude_local heartbeat run.
+   *
+   * **Invocation semantics: once per heartbeat run, NOT once per issue.**
+   *
+   * This function is called exactly once, at the top of a claude_local run,
+   * against the issue that the heartbeat picked up from the inbox (the one
+   * in `context.issueId`). If the engineer's adapter then decides — within
+   * that same run — to work through additional inbox items in a single
+   * session (which the claude_local adapter does when `inbox_remaining` wakes
+   * queue up multiple tasks), those secondary items do NOT get their own
+   * pre-flight brief. Only the first item the heartbeat run was triggered
+   * on sees one.
+   *
+   * This is a structural consequence of where the hook lives (at the
+   * heartbeat → adapter boundary, not inside the adapter's per-issue loop),
+   * and it's been observed empirically: running four test issues back-to-back
+   * in a benchmark resulted in one pre-flight comment on the first issue
+   * and zero on the other three, all sharing the same execution_run_id.
+   *
+   * Implications for callers relying on pre-flight research:
+   *   - If a managing agent wants a research brief on EVERY child task it
+   *     creates, it should either (a) create the children and let the inbox
+   *     drain gradually so each gets its own heartbeat run, or (b) post the
+   *     brief itself via the comment API rather than relying on pre-flight.
+   *   - If an engineer sees no `<!-- deerflow:research -->` tagged comment
+   *     on an issue it's processing, it doesn't mean the pre-flight
+   *     mechanism is broken — it may just mean this is the 2nd+ item in the
+   *     same heartbeat run.
+   *
+   * The dedup check below (looking for an existing tagged comment on the
+   * same issue) prevents duplicate pre-flights if the engineer's run is
+   * externally re-triggered on an issue that already has a brief — a
+   * separate concern from the batching semantics above.
+   */
   async function runDeerFlowPreflight(
     deerflowAgent: typeof agents.$inferSelect,
     parentRun: typeof heartbeatRuns.$inferSelect,
