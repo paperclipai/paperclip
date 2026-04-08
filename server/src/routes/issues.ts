@@ -263,7 +263,10 @@ export function issueRoutes(
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
+    // Team identifiers can include digits (e.g. ENG2, PLT3) since Phase 1,
+    // so the regex must allow alphanumeric after the first letter.
+    // Shape: PREFIX-NUMBER where PREFIX is [A-Z][A-Z0-9]*.
+    if (/^[A-Z][A-Z0-9]*-\d+$/i.test(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
       if (issue) {
         return issue.id;
@@ -453,6 +456,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
+    // router.param("id", ...) above already normalizes identifiers → uuid.
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
