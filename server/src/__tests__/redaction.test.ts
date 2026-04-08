@@ -97,4 +97,16 @@ describe("redaction", () => {
     expect(result.email).toBe("test@test.com");
     expect(result.rememberMe).toBe(true);
   });
+
+  it("redacts bare 'token' key not covered by compound forms", () => {
+    const body = {
+      token: "raw-bearer-value",
+      userId: "user-123",
+      email: "user@example.com",
+    };
+    const result = sanitizeRecord(body);
+    expect(result.token).toBe(REDACTED_EVENT_VALUE);
+    expect(result.userId).toBe("user-123");
+    expect(result.email).toBe("user@example.com");
+  });
 });
