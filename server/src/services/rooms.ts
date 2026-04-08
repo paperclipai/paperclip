@@ -56,14 +56,85 @@ async function assertUserInCompany(
   }
 }
 
+/**
+ * Assert that the given actor (agent or user) is a participant of the room.
+ * Throws 403 otherwise. Returns the matching participant row.
+ *
+ * This enforces the "rooms are private" contract — assertCompanyAccess
+ * only checks company-level access, not room-level membership.
+ */
+export async function assertRoomParticipant(
+  tx: { select: Db["select"] },
+  roomId: string,
+  actor: { agentId?: string | null; userId?: string | null },
+): Promise<{ id: string; role: string; agentId: string | null; userId: string | null }> {
+  if (!actor.agentId && !actor.userId) {
+    throw Object.assign(new Error(`Anonymous actor cannot access room`), { status: 403 });
+  }
+  const conds = [eq(roomParticipants.roomId, roomId)];
+  if (actor.agentId) {
+    conds.push(eq(roomParticipants.agentId, actor.agentId));
+  } else if (actor.userId) {
+    conds.push(eq(roomParticipants.userId, actor.userId));
+  }
+  const [row] = await tx
+    .select({
+      id: roomParticipants.id,
+      role: roomParticipants.role,
+      agentId: roomParticipants.agentId,
+      userId: roomParticipants.userId,
+    })
+    .from(roomParticipants)
+    .where(and(...conds))
+    .limit(1);
+  if (!row) {
+    throw Object.assign(new Error(`Not a participant of this room`), { status: 403 });
+  }
+  return row;
+}
+
 export function roomService(db: Db) {
   return {
-    list: (companyId: string) =>
-      db
-        .select()
+    /**
+     * List rooms in a company, filtered to rooms the caller is a participant of.
+     * Prevents information leak of private room names to non-members.
+     */
+    list: (
+      companyId: string,
+      actor: { agentId?: string | null; userId?: string | null },
+    ) => {
+      // Subquery: room_ids the actor participates in
+      const participantConds = [eq(roomParticipants.companyId, companyId)];
+      if (actor.agentId) {
+        participantConds.push(eq(roomParticipants.agentId, actor.agentId));
+      } else if (actor.userId) {
+        participantConds.push(eq(roomParticipants.userId, actor.userId));
+      } else {
+        return Promise.resolve([]);
+      }
+      return db
+        .select({
+          id: rooms.id,
+          companyId: rooms.companyId,
+          name: rooms.name,
+          description: rooms.description,
+          status: rooms.status,
+          createdByUserId: rooms.createdByUserId,
+          createdByAgentId: rooms.createdByAgentId,
+          createdAt: rooms.createdAt,
+          updatedAt: rooms.updatedAt,
+        })
         .from(rooms)
+        .innerJoin(
+          roomParticipants,
+          and(
+            eq(roomParticipants.roomId, rooms.id),
+            ...participantConds,
+          ),
+        )
         .where(and(eq(rooms.companyId, companyId), ne(rooms.status, "deleted")))
-        .orderBy(desc(rooms.createdAt)),
+        .orderBy(desc(rooms.createdAt));
+    },
 
     getById: (id: string) =>
       db
@@ -78,8 +149,12 @@ export function roomService(db: Db) {
       actor: { agentId?: string | null; userId?: string | null },
     ) => {
       return db.transaction(async (tx) => {
+        // Validate creator belongs to this company (P0 — code-reviewer)
         if (actor.agentId) {
           await assertAgentInCompany(tx, actor.agentId, companyId);
+        }
+        if (actor.userId) {
+          await assertUserInCompany(tx, actor.userId, companyId);
         }
         const [room] = await tx
           .insert(rooms)
@@ -264,23 +339,80 @@ export function roomService(db: Db) {
       });
     },
 
+    /**
+     * Update an action message's status. Only allows the target agent (or a
+     * room owner) to transition pending → executed | failed. Terminal states
+     * cannot regress. Idempotent re-application of the same terminal state
+     * is rejected as a 409.
+     */
     updateActionStatus: async (
       roomId: string,
       messageId: string,
-      status: RoomActionStatus,
+      nextStatus: RoomActionStatus,
+      actor: { agentId?: string | null; userId?: string | null },
     ) => {
-      const [row] = await db
-        .update(roomMessages)
-        .set({ actionStatus: status })
-        .where(
-          and(
-            eq(roomMessages.id, messageId),
-            eq(roomMessages.roomId, roomId),
-            eq(roomMessages.type, "action"),
-          ),
-        )
-        .returning();
-      return row ?? null;
+      return db.transaction(async (tx) => {
+        // Must be a room participant
+        const participant = await assertRoomParticipant(tx, roomId, actor);
+
+        // Load the action message scoped to this room
+        const [msg] = await tx
+          .select({
+            id: roomMessages.id,
+            type: roomMessages.type,
+            actionStatus: roomMessages.actionStatus,
+            actionTargetAgentId: roomMessages.actionTargetAgentId,
+          })
+          .from(roomMessages)
+          .where(
+            and(
+              eq(roomMessages.id, messageId),
+              eq(roomMessages.roomId, roomId),
+              eq(roomMessages.type, "action"),
+            ),
+          )
+          .limit(1);
+        if (!msg) {
+          throw Object.assign(new Error(`Action message not found in this room`), {
+            status: 404,
+          });
+        }
+
+        // Authorization: only the target agent or a room owner may update
+        const isTarget =
+          actor.agentId && msg.actionTargetAgentId && actor.agentId === msg.actionTargetAgentId;
+        const isOwner = participant.role === "owner";
+        if (!isTarget && !isOwner) {
+          throw Object.assign(
+            new Error(`Only the target agent or a room owner may update action status`),
+            { status: 403 },
+          );
+        }
+
+        // Transition guard: pending is the only valid source state;
+        // terminal (executed | failed) cannot regress.
+        if (msg.actionStatus !== "pending") {
+          throw Object.assign(
+            new Error(
+              `Cannot transition action_status from "${msg.actionStatus}" to "${nextStatus}"`,
+            ),
+            { status: 409 },
+          );
+        }
+        if (nextStatus !== "executed" && nextStatus !== "failed") {
+          throw Object.assign(
+            new Error(`Invalid terminal action_status "${nextStatus}"`),
+            { status: 422 },
+          );
+        }
+
+        const [row] = await tx
+          .update(roomMessages)
+          .set({ actionStatus: nextStatus })
+          .where(eq(roomMessages.id, messageId))
+          .returning();
+        return row ?? null;
+      });
     },
 
     // === Issues link (N:M) ===
