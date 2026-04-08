@@ -475,13 +475,6 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
-    const betterAuthSecret =
-      process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
-    if (!betterAuthSecret) {
-      throw new Error(
-        "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
-      );
-    }
     const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
