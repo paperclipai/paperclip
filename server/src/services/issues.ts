@@ -1780,9 +1780,15 @@ export function issueService(db: Db) {
           or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
         )
         : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
+      const queuedExecutionRunCondition = sql<boolean>`exists (
+        select 1
+        from ${heartbeatRuns}
+        where ${heartbeatRuns.id} = ${issues.executionRunId}
+          and ${heartbeatRuns.status} = 'queued'
+      )`;
       const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
-        : isNull(issues.executionRunId);
+        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId), queuedExecutionRunCondition)
+        : or(isNull(issues.executionRunId), queuedExecutionRunCondition);
       const updated = await db
         .update(issues)
         .set({
@@ -1823,12 +1829,20 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+      const currentExecutionRunStatus = current.executionRunId
+        ? await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, current.executionRunId))
+          .then((rows) => rows[0]?.status ?? null)
+        : null;
+      const currentExecutionRunIsQueued = currentExecutionRunStatus === "queued";
 
       if (
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
+        (current.executionRunId == null || current.executionRunId === checkoutRunId || currentExecutionRunIsQueued) &&
         checkoutRunId
       ) {
         const adopted = await db
@@ -1844,7 +1858,7 @@ export function issueService(db: Db) {
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId), queuedExecutionRunCondition),
             ),
           )
           .returning()

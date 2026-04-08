@@ -2185,16 +2185,94 @@ export function heartbeatService(db: Db) {
     }
 
     const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
+    const issueId = readNonEmptyString(context.issueId);
+    const agentNameKey = normalizeAgentNameKey(agent.name);
+    const claimed = issueId
+      ? await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where id = ${issueId} and company_id = ${run.companyId} for update`,
+        );
+
+        const issue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        const currentExecutionRun = issue?.executionRunId
+          ? await tx
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, issue.executionRunId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+
+        if (currentExecutionRun && currentExecutionRun.id !== run.id) {
+          return { claimed: null, cancelReason: "Cancelled because the issue is already owned by another execution run" };
+        }
+
+        if (
+          issue &&
+          issue.executionRunId == null &&
+          issue.status === "in_progress" &&
+          issue.checkoutRunId == null
+        ) {
+          return { claimed: null, cancelReason: "Cancelled because the issue execution lock was cleared before this queued run was claimed" };
+        }
+
+        const claimedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "running",
+            startedAt: run.startedAt ?? claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (!claimedRun) {
+          return { claimed: null, cancelReason: null };
+        }
+
+        if (issue) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: claimedRun.id,
+              executionAgentNameKey: agentNameKey,
+              executionLockedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+            .where(eq(issues.id, issue.id));
+        }
+
+        return { claimed: claimedRun, cancelReason: null };
+      }).then(async (result) => {
+        if (result.cancelReason) {
+          await cancelRunInternal(run.id, result.cancelReason);
+          return null;
+        }
+        return result.claimed;
       })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+      : await db
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
     publishLiveEvent({
