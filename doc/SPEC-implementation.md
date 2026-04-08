@@ -148,6 +148,8 @@ Invariants:
 - agent and manager must be in same company
 - no cycles in reporting tree
 - `terminated` agents cannot be resumed
+- adapter-specific config validation must run consistently for direct creation, approved joins, approval-created hires, and company import flows
+- `opencode_local` agent configs must include an explicit `model` in `provider/model` format before they are persisted
 
 ## 7.3 `agent_api_keys`
 
