@@ -29,6 +29,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { teamsApi, type AgentTeamMembership } from "../api/teams";
+import { leaderProcessesApi, type LeaderProcessStatus } from "../api/leader-processes";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
@@ -1280,6 +1281,40 @@ function AgentOverview({
     enabled: !!agent.companyId && !!agent.id && leadsTeams,
   });
 
+  const cliStatusQueryKey = ["agent-cli-status", agent.companyId, agent.id] as const;
+  const { data: cliStatus } = useQuery({
+    queryKey: cliStatusQueryKey,
+    queryFn: () => leaderProcessesApi.status(agent.companyId, agent.id),
+    enabled: !!agent.companyId && !!agent.id && leadsTeams,
+    refetchInterval: (q) => {
+      const s = (q.state.data as any)?.row?.status as LeaderProcessStatus | undefined;
+      // Poll faster while the process is in a transient state
+      return s === "starting" || s === "stopping" ? 1000 : 5000;
+    },
+  });
+
+  const cliLogsQueryKey = ["agent-cli-logs", agent.companyId, agent.id] as const;
+  const { data: cliLogs } = useQuery({
+    queryKey: cliLogsQueryKey,
+    queryFn: () => leaderProcessesApi.logs(agent.companyId, agent.id, { lines: 20 }),
+    enabled: !!agent.companyId && !!agent.id && leadsTeams && cliStatus?.row?.status === "running",
+    refetchInterval: 2000,
+  });
+
+  const qc2 = useQueryClient();
+  const startCliMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.start(agent.companyId, agent.id),
+    onSuccess: () => qc2.invalidateQueries({ queryKey: cliStatusQueryKey }),
+  });
+  const stopCliMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.stop(agent.companyId, agent.id),
+    onSuccess: () => qc2.invalidateQueries({ queryKey: cliStatusQueryKey }),
+  });
+  const restartCliMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.restart(agent.companyId, agent.id),
+    onSuccess: () => qc2.invalidateQueries({ queryKey: cliStatusQueryKey }),
+  });
+
   return (
     <div className="space-y-8">
       {/* Latest Run */}
@@ -1335,6 +1370,115 @@ function AgentOverview({
           </div>
         </div>
       )}
+
+      {/* CLI Process (leader only) */}
+      {leadsTeams && (() => {
+        const row = cliStatus?.row ?? null;
+        const status = row?.status ?? "stopped";
+        const dotClass =
+          status === "running"
+            ? "bg-emerald-500"
+            : status === "starting"
+              ? "bg-blue-500 animate-pulse"
+              : status === "stopping"
+                ? "bg-amber-500 animate-pulse"
+                : status === "crashed"
+                  ? "bg-red-500"
+                  : "bg-muted-foreground/40";
+        const isIdle = status === "stopped" || status === "crashed";
+        const isBusy =
+          startCliMutation.isPending ||
+          stopCliMutation.isPending ||
+          restartCliMutation.isPending;
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium">CLI Process</h3>
+                <span className={`inline-block h-2 w-2 rounded-full ${dotClass}`} aria-hidden />
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {status}
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                {isIdle && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    disabled={isBusy}
+                    onClick={() => startCliMutation.mutate()}
+                  >
+                    {startCliMutation.isPending ? "Starting..." : "Start"}
+                  </Button>
+                )}
+                {!isIdle && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      disabled={isBusy}
+                      onClick={() => stopCliMutation.mutate()}
+                    >
+                      {stopCliMutation.isPending ? "Stopping..." : "Stop"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      disabled={isBusy}
+                      onClick={() => restartCliMutation.mutate()}
+                    >
+                      Restart
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="border border-border rounded-lg bg-muted/10 p-4 space-y-2">
+              {row ? (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
+                  <div className="text-muted-foreground">Session</div>
+                  <div>{row.sessionId?.slice(0, 8) ?? "—"}</div>
+                  <div className="text-muted-foreground">PM2 name</div>
+                  <div>{row.pm2Name ?? "—"}</div>
+                  <div className="text-muted-foreground">PID</div>
+                  <div>{row.pid ?? "—"}</div>
+                  <div className="text-muted-foreground">Started</div>
+                  <div>{row.startedAt ? new Date(row.startedAt).toLocaleString() : "—"}</div>
+                  {row.exitReason && (
+                    <>
+                      <div className="text-muted-foreground">Exit reason</div>
+                      <div className="text-amber-600 dark:text-amber-400">{row.exitReason}</div>
+                    </>
+                  )}
+                  {row.errorMessage && (
+                    <>
+                      <div className="text-muted-foreground">Error</div>
+                      <div className="text-destructive">{row.errorMessage}</div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[12px] text-muted-foreground">
+                  No CLI process provisioned yet. Click <b>Start</b> to spawn.
+                </div>
+              )}
+              {cliLogs?.lines && cliLogs.lines.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                    Recent log (stdout)
+                  </div>
+                  <pre className="text-[11px] font-mono bg-background/60 border border-border/40 rounded px-2 py-1 max-h-48 overflow-auto whitespace-pre-wrap">
+                    {cliLogs.lines.join("\n")}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Team Instructions (leader only) */}
       {leaderInstructions && leaderInstructions.teams.length > 0 && (
