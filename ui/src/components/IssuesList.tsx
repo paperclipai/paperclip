@@ -28,7 +28,7 @@ import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
 
-const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
+const statusOrder = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
 
 function statusLabel(status: string): string {
@@ -579,7 +579,7 @@ export function IssuesList({
                     >
                       <span>{label}</span>
                       {viewState.sortField === field && (
-                        <span className="text-xs text-muted-foreground">
+                        <span className="text-xs text-muted-foreground" aria-label={`sorted ${viewState.sortDir === "asc" ? "ascending" : "descending"}`}>
                           {viewState.sortDir === "asc" ? "\u2191" : "\u2193"}
                         </span>
                       )}
