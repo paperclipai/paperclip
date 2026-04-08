@@ -14,6 +14,7 @@ import {
   Sparkles,
   Terminal,
   Cpu,
+  Camera,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
@@ -83,6 +84,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Pi",
     description: "Local Pi agent",
     icon: Terminal,
+  },
+  pixel_local: {
+    label: "Pixel",
+    description: "Local Pixel coding agent",
+    icon: Camera,
   },
   cursor: {
     label: "Cursor",

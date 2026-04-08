@@ -45,6 +45,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
+  } else if (adapterType === "pixel_local") {
+    nextValues.model = "";
   }
   return nextValues;
 }
