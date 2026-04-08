@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { sanitizeRecord } from "../redaction.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -28,7 +29,14 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: [
+    "req.headers.authorization",
+    "reqBody.password",
+    "reqBody.currentPassword",
+    "reqBody.newPassword",
+    "reqBody.token",
+    "reqBody.secret",
+  ],
 }, pino.transport({
   targets: [
     {
@@ -65,7 +73,7 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: ctx.reqBody && typeof ctx.reqBody === "object" ? sanitizeRecord(ctx.reqBody) : ctx.reqBody,
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
@@ -73,7 +81,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeRecord(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
