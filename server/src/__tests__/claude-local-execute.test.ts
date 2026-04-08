@@ -9,10 +9,14 @@ async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
+const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  appendedSystemPromptFilePath,
+  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -25,20 +29,65 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", res
   await fs.chmod(commandPath, 0o755);
 }
 
-async function setupExecuteEnv(root: string) {
+async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
+const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+  claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  appendedSystemPromptFilePath,
+  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+const resumed = process.argv.includes("--resume");
+const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
+if (shouldFailResume) {
+  fs.writeFileSync(statePath, "retried", "utf8");
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "error",
+    session_id: "claude-session-1",
+    result: "No conversation found with session id claude-session-1",
+    errors: ["No conversation found with session id claude-session-1"],
+  }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-2", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function setupExecuteEnv(
+  root: string,
+  options?: { commandWriter?: (commandPath: string) => Promise<void> },
+) {
   const workspace = path.join(root, "workspace");
   const binDir = path.join(root, "bin");
   const commandPath = path.join(binDir, "claude");
   const capturePath = path.join(root, "capture.json");
+  const statePath = path.join(root, "state.txt");
   await fs.mkdir(workspace, { recursive: true });
   await fs.mkdir(binDir, { recursive: true });
-  await writeFakeClaudeCommand(commandPath);
+  await (options?.commandWriter ?? writeFakeClaudeCommand)(commandPath);
   const previousHome = process.env.HOME;
   const previousPath = process.env.PATH;
   process.env.HOME = root;
   process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
   return {
-    workspace, commandPath, capturePath,
+    workspace, commandPath, capturePath, statePath,
     restore: () => {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -218,6 +267,66 @@ describe("claude execute", () => {
         f.includes("agent-instructions.md"),
       );
       expect(tempInstructionsWritten).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds the combined instructions file when an unknown resumed session falls back to fresh", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-fallback-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeRetryThenSucceedClaudeCommand,
+    });
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    const metaEvents: Array<{ commandArgs: string[]; commandNotes: string[] }> = [];
+    try {
+      const result = await execute({
+        runId: "run-resume-fallback",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          metaEvents.push({
+            commandArgs: ((meta.commandArgs as string[]) ?? []).slice(),
+            commandNotes: ((meta.commandNotes as string[]) ?? []).slice(),
+          });
+        },
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as Array<{
+        argv: string[];
+        appendedSystemPromptFilePath: string | null;
+        appendedSystemPromptFileContents: string | null;
+      }>;
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[0]?.argv).not.toContain("--append-system-prompt-file");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      expect(captured[1]?.argv).toContain("--append-system-prompt-file");
+      expect(captured[1]?.appendedSystemPromptFilePath).toContain("agent-instructions.md");
+      expect(captured[1]?.appendedSystemPromptFilePath).not.toBe(instructionsFile);
+      expect(captured[1]?.appendedSystemPromptFileContents).toContain("# Agent instructions");
+      expect(captured[1]?.appendedSystemPromptFileContents).toContain(
+        `The above agent instructions were loaded from ${instructionsFile}. Resolve any relative file references from ${path.dirname(instructionsFile)}/.`,
+      );
+      expect(metaEvents).toHaveLength(2);
+      expect(metaEvents[0]?.commandNotes).toHaveLength(0);
+      expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
+      expect(result.sessionId).toBe("claude-session-2");
+      expect(result.clearSession).toBe(false);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
