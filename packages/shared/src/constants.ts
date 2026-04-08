@@ -345,6 +345,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.status",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.preflight.skipped",
   "agent.status",
   "activity.logged",
   "plugin.ui.updated",
