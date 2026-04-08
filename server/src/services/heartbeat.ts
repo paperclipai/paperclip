@@ -28,7 +28,8 @@ import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveCompanyKnowledgeDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { ensureAgentHomeStructure } from "./agent-home.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
@@ -1084,20 +1085,32 @@ export function heartbeatService(db: Db) {
       };
     }
 
-    const latestSummary = summarizeHeartbeatRunResultJson(latestRun.resultJson);
-    const latestTextSummary =
-      readNonEmptyString(latestSummary?.summary) ??
-      readNonEmptyString(latestSummary?.result) ??
-      readNonEmptyString(latestSummary?.message) ??
-      readNonEmptyString(latestRun.error);
+    const recentRuns = runs.slice(0, 5);
+    const runSummaries = recentRuns
+      .map((run, i) => {
+        const summary = summarizeHeartbeatRunResultJson(run.resultJson);
+        const text =
+          readNonEmptyString(summary?.summary) ??
+          readNonEmptyString(summary?.result) ??
+          readNonEmptyString(summary?.message) ??
+          readNonEmptyString(run.error);
+        return text ? `  ${i + 1}. ${text}` : null;
+      })
+      .filter(Boolean);
 
     const handoffMarkdown = [
       "Paperclip session handoff:",
       `- Previous session: ${sessionId}`,
       issueId ? `- Issue: ${issueId}` : "",
       `- Rotation reason: ${reason}`,
-      latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
-      "Continue from the current task state. Rebuild only the minimum context you need.",
+      `- Session runs: ${runs.length}`,
+      runSummaries.length > 0 ? `- Recent run summaries (newest first):\n${runSummaries.join("\n")}` : "",
+      "",
+      "Recover full context from your memory files:",
+      "- Read $AGENT_HOME/memory/YYYY-MM-DD.md for today's timeline.",
+      "- Read $AGENT_HOME/MEMORY.md for operating patterns.",
+      "- Scan $AGENT_HOME/life/index.md for tracked entities.",
+      "Continue from the current task state.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -2414,8 +2427,13 @@ export function heartbeatService(db: Db) {
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
         const home = resolveDefaultAgentWorkspaceDir(agent.id);
-        await fs.mkdir(home, { recursive: true });
+        await ensureAgentHomeStructure(home);
         return home;
+      })(),
+      companyKnowledgePath: await (async () => {
+        const knowledgeDir = resolveCompanyKnowledgeDir(agent.companyId);
+        await fs.mkdir(knowledgeDir, { recursive: true });
+        return knowledgeDir;
       })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;

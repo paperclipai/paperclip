@@ -90,6 +90,14 @@ export function resolveManagedProjectWorkspaceDir(input: {
   );
 }
 
+export function resolveCompanyKnowledgeDir(companyId: string): string {
+  const trimmed = companyId.trim();
+  if (!trimmed) {
+    throw new Error("Company knowledge path requires a companyId.");
+  }
+  return path.resolve(resolvePaperclipInstanceRoot(), "companies", trimmed, "knowledge");
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

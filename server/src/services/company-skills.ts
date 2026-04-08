@@ -35,6 +35,12 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
 
+/**
+ * Skills that are always required for all agents, regardless of sourceKind.
+ * These provide foundational capabilities (memory, knowledge persistence).
+ */
+const CORE_REQUIRED_SKILL_SLUGS = new Set(["para-memory-files"]);
+
 type CompanySkillRow = typeof companySkills.$inferSelect;
 
 type ImportedSkill = {
@@ -2070,15 +2076,19 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const isBundled = sourceKind === "paperclip_bundled";
+      const isCoreSkill = CORE_REQUIRED_SKILL_SLUGS.has(skill.slug);
+      const required = isBundled || isCoreSkill;
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
         required,
-        requiredReason: required
+        requiredReason: isBundled
           ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
+          : isCoreSkill
+            ? "Core skill required for agent memory and knowledge persistence."
+            : null,
       });
     }
 
