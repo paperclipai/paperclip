@@ -16,6 +16,13 @@ const BOARD_ROUTE_ROOTS = new Set([
   "activity",
   "inbox",
   "design-guide",
+  // COS v2 additions — must be registered here so @/lib/router's
+  // applyCompanyPrefix can recognise them as board routes and prepend
+  // the company prefix in one hop. Without this, NavLink sends users
+  // to /teams/:id which then gets replaced to /BBR/teams/:id by
+  // UnprefixedBoardRedirect, producing a visible flicker.
+  "teams",
+  "rooms",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

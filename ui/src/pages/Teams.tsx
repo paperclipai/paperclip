@@ -37,7 +37,7 @@ export function NewTeamPage() {
   });
 
   return (
-    <div className="max-w-2xl mx-auto p-8">
+    <div className="max-w-2xl">
       <h1 className="text-2xl font-bold mb-6">New Team</h1>
       <form
         onSubmit={(e) => {
@@ -141,16 +141,12 @@ export function TeamDetailPage() {
   // (first page load, no sidebar cache, no placeholder). Use the shared
   // PageSkeleton variant="detail" to match ProjectDetail.
   if (isTeamLoading && !team) {
-    return (
-      <div className="max-w-4xl mx-auto p-8">
-        <PageSkeleton variant="detail" />
-      </div>
-    );
+    return <PageSkeleton variant="detail" />;
   }
   if (!team) return null;
 
   return (
-    <div className="max-w-4xl mx-auto p-8">
+    <div className="max-w-4xl">
       <div className="flex items-center gap-3 mb-6">
         <span
           className="h-10 w-10 rounded-md flex items-center justify-center text-white font-bold"

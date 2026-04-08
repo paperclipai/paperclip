@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
+import { PageSkeleton } from "../components/PageSkeleton";
 
 // Deterministic color from a string (user/agent id)
 function colorFromId(id: string): string {
@@ -191,7 +192,7 @@ export function NewRoomPage() {
   });
 
   return (
-    <div className="max-w-2xl mx-auto p-8">
+    <div className="max-w-2xl">
       <h1 className="text-2xl font-bold mb-6">New Mission Room</h1>
       <form
         onSubmit={(e) => {
@@ -456,10 +457,10 @@ export function RoomDetailPage() {
   );
   const linkableAgents = (allAgents.data ?? []).filter((a: any) => !linkedAgentIds.has(a.id));
 
-  if (!room.data) return <div className="p-8 text-muted-foreground">Loading room...</div>;
+  if (!room.data) return <PageSkeleton variant="detail" />;
 
   return (
-    <div className="max-w-5xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6 h-[calc(100vh-80px)]">
+    <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6 h-[calc(100vh-8rem)]">
       <div className="flex flex-col min-h-0">
         <div className="flex items-center gap-3 mb-4">
           <h1 className="text-2xl font-bold flex-1">{room.data.name}</h1>
