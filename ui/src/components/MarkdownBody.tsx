@@ -43,6 +43,7 @@ function isDirectoryPath(text: string): boolean {
 interface MarkdownBodyProps {
   children: string;
   className?: string;
+  style?: React.CSSProperties;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** When provided, inline code that looks like a file path becomes clickable. */
@@ -130,7 +131,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, resolveImageSrc, onFilePathClick, onDirPathClick }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, style, resolveImageSrc, onFilePathClick, onDirPathClick }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
@@ -244,6 +245,7 @@ export function MarkdownBody({ children, className, resolveImageSrc, onFilePathC
         theme === "dark" && "prose-invert",
         className,
       )}
+      style={style}
     >
       <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
         {children}

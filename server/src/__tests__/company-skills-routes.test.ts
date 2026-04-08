@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { companySkillRoutes } from "../routes/company-skills.js";
 import { errorHandler } from "../middleware/index.js";
+import { unprocessable } from "../errors.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -15,6 +16,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
+  deleteSkill: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -61,6 +63,11 @@ describe("company skill mutation permissions", () => {
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
       warnings: [],
+    });
+    mockCompanySkillService.deleteSkill.mockResolvedValue({
+      id: "skill-1",
+      slug: "find-skills",
+      name: "Find Skills",
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -260,5 +267,29 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("returns a blocking error when attempting to delete a skill still used by agents", async () => {
+    mockCompanySkillService.deleteSkill.mockRejectedValue(
+      unprocessable(
+        'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
+      ),
+    );
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .delete("/api/companies/company-1/skills/skill-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toEqual({
+      error: 'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
+    });
+    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

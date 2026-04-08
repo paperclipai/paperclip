@@ -40,11 +40,10 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
-import { CommentThread } from "../components/CommentThread";
+import { IssueChatThread } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
-import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -300,7 +299,7 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState("comments");
+  const [detailTab, setDetailTab] = useState("chat");
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
     action: "approve" | "reject";
@@ -610,15 +609,6 @@ export function IssueDetail() {
     });
   }, [activity, threadComments, linkedRuns, runningIssueRun]);
 
-  const queuedComments = useMemo(
-    () => commentsWithRunMeta.filter((comment) => comment.queueState === "queued"),
-    [commentsWithRunMeta],
-  );
-
-  const timelineComments = useMemo(
-    () => commentsWithRunMeta.filter((comment) => comment.queueState !== "queued"),
-    [commentsWithRunMeta],
-  );
   const timelineEvents = useMemo(
     () => extractIssueTimelineEvents(activity),
     [activity],
@@ -1713,9 +1703,9 @@ export function IssueDetail() {
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
         <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
+          <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Comments
+            Chat
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
@@ -1728,25 +1718,18 @@ export function IssueDetail() {
           ))}
         </TabsList>
 
-        <TabsContent value="comments">
-          <CommentThread
-            comments={timelineComments}
-            queuedComments={queuedComments}
-            linkedApprovals={linkedApprovals}
+        <TabsContent value="chat">
+          <IssueChatThread
+            comments={commentsWithRunMeta}
             feedbackVotes={feedbackVotes}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={FEEDBACK_TERMS_URL}
             linkedRuns={timelineRuns}
             timelineEvents={timelineEvents}
+            liveRuns={liveRuns}
+            activeRun={activeRun}
             companyId={issue.companyId}
             projectId={issue.projectId}
-            onApproveApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "approve" });
-            }}
-            onRejectApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "reject" });
-            }}
-            pendingApprovalAction={pendingApprovalAction}
             issueStatus={issue.status}
             agentMap={agentMap}
             currentUserId={currentUserId}
@@ -1756,10 +1739,6 @@ export function IssueDetail() {
             currentAssigneeValue={actualAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentionOptions}
-            onInterruptQueued={async (runId) => {
-              await interruptQueuedComment.mutateAsync(runId);
-            }}
-            interruptingQueuedRunId={interruptQueuedComment.isPending ? runningIssueRun?.id ?? null : null}
             composerDisabledReason={commentComposerDisabledReason}
             onVote={async (commentId, vote, options) => {
               await feedbackVoteMutation.mutateAsync({
@@ -1785,7 +1764,15 @@ export function IssueDetail() {
             onAttachImage={async (file) => {
               await uploadAttachment.mutateAsync(file);
             }}
-            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+            onInterruptQueued={async (runId) => {
+              await interruptQueuedComment.mutateAsync(runId);
+            }}
+            interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
+            onCancelRun={runningIssueRun
+              ? async () => {
+                  await interruptQueuedComment.mutateAsync(runningIssueRun.id);
+                }
+              : undefined}
           />
         </TabsContent>
 

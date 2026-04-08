@@ -346,7 +346,6 @@ list_base_node_modules_paths() {
       ! -path './.paperclip/*' \
       | sed 's#^\./##'
 }
-
 if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
   needs_install=0
 

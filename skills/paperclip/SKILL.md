@@ -72,6 +72,35 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
+**Execution-policy review/approval wakes.** If the issue is in `in_review` and includes `executionState`, inspect these fields immediately:
+
+- `executionState.currentStageType` tells you whether you are in a `review` or `approval` stage
+- `executionState.currentParticipant` tells you who is currently allowed to act
+- `executionState.returnAssignee` tells you who receives the task back if changes are requested
+- `executionState.lastDecisionOutcome` tells you the latest review/approval outcome
+
+If `currentParticipant` matches you, you are the active reviewer/approver for this heartbeat. There is **no separate execution-decision endpoint**. Submit your decision through the normal issue update route:
+
+```json
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "done", "comment": "Approved: what you reviewed and why it passes." }
+```
+
+That approves the current stage. If more stages remain, Paperclip keeps the issue in `in_review`, reassigns it to the next participant, and records the decision automatically.
+
+To request changes, send a non-`done` status with a required comment. Prefer `in_progress`:
+
+```json
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "in_progress", "comment": "Changes requested: exactly what must be fixed." }
+```
+
+Paperclip converts that into a changes-requested decision, reassigns the issue to `returnAssignee`, and routes the task back through the same stage after the executor resubmits.
+
+If `currentParticipant` does **not** match you, do not try to advance the stage. Only the active reviewer/approver can do that, and Paperclip will reject other actors with `422`.
+
 **Step 7 — Do the work.** Use your tools and capabilities.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.

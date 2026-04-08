@@ -232,6 +232,15 @@ pnpm paperclipai worktree init --force --seed-mode minimal \
 
 That rewrites the worktree-local `.paperclip/config.json` + `.paperclip/.env`, recreates the isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`, and preserves the git worktree contents themselves.
 
+For existing worktrees, prefer the dedicated reseed command instead of rebuilding the `worktree init --force` flags manually:
+
+```sh
+cd /path/to/existing/worktree
+pnpm paperclipai worktree reseed --from-config /path/to/source/.paperclip/config.json --seed-mode full
+```
+
+`worktree reseed` preserves the current worktree's instance id, ports, and branding while replacing only that worktree's isolated Paperclip instance data from the chosen source.
+
 **`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
 | Option | Description |
@@ -257,6 +266,17 @@ pnpm paperclipai worktree:make experiment --no-seed
 ```
 
 **`pnpm paperclipai worktree env [options]`** — Print shell exports for the current worktree-local Paperclip instance.
+
+**`pnpm paperclipai worktree reseed [options]`** — Replace the current worktree instance with a fresh seed from another Paperclip source while preserving the current worktree's ports and instance id.
+
+| Option | Description |
+|---|---|
+| `--from-config <path>` | Source config.json to seed from |
+| `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
+| `--from-instance <id>` | Source instance id when deriving the source config |
+| `--home <path>` | Home root for worktree instances (default: `~/.paperclip-worktrees`) |
+| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--yes` | Skip the destructive confirmation prompt |
 
 | Option | Description |
 |---|---|
