@@ -1012,7 +1012,20 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  // The worktree directory name defaults to the full branch name, but on
+  // Windows long parent paths can push the total past MAX_PATH (260), causing
+  // git to fail with "$GIT_DIR too big". Truncate the directory name (not the
+  // branch) to keep the worktree path under 200 chars, leaving room for
+  // nested files.
+  let worktreeDirName = branchName;
+  if (process.platform === "win32") {
+    const parentDirLen = worktreeParentDir.length + 1; // +1 for separator
+    const maxDirNameLen = Math.max(20, 200 - parentDirLen);
+    if (worktreeDirName.length > maxDirNameLen) {
+      worktreeDirName = worktreeDirName.slice(0, maxDirNameLen).replace(/-+$/, "");
+    }
+  }
+  const worktreePath = path.join(worktreeParentDir, worktreeDirName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1128,7 +1141,10 @@ export async function realizeExecutionWorkspace(input: {
         failureLabel: `git worktree add ${worktreePath}`,
       });
     } catch (attachError) {
-      if (!gitErrorIncludes(attachError, "already checked out")) {
+      // Branch is checked out in a different worktree (e.g. directory name
+      // changed between runs, or attach failed because the branch is already
+      // attached). Find and reuse that existing worktree.
+      if (!gitErrorIncludes(attachError, "already checked out") && !gitErrorIncludes(attachError, "already used by worktree")) {
         throw attachError;
       }
       const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
