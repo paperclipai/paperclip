@@ -1,22 +1,33 @@
 /**
- * In-memory pub/sub bus for plugin SSE streams.
+ * Plugin-scoped SSE stream bus.
  *
- * Workers emit stream events via JSON-RPC notifications. The bus fans out
- * each event to all connected SSE clients that match the (pluginId, channel,
- * companyId) tuple.
+ * Thin adapter over the generic StreamBus primitive (stream-bus.ts).
+ * Preserves the original public API for the plugin system — callers
+ * don't need to know about the underlying primitive.
+ *
+ * Workers emit stream events via JSON-RPC notifications. The bus fans
+ * out each event to all connected SSE clients matching the
+ * (pluginId, channel, companyId) tuple.
  *
  * @see PLUGIN_SPEC.md §19.8 — Real-Time Streaming
+ * @see stream-bus.ts — generic primitive
  */
+
+import { createStreamBus, type StreamBus } from "./stream-bus.js";
 
 /** Valid SSE event types for plugin streams. */
 export type StreamEventType = "message" | "open" | "close" | "error";
 
 export type StreamSubscriber = (event: unknown, eventType: StreamEventType) => void;
 
+const PLUGIN_TOPIC = "plugin";
+
 /**
- * Composite key for stream subscriptions: pluginId:channel:companyId
+ * Composite key for plugin stream subscriptions.
+ * Using ":" as the in-topic delimiter — pluginId/channel/companyId do
+ * not contain colons in practice.
  */
-function streamKey(pluginId: string, channel: string, companyId: string): string {
+function pluginKey(pluginId: string, channel: string, companyId: string): string {
   return `${pluginId}:${channel}:${companyId}`;
 }
 
@@ -46,36 +57,32 @@ export interface PluginStreamBus {
 }
 
 /**
- * Create a new PluginStreamBus instance.
+ * Create a new PluginStreamBus.
+ *
+ * If a shared StreamBus instance is passed, the plugin bus delegates to
+ * it — which lets the Phase 4 room/agent buses share the same underlying
+ * primitive. If omitted, a fresh StreamBus is created for backward
+ * compatibility with existing call sites that construct a standalone bus.
  */
-export function createPluginStreamBus(): PluginStreamBus {
-  const subscribers = new Map<string, Set<StreamSubscriber>>();
-
+export function createPluginStreamBus(
+  base: StreamBus = createStreamBus(),
+): PluginStreamBus {
   return {
     subscribe(pluginId, channel, companyId, listener) {
-      const key = streamKey(pluginId, channel, companyId);
-      let set = subscribers.get(key);
-      if (!set) {
-        set = new Set();
-        subscribers.set(key, set);
-      }
-      set.add(listener);
-
-      return () => {
-        set!.delete(listener);
-        if (set!.size === 0) {
-          subscribers.delete(key);
-        }
-      };
+      return base.subscribe(
+        PLUGIN_TOPIC,
+        pluginKey(pluginId, channel, companyId),
+        (event, meta) => listener(event, meta.type),
+      );
     },
 
-    publish(pluginId, channel, companyId, event, eventType: StreamEventType = "message") {
-      const key = streamKey(pluginId, channel, companyId);
-      const set = subscribers.get(key);
-      if (!set) return;
-      for (const listener of set) {
-        listener(event, eventType);
-      }
+    publish(pluginId, channel, companyId, event, eventType = "message") {
+      base.publish(
+        PLUGIN_TOPIC,
+        pluginKey(pluginId, channel, companyId),
+        event,
+        eventType,
+      );
     },
   };
 }
