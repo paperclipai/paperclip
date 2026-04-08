@@ -326,7 +326,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.\n\nYour working directory is your current cwd. Always search within your working directory first. Never search broad paths like /Users or $HOME — use your cwd, project paths from context, or the Paperclip API to locate files.",
   );
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");

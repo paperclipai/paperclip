@@ -197,6 +197,7 @@ type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  description: string | null;
   status: string | null;
   priority: string | null;
 };
@@ -230,12 +231,14 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
+  const description = asString(issue.description, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
   if (!id && !identifier && !title) return null;
   return {
     id,
     identifier,
     title,
+    description,
     status,
     priority,
   };
@@ -332,6 +335,9 @@ export function renderPaperclipWakePrompt(
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
 
+  if (normalized.issue?.description) {
+    lines.push(`- issue description: ${normalized.issue.description}`);
+  }
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
   }
