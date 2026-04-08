@@ -356,6 +356,15 @@ export function issueRoutes(
   const BROWSE_EVIDENCE_PATTERN =
     /\b(browser-test\s+(headless|headed)|browse\s+(goto|screenshot|snapshot|click)|dump-dom|--dump-dom|screenshot\s+saved|screenshot\s+attached|console\s+(output|errors)|no\s+console\s+errors|DOM\s+(dump|snapshot|output)|goto\s+https?:|snapshot\s+-|gstack|playwright|VERIFIED|health\s+score|browser\s+(verification|testing))\b/i;
 
+  /**
+   * Pattern for declaring that an issue has no browser surface.
+   * When an agent includes this in a comment, the browse evidence gate
+   * accepts it as a valid exemption reason instead of requiring screenshots.
+   * Agents MUST state the reason (e.g. "no browser surface — Python backend module").
+   */
+  const NO_BROWSER_SURFACE_PATTERN =
+    /\bno\s+browser\s+surface\b/i;
+
   // Tolerance for timestamp comparison between evidence (comments/attachments) and issue.updatedAt.
   // The comment/attachment insert can bump issue.updatedAt a few ms after the record's own createdAt.
   const EVIDENCE_TIMING_TOLERANCE_MS = 1000;
@@ -427,6 +436,16 @@ export function issueRoutes(
       || (req.body.comment && BROWSE_EVIDENCE_PATTERN.test(req.body.comment));
     const hasImage = actorHasImageAttachment(attachments, agentId, null, sinceDate);
 
+    // No-browser-surface exemption: if the actor declared this issue has no browser
+    // surface (e.g. Python backend, CLI tool), accept without screenshot evidence.
+    const noBrowserSince = new Date(sinceDate).getTime() - EVIDENCE_TIMING_TOLERANCE_MS;
+    const hasNoBrowserSurface = comments.some(c => {
+      if (new Date(c.createdAt).getTime() < noBrowserSince) return false;
+      return (agentId && c.authorAgentId === agentId) && NO_BROWSER_SURFACE_PATTERN.test(c.body);
+    }) || (req.body.comment && NO_BROWSER_SURFACE_PATTERN.test(req.body.comment));
+
+    if (hasNoBrowserSurface) return null;
+
     // Image attachment is the primary evidence. Browse text is a supporting signal.
     // If the actor uploaded screenshots, accept even without matching browse text —
     // the screenshot itself is proof of interactive testing. Text pattern alone
@@ -436,7 +455,7 @@ export function issueRoutes(
       if (!hasBrowseText) missing.push("browser testing commands in a comment");
       return {
         gate: "in_review_requires_browse_evidence",
-        reason: `Code issues require interactive browser testing evidence before moving to in_review. Missing: ${missing.join(" and ")}. Upload a screenshot via POST /api/companies/{companyId}/issues/{issueId}/attachments and include browser testing output in your comment.`,
+        reason: `Code issues require interactive browser testing evidence before moving to in_review. Missing: ${missing.join(" and ")}. Upload a screenshot via POST /api/companies/{companyId}/issues/{issueId}/attachments and include browser testing output in your comment. If this issue has no browser surface (backend, CLI, etc.), include "no browser surface" in your comment with a justification.`,
       };
     }
 
@@ -482,10 +501,21 @@ export function issueRoutes(
       return isActor && a.contentType?.startsWith("image/");
     });
 
+    // No-browser-surface exemption: if the QA reviewer declared this issue has
+    // no browser surface, accept without screenshot evidence.
+    const qaHasNoBrowserSurface = comments.some(c => {
+      const isQA =
+        (qaAgentId && c.authorAgentId === qaAgentId) ||
+        (qaUserId && c.authorUserId === qaUserId);
+      return isQA && NO_BROWSER_SURFACE_PATTERN.test(c.body);
+    });
+
+    if (qaHasNoBrowserSurface) return null;
+
     if (!hasImage) {
       return {
         gate: "done_requires_qa_browse_evidence",
-        reason: "QA PASS without screenshot evidence is insufficient for code issues. The QA reviewer must upload at least one screenshot via POST /api/companies/{companyId}/issues/{issueId}/attachments.",
+        reason: "QA PASS without screenshot evidence is insufficient for code issues. The QA reviewer must upload at least one screenshot via POST /api/companies/{companyId}/issues/{issueId}/attachments. If this issue has no browser surface (backend, CLI, etc.), include \"no browser surface\" in your QA PASS comment with a justification.",
       };
     }
 

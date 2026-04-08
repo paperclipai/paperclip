@@ -109,6 +109,24 @@ QA PASS requires **interactive outcome testing**, not static inspection. The QA 
 
 **If interactive testing cannot be performed** (missing credentials, no display, etc.), do NOT declare QA PASS. Post a comment explaining the blocker and escalate.
 
+### No-browser-surface exemption (backend/CLI/API-only issues)
+
+Some code issues have no browser surface — Python backends, CLI tools, API-only modules, data pipelines. These cannot produce screenshot evidence because there is nothing to screenshot.
+
+**Both the engineer (at `in_review` handoff) and the QA reviewer (at `QA: PASS`) MUST include the exact phrase `no browser surface` in their comment, followed by a justification.** The system recognizes this phrase and waives the screenshot requirement.
+
+**Example engineer handoff comment:**
+> Moving to in_review. No browser surface — this is a Python backend module (services/probability.py). Evidence: 68 tests passing, PR merged. @qa-agent please verify.
+
+**Example QA PASS comment:**
+> QA: PASS — no browser surface. This is a backend Python module with no UI. Verified: 68 tests passing (23 observation-specific), diurnal CDF model implemented at services/probability.py:501-627, all edge cases covered.
+
+**Rules:**
+- You MUST include `no browser surface` as an exact phrase (case-insensitive)
+- You MUST state WHY there is no browser surface (e.g. "Python backend", "CLI tool", "API-only module")
+- Do NOT use this exemption for issues that have ANY UI component — even if the UI is secondary
+- If unsure whether an issue has a browser surface, default to providing screenshots
+
 ### Multi-role testing (MANDATORY for auth/routing/guard changes)
 
 Any issue that touches authentication, route guards, sidebar visibility, or role-based access MUST be tested as **multiple roles**. Single-role testing is an automatic QA FAIL.
@@ -274,6 +292,8 @@ Both must be from the current review cycle (after the issue's last status/assign
 
 If either is missing, the transition returns 422 with gate `in_review_requires_browse_evidence`. Read the error message for specifics on what's missing.
 
+**Exemption:** If your comment includes the phrase `no browser surface` (e.g. "no browser surface — Python backend module"), the screenshot requirement is waived. See the no-browser-surface exemption section above.
+
 ### `done` — QA evidence gate
 
 When moving a code issue to `done`, the system requires (in addition to `QA: PASS`):
@@ -284,6 +304,8 @@ When moving a code issue to `done`, the system requires (in addition to `QA: PAS
 The QA reviewer's browse evidence and QA PASS must come from the **same actor**. Evidence from a different agent does not count.
 
 If missing, the transition returns 422 with gate `done_requires_qa_browse_evidence`.
+
+**Exemption:** If the QA reviewer's comment includes the phrase `no browser surface` with justification, the screenshot requirement is waived. See the no-browser-surface exemption section above.
 
 ### What counts as browse evidence
 
