@@ -25,6 +25,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeUsageLimitResult,
 } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -757,12 +758,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      // Without a parsed stream result we can only look at the raw stdout/
+      // stderr for a usage-limit marker. This covers the edge case where the
+      // Claude CLI errors out early without producing a structured result.
+      const usageLimited = isClaudeUsageLimitResult({
+        result: [proc.stdout, proc.stderr].join("\n"),
+      });
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : usageLimited
+            ? "claude_usage_limited"
+            : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -797,6 +808,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
 
+    // A usage/rate-limit hit is systemic — the CLI exits non-zero but the
+    // stream result is often shaped `{subtype: "success", result: "You've hit
+    // your limit · resets 10am (UTC)"}`. Tag it explicitly so the heartbeat's
+    // SYSTEMIC_ERROR_CODES set rejects it from self-wake and the agent
+    // doesn't tight-loop 429-ing against the same limit.
+    const usageLimited = isClaudeUsageLimitResult(parsed);
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -805,7 +822,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : usageLimited
+          ? "claude_usage_limited"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

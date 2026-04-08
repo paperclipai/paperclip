@@ -34,6 +34,15 @@ describe("shouldSelfWake", () => {
     expect(shouldSelfWake("failed", "timeout")).toBe(false);
   });
 
+  // A Claude CLI usage/rate-limit hit is systemic — retrying immediately
+  // burns tokens without any chance of success until the subscription
+  // window resets. Must short-circuit the self-wake chain or the agent
+  // tight-loops making 429-ing API calls. See claude-local-adapter.test.ts
+  // for detection-side tests and the original diagnosis.
+  it("returns false when outcome is failed with claude_usage_limited", () => {
+    expect(shouldSelfWake("failed", "claude_usage_limited")).toBe(false);
+  });
+
   it("returns false when outcome is timed_out", () => {
     expect(shouldSelfWake("timed_out", undefined)).toBe(false);
   });

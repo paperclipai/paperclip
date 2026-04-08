@@ -364,6 +364,7 @@ export function shouldResetTaskSessionForWake(
 const SYSTEMIC_ERROR_CODES = new Set([
   "auth_failed",
   "claude_auth_required",
+  "claude_usage_limited",
   "adapter_failed",
   "timeout",
 ]);

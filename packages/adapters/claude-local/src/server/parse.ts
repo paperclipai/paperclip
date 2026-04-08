@@ -177,3 +177,33 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
 }
+
+// Patterns the Claude CLI emits when a subscription / API / rate limit has
+// been hit. Conservative by design — the goal is to match the known phrasing
+// without being tripped by task output that happens to contain the word
+// "limit" (e.g. an engineer's run reporting on a "time limit" constant).
+//
+// The observed trigger during diagnosis was the literal string:
+//   "You've hit your limit · resets 10am (UTC)"
+// We also match "rate limit exceeded" / "usage limit reached" style phrasing
+// because the CLI surfaces these on different error paths and we want a
+// single detector for the whole class.
+const CLAUDE_USAGE_LIMIT_RE =
+  /\byou'?ve\s+hit\s+your\s+(?:\w+\s+)?limit\b|\b(?:usage|rate)\s+limit\s+(?:reached|exceeded|hit)\b/i;
+
+/**
+ * Returns true when the Claude CLI result or error messages indicate the
+ * caller has hit a subscription / rate / usage limit. Callers should treat
+ * this as a systemic failure — retrying immediately will burn API calls
+ * against the same limit and tight-loop until the reset window.
+ */
+export function isClaudeUsageLimitResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) => CLAUDE_USAGE_LIMIT_RE.test(msg));
+}
