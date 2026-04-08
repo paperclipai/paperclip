@@ -86,7 +86,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
  * does not inherit parent process environment variables, so this file bridges
  * the gap by making PAPERCLIP_* vars available via explicit sourcing.
  */
-async function writePaperclipEnvFile(cwd: string, env: Record<string, string>): Promise<void> {
+export async function writePaperclipEnvFile(cwd: string, env: Record<string, string>): Promise<void> {
   const lines: string[] = [];
   for (const [key, value] of Object.entries(env).sort(([a], [b]) => a.localeCompare(b))) {
     if (key.startsWith("PAPERCLIP_") || key === "AGENT_HOME") {
