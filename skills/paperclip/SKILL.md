@@ -18,6 +18,8 @@ Mutating requests MUST include: `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'`
 
 ## Heartbeat Procedure
 
+**Scoped-wake fast path.** If the wake names a specific issue (via `PAPERCLIP_TASK_ID`, or a "Paperclip Resume Delta" / "Paperclip Wake Payload" section in the user message), **skip steps 1–2**. Go straight to Checkout (step 3) for that issue. Do not call `/api/agents/me` or fetch your inbox when you already know which issue to work on — the scoped wake tells you.
+
 1. **Identity**: `GET /api/agents/me` → id, companyId, role, budget.
 2. **Inbox**: `GET /api/agents/me/inbox-lite`. Prioritize `PAPERCLIP_TASK_ID` if set, then `in_progress`, then `todo`. Skip `blocked` unless unblockable.
 3. **Checkout**: `POST /api/issues/{issueId}/checkout` with `{"agentId":"{id}","expectedStatuses":["todo","backlog","blocked"]}`. 409 = someone else owns it, move on.
