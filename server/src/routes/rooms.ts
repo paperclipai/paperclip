@@ -79,9 +79,17 @@ async function loadRoomForAccess(
   return room;
 }
 
-export function roomRoutes(db: Db, storage: StorageService) {
+export interface RoomRoutesOptions {
+  buses?: import("../services/rooms.js").RoomServiceBuses;
+}
+
+export function roomRoutes(
+  db: Db,
+  storage: StorageService,
+  opts: RoomRoutesOptions = {},
+) {
   const router = Router();
-  const svc = roomService(db);
+  const svc = roomService(db, opts.buses);
   const assets = assetService(db);
   const attachmentUpload = multer({
     storage: multer.memoryStorage(),

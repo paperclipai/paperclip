@@ -71,7 +71,12 @@ import {
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
 
-export function agentRoutes(db: Db) {
+export interface AgentRoutesOptions {
+  /** Phase 4: hook called before an agent is deleted. Used to stop/cleanup leader CLI. */
+  beforeDelete?: (agentId: string) => Promise<void>;
+}
+
+export function agentRoutes(db: Db, opts: AgentRoutesOptions = {}) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -2013,6 +2018,17 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    // Phase 4: tear down leader CLI + session + workspace BEFORE the
+    // agent row is deleted (agent_sessions and leader_processes both
+    // CASCADE off agents, so waiting would delete the rows before we
+    // can archive them or kill the process).
+    if (opts.beforeDelete) {
+      try {
+        await opts.beforeDelete(id);
+      } catch (err) {
+        console.warn("[agent.delete] beforeDelete hook failed", { agentId: id, err });
+      }
+    }
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });

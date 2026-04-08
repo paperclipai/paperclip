@@ -34,6 +34,15 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { agentStreamRoutes } from "./routes/agent-streams.js";
+import { leaderProcessRoutes } from "./routes/leader-processes.js";
+import { createStreamBus } from "./services/stream-bus.js";
+import { createRoomStreamBus } from "./services/room-stream-bus.js";
+import { createAgentStreamBus } from "./services/agent-stream-bus.js";
+import { createAgentSessionService } from "./services/agent-sessions.js";
+import { createLeaderProcessService } from "./services/leader-processes.js";
+import { createPm2Backend, ensureLogRotateInstalled } from "./services/process-backend-pm2.js";
+import { createWorkspaceProvisioner } from "./services/workspace-provisioner.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -154,7 +163,19 @@ export async function createApp(
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db));
+  // agentRoutes's beforeDelete hook needs leaderProcess which is
+  // created later in this function. Use a holder closure so the
+  // route can look up the current instance when a delete arrives.
+  let leaderProcessRef: import("./services/leader-processes.js").LeaderProcessService | null = null;
+  api.use(
+    agentRoutes(db, {
+      beforeDelete: async (agentId) => {
+        if (leaderProcessRef) {
+          await leaderProcessRef.destroyForAgent({ agentId });
+        }
+      },
+    }),
+  );
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
@@ -165,7 +186,18 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(teamRoutes(db));
   api.use(projectExtrasRoutes(db));
-  api.use(roomRoutes(db, opts.storageService));
+  // Phase 4: shared stream bus primitive. Room + agent adapters sit
+  // on top of this single instance. The existing plugin-stream-bus
+  // remains unchanged — its own instance is created separately in
+  // the plugin loader below.
+  const streamBus = createStreamBus();
+  const roomStreamBus = createRoomStreamBus(streamBus);
+  const agentStreamBus = createAgentStreamBus(streamBus);
+  api.use(
+    roomRoutes(db, opts.storageService, {
+      buses: { room: roomStreamBus, agent: agentStreamBus },
+    }),
+  );
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));
@@ -173,6 +205,27 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(instanceSettingsRoutes(db));
+
+  // Phase 4: leader CLI lifecycle — agentSessionService + leaderProcessService
+  // + PM2 backend + workspace provisioner. Wired together with the stream
+  // buses created above so SSE + CLI start/stop share a single object graph.
+  const agentSessions = createAgentSessionService(db);
+  const processBackend = createPm2Backend();
+  const workspaceProvisioner = createWorkspaceProvisioner({ db });
+  const leaderProcess = createLeaderProcessService({
+    db,
+    sessions: agentSessions,
+    workspaces: workspaceProvisioner,
+    backend: processBackend,
+    logger: {
+      info: (obj, msg) => logger.info(obj, msg ?? ""),
+      warn: (obj, msg) => logger.warn(obj, msg ?? ""),
+      error: (obj, msg) => logger.error(obj, msg ?? ""),
+    },
+  });
+  leaderProcessRef = leaderProcess;
+  api.use(agentStreamRoutes({ db, agentStreamBus }));
+  api.use(leaderProcessRoutes({ db, leaderProcess, backend: processBackend }));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
@@ -348,6 +401,25 @@ export async function createApp(
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });
+
+  // Phase 4: PM2 logrotate + leader process reconciliation.
+  // Best-effort — any failure is logged but does not block startup.
+  ensureLogRotateInstalled().catch((err) => {
+    logger.warn({ err }, "pm2-logrotate install failed (logs will not auto-rotate)");
+  });
+  leaderProcess
+    .reconcile()
+    .then((result) => {
+      if (result.reconciled || result.crashed || result.orphanStopped) {
+        logger.info(
+          { ...result },
+          "leader process reconcile completed",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "leader process reconcile failed");
+    });
 
   return app;
 }
