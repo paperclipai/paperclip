@@ -9,7 +9,6 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import {
   computeInboxBadgeData,
-  getRecentTouchedIssues,
   loadDismissedInboxItems,
   saveDismissedInboxItems,
   loadReadInboxItems,
@@ -107,18 +106,16 @@ export function useInboxBadge(companyId: string | null | undefined) {
     enabled: !!companyId,
   });
 
-  const { data: mineIssuesRaw = [] } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(companyId!),
+  const { data: mineIssues = [] } = useQuery({
+    queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId!),
     queryFn: () =>
       issuesApi.list(companyId!, {
-        touchedByUserId: "me",
+        unreadForUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!companyId,
   });
-
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
 
   const { data: heartbeatRuns = [] } = useQuery({
     queryKey: queryKeys.heartbeats(companyId!),
