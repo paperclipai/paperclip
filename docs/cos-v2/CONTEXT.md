@@ -73,8 +73,8 @@ Codex 비판적 리뷰(25개 이슈) 중 대응 완료되지 않은 주의사항
 | 3 | PM2 예시가 잘못됨 — `claude --print`는 1회 실행, wrapper 프로세스 미정의 | Phase 3에서 해결 |
 | 4 | 세션 소유권 미정의 (PM2/wrapper/Paperclip 중 누가 관리) | Phase 3에서 해결 |
 | 6 | 업스트림 충돌 위험 — Paperclip TASKS.md가 teams/workflow 자체 구현 예정 | 우리가 먼저 구현하는 전략. 충돌 시 수동 머지 |
-| 11 | 액션 메시지 실행이 unsafe — 중복/우발 실행 가능 | Phase 3에서 해결 |
-| 12 | 액션 모델 미완성 (idempotency, ACL 등) | Phase 3에서 해결 |
+| 11 | 액션 메시지 실행이 unsafe — 중복/우발 실행 가능 | ✅ `5628eb0f` — FOR UPDATE 락 + true idempotency |
+| 12 | 액션 모델 미완성 (idempotency, ACL 등) | ✅ `5628eb0f` — result/error/executedAt/executedBy 컬럼 + idempotency |
 | 14 | Source of truth 분산 (룸 채팅 vs 이슈 코멘트 vs md) | 규칙 정의 필요 |
 | 15 | 룸 운영 설계 미흡 (unread, presence, reconnect 등) | Phase 3에서 해결 |
 | 17 | 팀별 atomic counter + 식별자 마이그레이션 | Unit 1e에서 해결 |
