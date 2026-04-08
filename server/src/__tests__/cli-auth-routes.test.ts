@@ -25,14 +25,18 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
-  logActivity: mockLogActivity,
-  notifyHireApproved: vi.fn(),
-  deduplicateAgentName: vi.fn((name: string) => name),
-}));
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+  };
+});
 
 function createApp(actor: any) {
   const app = express();

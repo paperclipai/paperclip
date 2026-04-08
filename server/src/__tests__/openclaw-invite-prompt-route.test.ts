@@ -36,14 +36,18 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
-  deduplicateAgentName: vi.fn(),
-  logActivity: mockLogActivity,
-  notifyHireApproved: vi.fn(),
-}));
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    deduplicateAgentName: vi.fn(),
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+  };
+});
 
 function createDbStub() {
   const createdInvite = {

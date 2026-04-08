@@ -50,6 +50,7 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
+import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -62,6 +63,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -2744,9 +2746,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
   const access = accessService(db);
+  const secrets = secretService(db);
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -4065,6 +4069,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         delete adapterConfigWithSkills.instructionsBundleMode;
         delete adapterConfigWithSkills.instructionsRootPath;
         delete adapterConfigWithSkills.instructionsEntryFile;
+        let normalizedAdapterConfig: Record<string, unknown>;
+        try {
+          normalizedAdapterConfig = await prepareAdapterConfigForPersistence({
+            companyId: targetCompany.id,
+            adapterType: effectiveAdapterType,
+            adapterConfig: adapterConfigWithSkills,
+            strictMode: strictSecretsMode,
+            secretsSvc: secrets,
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          warnings.push(`Skipped agent ${manifestAgent.slug}: invalid adapter config (${reason})`);
+          resultAgents.push({
+            slug: planAgent.slug,
+            id: null,
+            action: "skipped",
+            name: planAgent.plannedName,
+            reason: "Invalid adapter config.",
+          });
+          continue;
+        }
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -4073,7 +4098,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           capabilities: manifestAgent.capabilities,
           reportsTo: null,
           adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
+          adapterConfig: normalizedAdapterConfig,
           runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,

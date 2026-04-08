@@ -64,6 +64,8 @@ const agentInstructionsSvc = {
   materializeManagedBundle: vi.fn(),
 };
 
+const mockPrepareAdapterConfigForPersistence = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
 }));
@@ -100,6 +102,17 @@ vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => agentInstructionsSvc,
 }));
 
+vi.mock("../services/agent-adapter-config.js", () => ({
+  prepareAdapterConfigForPersistence: mockPrepareAdapterConfigForPersistence,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: vi.fn(() => ({
+    normalizeAdapterConfigForPersistence: vi.fn(),
+    resolveAdapterConfigForRuntime: vi.fn(),
+  })),
+}));
+
 vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
@@ -117,6 +130,9 @@ describe("company portability", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPrepareAdapterConfigForPersistence.mockImplementation(
+      async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig,
+    );
     companySvc.getById.mockResolvedValue({
       id: "company-1",
       name: "Paperclip",
@@ -2351,5 +2367,77 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).toContain("You are ClaudeCoder.");
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
+  });
+
+  it("warns and skips opencode_local imports without an explicit model", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    agentSvc.list.mockResolvedValue([]);
+    mockPrepareAdapterConfigForPersistence.mockRejectedValueOnce(
+      new Error("OpenCode requires an explicit model in provider/model format."),
+    );
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "paperclip-demo",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'schema: "agentcompanies/v1"',
+            'name: "Imported Paperclip"',
+            "---",
+            "",
+          ].join("\n"),
+          "agents/opencode-agent/AGENTS.md": [
+            "---",
+            'name: "OpenCode Agent"',
+            "---",
+            "",
+            "Run OpenCode locally.",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+      adapterOverrides: {
+        "opencode-agent": {
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+      },
+    }, "user-1");
+
+    expect(result.company).toEqual({
+      id: "company-imported",
+      name: "Imported Paperclip",
+      action: "created",
+    });
+    expect(result.warnings).toContain(
+      "Skipped agent opencode-agent: invalid adapter config (OpenCode requires an explicit model in provider/model format.)",
+    );
+    expect(result.agents).toContainEqual({
+      slug: "opencode-agent",
+      id: null,
+      action: "skipped",
+      name: "OpenCode Agent",
+      reason: "Invalid adapter config.",
+    });
+    expect(agentSvc.create).not.toHaveBeenCalled();
   });
 });
