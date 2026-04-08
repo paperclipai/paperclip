@@ -56,7 +56,7 @@ export function costRoutes(db: Db) {
       action: "cost.reported",
       entityType: "cost_event",
       entityId: event.id,
-      details: { costCents: event.costCents, model: event.model },
+      details: { costCents: event.costCents, shadowCostCents: event.shadowCostCents, model: event.model },
     });
 
     res.status(201).json(event);

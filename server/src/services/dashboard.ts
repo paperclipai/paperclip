@@ -6,6 +6,16 @@ import { budgetService } from "./budgets.js";
 
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
+
+  function currentUtcMonthWindow(now = new Date()) {
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    return {
+      start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
+      end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
+    };
+  }
+
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -61,11 +71,11 @@ export function dashboardService(db: Db) {
         if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
       }
 
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const [{ monthSpend }] = await db
+      const { start: monthStart } = currentUtcMonthWindow();
+      const [{ monthSpend, monthShadowSpend }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          monthShadowSpend: sql<number>`coalesce(sum(${costEvents.shadowCostCents}), 0)::int`,
         })
         .from(costEvents)
         .where(
@@ -76,6 +86,7 @@ export function dashboardService(db: Db) {
         );
 
       const monthSpendCents = Number(monthSpend);
+      const monthShadowSpendCents = Number(monthShadowSpend);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
@@ -93,6 +104,7 @@ export function dashboardService(db: Db) {
         tasks: taskCounts,
         costs: {
           monthSpendCents,
+          monthShadowSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },

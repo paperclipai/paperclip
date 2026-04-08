@@ -45,7 +45,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
-  summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  summary: vi.fn().mockResolvedValue({ spendCents: 0, shadowSpendCents: 0, budgetCents: 0, utilizationPercent: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -136,6 +136,56 @@ describe("cost routes", () => {
       .get("/api/companies/company-1/costs/summary")
       .query({ from: "2026-01-01T00:00:00.000Z", to: "2026-01-31T23:59:59.999Z" });
     expect(res.status).toBe(200);
+  });
+
+  it("passes shadow cost cents through direct cost event reporting without affecting validation", async () => {
+    const app = createApp();
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockCostService.createEvent.mockResolvedValue({
+      id: "cost-1",
+      companyId: "company-1",
+      agentId,
+      issueId: null,
+      projectId: null,
+      goalId: null,
+      heartbeatRunId: null,
+      billingCode: null,
+      provider: "openai",
+      biller: "chatgpt",
+      billingType: "subscription_included",
+      model: "gpt-5.4",
+      inputTokens: 1000,
+      cachedInputTokens: 500,
+      outputTokens: 250,
+      costCents: 0,
+      shadowCostCents: 12,
+      occurredAt: new Date("2026-01-01T00:00:00.000Z"),
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .send({
+        agentId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 1000,
+        cachedInputTokens: 500,
+        outputTokens: 250,
+        costCents: 0,
+        shadowCostCents: 12,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockCostService.createEvent).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        shadowCostCents: 12,
+      }),
+    );
   });
 
   it("returns 400 for an invalid 'from' date string", async () => {

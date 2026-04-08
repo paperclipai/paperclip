@@ -583,7 +583,7 @@ export function Costs() {
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events${(spendData?.summary.shadowSpendCents ?? 0) > 0 ? ` · Shadow ${formatCents(spendData?.summary.shadowSpendCents ?? 0)}` : ""}`}
               icon={DollarSign}
             />
             <MetricTile
@@ -659,7 +659,7 @@ export function Costs() {
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">Inference ledger</CardTitle>
                     <CardDescription>
-                      Request-scoped inference spend for the selected period.
+                      Request-scoped inference spend for the selected period. Billed spend and subscription shadow attribution are tracked separately.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
@@ -681,6 +681,19 @@ export function Costs() {
                         </div>
                       </div>
                     </div>
+                    {(spendData?.summary.shadowSpendCents ?? 0) > 0 ? (
+                      <div className="border border-border/70 bg-muted/20 px-4 py-3">
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                          Shadow attribution
+                        </div>
+                        <div className="mt-1 text-lg font-medium tabular-nums">
+                          {formatCents(spendData?.summary.shadowSpendCents ?? 0)}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Informational list-price attribution for subscription-backed runs. This does not count against budget enforcement.
+                        </div>
+                      </div>
+                    ) : null}
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
                       <div className="space-y-2">
                         <div className="h-2 overflow-hidden bg-muted">

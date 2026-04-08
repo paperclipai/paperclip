@@ -265,6 +265,9 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
+                  {data.costs.monthShadowSpendCents > 0
+                    ? ` · Shadow ${formatCents(data.costs.monthShadowSpendCents)}`
+                    : ""}
                 </span>
               }
             />

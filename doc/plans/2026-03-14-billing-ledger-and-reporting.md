@@ -416,8 +416,11 @@ Migration behavior:
   - `cached_input_tokens = 0`
   - `heartbeat_run_id = null`
 
-Do **not** attempt to backfill historical provider-level subscription attribution from `heartbeat_runs`.
-That data was never stored with the required dimensions.
+Do **not** attempt to backfill historical provider-level subscription attribution from `heartbeat_runs`
+into `cost_cents`.
+That data was never stored with the required dimensions for billed-spend enforcement.
+Shadow-only backfills into `shadow_cost_cents` are allowed when the historical `cost_events` rows
+already preserve the required scope and token dimensions.
 
 ## Testing Plan
 

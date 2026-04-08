@@ -1133,6 +1133,7 @@ async function buildAgentContext(
         cachedInputTokens: costEvents.cachedInputTokens,
         outputTokens: costEvents.outputTokens,
         costCents: costEvents.costCents,
+        shadowCostCents: costEvents.shadowCostCents,
       })
       .from(costEvents)
       .where(and(eq(costEvents.companyId, companyId), eq(costEvents.heartbeatRunId, run.id)))
@@ -1185,6 +1186,7 @@ async function buildAgentContext(
         cachedInputTokens: runCosts.reduce((sum, row) => sum + row.cachedInputTokens, 0),
         outputTokens: runCosts.reduce((sum, row) => sum + row.outputTokens, 0),
         costCents: runCosts.reduce((sum, row) => sum + row.costCents, 0),
+        shadowCostCents: runCosts.reduce((sum, row) => sum + row.shadowCostCents, 0),
       }
       : null,
   };
