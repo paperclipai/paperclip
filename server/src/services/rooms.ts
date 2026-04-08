@@ -101,10 +101,162 @@ export async function assertRoomParticipant(
 }
 
 /**
+ * Parse `@mention` tokens out of a message body. Returns lowercased
+ * tokens in first-seen order. Used by the message fanout to decide
+ * which leaders in a multi-leader room should receive the event.
+ *
+ * Rules:
+ *   - `@Hana`, `@hana`, `@Hana.` all yield "hana"
+ *   - `user@example.com` does NOT match — we require start-of-string
+ *     or whitespace/punctuation before the `@`
+ *   - Accepts letters, digits, underscore, hyphen (1-64 chars)
+ *   - Deduplicates while preserving first-seen order
+ *
+ * Exported for unit testing.
+ */
+export function parseMentions(body: string | null | undefined): string[] {
+  if (!body) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const pattern = /(?:^|[\s.,;:!?()[\]{}"'`])@([A-Za-z0-9_\-]{1,64})/g;
+  for (const match of body.matchAll(pattern)) {
+    const tok = match[1]?.toLowerCase();
+    if (!tok) continue;
+    if (seen.has(tok)) continue;
+    seen.add(tok);
+    out.push(tok);
+  }
+  return out;
+}
+
+/**
+ * Decide which agent IDs should receive a channel notification for the
+ * given message. The rules enforce Phase 5.1's §3 "When to reply"
+ * guidance at the runtime level so a misbehaving Claude session cannot
+ * double-answer messages not addressed to it.
+ *
+ * Algorithm:
+ *   1. Fetch all participants of the room, joined with agents so we
+ *      have each one's `adapterType` and `name`.
+ *   2. Split participants into two sets:
+ *        - leaders  = agents where adapterType === "claude_local"
+ *        - others   = agents with any other adapter type (sub-agents)
+ *                     Non-agent rows (users) are not routed through the
+ *                     agent bus at all — the existing UI/WS path keeps
+ *                     delivering to them.
+ *   3. Parse @mentions from the message body.
+ *   4. If mentions ∩ leader names is non-empty → deliver to THAT
+ *      subset of leaders only. Otherwise → deliver to ALL leaders
+ *      (original behaviour preserved for unaddressed messages).
+ *   5. Always deliver to every non-leader agent in the room. Sub-agents
+ *      rarely subscribe to rooms today, but if any do we must not
+ *      silently drop their events.
+ *   6. NEVER deliver to the sender agent — the self-loop guard lives
+ *      both here (cheap) and in the bridge (defence in depth).
+ *
+ * Exported for unit testing.
+ */
+export async function resolveMessageAudience(
+  db: Db,
+  roomId: string,
+  body: string | null | undefined,
+  senderAgentId: string | null | undefined,
+  actionTargetAgentId?: string | null,
+): Promise<{
+  leaders: Array<{ agentId: string; name: string }>;
+  others: Array<{ agentId: string; name: string }>;
+  mentioned: string[];
+  deliveredLeaderIds: string[];
+  mentionHit: boolean;
+  actionTargeted: boolean;
+}> {
+  const rows = await db
+    .select({
+      agentId: roomParticipants.agentId,
+      adapterType: agents.adapterType,
+      name: agents.name,
+    })
+    .from(roomParticipants)
+    .innerJoin(agents, eq(roomParticipants.agentId, agents.id))
+    .where(eq(roomParticipants.roomId, roomId));
+
+  const leaders: Array<{ agentId: string; name: string }> = [];
+  const others: Array<{ agentId: string; name: string }> = [];
+  for (const r of rows) {
+    if (!r.agentId) continue;
+    if (senderAgentId && r.agentId === senderAgentId) continue; // self-loop guard
+    if (r.adapterType === "claude_local") {
+      leaders.push({ agentId: r.agentId, name: r.name });
+    } else {
+      others.push({ agentId: r.agentId, name: r.name });
+    }
+  }
+
+  // Action messages with a concrete target agent override mentions.
+  // The sender has explicitly said "this task goes to this agent" and
+  // every other leader should stay quiet. We still deliver to the
+  // target even if they are a sub-agent (non-leader) — the bus carries
+  // events for all agent kinds; whether the agent is listening is the
+  // subscriber's problem.
+  if (actionTargetAgentId && actionTargetAgentId !== senderAgentId) {
+    const targetLeader = leaders.find((l) => l.agentId === actionTargetAgentId);
+    const targetOther = others.find((o) => o.agentId === actionTargetAgentId);
+    const deliveredLeaderIds = targetLeader ? [targetLeader.agentId] : [];
+    // Overwrite `others` to contain only the target if it's a sub-agent,
+    // so the caller's fanout loop delivers there and nowhere else.
+    const actionOthers = targetOther ? [targetOther] : [];
+    return {
+      leaders,
+      others: actionOthers,
+      mentioned: [],
+      deliveredLeaderIds,
+      mentionHit: false,
+      actionTargeted: true,
+    };
+  }
+
+  const mentions = parseMentions(body);
+  // Index leader names lowercased for O(1) lookup; keep ids too since
+  // humans sometimes @<uuid> to disambiguate.
+  const leaderByName = new Map<string, string>();
+  for (const l of leaders) {
+    leaderByName.set(l.name.toLowerCase(), l.agentId);
+  }
+  const leaderIdSet = new Set(leaders.map((l) => l.agentId));
+
+  const hitIds = new Set<string>();
+  for (const tok of mentions) {
+    const byName = leaderByName.get(tok);
+    if (byName) hitIds.add(byName);
+    else if (leaderIdSet.has(tok)) hitIds.add(tok);
+  }
+
+  const mentionHit = hitIds.size > 0;
+  const deliveredLeaders = mentionHit
+    ? leaders.filter((l) => hitIds.has(l.agentId))
+    : leaders;
+
+  return {
+    leaders,
+    others,
+    mentioned: mentions,
+    deliveredLeaderIds: deliveredLeaders.map((l) => l.agentId),
+    mentionHit,
+    actionTargeted: false,
+  };
+}
+
+/**
  * Fan out a freshly-created or updated room message to the room bus and
  * the participating agents' buses. Runs after the DB transaction commits
  * so subscribers see a row that definitely exists. Fetching the current
  * participant list is a cheap lookup on the indexed (roomId) column.
+ *
+ * message.created events use `resolveMessageAudience` so that `@mention`
+ * in a multi-leader room only wakes the mentioned leader(s). Update
+ * events bypass the mention filter and fan out to every participant
+ * (minus the sender) because a status/edit transition is relevant to
+ * everyone watching.
  */
 async function fanoutMessageEvent(
   db: Db,
@@ -119,17 +271,35 @@ async function fanoutMessageEvent(
     buses.room.publish(roomId, { type: eventKind, roomId, message });
   }
 
-  if (buses.agent) {
-    // Fanout to every participant agent of this room (users are NOT
-    // routed through the agent bus — they use the UI / WS path).
-    const participants = await db
-      .select({ agentId: roomParticipants.agentId })
-      .from(roomParticipants)
-      .where(eq(roomParticipants.roomId, roomId));
-    for (const p of participants) {
-      if (!p.agentId) continue;
-      buses.agent.publish(p.agentId, { type: eventKind, roomId, message });
+  if (!buses.agent) return;
+
+  if (eventKind === "message.created") {
+    const audience = await resolveMessageAudience(
+      db,
+      roomId,
+      message.body ?? "",
+      message.senderAgentId ?? null,
+      message.actionTargetAgentId ?? null,
+    );
+    const targets = new Set<string>([
+      ...audience.deliveredLeaderIds,
+      ...audience.others.map((o) => o.agentId),
+    ]);
+    for (const agentId of targets) {
+      buses.agent.publish(agentId, { type: eventKind, roomId, message });
     }
+    return;
+  }
+
+  // message.updated → deliver to every participant agent (broad fanout)
+  const participants = await db
+    .select({ agentId: roomParticipants.agentId })
+    .from(roomParticipants)
+    .where(eq(roomParticipants.roomId, roomId));
+  for (const p of participants) {
+    if (!p.agentId) continue;
+    if (message.senderAgentId && p.agentId === message.senderAgentId) continue;
+    buses.agent.publish(p.agentId, { type: eventKind, roomId, message });
   }
 }
 
