@@ -2412,6 +2412,8 @@ export function heartbeatService(db: Db) {
       issueCommentSatisfiedByCommentId: null,
     });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
+  }
+
   async function repairIssueExecutionLock(
     tx: DbExecutor,
     issue: {
