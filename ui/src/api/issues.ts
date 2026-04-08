@@ -24,6 +24,8 @@ export const issuesApi = {
     filters?: {
       status?: string;
       projectId?: string;
+      teamId?: string;
+      milestoneId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
       assigneeUserId?: string;
@@ -42,6 +44,8 @@ export const issuesApi = {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.teamId) params.set("teamId", filters.teamId);
+    if (filters?.milestoneId) params.set("milestoneId", filters.milestoneId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);

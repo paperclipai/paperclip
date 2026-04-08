@@ -1,13 +1,26 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "@/lib/router";
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useNavigate, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Plus, Trash2, Users } from "lucide-react";
+import { Trash2, Users } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team, type WorkflowStatus, type TeamMember } from "../api/teams";
+import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
+import { heartbeatsApi } from "../api/heartbeats";
+import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { IssuesList } from "../components/IssuesList";
+import { EntityRow } from "../components/EntityRow";
+import { StatusBadge } from "../components/StatusBadge";
+import { EmptyState } from "../components/EmptyState";
+import { formatDate, projectUrl } from "../lib/utils";
+import { Hexagon } from "lucide-react";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { useLocation } from "@/lib/router";
 
 export function NewTeamPage() {
   const { selectedCompanyId } = useCompany();
@@ -89,7 +102,170 @@ export function NewTeamPage() {
   );
 }
 
-export function TeamDetailPage() {
+/**
+ * Shared hook: load a team by id with keepPreviousData + initialData fallback
+ * from the sidebar cache so navigation is flicker-free.
+ */
+function useTeam(teamId: string | undefined) {
+  const { selectedCompanyId } = useCompany();
+  const qc = useQueryClient();
+  const sidebarTeams = qc.getQueryData<Team[]>(["teams", selectedCompanyId]);
+  const teamFromList = sidebarTeams?.find((t) => t.id === teamId) ?? null;
+
+  return useQuery({
+    queryKey: ["team", selectedCompanyId, teamId],
+    queryFn: () => teamsApi.get(selectedCompanyId!, teamId!),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+    initialData: teamFromList ?? undefined,
+    initialDataUpdatedAt: 0,
+  });
+}
+
+/**
+ * Team → issues. Reuses the shared <IssuesList> component the main Issues
+ * page uses; just adds a teamId filter to the fetch and the view-state key.
+ */
+export function TeamIssuesPage() {
+  const { teamId } = useParams<{ teamId: string }>();
+  const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  const { data: team } = useTeam(teamId);
+
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "team", teamId],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { teamId }),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
+  });
+
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) ids.add(run.issueId);
+    }
+    return ids;
+  }, [liveRuns]);
+
+  const issueLinkState = useMemo(
+    () =>
+      createIssueDetailLocationState(
+        team?.name ?? "Team",
+        `${location.pathname}${location.search}${location.hash}`,
+        "issues",
+      ),
+    [location.pathname, location.search, location.hash, team?.name],
+  );
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+    },
+  });
+
+  return (
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error as Error | null}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={liveIssueIds}
+      viewStateKey={`paperclip:team-issues-view:${teamId ?? "__none__"}`}
+      issueLinkState={issueLinkState}
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
+  );
+}
+
+/**
+ * Team → projects. Filters the projects list by the teamId (uses the
+ * Phase 2 backend endpoint projectsApi.list?teamId=...).
+ */
+export function TeamProjectsPage() {
+  const { teamId } = useParams<{ teamId: string }>();
+  const { selectedCompanyId } = useCompany();
+
+  const { data: allProjects, isLoading, error } = useQuery({
+    queryKey: [...queryKeys.projects.list(selectedCompanyId!), "team", teamId],
+    queryFn: () => projectsApi.list(selectedCompanyId!, { teamId }),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+  const projects = useMemo(
+    () => (allProjects ?? []).filter((p) => !p.archivedAt),
+    [allProjects],
+  );
+
+  if (isLoading && !allProjects) return <PageSkeleton variant="list" />;
+
+  return (
+    <div className="space-y-4">
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {projects.length === 0 ? (
+        <EmptyState icon={Hexagon} message="No projects linked to this team yet." />
+      ) : (
+        <div className="border border-border">
+          {projects.map((project) => (
+            <EntityRow
+              key={project.id}
+              title={project.name}
+              subtitle={project.description ?? undefined}
+              to={projectUrl(project)}
+              trailing={
+                <div className="flex items-center gap-3">
+                  {project.targetDate && (
+                    <span className="text-xs text-muted-foreground">
+                      {formatDate(project.targetDate)}
+                    </span>
+                  )}
+                  <StatusBadge status={project.status} />
+                </div>
+              }
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * /teams/:teamId → redirect to /teams/:teamId/issues (Linear pattern:
+ * clicking a team opens its issues, not its settings).
+ */
+export function TeamIndexRedirect() {
+  const { teamId } = useParams<{ teamId: string }>();
+  return <Navigate to={`/teams/${teamId}/issues`} replace />;
+}
+
+/**
+ * Team settings page (the old TeamDetailPage contents moved under /settings).
+ * Only accessed explicitly via the sub-menu, never from a team click.
+ */
+export function TeamSettingsPage() {
   const { teamId } = useParams<{ teamId: string }>();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();

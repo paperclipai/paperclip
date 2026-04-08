@@ -12,7 +12,10 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
-  list: (companyId: string) => api.get<Project[]>(`/companies/${companyId}/projects`),
+  list: (companyId: string, filters?: { teamId?: string }) => {
+    const qs = filters?.teamId ? `?teamId=${encodeURIComponent(filters.teamId)}` : "";
+    return api.get<Project[]>(`/companies/${companyId}/projects${qs}`);
+  },
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),

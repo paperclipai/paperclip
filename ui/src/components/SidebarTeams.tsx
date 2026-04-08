@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus, Users } from "lucide-react";
+import { ChevronRight, Plus, Users, CircleDot, Hexagon, Settings } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team } from "../api/teams";
 import { cn } from "../lib/utils";
@@ -30,44 +30,45 @@ function buildTeamTree(teams: Team[]): TeamTreeNode[] {
   return roots;
 }
 
-function TeamLeaf({
-  team,
-  depth,
-  onHoverPrefetch,
-}: {
-  team: TeamTreeNode;
-  depth: number;
-  onHoverPrefetch: (teamId: string) => void;
-}) {
+/**
+ * Sub-menu under an expanded team — Issues / Projects / Settings.
+ * Indent matches the team row so the hierarchy is clear.
+ */
+function TeamSubMenu({ team, depth }: { team: TeamTreeNode; depth: number }) {
+  const subItems = [
+    { to: `/teams/${team.id}/issues`, label: "Issues", Icon: CircleDot },
+    { to: `/teams/${team.id}/projects`, label: "Projects", Icon: Hexagon },
+    { to: `/teams/${team.id}/settings`, label: "Settings", Icon: Settings },
+  ];
   return (
-    <NavLink
-      to={`/teams/${team.id}`}
-      onMouseEnter={() => onHoverPrefetch(team.id)}
-      className={({ isActive }) =>
-        cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-          isActive
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-        )
-      }
-      style={{ paddingLeft: `${12 + depth * 14}px` }}
-    >
-      <span
-        className="shrink-0 h-3.5 w-3.5 rounded-sm flex items-center justify-center text-[9px] font-bold text-white"
-        style={{ backgroundColor: team.color ?? "#6366f1" }}
-      >
-        {team.identifier.slice(0, 2)}
-      </span>
-      <span className="flex-1 truncate">{team.name}</span>
-    </NavLink>
+    <div className="flex flex-col">
+      {subItems.map(({ to, label, Icon }) => (
+        <NavLink
+          key={to}
+          to={to}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-2 py-1 text-[12px] font-medium transition-colors",
+              isActive
+                ? "bg-accent text-foreground"
+                : "text-foreground/70 hover:bg-accent/50 hover:text-foreground",
+            )
+          }
+          // indent: team row padding (12 + depth*14) + avatar column (20) + gap (4)
+          style={{ paddingLeft: `${12 + depth * 14 + 24}px` }}
+        >
+          <Icon className="h-3 w-3 shrink-0" />
+          <span className="flex-1 truncate">{label}</span>
+        </NavLink>
+      ))}
+    </div>
   );
 }
 
 /**
- * A parent team that has sub-teams. Renders as a Collapsible with a chevron
- * + the team nav link. The chevron is its own click target so clicking the
- * name still navigates to the team page.
+ * A team with its own sub-menu AND child teams (if any).
+ * Clicking the name navigates to /teams/:id (→ issues redirect).
+ * The chevron toggles the sub-menu + child list.
  */
 function TeamBranch({
   team,
@@ -85,6 +86,7 @@ function TeamBranch({
       <div className="group/branch flex items-center">
         <NavLink
           to={`/teams/${team.id}`}
+          end
           onMouseEnter={() => onHoverPrefetch(team.id)}
           className={({ isActive }) =>
             cn(
@@ -109,31 +111,22 @@ function TeamBranch({
           aria-label={open ? `Collapse ${team.name}` : `Expand ${team.name}`}
         >
           <ChevronRight
-            className={cn(
-              "h-3 w-3 transition-transform",
-              open && "rotate-90",
-            )}
+            className={cn("h-3 w-3 transition-transform", open && "rotate-90")}
           />
         </CollapsibleTrigger>
       </div>
       <CollapsibleContent>
-        {team.children.map((child) =>
-          child.children.length > 0 ? (
-            <TeamBranch
-              key={child.id}
-              team={child}
-              depth={depth + 1}
-              onHoverPrefetch={onHoverPrefetch}
-            />
-          ) : (
-            <TeamLeaf
-              key={child.id}
-              team={child}
-              depth={depth + 1}
-              onHoverPrefetch={onHoverPrefetch}
-            />
-          ),
-        )}
+        {/* Team's own Issues/Projects/Settings sub-menu */}
+        <TeamSubMenu team={team} depth={depth} />
+        {/* Then any child teams, recursive */}
+        {team.children.map((child) => (
+          <TeamBranch
+            key={child.id}
+            team={child}
+            depth={depth + 1}
+            onHoverPrefetch={onHoverPrefetch}
+          />
+        ))}
       </CollapsibleContent>
     </Collapsible>
   );
@@ -162,16 +155,6 @@ export function SidebarTeams() {
     qc.prefetchQuery({
       queryKey: ["team", selectedCompanyId, teamId],
       queryFn: () => teamsApi.get(selectedCompanyId, teamId),
-      staleTime: 5_000,
-    });
-    qc.prefetchQuery({
-      queryKey: ["team-members", selectedCompanyId, teamId],
-      queryFn: () => teamsApi.listMembers(selectedCompanyId, teamId),
-      staleTime: 5_000,
-    });
-    qc.prefetchQuery({
-      queryKey: ["team-workflow-statuses", selectedCompanyId, teamId],
-      queryFn: () => teamsApi.listWorkflowStatuses(selectedCompanyId, teamId),
       staleTime: 5_000,
     });
   };
@@ -210,23 +193,14 @@ export function SidebarTeams() {
               No teams yet
             </div>
           ) : (
-            tree.map((team) =>
-              team.children.length > 0 ? (
-                <TeamBranch
-                  key={team.id}
-                  team={team}
-                  depth={0}
-                  onHoverPrefetch={prefetchTeam}
-                />
-              ) : (
-                <TeamLeaf
-                  key={team.id}
-                  team={team}
-                  depth={0}
-                  onHoverPrefetch={prefetchTeam}
-                />
-              ),
-            )
+            tree.map((team) => (
+              <TeamBranch
+                key={team.id}
+                team={team}
+                depth={0}
+                onHoverPrefetch={prefetchTeam}
+              />
+            ))
           )}
         </div>
       </CollapsibleContent>
