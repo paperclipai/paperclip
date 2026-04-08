@@ -131,6 +131,25 @@ function renderMessageBody(
         </div>
         {m.body && <div className="text-foreground/90 text-[14px]">{m.body}</div>}
         {m.attachments && <Attachments list={m.attachments} />}
+        {m.actionStatus === "executed" && m.actionResult && Object.keys(m.actionResult).length > 0 && (
+          <pre className="mt-2 text-[11px] font-mono bg-background/40 border border-current/20 rounded px-2 py-1 max-h-40 overflow-auto whitespace-pre-wrap">
+            {JSON.stringify(m.actionResult, null, 2)}
+          </pre>
+        )}
+        {m.actionStatus === "failed" && m.actionError && (
+          <div className="mt-2 text-[12px] font-mono text-destructive bg-background/40 border border-destructive/30 rounded px-2 py-1">
+            {m.actionError}
+          </div>
+        )}
+        {(m.actionStatus === "executed" || m.actionStatus === "failed") && m.actionExecutedAt && (
+          <div className="mt-1 text-[10px] opacity-60">
+            by {m.actionExecutedByAgentId
+              ? agentName(m.actionExecutedByAgentId)
+              : (m.actionExecutedByUserId ?? "system")}
+            {" · "}
+            {new Date(m.actionExecutedAt).toLocaleString()}
+          </div>
+        )}
         {m.actionStatus === "pending" && (
           <div className="mt-2 flex items-center gap-2">
             <Button

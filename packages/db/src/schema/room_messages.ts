@@ -16,6 +16,13 @@ export const roomMessages = pgTable(
     actionPayload: jsonb("action_payload").$type<Record<string, unknown>>(),
     actionStatus: text("action_status"),
     actionTargetAgentId: uuid("action_target_agent_id").references(() => agents.id),
+    // Phase 4 prep: action execution audit trail. Populated when an action
+    // transitions pending → executed | failed.
+    actionResult: jsonb("action_result").$type<Record<string, unknown>>(),
+    actionError: text("action_error"),
+    actionExecutedAt: timestamp("action_executed_at", { withTimezone: true }),
+    actionExecutedByAgentId: uuid("action_executed_by_agent_id").references(() => agents.id),
+    actionExecutedByUserId: text("action_executed_by_user_id"),
     attachments: jsonb("attachments").$type<
       Array<{
         assetId: string;

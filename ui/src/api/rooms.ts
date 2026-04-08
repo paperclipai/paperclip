@@ -41,6 +41,11 @@ export interface RoomMessage {
   actionPayload: Record<string, unknown> | null;
   actionStatus: string | null;
   actionTargetAgentId: string | null;
+  actionResult: Record<string, unknown> | null;
+  actionError: string | null;
+  actionExecutedAt: string | null;
+  actionExecutedByAgentId: string | null;
+  actionExecutedByUserId: string | null;
   replyToId: string | null;
   createdAt: string;
 }
@@ -109,10 +114,11 @@ export const roomsApi = {
     roomId: string,
     messageId: string,
     actionStatus: string,
+    extras?: { result?: Record<string, unknown>; error?: string },
   ) =>
     api.patch<RoomMessage>(
       `/companies/${companyId}/rooms/${roomId}/messages/${messageId}/action-status`,
-      { actionStatus },
+      { actionStatus, ...extras },
     ),
 
   listIssues: (companyId: string, roomId: string) =>

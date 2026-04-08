@@ -305,6 +305,7 @@ export function roomRoutes(db: Db, storage: StorageService) {
           req.params.messageId as string,
           req.body.actionStatus,
           roomActor(req),
+          { result: req.body.result, error: req.body.error },
         );
         if (!updated) {
           res.status(404).json({ error: "Action message not found in this room" });

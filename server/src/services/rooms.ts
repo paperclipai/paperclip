@@ -350,21 +350,37 @@ export function roomService(db: Db) {
 
     /**
      * Update an action message's status. Only allows the target agent (or a
-     * room owner) to transition pending → executed | failed. Terminal states
-     * cannot regress. Idempotent re-application of the same terminal state
-     * is rejected as a 409.
+     * room owner) to transition pending → executed | failed.
+     *
+     * Concurrency: SELECT acquires a row-level `FOR UPDATE` lock inside the
+     * transaction so two simultaneous "execute" calls serialize — the second
+     * sees the already-executed row and either succeeds idempotently
+     * (same terminal state + same actor) or returns 409 (different terminal
+     * state, non-owner, or different actor).
+     *
+     * Idempotency: re-applying the SAME terminal state is NOT an error — the
+     * stored row is returned unchanged. This lets CLI executors retry a
+     * flaky network hop without faking 409 handling. Transitioning to a
+     * DIFFERENT terminal state still returns 409 (terminal state sticks).
+     *
+     * Audit: executedAt / executedBy{Agent,User}Id / actionResult /
+     * actionError are captured on the first successful transition.
      */
     updateActionStatus: async (
       roomId: string,
       messageId: string,
       nextStatus: RoomActionStatus,
       actor: { agentId?: string | null; userId?: string | null },
+      extras: { result?: Record<string, unknown>; error?: string } = {},
     ) => {
       return db.transaction(async (tx) => {
         // Must be a room participant
         const participant = await assertRoomParticipant(tx, roomId, actor);
 
-        // Load the action message scoped to this room
+        // Load the action message scoped to this room, with a row lock so
+        // concurrent callers serialize on the same message. READ COMMITTED
+        // without FOR UPDATE would race — both readers see "pending" and
+        // both write.
         const [msg] = await tx
           .select({
             id: roomMessages.id,
@@ -380,6 +396,7 @@ export function roomService(db: Db) {
               eq(roomMessages.type, "action"),
             ),
           )
+          .for("update")
           .limit(1);
         if (!msg) {
           throw Object.assign(new Error(`Action message not found in this room`), {
@@ -398,8 +415,25 @@ export function roomService(db: Db) {
           );
         }
 
-        // Transition guard: pending is the only valid source state;
-        // terminal (executed | failed) cannot regress.
+        if (nextStatus !== "executed" && nextStatus !== "failed") {
+          throw Object.assign(
+            new Error(`Invalid terminal action_status "${nextStatus}"`),
+            { status: 422 },
+          );
+        }
+
+        // Idempotency: same terminal state is a no-op that returns the
+        // already-stored row (including its original execution audit).
+        if (msg.actionStatus === nextStatus) {
+          const [existing] = await tx
+            .select()
+            .from(roomMessages)
+            .where(eq(roomMessages.id, messageId))
+            .limit(1);
+          return existing ?? null;
+        }
+
+        // Transition guard: any OTHER already-terminal state is a 409.
         if (msg.actionStatus !== "pending") {
           throw Object.assign(
             new Error(
@@ -408,16 +442,17 @@ export function roomService(db: Db) {
             { status: 409 },
           );
         }
-        if (nextStatus !== "executed" && nextStatus !== "failed") {
-          throw Object.assign(
-            new Error(`Invalid terminal action_status "${nextStatus}"`),
-            { status: 422 },
-          );
-        }
 
         const [row] = await tx
           .update(roomMessages)
-          .set({ actionStatus: nextStatus })
+          .set({
+            actionStatus: nextStatus,
+            actionResult: nextStatus === "executed" ? (extras.result ?? null) : null,
+            actionError: nextStatus === "failed" ? (extras.error ?? null) : null,
+            actionExecutedAt: new Date(),
+            actionExecutedByAgentId: actor.agentId ?? null,
+            actionExecutedByUserId: actor.userId ?? null,
+          })
           .where(eq(roomMessages.id, messageId))
           .returning();
         return row ?? null;

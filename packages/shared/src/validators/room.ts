@@ -65,6 +65,10 @@ export type SendRoomMessage = z.infer<typeof sendRoomMessageSchema>;
 
 export const updateActionStatusSchema = z.object({
   actionStatus: z.enum(ROOM_ACTION_STATUSES),
+  /** Execution output (only applies when status = "executed"). */
+  result: z.record(z.string(), z.unknown()).optional(),
+  /** Error message (only applies when status = "failed"). */
+  error: z.string().max(2000).optional(),
 });
 export type UpdateActionStatus = z.infer<typeof updateActionStatusSchema>;
 
