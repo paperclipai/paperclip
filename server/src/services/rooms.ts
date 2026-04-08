@@ -10,6 +10,13 @@ import {
   roomIssues,
 } from "@paperclipai/db";
 import type { RoomActionStatus, RoomMessageType } from "@paperclipai/shared";
+import type { RoomStreamBus, RoomMessageLike, RoomParticipantLike } from "./room-stream-bus.js";
+import type { AgentStreamBus } from "./agent-stream-bus.js";
+
+export interface RoomServiceBuses {
+  room?: RoomStreamBus;
+  agent?: AgentStreamBus;
+}
 
 async function assertAgentInCompany(
   tx: { select: Db["select"] },
@@ -93,7 +100,40 @@ export async function assertRoomParticipant(
   return row;
 }
 
-export function roomService(db: Db) {
+/**
+ * Fan out a freshly-created or updated room message to the room bus and
+ * the participating agents' buses. Runs after the DB transaction commits
+ * so subscribers see a row that definitely exists. Fetching the current
+ * participant list is a cheap lookup on the indexed (roomId) column.
+ */
+async function fanoutMessageEvent(
+  db: Db,
+  roomId: string,
+  eventKind: "message.created" | "message.updated",
+  message: RoomMessageLike,
+  buses?: RoomServiceBuses,
+): Promise<void> {
+  if (!buses?.room && !buses?.agent) return;
+
+  if (buses.room) {
+    buses.room.publish(roomId, { type: eventKind, roomId, message });
+  }
+
+  if (buses.agent) {
+    // Fanout to every participant agent of this room (users are NOT
+    // routed through the agent bus — they use the UI / WS path).
+    const participants = await db
+      .select({ agentId: roomParticipants.agentId })
+      .from(roomParticipants)
+      .where(eq(roomParticipants.roomId, roomId));
+    for (const p of participants) {
+      if (!p.agentId) continue;
+      buses.agent.publish(p.agentId, { type: eventKind, roomId, message });
+    }
+  }
+}
+
+export function roomService(db: Db, buses?: RoomServiceBuses) {
   return {
     /**
      * List rooms in a company, filtered to rooms the caller is a participant of.
@@ -217,7 +257,7 @@ export function roomService(db: Db) {
       if (!data.agentId && !data.userId) {
         throw Object.assign(new Error(`Must provide agentId or userId`), { status: 422 });
       }
-      return db.transaction(async (tx) => {
+      const row = await db.transaction(async (tx) => {
         if (data.agentId) {
           await assertAgentInCompany(tx, data.agentId, companyId);
         }
@@ -231,16 +271,53 @@ export function roomService(db: Db) {
           .returning();
         return row ?? null;
       });
+      if (row) {
+        buses?.room?.publish(roomId, {
+          type: "participant.joined",
+          roomId,
+          participant: row as RoomParticipantLike,
+        });
+        // Newly-added agent should learn its full room list.
+        if (row.agentId && buses?.agent) {
+          const rooms = await db
+            .select({ roomId: roomParticipants.roomId })
+            .from(roomParticipants)
+            .where(eq(roomParticipants.agentId, row.agentId));
+          buses.agent.publish(row.agentId, {
+            type: "membership.changed",
+            roomIds: rooms.map((r) => r.roomId),
+          });
+        }
+      }
+      return row;
     },
 
-    removeParticipant: (roomId: string, participantId: string) =>
-      db
+    removeParticipant: async (roomId: string, participantId: string) => {
+      const [row] = await db
         .delete(roomParticipants)
         .where(
           and(eq(roomParticipants.id, participantId), eq(roomParticipants.roomId, roomId)),
         )
-        .returning()
-        .then((rows) => rows[0] ?? null),
+        .returning();
+      if (row) {
+        buses?.room?.publish(roomId, {
+          type: "participant.left",
+          roomId,
+          participantId: row.id,
+        });
+        if (row.agentId && buses?.agent) {
+          const rooms = await db
+            .select({ roomId: roomParticipants.roomId })
+            .from(roomParticipants)
+            .where(eq(roomParticipants.agentId, row.agentId));
+          buses.agent.publish(row.agentId, {
+            type: "membership.changed",
+            roomIds: rooms.map((r) => r.roomId),
+          });
+        }
+      }
+      return row ?? null;
+    },
 
     // === Messages ===
 
@@ -277,7 +354,7 @@ export function roomService(db: Db) {
         senderUserId?: string | null;
       },
     ) => {
-      return db.transaction(async (tx) => {
+      const row = await db.transaction(async (tx) => {
         // Verify room exists in company
         const [room] = await tx
           .select({ companyId: rooms.companyId })
@@ -346,6 +423,9 @@ export function roomService(db: Db) {
           .where(eq(rooms.id, roomId));
         return row;
       });
+      // Publish after commit so subscribers always see a persisted row.
+      await fanoutMessageEvent(db, roomId, "message.created", row as RoomMessageLike, buses);
+      return row;
     },
 
     /**
@@ -373,7 +453,10 @@ export function roomService(db: Db) {
       actor: { agentId?: string | null; userId?: string | null },
       extras: { result?: Record<string, unknown>; error?: string } = {},
     ) => {
-      return db.transaction(async (tx) => {
+      const { row, changed } = await db.transaction(async (tx): Promise<{
+        row: typeof roomMessages.$inferSelect | null;
+        changed: boolean;
+      }> => {
         // Must be a room participant
         const participant = await assertRoomParticipant(tx, roomId, actor);
 
@@ -430,7 +513,7 @@ export function roomService(db: Db) {
             .from(roomMessages)
             .where(eq(roomMessages.id, messageId))
             .limit(1);
-          return existing ?? null;
+          return { row: existing ?? null, changed: false };
         }
 
         // Transition guard: any OTHER already-terminal state is a 409.
@@ -443,7 +526,7 @@ export function roomService(db: Db) {
           );
         }
 
-        const [row] = await tx
+        const [updated] = await tx
           .update(roomMessages)
           .set({
             actionStatus: nextStatus,
@@ -455,8 +538,13 @@ export function roomService(db: Db) {
           })
           .where(eq(roomMessages.id, messageId))
           .returning();
-        return row ?? null;
+        return { row: updated ?? null, changed: true };
       });
+      // Only fan out on actual transitions (not idempotent re-apply).
+      if (changed && row) {
+        await fanoutMessageEvent(db, roomId, "message.updated", row as RoomMessageLike, buses);
+      }
+      return row;
     },
 
     // === Issues link (N:M) ===
