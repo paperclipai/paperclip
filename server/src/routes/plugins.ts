@@ -21,7 +21,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { Router } from "express";
+import express, { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -243,6 +243,36 @@ export interface PluginRouteBridgeDeps {
   workerManager: PluginWorkerManager;
   /** Optional stream bus for SSE push from worker to UI. */
   streamBus?: PluginStreamBus;
+}
+
+function buildWebhookPayload(req: Request): {
+  rawBody: string;
+  parsedBody: unknown;
+  payload: Record<string, unknown>;
+} {
+  const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
+  if (stashedRaw) {
+    return {
+      rawBody: stashedRaw.toString("utf-8"),
+      parsedBody: req.body as unknown,
+      payload: ((req.body as Record<string, unknown> | undefined) ?? {}),
+    };
+  }
+
+  if (Buffer.isBuffer(req.body)) {
+    const rawBody = req.body.toString("utf-8");
+    return {
+      rawBody,
+      parsedBody: rawBody,
+      payload: { rawBody },
+    };
+  }
+
+  return {
+    rawBody: "",
+    parsedBody: req.body as unknown,
+    payload: ((req.body as Record<string, unknown> | undefined) ?? {}),
+  };
 }
 
 /** Request body for POST /api/plugins/tools/execute */
@@ -1893,12 +1923,12 @@ export function pluginRoutes(
    * - 502 if the worker is unavailable or the RPC call fails
    */
   router.post("/plugins/:pluginId/webhooks/:endpointKey", async (req, res) => {
-    if (!webhookDeps) {
-      res.status(501).json({ error: "Webhook ingestion is not enabled" });
-      return;
-    }
+      if (!webhookDeps) {
+        res.status(501).json({ error: "Webhook ingestion is not enabled" });
+        return;
+      }
 
-    const { pluginId, endpointKey } = req.params;
+      const { pluginId, endpointKey } = req.params;
 
     // Step 1: Resolve the plugin
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1956,10 +1986,7 @@ export function pluginRoutes(
     // Use the raw buffer stashed by the express.json() `verify` callback.
     // This preserves the exact bytes the provider signed, whereas
     // JSON.stringify(req.body) would re-serialize and break HMAC verification.
-    const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
-    const rawBody = stashedRaw ? stashedRaw.toString("utf-8") : "";
-    const parsedBody = req.body as unknown;
-    const payload = (req.body as Record<string, unknown> | undefined) ?? {};
+      const { rawBody, parsedBody, payload } = buildWebhookPayload(req);
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
@@ -2023,7 +2050,7 @@ export function pluginRoutes(
         error: errorMessage,
       });
     }
-  });
+    });
 
   // ===========================================================================
   // Plugin health dashboard — aggregated diagnostics for the settings page
