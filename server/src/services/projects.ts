@@ -25,6 +25,7 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
+  description?: string | null;
   sourceType?: string | null;
   cwd?: string | null;
   repoUrl?: string | null;
@@ -682,6 +683,7 @@ export function projectService(db: Db) {
       if (data.name === undefined && (data.cwd !== undefined || data.repoUrl !== undefined)) {
         patch.name = deriveWorkspaceName({ cwd: nextCwd, repoUrl: nextRepoUrl });
       }
+      if (data.description !== undefined) patch.description = data.description;
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
       if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
