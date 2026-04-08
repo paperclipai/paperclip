@@ -3,9 +3,12 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   approvals,
   companies,
+  costEvents,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -57,12 +60,16 @@ describeEmbeddedPostgres("heartbeat preflight check", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     delete process.env.HEARTBEAT_PREFLIGHT_ENABLED;
+    // Delete in FK-safe order: children before parents
     await db.delete(issueComments);
     await db.delete(approvals);
+    await db.delete(costEvents);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentTaskSessions);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
