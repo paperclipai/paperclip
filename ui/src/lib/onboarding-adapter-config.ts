@@ -4,7 +4,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { getUIAdapter } from "../adapters";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 
-type OnboardingAdapterType =
+export type OnboardingAdapterType =
   | "claude_local"
   | "codex_local"
   | "gemini_local"

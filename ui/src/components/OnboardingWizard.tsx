@@ -312,7 +312,7 @@ export function OnboardingWizard() {
 
   function buildAdapterConfig(): Record<string, unknown> {
     return buildOnboardingAdapterConfig({
-      adapterType,
+      adapterType: adapterType as import("../lib/onboarding-adapter-config").OnboardingAdapterType,
       model,
       command,
       extraArgs,
