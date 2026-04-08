@@ -7,7 +7,7 @@ import {
   DialogContent,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Github, Plus, X } from "lucide-react";
+import { FolderOpen, Github, Plus } from "lucide-react";
 import { cn } from "../lib/utils";
 
 interface NewWorkspaceDialogProps {
@@ -98,7 +98,7 @@ export function NewWorkspaceDialog({
             className="text-muted-foreground"
             onClick={() => { reset(); onOpenChange(false); }}
           >
-            <X className="text-lg leading-none" />
+            <span className="text-lg leading-none">&times;</span>
           </Button>
         </div>
 

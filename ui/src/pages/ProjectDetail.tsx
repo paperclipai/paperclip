@@ -32,7 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Copy, FolderOpen, GitBranch, Loader2, Play, Plus, Square } from "lucide-react";
+import { Copy, FolderOpen, GitBranch, Github, Loader2, Play, Plus, Square, Trash2 } from "lucide-react";
 import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
@@ -255,6 +255,14 @@ function ProjectWorkspacesContent({
     },
   });
 
+  const removeWorkspace = useMutation({
+    mutationFn: (workspaceId: string) =>
+      projectsApi.removeWorkspace(projectId, workspaceId, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+    },
+  });
+
   if (summaries.length === 0) {
     return (
       <>
@@ -276,8 +284,70 @@ function ProjectWorkspacesContent({
     );
   }
 
+  const inactiveWorkspaces = projectWorkspaces
+    .filter((w) => !summaries.some((s) => s.workspaceId === w.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
   const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
+
+  const renderWorkspaceCard = (workspace: { id: string; name: string; isPrimary: boolean; cwd?: string | null; repoUrl?: string | null }) => {
+    const workspaceHref = projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, workspace.id);
+    const truncatePath = (path: string) => {
+      const parts = path.split("/").filter(Boolean);
+      if (parts.length <= 3) return path;
+      return `…/${parts.slice(-2).join("/")}`;
+    };
+
+    return (
+      <div
+        key={workspace.id}
+        className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0"
+      >
+        <Link
+          to={workspaceHref}
+          className="min-w-0 shrink truncate text-sm font-medium hover:underline"
+        >
+          {workspace.name}
+        </Link>
+        <div className="flex shrink-0 items-center gap-1.5 text-xs">
+          {workspace.isPrimary && (
+            <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-500">primary</span>
+          )}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+          {workspace.cwd && (
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate" title={workspace.cwd}>{truncatePath(workspace.cwd)}</span>
+              <CopyText text={workspace.cwd} className="shrink-0" copiedLabel="Path copied">
+                <Copy className="h-3 w-3" />
+              </CopyText>
+            </span>
+          )}
+          {workspace.repoUrl && (
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              <Github className="h-3 w-3 shrink-0" />
+              <span className="truncate" title={workspace.repoUrl}>{workspace.repoUrl}</span>
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="shrink-0 text-muted-foreground hover:text-destructive"
+            disabled={removeWorkspace.isPending}
+            onClick={() => {
+              if (confirm(`Delete workspace "${workspace.name}"?`)) {
+                removeWorkspace.mutate(workspace.id);
+              }
+            }}
+          >
+            <Trash2 className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const renderSummaryRow = (summary: ReturnType<typeof buildProjectWorkspaceSummaries>[number]) => {
     const visibleIssues = summary.issues.slice(0, 5);
@@ -434,6 +504,14 @@ function ProjectWorkspacesContent({
             Add workspace
           </Button>
         </div>
+
+        {/* Configured workspaces (including those with no activity) */}
+        {inactiveWorkspaces.length > 0 && (
+          <div className="rounded-xl border border-border bg-card">
+            {inactiveWorkspaces.map(renderWorkspaceCard)}
+          </div>
+        )}
+
         <div className="overflow-hidden rounded-xl border border-border bg-card">
           {activeSummaries.map(renderSummaryRow)}
         </div>
