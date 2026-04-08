@@ -12,7 +12,7 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, onLog, onMeta } = ctx;
+  const { runId, agent, config, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
@@ -20,6 +20,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  // Inject runId + authToken so spawned adapters (claude_local, codex_local,
+  // gemini_local, etc.) can authenticate back to Paperclip's API. Mirrors
+  // the same pattern already applied to the Hermes adapter upstream.
+  if (runId) env.PAPERCLIP_RUN_ID = runId;
+  if (authToken && !env.PAPERCLIP_API_KEY) env.PAPERCLIP_API_KEY = authToken;
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
