@@ -320,8 +320,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (buffer.trim()) {
       try {
         const parsed = JSON.parse(buffer.trim()) as Record<string, unknown>;
-        if (typeof parsed.response === "string") {
-          assistantContent += parsed.response;
+        // /api/chat uses message.content; /api/generate uses response
+        const msg = parsed.message as Record<string, unknown> | undefined;
+        const chunk = typeof msg?.content === "string" ? msg.content : typeof parsed.response === "string" ? parsed.response : null;
+        if (chunk) {
+          assistantContent += chunk;
         }
         if (parsed.done === true) {
           promptEvalCount += asNumber(parsed.prompt_eval_count, 0);

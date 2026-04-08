@@ -252,6 +252,11 @@ export function OllamaModelPicker({
   // picker always reflects the right server, even when the server-side
   // listOllamaModels() defaults to localhost.
   const [clientModels, setClientModels] = useState<{ id: string; label: string }[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const refreshModels = useCallback(() => {
+    setRefreshTick((n) => n + 1);
+    onRefreshRef.current?.();
+  }, []);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -276,7 +281,7 @@ export function OllamaModelPicker({
       }
     })();
     return () => { cancelled = true; };
-  }, [effectiveBaseUrl]);
+  }, [effectiveBaseUrl, refreshTick]);
 
   // Merge server-provided and client-fetched models, deduplicating by id
   const mergedInstalled = useMemo(() => {
@@ -350,6 +355,7 @@ export function OllamaModelPicker({
           if (obj.status === "success") {
             setDownloadState(key, { status: "done", statusText: "Installed!", percent: 100 });
             _globalAborts.delete(key);
+            setRefreshTick((n) => n + 1);
             onRefreshRef.current?.();
             return;
           }
@@ -373,12 +379,17 @@ export function OllamaModelPicker({
           if (obj.status === "success") {
             setDownloadState(key, { status: "done", statusText: "Installed!", percent: 100 });
             _globalAborts.delete(key);
+            setRefreshTick((n) => n + 1);
             onRefreshRef.current?.();
             return;
           }
         } catch (e) {
-          if (e instanceof Error && e.message !== buffer.trim()) throw e;
-          // parse error on trailing buffer — fall through
+          // Re-throw Ollama errors; swallow JSON parse errors
+          if (e instanceof SyntaxError) {
+            // malformed trailing data — fall through
+          } else {
+            throw e;
+          }
         }
       }
 

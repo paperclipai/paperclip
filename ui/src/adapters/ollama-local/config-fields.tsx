@@ -66,7 +66,6 @@ export function OllamaLocalConfigFields({
           installedModels={models}
           value={currentModel}
           onChange={setModel}
-          onRefresh={undefined}
           baseUrl={currentBaseUrl || DEFAULT_OLLAMA_BASE_URL}
         />
       </Field>
