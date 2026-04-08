@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Trash2, Users } from "lucide-react";
+import { Trash2, Users, Plus, X, Check, Star } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team, type WorkflowStatus, type TeamMember } from "../api/teams";
 import { issuesApi } from "../api/issues";
@@ -261,6 +261,409 @@ export function TeamIndexRedirect() {
   return <Navigate to={`/teams/${teamId}/issues`} replace />;
 }
 
+const WORKFLOW_CATEGORIES = [
+  "backlog",
+  "unstarted",
+  "started",
+  "completed",
+  "canceled",
+] as const;
+
+/**
+ * Inline editor for team workflow statuses.
+ * Supports: add new status (name + category + color), rename/recolor
+ * existing, set as default, delete (service enforces "last in category"
+ * rule + 409 on slug clash, handled with a toast-style error message).
+ */
+function WorkflowStatusesEditor({
+  teamId,
+  companyId,
+  statuses,
+}: {
+  teamId: string;
+  companyId: string;
+  statuses: WorkflowStatus[];
+}) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCategory, setNewCategory] = useState<typeof WORKFLOW_CATEGORIES[number]>("unstarted");
+  const [newColor, setNewColor] = useState("#64748B");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editColor, setEditColor] = useState("");
+
+  const invalidate = () =>
+    qc.invalidateQueries({ queryKey: ["team-workflow-statuses", companyId, teamId] });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      teamsApi.createWorkflowStatus(companyId, teamId, {
+        name: newName,
+        category: newCategory,
+        color: newColor,
+      }),
+    onSuccess: () => {
+      invalidate();
+      setAdding(false);
+      setNewName("");
+      setNewColor("#64748B");
+      setError(null);
+    },
+    onError: (err: any) => setError(err?.message ?? "Failed to create"),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<WorkflowStatus> }) =>
+      teamsApi.updateWorkflowStatus(companyId, teamId, id, data),
+    onSuccess: () => {
+      invalidate();
+      setEditingId(null);
+      setError(null);
+    },
+    onError: (err: any) => setError(err?.message ?? "Failed to update"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => teamsApi.removeWorkflowStatus(companyId, teamId, id),
+    onSuccess: () => invalidate(),
+    onError: (err: any) => setError(err?.message ?? "Failed to delete"),
+  });
+
+  const setDefault = (id: string) =>
+    updateMutation.mutate({ id, data: { isDefault: true } });
+
+  const startEdit = (s: WorkflowStatus) => {
+    setEditingId(s.id);
+    setEditName(s.name);
+    setEditColor(s.color ?? "#94A3B8");
+    setError(null);
+  };
+
+  return (
+    <section className="mb-8">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-muted-foreground">
+          Workflow Statuses ({statuses.length})
+        </h2>
+        {!adding && (
+          <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+            <Plus className="h-3 w-3 mr-1" /> Add status
+          </Button>
+        )}
+      </div>
+
+      {error && <div className="text-xs text-destructive mb-2">{error}</div>}
+
+      <div className="space-y-1">
+        {statuses.map((s) => {
+          const isEditing = editingId === s.id;
+          return (
+            <div
+              key={s.id}
+              className="flex items-center gap-2 p-2 rounded border border-border"
+            >
+              {isEditing ? (
+                <>
+                  <input
+                    type="color"
+                    value={editColor}
+                    onChange={(e) => setEditColor(e.target.value)}
+                    className="h-5 w-8 rounded border border-border bg-transparent"
+                  />
+                  <Input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="h-7 text-sm flex-1"
+                    autoFocus
+                  />
+                  <Badge variant="outline" className="text-xs">
+                    {s.category}
+                  </Badge>
+                  <code className="text-xs text-muted-foreground">{s.slug}</code>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0"
+                    onClick={() =>
+                      updateMutation.mutate({
+                        id: s.id,
+                        data: { name: editName, color: editColor },
+                      })
+                    }
+                  >
+                    <Check className="h-3 w-3 text-emerald-500" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0"
+                    onClick={() => setEditingId(null)}
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <span
+                    className="h-3 w-3 rounded-full shrink-0"
+                    style={{ backgroundColor: s.color ?? "#94A3B8" }}
+                  />
+                  <span
+                    className="font-medium text-sm cursor-pointer flex-1"
+                    onClick={() => startEdit(s)}
+                  >
+                    {s.name}
+                  </span>
+                  <Badge variant="outline" className="text-xs">
+                    {s.category}
+                  </Badge>
+                  <code className="text-xs text-muted-foreground">{s.slug}</code>
+                  {s.isDefault ? (
+                    <Badge className="flex items-center gap-1">
+                      <Star className="h-3 w-3" />
+                      default
+                    </Badge>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 text-[11px] px-2"
+                      onClick={() => setDefault(s.id)}
+                      title="Set as default for new issues"
+                    >
+                      Set default
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => {
+                      if (confirm(`Delete status "${s.name}"?`)) deleteMutation.mutate(s.id);
+                    }}
+                    title="Delete status"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {adding && (
+          <div className="flex items-center gap-2 p-2 rounded border border-border bg-accent/20">
+            <input
+              type="color"
+              value={newColor}
+              onChange={(e) => setNewColor(e.target.value)}
+              className="h-5 w-8 rounded border border-border bg-transparent"
+            />
+            <Input
+              placeholder="Status name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              className="h-7 text-sm flex-1"
+              autoFocus
+            />
+            <select
+              value={newCategory}
+              onChange={(e) => setNewCategory(e.target.value as any)}
+              className="h-7 text-xs border border-border rounded px-2 bg-background"
+            >
+              {WORKFLOW_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => newName.trim() && createMutation.mutate()}
+              disabled={!newName.trim() || createMutation.isPending}
+            >
+              Add
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0"
+              onClick={() => {
+                setAdding(false);
+                setNewName("");
+                setError(null);
+              }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Inline editor for team members.
+ * Supports: add agent from a picker (filtered to company agents not
+ * already in the team), change role between lead/member, remove.
+ * The service enforces company scope on agent ids.
+ */
+function TeamMembersEditor({
+  teamId,
+  companyId,
+  team,
+  members,
+}: {
+  teamId: string;
+  companyId: string;
+  team: Team;
+  members: TeamMember[];
+}) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [pickerValue, setPickerValue] = useState("");
+
+  const { data: allAgents } = useQuery({
+    queryKey: ["agents", companyId],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const agentName = (id: string | null) => {
+    if (!id) return "—";
+    const a = (allAgents ?? []).find((x: any) => x.id === id);
+    return a?.name ?? id.slice(0, 8);
+  };
+
+  const linkedAgentIds = new Set(
+    members.map((m) => m.agentId).filter((x): x is string => !!x),
+  );
+  const linkable = (allAgents ?? []).filter((a: any) => !linkedAgentIds.has(a.id));
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["team-members", companyId, teamId] });
+    qc.invalidateQueries({ queryKey: ["team", companyId, teamId] });
+  };
+
+  const addMutation = useMutation({
+    mutationFn: (agentId: string) =>
+      teamsApi.addMember(companyId, teamId, { agentId, role: "member" }),
+    onSuccess: () => {
+      invalidate();
+      setPickerValue("");
+      setError(null);
+    },
+    onError: (err: any) => setError(err?.message ?? "Failed to add member"),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (memberId: string) =>
+      teamsApi.removeMember(companyId, teamId, memberId),
+    onSuccess: () => invalidate(),
+    onError: (err: any) => setError(err?.message ?? "Failed to remove"),
+  });
+
+  // Changing lead is done by updating team.leadAgentId so that
+  // team_members role=lead stays in sync with the teams.lead_agent_id
+  // column (the service handles the demotion/promotion transaction).
+  const setLeadMutation = useMutation({
+    mutationFn: (agentId: string | null) =>
+      teamsApi.update(companyId, teamId, { leadAgentId: agentId }),
+    onSuccess: () => invalidate(),
+    onError: (err: any) => setError(err?.message ?? "Failed to set lead"),
+  });
+
+  return (
+    <section className="mb-8">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
+          <Users className="h-4 w-4" /> Members ({members.length})
+        </h2>
+      </div>
+
+      {error && <div className="text-xs text-destructive mb-2">{error}</div>}
+
+      {members.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic mb-2">No members yet</p>
+      ) : (
+        <div className="space-y-1 mb-3">
+          {members.map((m) => {
+            const isLead = m.role === "lead" || m.agentId === team.leadAgentId;
+            return (
+              <div
+                key={m.id}
+                className="flex items-center gap-2 p-2 rounded border border-border"
+              >
+                <span className="text-sm flex-1">
+                  {m.agentId ? agentName(m.agentId) : m.userId ?? "?"}
+                </span>
+                {isLead ? (
+                  <Badge className="flex items-center gap-1">
+                    <Star className="h-3 w-3" />
+                    lead
+                  </Badge>
+                ) : (
+                  <>
+                    <Badge variant="outline">member</Badge>
+                    {m.agentId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-[11px] px-2"
+                        onClick={() => setLeadMutation.mutate(m.agentId)}
+                        title="Promote to lead"
+                      >
+                        Make lead
+                      </Button>
+                    )}
+                  </>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    if (confirm("Remove from team?")) removeMutation.mutate(m.id);
+                  }}
+                  title="Remove member"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <select
+          value={pickerValue}
+          onChange={(e) => setPickerValue(e.target.value)}
+          className="h-8 text-sm border border-border rounded px-2 bg-background flex-1 max-w-xs"
+        >
+          <option value="">+ Add agent as member…</option>
+          {linkable.map((a: any) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <Button
+          size="sm"
+          disabled={!pickerValue}
+          onClick={() => pickerValue && addMutation.mutate(pickerValue)}
+        >
+          Add
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 /**
  * Team settings page (the old TeamDetailPage contents moved under /settings).
  * Only accessed explicitly via the sub-menu, never from a team click.
@@ -351,51 +754,18 @@ export function TeamSettingsPage() {
         <p className="text-sm text-muted-foreground mb-6">{team.description}</p>
       )}
 
-      <section className="mb-8">
-        <h2 className="text-sm font-bold uppercase tracking-wide text-muted-foreground mb-3">
-          Workflow Statuses ({statuses?.length ?? 0})
-        </h2>
-        <div className="space-y-1">
-          {(statuses ?? []).map((s: WorkflowStatus) => (
-            <div
-              key={s.id}
-              className="flex items-center gap-3 p-2 rounded border border-border"
-            >
-              <span
-                className="h-3 w-3 rounded-full"
-                style={{ backgroundColor: s.color ?? "#94A3B8" }}
-              />
-              <span className="font-medium">{s.name}</span>
-              <Badge variant="outline" className="text-xs">
-                {s.category}
-              </Badge>
-              <code className="text-xs text-muted-foreground ml-auto">{s.slug}</code>
-              {s.isDefault && <Badge>default</Badge>}
-            </div>
-          ))}
-        </div>
-      </section>
+      <WorkflowStatusesEditor
+        teamId={teamId!}
+        companyId={selectedCompanyId!}
+        statuses={statuses ?? []}
+      />
 
-      <section className="mb-8">
-        <h2 className="text-sm font-bold uppercase tracking-wide text-muted-foreground mb-3 flex items-center gap-2">
-          <Users className="h-4 w-4" /> Members ({members?.length ?? 0})
-        </h2>
-        {(members ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground italic">No members yet</p>
-        ) : (
-          <div className="space-y-1">
-            {(members ?? []).map((m: TeamMember) => (
-              <div
-                key={m.id}
-                className="flex items-center gap-3 p-2 rounded border border-border"
-              >
-                <span className="text-sm">{m.agentId ?? m.userId}</span>
-                <Badge variant="outline">{m.role}</Badge>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      <TeamMembersEditor
+        teamId={teamId!}
+        companyId={selectedCompanyId!}
+        team={team}
+        members={members ?? []}
+      />
 
       <section>
         <h2 className="text-sm font-bold uppercase tracking-wide text-muted-foreground mb-3">
