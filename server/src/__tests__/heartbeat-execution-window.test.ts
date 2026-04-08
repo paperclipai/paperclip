@@ -61,7 +61,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
     await tempDb?.cleanup();
   });
 
-async function seedFixture(input: {
+  async function seedFixture(input: {
     now: Date;
     allowOutsideExecutionWindow?: boolean;
     withIssue?: boolean;

@@ -2526,6 +2526,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function promoteDeferredIssueWakeups() {
+    const DEFERRED_PROMOTION_BATCH_SIZE = 500;
     const deferredIssues = await db
       .select({
         companyId: agentWakeupRequests.companyId,
@@ -2533,7 +2534,8 @@ export function heartbeatService(db: Db) {
       })
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.status, "deferred_issue_execution"))
-      .orderBy(asc(agentWakeupRequests.requestedAt));
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(DEFERRED_PROMOTION_BATCH_SIZE);
 
     const seen = new Set<string>();
     for (const deferredIssue of deferredIssues) {
