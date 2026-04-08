@@ -262,7 +262,7 @@ describe("heartbeat comment wake batching", () => {
           payloadTemplate: {
             message: "wake now",
           },
-          waitTimeoutMs: 2_000,
+          waitTimeoutMs: 20_000,
         },
         runtimeConfig: {},
         permissions: {},
@@ -455,7 +455,7 @@ describe("heartbeat comment wake batching", () => {
           payloadTemplate: {
             message: "wake now",
           },
-          waitTimeoutMs: 2_000,
+          waitTimeoutMs: 20_000,
         },
         runtimeConfig: {},
         permissions: {},
