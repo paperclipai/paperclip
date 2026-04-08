@@ -100,6 +100,30 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
+function debugLog(message: string): void {
+  if (process.env.DEBUG || process.env.PAPERCLIP_DEBUG) {
+    process.stderr.write(`[opencode-local] ${message}\n`);
+  }
+}
+
+function findClosestModelMatch(model: string, models: AdapterModel[]): string | undefined {
+  const modelLower = model.toLowerCase();
+  // 1. Case-insensitive exact match
+  const ciMatch = models.find((m) => m.id.toLowerCase() === modelLower);
+  if (ciMatch) return ciMatch.id;
+  // 2. One side includes the other
+  const includesMatch = models.find(
+    (m) => m.id.toLowerCase().includes(modelLower) || modelLower.includes(m.id.toLowerCase()),
+  );
+  if (includesMatch) return includesMatch.id;
+  // 3. startsWith match
+  const startsWithMatch = models.find(
+    (m) => m.id.toLowerCase().startsWith(modelLower) || modelLower.startsWith(m.id.toLowerCase()),
+  );
+  if (startsWithMatch) return startsWithMatch.id;
+  return undefined;
+}
+
 export async function discoverOpenCodeModels(input: {
   command?: unknown;
   cwd?: unknown;
@@ -123,6 +147,17 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
+  const home = runtimeEnv.HOME ?? resolvedHome ?? process.env.HOME ?? "(unset)";
+  const path = runtimeEnv.PATH ?? process.env.PATH ?? "(unset)";
+  const opencodeVars = Object.entries(runtimeEnv)
+    .filter(([k]) => k.startsWith("OPENCODE_"))
+    .map(([k, v]) => `${k}=${v}`)
+    .join(", ");
+
+  debugLog(
+    `discoverOpenCodeModels: command="${command} models" cwd="${cwd}" HOME="${home}" PATH="${path}"${opencodeVars ? ` OPENCODE_VARS=${opencodeVars}` : ""}`,
+  );
+
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
@@ -137,14 +172,43 @@ export async function discoverOpenCodeModels(input: {
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    throw new Error(
+      `\`${command} models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s. HOME="${home}" cwd="${cwd}"`,
+    );
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
+    const context = `command="${command} models" HOME="${home}" cwd="${cwd}"`;
+    throw new Error(
+      detail
+        ? `\`${command} models\` failed: ${detail} (${context})`
+        : `\`${command} models\` failed. (${context})`,
+    );
   }
 
-  return sortModels(parseModelsOutput(result.stdout));
+  const models = sortModels(parseModelsOutput(result.stdout));
+
+  if (models.length === 0) {
+    const stdoutSnippet = result.stdout
+      .split(/\r?\n/)
+      .slice(0, 5)
+      .join(" | ")
+      .trim();
+    const stderrSnippet = result.stderr
+      .split(/\r?\n/)
+      .slice(0, 5)
+      .join(" | ")
+      .trim();
+    throw new Error(
+      `\`${command} models\` returned no models. ` +
+        `Run \`${command} models\` manually and verify provider auth. ` +
+        `command="${command} models" HOME="${home}" cwd="${cwd}"` +
+        (stdoutSnippet ? ` stdout="${stdoutSnippet}"` : "") +
+        (stderrSnippet ? ` stderr="${stderrSnippet}"` : ""),
+    );
+  }
+
+  return models;
 }
 
 export async function discoverOpenCodeModelsCached(input: {
@@ -187,10 +251,30 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
   }
 
-  if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+  const modelLower = model.toLowerCase();
+  const exactMatch = models.some((entry) => entry.id === model);
+  if (!exactMatch) {
+    const ciMatch = models.find((entry) => entry.id.toLowerCase() === modelLower);
+    if (ciMatch) {
+      // Case-insensitive match found — warn but proceed
+      process.stderr.write(
+        `[opencode-local] Warning: configured model "${model}" found with different casing as "${ciMatch.id}". Consider updating adapterConfig.model to match exactly.\n`,
+      );
+      return models;
+    }
+
+    const command = resolveOpenCodeCommand(input.command);
+    const cwd = asString(input.cwd, process.cwd());
+    const total = models.length;
+    const sample = models.slice(0, 50).map((entry) => entry.id).join("\n  ");
+    const closeMatch = findClosestModelMatch(model, models);
+    const closestHint = closeMatch ? `\nClosest match found: "${closeMatch}"` : "";
     throw new Error(
-      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      `Configured OpenCode model is unavailable: "${model}"\n` +
+        `command="${command} models" cwd="${cwd}"\n` +
+        `Total models found: ${total}${closestHint}\n` +
+        `Available models (first ${Math.min(50, total)}):\n  ${sample}` +
+        (total > 50 ? `\n  ... and ${total - 50} more` : ""),
     );
   }
 
@@ -200,7 +284,12 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   try {
     return await discoverOpenCodeModelsCached();
-  } catch {
+  } catch (err) {
+    if (process.env.PAPERCLIP_DEBUG || process.env.DEBUG) {
+      process.stderr.write(
+        `[opencode-local] listOpenCodeModels failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
     return [];
   }
 }
