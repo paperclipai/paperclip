@@ -25,6 +25,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import type { Db } from "@paperclipai/db";
 import type {
   LeaderWorkspaceProvisioner,
@@ -71,7 +72,22 @@ function defaultRepoRoot(): string {
 }
 
 function defaultTsxBin(repoRoot: string): string {
-  return path.join(repoRoot, "node_modules", ".bin", "tsx");
+  // pnpm does not hoist dev deps to the workspace root by default;
+  // tsx is installed locally in server/node_modules. Fall back to the
+  // hoisted location for bare npm/yarn layouts.
+  const candidates = [
+    path.join(repoRoot, "server", "node_modules", ".bin", "tsx"),
+    path.join(repoRoot, "node_modules", ".bin", "tsx"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      fsSync.accessSync(candidate, fsSync.constants.X_OK);
+      return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return candidates[0]; // last resort, will fail visibly
 }
 
 function bridgeEntryPath(repoRoot: string): string {
@@ -79,8 +95,39 @@ function bridgeEntryPath(repoRoot: string): string {
 }
 
 function resolveClaudeBinary(): string {
-  // Prefer COS_V2_CLAUDE_BIN override for tests / custom installs.
-  return process.env.COS_V2_CLAUDE_BIN ?? "claude";
+  // Explicit override always wins.
+  const override = process.env.COS_V2_CLAUDE_BIN;
+  if (override) return override;
+
+  // Walk PATH manually so we get an absolute path to hand to pty-runner
+  // (shell aliases are NOT in PATH, and node-pty's posix_spawnp does not
+  // resolve them; an absolute path sidesteps the problem).
+  const PATH = process.env.PATH ?? "";
+  const candidates: string[] = [];
+  for (const dir of PATH.split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, "claude"));
+  }
+  // Common locations that may be missing from PATH under a daemon.
+  const home = process.env.HOME ?? "";
+  if (home) {
+    candidates.push(path.join(home, ".local", "bin", "claude"));
+    candidates.push(path.join(home, ".claude", "local", "claude"));
+  }
+  candidates.push("/usr/local/bin/claude");
+  candidates.push("/opt/homebrew/bin/claude");
+
+  // First existing + executable match wins.
+  for (const candidate of candidates) {
+    try {
+      fsSync.accessSync(candidate, fsSync.constants.X_OK);
+      return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+
+  // Last resort — "claude" and hope PATH has it.
+  return "claude";
 }
 
 export function createWorkspaceProvisioner(

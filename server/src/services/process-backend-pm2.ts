@@ -19,6 +19,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pm2 from "pm2";
 import type {
   ProcessBackend,
@@ -26,6 +27,33 @@ import type {
   ProcessInfo,
   ProcessSpec,
 } from "./process-backend.js";
+
+/**
+ * Path to the PTY runner shim. PM2 spawns this script; the shim
+ * allocates a node-pty and spawns the real target (claude CLI) in
+ * it, then pipes pty output to its own stdout (which PM2 captures
+ * to log files).
+ *
+ * Why needed: Claude CLI refuses to enter interactive / channel
+ * mode when stdin is not a TTY — it auto-falls back to --print.
+ * PM2's default child stdio is file-based pipes (no TTY). node-pty
+ * is the cross-platform way to allocate a pseudo-terminal without
+ * relying on an OS-level `script(1)` helper (which itself needs a
+ * TTY in its parent).
+ */
+function ptyRunnerPath(): string {
+  // This file lives next to pty-runner.cjs (both in services/).
+  // In dev tsx runs from src/, in prod from dist/, both locations
+  // keep the shim alongside.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // src/services/ case
+  let candidate = path.join(here, "pty-runner.cjs");
+  if (fs.existsSync(candidate)) return candidate;
+  // dist/services/ case — runner may not have been copied; fall back
+  // to source location via ../..
+  candidate = path.resolve(here, "..", "..", "src", "services", "pty-runner.cjs");
+  return candidate;
+}
 
 /** Promisified wrappers over the callback-style pm2 API. */
 function pm2Connect(): Promise<void> {
@@ -134,10 +162,17 @@ export function createPm2Backend(): ProcessBackend {
       await ensureConnected();
       const outFile = spec.outFile ?? path.join(spec.cwd, "logs", "stdout.log");
       const errFile = spec.errFile ?? path.join(spec.cwd, "logs", "stderr.log");
+
+      // Wrap the real target in pty-runner.cjs so claude sees a TTY.
+      // PM2 launches `node pty-runner.cjs <claude-bin> <claude-args...>`,
+      // the runner forks claude in a node-pty session.
+      const wrappedScript = ptyRunnerPath();
+      const wrappedArgs = [spec.script, ...spec.args];
+
       const procs = await pm2Start({
         name: spec.name,
-        script: spec.script,
-        args: spec.args,
+        script: wrappedScript,
+        args: wrappedArgs,
         cwd: spec.cwd,
         env: spec.env,
         output: outFile,
@@ -228,23 +263,16 @@ export function createPm2Backend(): ProcessBackend {
 }
 
 /**
- * Ensure pm2-logrotate is installed and configured. Called once at
- * server startup. Idempotent — no-op if already present.
+ * Hint that pm2-logrotate should be installed for automatic log file
+ * rotation. We deliberately do NOT invoke pm2.install() here — in
+ * pm2@6.x the install codepath can synchronously throw an
+ * uncaughtException outside any Promise context (attempts to require
+ * a yet-to-exist package.json), which is fatal to the server process.
  *
- * Not part of ProcessBackend because it's a pm2 daemon-level concern
- * that applies to all managed processes, not to a specific spec.
+ * If logs grow unbounded, the operator runs `pm2 install pm2-logrotate`
+ * once, and PM2 then handles rotation for every managed process
+ * forever. No COS v2 action needed.
  */
 export async function ensureLogRotateInstalled(): Promise<void> {
-  // pm2.install isn't in the type defs of pm2 6.x — use the callback
-  // form via the untyped surface.
-  const pm2Any = pm2 as any;
-  if (typeof pm2Any.install !== "function") return;
-  await new Promise<void>((resolve, reject) => {
-    pm2Any.install("pm2-logrotate", (err: Error | null) =>
-      err ? reject(err) : resolve(),
-    );
-  }).catch(() => {
-    // Installation is best-effort. If it fails we still function —
-    // logs just won't auto-rotate. Logged by the caller.
-  });
+  // No-op. See JSDoc above.
 }
