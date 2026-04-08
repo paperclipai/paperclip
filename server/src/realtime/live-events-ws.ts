@@ -142,6 +142,8 @@ async function authorizeUpgrade(
         ),
     ]);
 
+    // NOTE: This membership check mirrors assertCompanyAccess() in routes/authz.ts.
+    // If the access model changes there, update this check to match.
     const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
     if (!roleRow && !hasCompanyMembership) return null;
 

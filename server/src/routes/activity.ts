@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { heartbeatRuns } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -46,6 +48,7 @@ export function activityRoutes(db: Db) {
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
     const event = await svc.create({
       companyId,
       ...req.body,
@@ -79,7 +82,18 @@ export function activityRoutes(db: Db) {
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
+    assertBoard(req);
     const runId = req.params.runId as string;
+    const run = await db
+      .select({ companyId: heartbeatRuns.companyId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });
