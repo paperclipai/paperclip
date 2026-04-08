@@ -75,6 +75,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       eventType: input.action as PluginEventType,
       occurredAt: new Date().toISOString(),
       actorId: input.actorId,
+ ,
       actorType: input.actorType,
       entityId: input.entityId,
       entityType: input.entityType,
