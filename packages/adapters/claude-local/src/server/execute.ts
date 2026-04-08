@@ -23,11 +23,15 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  sleep,
+  rateLimitBackoffMs,
+  RATE_LIMIT_RETRY_DEFAULTS,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeRateLimit,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -529,6 +533,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    const rateLimitMeta = detectClaudeRateLimit({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
     const errorMeta =
       loginMeta.loginUrl != null
         ? {
@@ -554,7 +563,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : (proc.exitCode ?? 0) !== 0 && rateLimitMeta.rateLimited ? "rate_limit_exhausted" : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -597,7 +606,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : (proc.exitCode ?? 0) !== 0 && rateLimitMeta.rateLimited ? "rate_limit_exhausted" : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -614,8 +623,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const isRateLimited = (attempt: { proc: RunProcessResult; parsed: Record<string, unknown> | null }): boolean => {
+    if (attempt.proc.timedOut || (attempt.proc.exitCode ?? 0) === 0) return false;
+    return detectClaudeRateLimit({
+      parsed: attempt.parsed,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    }).rateLimited;
+  };
+
   try {
     const initial = await runAttempt(sessionId ?? null);
+
+    // Handle unknown session error — retry once with fresh session
     if (
       sessionId &&
       !initial.proc.timedOut &&
@@ -629,6 +649,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
+
+    // Handle rate-limit (429) — retry with exponential backoff
+    if (isRateLimited(initial)) {
+      let lastAttempt = initial;
+      for (let i = 0; i < RATE_LIMIT_RETRY_DEFAULTS.maxRetries; i++) {
+        const delayMs = rateLimitBackoffMs(i);
+        await onLog(
+          "stdout",
+          `[paperclip] Claude returned 429/rate-limit. Retrying in ${Math.round(delayMs / 1000)}s (attempt ${i + 2}/${RATE_LIMIT_RETRY_DEFAULTS.maxRetries + 1}).\n`,
+        );
+        await sleep(delayMs);
+        lastAttempt = await runAttempt(sessionId ?? null);
+        if (!isRateLimited(lastAttempt)) {
+          return toAdapterResult(lastAttempt, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+        }
+      }
+      // All retries exhausted — return last attempt (will have rate_limit_exhausted errorCode)
+      return toAdapterResult(lastAttempt, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
     }
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
