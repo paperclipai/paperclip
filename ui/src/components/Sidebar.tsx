@@ -2,6 +2,7 @@ import {
   Inbox,
   CircleDot,
   Target,
+  Building2,
   LayoutDashboard,
   DollarSign,
   History,
@@ -108,6 +109,7 @@ export function Sidebar() {
         <SidebarAgents />
 
         <SidebarSection label="Company">
+          <SidebarNavItem to="/departments" label="Departments" icon={Building2} />
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />

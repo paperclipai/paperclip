@@ -39,6 +39,9 @@ import { PluginPage } from "./pages/PluginPage";
 import { IssueChatUxLab } from "./pages/IssueChatUxLab";
 import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
+import { Departments } from "./pages/Departments";
+import { DepartmentDetail } from "./pages/DepartmentDetail";
+import { TeamDetail } from "./pages/TeamDetail";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -132,6 +135,9 @@ function boardRoutes() {
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
+      <Route path="departments" element={<Departments />} />
+      <Route path="departments/:departmentId" element={<DepartmentDetail />} />
+      <Route path="teams/:teamId" element={<TeamDetail />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />

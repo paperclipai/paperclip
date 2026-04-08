@@ -1,4 +1,4 @@
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import type { AgentAdapterType, CompanyMembership, JoinRequest } from "@paperclipai/shared";
 import { api } from "./client";
 
 type InviteSummary = {
@@ -128,6 +128,8 @@ export const accessApi = {
 
   listJoinRequests: (companyId: string, status: "pending_approval" | "approved" | "rejected" = "pending_approval") =>
     api.get<JoinRequest[]>(`/companies/${companyId}/join-requests?status=${status}`),
+  listMembers: (companyId: string) =>
+    api.get<CompanyMembership[]>(`/companies/${companyId}/members`),
 
   approveJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/approve`, {}),

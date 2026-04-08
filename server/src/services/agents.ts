@@ -15,6 +15,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  departments,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -187,6 +188,30 @@ export function deduplicateAgentName(
 }
 
 export function agentService(db: Db) {
+  function buildOrgForest(
+    rows: Array<Record<string, unknown> & { id: string; reportsTo: string | null }>,
+  ): Array<Record<string, unknown>> {
+    const byManager = new Map<string | null, Array<Record<string, unknown> & { id: string; reportsTo: string | null }>>();
+    for (const row of rows) {
+      const key = row.reportsTo ?? null;
+      const group = byManager.get(key) ?? [];
+      group.push(row);
+      byManager.set(key, group);
+    }
+
+    const build = (managerId: string | null): Array<Record<string, unknown>> => {
+      const members = [...(byManager.get(managerId) ?? [])].sort((left, right) =>
+        String(left.name ?? "").localeCompare(String(right.name ?? "")),
+      );
+      return members.map((member) => ({
+        ...member,
+        reports: build(member.id),
+      }));
+    };
+
+    return build(null);
+  }
+
   function currentUtcMonthWindow(now = new Date()) {
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
@@ -634,23 +659,51 @@ export function agentService(db: Db) {
         .from(agents)
         .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
       const normalizedRows = rows.map(normalizeAgentRow);
-      const byManager = new Map<string | null, typeof normalizedRows>();
+      return buildOrgForest(normalizedRows);
+    },
+
+    orgByDepartmentForCompany: async (companyId: string) => {
+      const [rows, departmentRows] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+        db
+          .select({ id: departments.id, name: departments.name })
+          .from(departments)
+          .where(and(eq(departments.companyId, companyId), eq(departments.status, "active"))),
+      ]);
+      const normalizedRows = rows.map(normalizeAgentRow);
+      const departmentById = new Map(departmentRows.map((row) => [row.id, row]));
+      const byDepartment = new Map<string | null, typeof normalizedRows>();
+
       for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
-        const group = byManager.get(key) ?? [];
+        const key = row.departmentId ?? null;
+        const group = byDepartment.get(key) ?? [];
         group.push(row);
-        byManager.set(key, group);
+        byDepartment.set(key, group);
       }
 
-      const build = (managerId: string | null): Array<Record<string, unknown>> => {
-        const members = byManager.get(managerId) ?? [];
-        return members.map((member) => ({
-          ...member,
-          reports: build(member.id),
-        }));
-      };
-
-      return build(null);
+      return [...byDepartment.entries()]
+        .map(([departmentId, members]) => {
+          const memberIds = new Set(members.map((member) => member.id));
+          const scopedMembers = members.map((member) => ({
+            ...member,
+            reportsTo: member.reportsTo && memberIds.has(member.reportsTo) ? member.reportsTo : null,
+          }));
+          const department = departmentId ? (departmentById.get(departmentId) ?? null) : null;
+          return {
+            department,
+            memberCount: members.length,
+            roots: buildOrgForest(scopedMembers),
+          };
+        })
+        .sort((left, right) => {
+          if (!left.department && !right.department) return 0;
+          if (!left.department) return 1;
+          if (!right.department) return -1;
+          return left.department.name.localeCompare(right.department.name);
+        });
     },
 
     getChainOfCommand: async (agentId: string) => {

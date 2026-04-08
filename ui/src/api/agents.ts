@@ -52,6 +52,12 @@ export interface OrgNode {
   reports: OrgNode[];
 }
 
+export interface DepartmentOrgGroup {
+  department: { id: string; name: string } | null;
+  memberCount: number;
+  roots: OrgNode[];
+}
+
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
@@ -75,6 +81,8 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
+  orgByDepartment: (companyId: string) =>
+    api.get<DepartmentOrgGroup[]>(`/companies/${companyId}/org?groupBy=department`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
   get: async (id: string, companyId?: string) => {

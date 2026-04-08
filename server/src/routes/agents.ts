@@ -754,6 +754,24 @@ export function agentRoutes(db: Db) {
     };
   }
 
+  function toLeanOrgGroup(group: Record<string, unknown>): Record<string, unknown> {
+    const roots = Array.isArray(group.roots)
+      ? (group.roots as Array<Record<string, unknown>>).map((node) => toLeanOrgNode(node))
+      : [];
+    const department =
+      typeof group.department === "object" && group.department !== null
+        ? {
+          id: String((group.department as Record<string, unknown>).id),
+          name: String((group.department as Record<string, unknown>).name),
+        }
+        : null;
+    return {
+      department,
+      memberCount: Number(group.memberCount ?? roots.length),
+      roots,
+    };
+  }
+
   router.param("id", async (req, _res, next, rawId) => {
     try {
       req.params.id = await normalizeAgentReference(req, String(rawId));
@@ -1025,6 +1043,12 @@ export function agentRoutes(db: Db) {
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.query.groupBy === "department") {
+      const groups = await svc.orgByDepartmentForCompany(companyId);
+      const leanGroups = groups.map((group) => toLeanOrgGroup(group as Record<string, unknown>));
+      res.json(leanGroups);
+      return;
+    }
     const tree = await svc.orgForCompany(companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);

@@ -95,13 +95,17 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
-async function createControlledGatewayServer() {
+async function createControlledGatewayServer(options?: { holdSecondWait?: boolean }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
   let firstWaitRelease: (() => void) | null = null;
   let firstWaitGate = new Promise<void>((resolve) => {
     firstWaitRelease = resolve;
+  });
+  let secondWaitRelease: (() => void) | null = null;
+  let secondWaitGate = new Promise<void>((resolve) => {
+    secondWaitRelease = resolve;
   });
   let waitCount = 0;
 
@@ -171,6 +175,9 @@ async function createControlledGatewayServer() {
         if (waitCount === 1) {
           await firstWaitGate;
         }
+        if (waitCount === 2 && options?.holdSecondWait) {
+          await secondWaitGate;
+        }
         socket.send(
           JSON.stringify({
             type: "res",
@@ -205,7 +212,14 @@ async function createControlledGatewayServer() {
       firstWaitRelease = null;
       firstWaitGate = Promise.resolve();
     },
+    releaseSecondWait: () => {
+      secondWaitRelease?.();
+      secondWaitRelease = null;
+      secondWaitGate = Promise.resolve();
+    },
     close: async () => {
+      firstWaitRelease?.();
+      secondWaitRelease?.();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -232,7 +246,7 @@ describe("heartbeat comment wake batching", () => {
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ holdSecondWait: true });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -404,6 +418,33 @@ describe("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        return runs.length === 2;
+      });
+
+      const promotedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      const promotedRun = promotedRuns[1];
+      expect(promotedRun).toBeDefined();
+
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: promotedRun?.id ?? null,
+        body: "Batched wake acknowledged",
+      });
+
+      gateway.releaseSecondWait();
+
+      await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
       }, 30_000);
@@ -420,6 +461,7 @@ describe("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).not.toContain("First comment");
     } finally {
       gateway.releaseFirstWait();
+      gateway.releaseSecondWait();
       await gateway.close();
     }
   }, 45_000);

@@ -14,6 +14,7 @@ import { agents } from "./agents.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { companies } from "./companies.js";
+import { departments } from "./departments.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -45,6 +46,7 @@ export const issues = pgTable(
     originId: text("origin_id"),
     originRunId: text("origin_run_id"),
     requestDepth: integer("request_depth").notNull().default(0),
+    departmentId: uuid("department_id").references(() => departments.id),
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),

@@ -514,6 +514,7 @@ function invalidateActivityQueries(
   if (entityType === "agent") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.orgByDepartment(companyId) });
     if (entityId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(entityId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, entityId) });
@@ -524,6 +525,25 @@ function invalidateActivityQueries(
   if (entityType === "project") {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(companyId) });
     if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(entityId) });
+    return;
+  }
+
+  if (entityType === "department") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.departments.tree(companyId) });
+    if (entityId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.departments.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.departments.members(entityId) });
+    }
+    return;
+  }
+
+  if (entityType === "team") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.teams.list(companyId) });
+    if (entityId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams.members(entityId) });
+    }
     return;
   }
 
@@ -636,6 +656,7 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.orgByDepartment(expectedCompanyId) });
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);

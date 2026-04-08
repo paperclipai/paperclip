@@ -222,6 +222,20 @@ async function flush() {
   });
 }
 
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Assertion did not pass in time");
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -421,9 +435,12 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
 
-    const selects = Array.from(container.querySelectorAll("select"));
-    const modeSelect = selects[0] as HTMLSelectElement | undefined;
-    expect(modeSelect).not.toBeUndefined();
+    let modeSelect: HTMLSelectElement | undefined;
+    await waitForAssertion(() => {
+      const selects = Array.from(container.querySelectorAll("select"));
+      modeSelect = selects[0] as HTMLSelectElement | undefined;
+      expect(modeSelect).not.toBeUndefined();
+    });
 
     await act(async () => {
       modeSelect!.value = "shared_workspace";

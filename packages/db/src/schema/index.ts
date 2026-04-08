@@ -60,3 +60,7 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { departments } from "./departments.js";
+export { teams } from "./teams.js";
+export { departmentMemberships } from "./department_memberships.js";
+export { teamMemberships } from "./team_memberships.js";

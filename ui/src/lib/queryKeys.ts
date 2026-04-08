@@ -88,6 +88,7 @@ export const queryKeys = {
   access: {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
+    members: (companyId: string) => ["access", "members", companyId] as const,
     invite: (token: string) => ["access", "invite", token] as const,
   },
   auth: {
@@ -131,6 +132,7 @@ export const queryKeys = {
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
   org: (companyId: string) => ["org", companyId] as const,
+  orgByDepartment: (companyId: string) => ["org", companyId, "department"] as const,
   skills: {
     available: ["skills", "available"] as const,
   },
@@ -146,5 +148,16 @@ export const queryKeys = {
   },
   adapters: {
     all: ["adapters"] as const,
+  },
+  departments: {
+    list: (companyId: string) => ["departments", companyId] as const,
+    tree: (companyId: string) => ["departments", companyId, "tree"] as const,
+    detail: (id: string) => ["departments", "detail", id] as const,
+    members: (id: string) => ["departments", "members", id] as const,
+  },
+  teams: {
+    list: (companyId: string) => ["teams", companyId] as const,
+    detail: (id: string) => ["teams", "detail", id] as const,
+    members: (id: string) => ["teams", "members", id] as const,
   },
 };
