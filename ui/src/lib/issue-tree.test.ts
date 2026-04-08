@@ -23,6 +23,7 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     requestDepth: 0,
     billingCode: null,
     assigneeAdapterOverrides: null,
+    allowOutsideExecutionWindow: false,
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
