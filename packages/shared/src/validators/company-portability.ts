@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -14,6 +15,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -36,6 +38,10 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
+  feedbackDataSharingEnabled: z.boolean().default(false),
+  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
+  feedbackDataSharingTermsVersion: z.string().nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -119,6 +125,7 @@ export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
 export const portabilityIssueRoutineManifestEntrySchema = z.object({
   concurrencyPolicy: z.string().nullable(),
   catchUpPolicy: z.string().nullable(),
+  variables: z.array(routineVariableSchema).nullable().optional(),
   triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
 });
 

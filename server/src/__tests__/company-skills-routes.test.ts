@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { companySkillRoutes } from "../routes/company-skills.js";
 import { errorHandler } from "../middleware/index.js";
+import { unprocessable } from "../errors.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -15,9 +16,26 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
+  deleteSkill: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackSkillImported = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackSkillImported: mockTrackSkillImported,
+  };
+});
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -41,9 +59,15 @@ function createApp(actor: Record<string, unknown>) {
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
       warnings: [],
+    });
+    mockCompanySkillService.deleteSkill.mockResolvedValue({
+      id: "skill-1",
+      slug: "find-skills",
+      name: "Find Skills",
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -66,6 +90,140 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("tracks public GitHub skill imports with an explicit skill reference", async () => {
+    mockCompanySkillService.importFromSource.mockResolvedValue({
+      imported: [
+        {
+          id: "skill-1",
+          companyId: "company-1",
+          key: "vercel-labs/agent-browser/find-skills",
+          slug: "find-skills",
+          name: "Find Skills",
+          description: null,
+          markdown: "# Find Skills",
+          sourceType: "github",
+          sourceLocator: "https://github.com/vercel-labs/agent-browser",
+          sourceRef: null,
+          trustLevel: "markdown_only",
+          compatibility: "compatible",
+          fileInventory: [],
+          metadata: {
+            hostname: "github.com",
+            owner: "vercel-labs",
+            repo: "agent-browser",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      warnings: [],
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
+      sourceType: "github",
+      skillRef: "vercel-labs/agent-browser/find-skills",
+    });
+  });
+
+  it("does not expose a skill reference for non-public skill imports", async () => {
+    mockCompanySkillService.importFromSource.mockResolvedValue({
+      imported: [
+        {
+          id: "skill-1",
+          companyId: "company-1",
+          key: "private-skill",
+          slug: "private-skill",
+          name: "Private Skill",
+          description: null,
+          markdown: "# Private Skill",
+          sourceType: "github",
+          sourceLocator: "https://ghe.example.com/acme/private-skill",
+          sourceRef: null,
+          trustLevel: "markdown_only",
+          compatibility: "compatible",
+          fileInventory: [],
+          metadata: {
+            hostname: "ghe.example.com",
+            owner: "acme",
+            repo: "private-skill",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      warnings: [],
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://ghe.example.com/acme/private-skill" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
+      sourceType: "github",
+      skillRef: null,
+    });
+  });
+
+  it("does not expose a skill reference when GitHub metadata is missing", async () => {
+    mockCompanySkillService.importFromSource.mockResolvedValue({
+      imported: [
+        {
+          id: "skill-1",
+          companyId: "company-1",
+          key: "unknown/private-skill",
+          slug: "private-skill",
+          name: "Private Skill",
+          description: null,
+          markdown: "# Private Skill",
+          sourceType: "github",
+          sourceLocator: "https://github.com/acme/private-skill",
+          sourceRef: null,
+          trustLevel: "markdown_only",
+          compatibility: "compatible",
+          fileInventory: [],
+          metadata: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      warnings: [],
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/acme/private-skill" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
+      sourceType: "github",
+      skillRef: null,
+    });
   });
 
   it("blocks same-company agents without management permission from mutating company skills", async () => {
@@ -109,5 +267,29 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("returns a blocking error when attempting to delete a skill still used by agents", async () => {
+    mockCompanySkillService.deleteSkill.mockRejectedValue(
+      unprocessable(
+        'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
+      ),
+    );
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .delete("/api/companies/company-1/skills/skill-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toEqual({
+      error: 'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
+    });
+    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

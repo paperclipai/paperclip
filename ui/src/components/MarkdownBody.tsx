@@ -8,6 +8,7 @@ import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chi
 interface MarkdownBodyProps {
   children: string;
   className?: string;
+  style?: React.CSSProperties;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
 }
@@ -91,7 +92,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, style, resolveImageSrc }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
@@ -106,7 +107,9 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
-          : `/agents/${parsed.agentId}`;
+          : parsed.kind === "skill"
+            ? `/skills/${parsed.skillId}`
+            : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}
@@ -143,6 +146,7 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
         theme === "dark" && "prose-invert",
         className,
       )}
+      style={style}
     >
       <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
         {children}
