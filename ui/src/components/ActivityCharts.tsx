@@ -2,11 +2,18 @@ import type { HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
+function localDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export function getLast14Days(): string[] {
   return Array.from({ length: 14 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (13 - i));
-    return d.toISOString().slice(0, 10);
+    return localDateKey(d);
   });
 }
 
@@ -64,7 +71,7 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, failed: 0, other: 0 });
   for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const day = localDateKey(new Date(run.createdAt));
     const entry = grouped.get(day);
     if (!entry) continue;
     if (run.status === "succeeded") entry.succeeded++;
@@ -118,7 +125,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+    const day = localDateKey(new Date(issue.createdAt));
     const entry = grouped.get(day);
     if (!entry) continue;
     if (issue.priority in entry) entry[issue.priority]++;
@@ -183,7 +190,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+    const day = localDateKey(new Date(issue.createdAt));
     const entry = grouped.get(day);
     if (!entry) continue;
     entry[issue.status] = (entry[issue.status] ?? 0) + 1;
@@ -229,7 +236,7 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });
   for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const day = localDateKey(new Date(run.createdAt));
     const entry = grouped.get(day);
     if (!entry) continue;
     entry.total++;
