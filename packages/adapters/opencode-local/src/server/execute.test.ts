@@ -88,10 +88,14 @@ describe("opencode_local execute cwd selection", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "OpenCode Agent",
+        adapterType: "opencode_local",
+        adapterConfig: null,
       },
       runtime: {
         sessionId: null,
         sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
       },
       config: {
         command: "opencode",
@@ -123,10 +127,14 @@ describe("opencode_local execute cwd selection", () => {
         id: "agent-2",
         companyId: "company-1",
         name: "OpenCode Agent",
+        adapterType: "opencode_local",
+        adapterConfig: null,
       },
       runtime: {
         sessionId: null,
         sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
       },
       config: {
         command: "opencode",
