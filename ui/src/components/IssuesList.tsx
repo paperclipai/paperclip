@@ -664,6 +664,9 @@ export function IssuesList({
                   <span className="text-sm font-semibold uppercase tracking-wide">
                     {group.label}
                   </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {group.items.length}
+                  </span>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
