@@ -10,10 +10,12 @@ import {
   DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
+  ssoProviderConfigSchema,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
   type SecretProvider,
+  type SsoProviderConfig,
   type StorageProvider,
 } from "@paperclipai/shared";
 import {
@@ -50,6 +52,7 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  ssoProviders: SsoProviderConfig[];
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -171,6 +174,26 @@ export function loadConfig(): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
+
+  const ssoProviders: SsoProviderConfig[] = (() => {
+    const envRaw = process.env.PAPERCLIP_SSO_PROVIDERS?.trim();
+    if (envRaw) {
+      try {
+        const parsed = JSON.parse(envRaw);
+        const arr = Array.isArray(parsed) ? parsed : [];
+        const results: SsoProviderConfig[] = [];
+        for (const entry of arr) {
+          const r = ssoProviderConfigSchema.safeParse(entry);
+          if (r.success) results.push(r.data);
+        }
+        return results;
+      } catch {
+        return [];
+      }
+    }
+    return fileConfig?.auth?.ssoProviders ?? [];
+  })();
+
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -233,6 +256,7 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    ssoProviders,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(
