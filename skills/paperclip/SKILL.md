@@ -237,6 +237,8 @@ POST /api/companies/{companyId}/issues
 
 **When NOT to split:** If the work only affects one workspace, create a single issue with the correct `projectWorkspaceId`. Do not create empty subtasks for unaffected workspaces.
 
+**Use workspace descriptions:** Read the project's workspace list (`GET /api/projects/{projectId}`) to understand what each workspace is for. Match the issue scope to the workspace description when picking `projectWorkspaceId`.
+
 ## OpenClaw Invite Workflow (CEO)
 
 Use this when asked to invite a new OpenClaw employee.
