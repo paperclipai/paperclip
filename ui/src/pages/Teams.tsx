@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import { Trash2, Users, Plus, X, Check, Star } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team, type WorkflowStatus, type TeamMember } from "../api/teams";
+import { teamDocumentsApi, type TeamDocument } from "../api/team-documents";
+import { FileText } from "lucide-react";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -248,6 +250,250 @@ export function TeamProjectsPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Team docs index — lists all markdown documents attached to the team.
+ * Click a doc row to open the editor.
+ */
+export function TeamDocsPage() {
+  const { teamId } = useParams<{ teamId: string }>();
+  const { selectedCompanyId } = useCompany();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+
+  const { data: docs } = useQuery({
+    queryKey: ["team-documents", selectedCompanyId, teamId],
+    queryFn: () => teamDocumentsApi.list(selectedCompanyId!, teamId!),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+
+  const [creating, setCreating] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newTitle, setNewTitle] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      teamDocumentsApi.upsert(selectedCompanyId!, teamId!, newKey, {
+        key: newKey,
+        title: newTitle || null,
+        body: `# ${newTitle || newKey}\n\n`,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["team-documents", selectedCompanyId, teamId] });
+      setCreating(false);
+      navigate(`/teams/${teamId}/docs/${newKey}`);
+      setNewKey("");
+      setNewTitle("");
+      setError(null);
+    },
+    onError: (err: any) => setError(err?.message ?? "Failed to create"),
+  });
+
+  return (
+    <div className="max-w-4xl">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-bold flex items-center gap-2">
+          <FileText className="h-5 w-5" /> Team Docs
+        </h1>
+        {!creating && (
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="h-3 w-3 mr-1" /> New doc
+          </Button>
+        )}
+      </div>
+
+      {error && <div className="text-xs text-destructive mb-2">{error}</div>}
+
+      {creating && (
+        <div className="mb-4 p-3 border border-border rounded bg-accent/20 space-y-2">
+          <div className="flex gap-2">
+            <Input
+              placeholder="title (e.g. Team Rules)"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              className="flex-1 h-8 text-sm"
+              autoFocus
+            />
+            <Input
+              placeholder="key (e.g. rules)"
+              value={newKey}
+              onChange={(e) =>
+                setNewKey(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "-"))
+              }
+              className="w-40 h-8 text-sm font-mono"
+            />
+            <Button
+              size="sm"
+              disabled={!newKey.trim() || createMutation.isPending}
+              onClick={() => createMutation.mutate()}
+            >
+              Create
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setCreating(false);
+                setError(null);
+              }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Key is a URL-safe slug unique within the team. It's immutable after
+            creation.
+          </p>
+        </div>
+      )}
+
+      {(docs ?? []).length === 0 && !creating ? (
+        <div className="text-sm text-muted-foreground italic p-8 text-center border border-dashed border-border rounded">
+          No docs yet. Click <strong>New doc</strong> to create the first one.
+        </div>
+      ) : (
+        <div className="border border-border rounded">
+          {(docs ?? []).map((doc) => (
+            <NavLinkDocRow key={doc.id} teamId={teamId!} doc={doc} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NavLinkDocRow({ teamId, doc }: { teamId: string; doc: TeamDocument }) {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`/teams/${teamId}/docs/${doc.key}`)}
+      className="w-full text-left px-3 py-2 border-b border-border last:border-b-0 hover:bg-accent/40 transition-colors flex items-center gap-3"
+    >
+      <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">
+          {doc.title || doc.key}
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          <code className="font-mono">{doc.key}</code> · rev{" "}
+          {doc.latestRevisionNumber} ·{" "}
+          {new Date(doc.updatedAt).toLocaleDateString()}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/**
+ * Team doc editor — plain textarea + save button. Uses
+ * optimistic-concurrency with baseRevisionId so two tabs editing the same
+ * doc get a 409 instead of clobbering each other.
+ */
+export function TeamDocDetailPage() {
+  const { teamId, key } = useParams<{ teamId: string; key: string }>();
+  const { selectedCompanyId } = useCompany();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+
+  const { data: doc } = useQuery({
+    queryKey: ["team-document", selectedCompanyId, teamId, key],
+    queryFn: () => teamDocumentsApi.get(selectedCompanyId!, teamId!, key!),
+    enabled: !!selectedCompanyId && !!teamId && !!key,
+    placeholderData: keepPreviousData,
+  });
+
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Sync local state when doc loads/changes and the local copy isn't dirty.
+  useEffect(() => {
+    if (doc && !dirty) {
+      setTitle(doc.title ?? "");
+      setBody(doc.latestBody);
+    }
+  }, [doc, dirty]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      teamDocumentsApi.upsert(selectedCompanyId!, teamId!, key!, {
+        key: key!,
+        title: title || null,
+        body,
+        baseRevisionId: doc?.latestRevisionId ?? null,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["team-document", selectedCompanyId, teamId, key] });
+      qc.invalidateQueries({ queryKey: ["team-documents", selectedCompanyId, teamId] });
+      setDirty(false);
+      setError(null);
+    },
+    onError: (err: any) => setError(err?.message ?? "Save failed"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => teamDocumentsApi.remove(selectedCompanyId!, teamId!, key!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["team-documents", selectedCompanyId, teamId] });
+      navigate(`/teams/${teamId}/docs`);
+    },
+  });
+
+  if (!doc) return <PageSkeleton variant="detail" />;
+
+  return (
+    <div className="max-w-4xl">
+      <div className="flex items-center gap-3 mb-4">
+        <FileText className="h-5 w-5 text-muted-foreground" />
+        <Input
+          value={title}
+          placeholder="Untitled doc"
+          onChange={(e) => {
+            setTitle(e.target.value);
+            setDirty(true);
+          }}
+          className="flex-1 text-lg font-bold h-10 border-none bg-transparent px-0 focus-visible:ring-0"
+        />
+        <code className="text-xs text-muted-foreground font-mono">{key}</code>
+        <span className="text-xs text-muted-foreground">
+          rev {doc.latestRevisionNumber}
+        </span>
+        <Button
+          size="sm"
+          disabled={!dirty || saveMutation.isPending}
+          onClick={() => saveMutation.mutate()}
+        >
+          {saveMutation.isPending ? "Saving..." : dirty ? "Save" : "Saved"}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={() => {
+            if (confirm(`Delete doc "${title || key}"?`)) deleteMutation.mutate();
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+      {error && <div className="text-xs text-destructive mb-2">{error}</div>}
+      <textarea
+        value={body}
+        onChange={(e) => {
+          setBody(e.target.value);
+          setDirty(true);
+        }}
+        className="w-full min-h-[60vh] p-3 bg-background border border-border rounded text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+        placeholder="Write markdown…"
+        spellCheck={false}
+      />
     </div>
   );
 }

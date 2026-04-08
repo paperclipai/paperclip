@@ -6,15 +6,22 @@ import {
   addTeamMemberSchema,
   createWorkflowStatusSchema,
   updateWorkflowStatusSchema,
+  upsertTeamDocumentSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { teamService, workflowStatusService, logActivity } from "../services/index.js";
+import {
+  teamService,
+  workflowStatusService,
+  teamDocumentService,
+  logActivity,
+} from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function teamRoutes(db: Db) {
   const router = Router();
   const svc = teamService(db);
   const wfSvc = workflowStatusService(db);
+  const docSvc = teamDocumentService(db);
 
   // --- Teams CRUD ---
 
@@ -313,6 +320,115 @@ export function teamRoutes(db: Db) {
         }
         throw err;
       }
+    },
+  );
+
+  // === Team documents ===
+
+  router.get("/companies/:companyId/teams/:teamId/documents", async (req, res) => {
+    const team = await svc.getById(req.params.teamId as string);
+    if (!team) {
+      res.status(404).json({ error: "Team not found" });
+      return;
+    }
+    assertCompanyAccess(req, team.companyId);
+    res.json(await docSvc.list(team.id, team.companyId));
+  });
+
+  router.get(
+    "/companies/:companyId/teams/:teamId/documents/:key",
+    async (req, res) => {
+      const team = await svc.getById(req.params.teamId as string);
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+      assertCompanyAccess(req, team.companyId);
+      const doc = await docSvc.getByKey(
+        team.id,
+        team.companyId,
+        req.params.key as string,
+      );
+      if (!doc) {
+        res.status(404).json({ error: "Document not found" });
+        return;
+      }
+      res.json(doc);
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/teams/:teamId/documents/:key",
+    validate(upsertTeamDocumentSchema),
+    async (req, res) => {
+      const team = await svc.getById(req.params.teamId as string);
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+      assertCompanyAccess(req, team.companyId);
+      const actor = getActorInfo(req);
+      try {
+        // URL key takes precedence over body key so PUT is idempotent per URL.
+        const body = { ...req.body, key: req.params.key as string };
+        const result = await docSvc.upsert({
+          teamId: team.id,
+          companyId: team.companyId,
+          ...body,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId:
+            actor.actorType === "user" || actor.actorType === "board"
+              ? actor.actorId
+              : null,
+        });
+        res.status(result.created ? 201 : 200).json(result);
+      } catch (err: any) {
+        if (err?.status === 409 || err?.status === 422 || err?.status === 404) {
+          res.status(err.status).json({ error: err.message, ...(err.details ?? {}) });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.delete(
+    "/companies/:companyId/teams/:teamId/documents/:key",
+    async (req, res) => {
+      const team = await svc.getById(req.params.teamId as string);
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+      assertCompanyAccess(req, team.companyId);
+      const removed = await docSvc.remove(
+        team.id,
+        team.companyId,
+        req.params.key as string,
+      );
+      if (!removed) {
+        res.status(404).json({ error: "Document not found" });
+        return;
+      }
+      res.json(removed);
+    },
+  );
+
+  router.get(
+    "/companies/:companyId/teams/:teamId/documents/:key/revisions",
+    async (req, res) => {
+      const team = await svc.getById(req.params.teamId as string);
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+      assertCompanyAccess(req, team.companyId);
+      const revisions = await docSvc.listRevisions(
+        team.id,
+        team.companyId,
+        req.params.key as string,
+      );
+      res.json(revisions);
     },
   );
 

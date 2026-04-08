@@ -435,6 +435,13 @@
       "when": 1775808800000,
       "tag": "0061_cos_room_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1775808900000,
+      "tag": "0062_cos_team_documents",
+      "breakpoints": true
     }
   ]
 }

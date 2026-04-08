@@ -31,3 +31,17 @@ export const addTeamMemberSchema = z.object({
 });
 
 export type AddTeamMember = z.infer<typeof addTeamMemberSchema>;
+
+export const upsertTeamDocumentSchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9][a-z0-9_-]*$/, "key must be lowercase slug"),
+  title: z.string().max(200).optional().nullable(),
+  format: z.string().optional().default("markdown"),
+  body: z.string(),
+  changeSummary: z.string().max(500).optional().nullable(),
+  baseRevisionId: z.string().uuid().optional().nullable(),
+});
+export type UpsertTeamDocument = z.infer<typeof upsertTeamDocumentSchema>;

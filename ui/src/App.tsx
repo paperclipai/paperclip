@@ -24,6 +24,8 @@ import {
   TeamIssuesPage,
   TeamProjectsPage,
   TeamSettingsPage,
+  TeamDocsPage,
+  TeamDocDetailPage,
 } from "./pages/Teams";
 import { NewRoomPage, RoomDetailPage } from "./pages/Rooms";
 import { GoalDetail } from "./pages/GoalDetail";
@@ -174,6 +176,8 @@ function boardRoutes() {
       <Route path="teams/:teamId" element={<TeamIndexRedirect />} />
       <Route path="teams/:teamId/issues" element={<TeamIssuesPage />} />
       <Route path="teams/:teamId/projects" element={<TeamProjectsPage />} />
+      <Route path="teams/:teamId/docs" element={<TeamDocsPage />} />
+      <Route path="teams/:teamId/docs/:key" element={<TeamDocDetailPage />} />
       <Route path="teams/:teamId/settings" element={<TeamSettingsPage />} />
       <Route path="rooms/new" element={<NewRoomPage />} />
       <Route path="rooms/:roomId" element={<RoomDetailPage />} />
@@ -366,6 +370,8 @@ export function App() {
           <Route path="teams/:teamId" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/projects" element={<UnprefixedBoardRedirect />} />
+          <Route path="teams/:teamId/docs" element={<UnprefixedBoardRedirect />} />
+          <Route path="teams/:teamId/docs/:key" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/settings" element={<UnprefixedBoardRedirect />} />
           <Route path="rooms/new" element={<UnprefixedBoardRedirect />} />
           <Route path="rooms/:roomId" element={<UnprefixedBoardRedirect />} />

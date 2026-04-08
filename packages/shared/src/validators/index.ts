@@ -190,9 +190,11 @@ export {
   createTeamSchema,
   updateTeamSchema,
   addTeamMemberSchema,
+  upsertTeamDocumentSchema,
   type CreateTeam,
   type UpdateTeam,
   type AddTeamMember,
+  type UpsertTeamDocument,
 } from "./team.js";
 
 export {
