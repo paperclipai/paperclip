@@ -325,6 +325,18 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+
+  // Fetch workspaces for the selected project
+  const { data: projectWorkspaces } = useQuery({
+    queryKey: queryKeys.projects.detail(projectId),
+    queryFn: () => projectsApi.get(projectId),
+    enabled: !!projectId && newIssueOpen,
+  });
+  const workspaceOptions = useMemo(
+    () => (projectWorkspaces?.workspaces ?? []).map((w) => ({ id: w.id, label: w.name, isPrimary: w.isPrimary })),
+    [projectWorkspaces?.workspaces],
+  );
+
   const { data: reusableExecutionWorkspaces } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
       projectId,
@@ -1153,6 +1165,25 @@ export function NewIssueDialog() {
                   );
                 }}
               />
+              {workspaceOptions.length > 1 && (
+                <>
+                  <span>→</span>
+                  <select
+                    className="rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none hover:bg-accent/50 transition-colors"
+                    value={projectWorkspaceId}
+                    onChange={(e) => {
+                      setProjectWorkspaceId(e.target.value);
+                      setSelectedExecutionWorkspaceId("");
+                    }}
+                  >
+                    {workspaceOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.isPrimary ? "★ " : ""}{opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
             </div>
           </div>
         </div>
