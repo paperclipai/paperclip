@@ -55,6 +55,7 @@ import {
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
+import { statusBecameActionable } from "./issues-status-actionable.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
@@ -1415,6 +1416,15 @@ export function issueRoutes(
       issue.status !== "backlog" &&
       req.body.status !== undefined;
 
+    // Wake agent when status transitions to an actionable state from a
+    // non-actionable one (e.g. in_review → todo, done → todo).  The backlog
+    // case is already covered above, so we exclude it here.
+    const statusIsNowActionable = statusBecameActionable({
+      requestStatus: req.body.status,
+      previousStatus: existing.status,
+      newStatus: issue.status,
+    });
+
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
@@ -1447,7 +1457,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusBecameActionable) && issue.assigneeAgentId) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
