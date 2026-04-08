@@ -33,6 +33,15 @@ import {
 export interface PluginBridgeRegistry {
   react: unknown;
   reactDom: unknown;
+  /**
+   * The host's `react/jsx-runtime` module. Plugin UI bundles import
+   * `jsx`, `jsxs`, and `Fragment` from `react/jsx-runtime`; if the
+   * shim re-implements these via `createElement`, React loses the
+   * static-children-from-jsx-siblings exemption and warns about
+   * missing keys on every multi-child JSX element. Exposing the
+   * real runtime here lets the shim alias to the real exports.
+   */
+  reactJsxRuntime: unknown;
   sdkUi: Record<string, unknown>;
 }
 
@@ -54,10 +63,12 @@ declare global {
 export function initPluginBridge(
   react: typeof import("react"),
   reactDom: typeof import("react-dom"),
+  reactJsxRuntime: typeof import("react/jsx-runtime"),
 ): void {
   globalThis.__paperclipPluginBridge__ = {
     react,
     reactDom,
+    reactJsxRuntime,
     sdkUi: {
       usePluginData,
       usePluginAction,

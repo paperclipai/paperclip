@@ -237,12 +237,22 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       `;
       break;
     case "react/jsx-runtime":
+      // Prefer the host's real react/jsx-runtime exports so React's
+      // static-children-from-jsx-siblings exemption is preserved.
+      // Falling back to createElement (the previous behavior) loses
+      // that exemption and produces a "missing key" warning for every
+      // multi-child JSX element in every plugin's UI bundle.
       source = `
+        const RT = globalThis.__paperclipPluginBridge__?.reactJsxRuntime;
         const R = globalThis.__paperclipPluginBridge__?.react;
         const withKey = ${applyJsxRuntimeKey.toString()};
-        export const jsx = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const jsxs = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const Fragment = R.Fragment;
+        export const jsx = RT?.jsx
+          ? RT.jsx
+          : (type, props, key) => R.createElement(type, withKey(props, key));
+        export const jsxs = RT?.jsxs
+          ? RT.jsxs
+          : (type, props, key) => R.createElement(type, withKey(props, key));
+        export const Fragment = RT?.Fragment ?? R.Fragment;
       `;
       break;
     case "react-dom":
