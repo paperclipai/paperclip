@@ -13,50 +13,54 @@ export function sidebarBadgeService(db: Db) {
       companyId: string,
       extra?: { joinRequests?: number; unreadTouchedIssues?: number },
     ): Promise<SidebarBadges> => {
-      const actionableApprovals = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(approvals)
-        .where(
-          and(
-            eq(approvals.companyId, companyId),
-            inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
-          ),
-        )
-        .then((rows) => Number(rows[0]?.count ?? 0));
-
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      const latestRunByAgent = await db
-        .selectDistinctOn([heartbeatRuns.agentId], {
-          runStatus: heartbeatRuns.status,
-        })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            eq(agents.companyId, companyId),
-            not(eq(agents.status, "terminated")),
-            gte(heartbeatRuns.createdAt, thirtyDaysAgo),
-          ),
-        )
-        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+
+      // Run all three badge queries in parallel (was sequential)
+      const [actionableApprovals, latestRunByAgent, deliverablesReview] = await Promise.all([
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.companyId, companyId),
+              inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0)),
+
+        db
+          .selectDistinctOn([heartbeatRuns.agentId], {
+            runStatus: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(agents.companyId, companyId),
+              not(eq(agents.status, "terminated")),
+              gte(heartbeatRuns.createdAt, thirtyDaysAgo),
+            ),
+          )
+          .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt)),
+
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(knowledgePages)
+          .where(
+            and(
+              eq(knowledgePages.companyId, companyId),
+              eq(knowledgePages.deliverableStatus, "review"),
+              isNotNull(knowledgePages.documentType),
+              inArray(knowledgePages.documentType, [...DELIVERABLE_DOCUMENT_TYPES]),
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0)),
+      ]);
 
       const failedRuns = latestRunByAgent.filter((row) =>
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus),
       ).length;
-
-      const deliverablesReview = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(knowledgePages)
-        .where(
-          and(
-            eq(knowledgePages.companyId, companyId),
-            eq(knowledgePages.deliverableStatus, "review"),
-            isNotNull(knowledgePages.documentType),
-            inArray(knowledgePages.documentType, [...DELIVERABLE_DOCUMENT_TYPES]),
-          ),
-        )
-        .then((rows) => Number(rows[0]?.count ?? 0));
 
       const joinRequests = extra?.joinRequests ?? 0;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;

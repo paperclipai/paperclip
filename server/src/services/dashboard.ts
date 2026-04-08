@@ -8,15 +8,13 @@ export function dashboardService(db: Db) {
   const budgets = budgetService(db);
   return {
     summary: async (companyId: string) => {
-      const company = await db
-        .select()
-        .from(companies)
-        .where(eq(companies.id, companyId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!company) throw notFound("Company not found");
-
-      const [agentRows, taskRows, pendingApprovals] = await Promise.all([
+      // Fetch company + all aggregate counts in parallel (was sequential: company first, then the rest)
+      const [company, agentRows, taskRows, pendingApprovals] = await Promise.all([
+        db
+          .select()
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => rows[0] ?? null),
         db
           .select({ status: agents.status, count: sql<number>`count(*)` })
           .from(agents)
@@ -33,6 +31,8 @@ export function dashboardService(db: Db) {
           .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
           .then((rows) => Number(rows[0]?.count ?? 0)),
       ]);
+
+      if (!company) throw notFound("Company not found");
 
       const agentCounts: Record<string, number> = {
         active: 0,

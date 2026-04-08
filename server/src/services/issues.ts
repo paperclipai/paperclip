@@ -394,7 +394,7 @@ const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 async function activeRunMapForIssues(
   dbOrTx: DbOrTx,
-  issueRows: IssueWithLabels[],
+  issueRows: readonly { executionRunId: string | null }[],
 ): Promise<Map<string, IssueActiveRunRow>> {
   const map = new Map<string, IssueActiveRunRow>();
   const runIds = issueRows
@@ -687,13 +687,56 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      // Fetch list rows without the (potentially large) description field - the detail view fetches it separately
       const rows = await db
-        .select()
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+          goalId: issues.goalId,
+          parentId: issues.parentId,
+          title: issues.title,
+          description: sql<string | null>`null::text`.as("description"),
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          issueNumber: issues.issueNumber,
+          identifier: issues.identifier,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          originRunId: issues.originRunId,
+          requestDepth: issues.requestDepth,
+          billingCode: issues.billingCode,
+          assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+          executionWorkspaceId: issues.executionWorkspaceId,
+          executionWorkspacePreference: issues.executionWorkspacePreference,
+          executionWorkspaceSettings: issues.executionWorkspaceSettings,
+          startedAt: issues.startedAt,
+          completedAt: issues.completedAt,
+          cancelledAt: issues.cancelledAt,
+          hiddenAt: issues.hiddenAt,
+          targetDate: issues.targetDate,
+          specTemplate: issues.specTemplate,
+          dependsOn: issues.dependsOn,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
         .from(issues)
         .where(and(...conditions))
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
-      const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
+      // Fetch labels and active runs in parallel (was sequential: labels first, then runs)
+      const [withLabels, runMap] = await Promise.all([
+        withIssueLabels(db, rows),
+        activeRunMapForIssues(db, rows),
+      ]);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (!contextUserId || withRuns.length === 0) {
         return withRuns;

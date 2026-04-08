@@ -67,3 +67,7 @@ ironworks-todo.md
 .test-reports/
 .a11y/
 .cleancode-reports/
+
+# k6 load tests - never commit test scripts or results
+load-tests/
+.k6-results/
