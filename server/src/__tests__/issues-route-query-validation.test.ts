@@ -5,23 +5,26 @@ import { issueRoutes } from "../routes/issues.js";
 
 const listMock = vi.fn();
 
-vi.mock("../services/index.js", () => ({
-  issueService: () => ({
-    list: listMock,
-  }),
-  accessService: () => ({}),
-  agentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({}),
-  goalService: () => ({}),
-  heartbeatService: () => ({}),
-  issueApprovalService: () => ({}),
-  documentService: () => ({}),
-  logActivity: vi.fn(),
-  projectService: () => ({}),
-  routineService: () => ({}),
-  workProductService: () => ({}),
-}));
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    issueService: () => ({
+      list: listMock,
+    }),
+    accessService: () => ({}),
+    agentService: () => ({}),
+    executionWorkspaceService: () => ({}),
+    goalService: () => ({}),
+    heartbeatService: () => ({}),
+    issueApprovalService: () => ({}),
+    documentService: () => ({}),
+    logActivity: vi.fn(),
+    projectService: () => ({}),
+    routineService: () => ({}),
+    workProductService: () => ({}),
+  };
+});
 
 describe("issue routes query validation", () => {
   beforeEach(() => {
