@@ -502,6 +502,24 @@ function gitErrorIncludes(error: unknown, needle: string) {
   return message.toLowerCase().includes(needle.toLowerCase());
 }
 
+/**
+ * Find the worktree path where a given branch is currently checked out.
+ * Returns null if no worktree has that branch.
+ */
+async function findWorktreeForBranch(repoRoot: string, branchName: string): Promise<string | null> {
+  const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+  const fullRef = `refs/heads/${branchName}`;
+  let currentWorktree: string | null = null;
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      currentWorktree = path.normalize(line.slice("worktree ".length).trim());
+    } else if (line.startsWith("branch ") && line.slice("branch ".length).trim() === fullRef) {
+      return currentWorktree;
+    }
+  }
+  return null;
+}
+
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
   // Try the explicit remote HEAD first (set by git clone or git remote set-head)
   try {
@@ -880,7 +898,20 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  // The worktree directory name defaults to the full branch name, but on
+  // Windows long parent paths can push the total past MAX_PATH (260), causing
+  // git to fail with "$GIT_DIR too big". Truncate the directory name (not the
+  // branch) to keep the worktree path under 200 chars, leaving room for
+  // nested files.
+  let worktreeDirName = branchName;
+  if (process.platform === "win32") {
+    const parentDirLen = worktreeParentDir.length + 1; // +1 for separator
+    const maxDirNameLen = Math.max(20, 200 - parentDirLen);
+    if (worktreeDirName.length > maxDirNameLen) {
+      worktreeDirName = worktreeDirName.slice(0, maxDirNameLen).replace(/-+$/, "");
+    }
+  }
+  const worktreePath = path.join(worktreeParentDir, worktreeDirName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -956,21 +987,73 @@ export async function realizeExecutionWorkspace(input: {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
     }
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
-      cwd: repoRoot,
-      metadata: {
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: false,
+          reusedExistingBranch: true,
+        },
+        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (fallbackError) {
+      if (!gitErrorIncludes(fallbackError, "already used by worktree")) {
+        throw fallbackError;
+      }
+      // Branch is checked out in a different worktree (e.g. directory name
+      // changed between runs). Find and reuse that existing worktree.
+      const existingPath = await findWorktreeForBranch(repoRoot, branchName);
+      if (!existingPath) {
+        throw fallbackError;
+      }
+      if (input.recorder) {
+        await input.recorder.recordOperation({
+          phase: "worktree_prepare",
+          cwd: repoRoot,
+          metadata: {
+            repoRoot,
+            worktreePath: existingPath,
+            branchName,
+            baseRef,
+            created: false,
+            reused: true,
+            originalWorktreePath: worktreePath,
+          },
+          run: async () => ({
+            status: "succeeded",
+            exitCode: 0,
+            system: `Branch ${branchName} already checked out at ${existingPath}, reusing existing worktree\n`,
+          }),
+        });
+      }
+      await provisionExecutionWorktree({
+        strategy: rawStrategy,
+        base: input.base,
         repoRoot,
-        worktreePath,
+        worktreePath: existingPath,
         branchName,
-        baseRef,
+        issue: input.issue,
+        agent: input.agent,
         created: false,
-        reusedExistingBranch: true,
-      },
-      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
-    });
+        recorder: input.recorder ?? null,
+      });
+      return {
+        ...input.base,
+        strategy: "git_worktree",
+        cwd: existingPath,
+        branchName,
+        worktreePath: existingPath,
+        warnings: [],
+        created: false,
+      };
+    }
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
