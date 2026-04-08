@@ -34,7 +34,9 @@ import { InstanceSettings } from "./pages/InstanceSettings";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
+import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
+import { IssueChatUxLab } from "./pages/IssueChatUxLab";
 import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
@@ -174,7 +176,9 @@ function boardRoutes() {
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="tests/ux/chat" element={<IssueChatUxLab />} />
       <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
+      <Route path="instance/settings/adapters" element={<AdapterManager />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
@@ -321,6 +325,7 @@ export function App() {
             <Route path="experimental" element={<InstanceExperimentalSettings />} />
             <Route path="plugins" element={<PluginManager />} />
             <Route path="plugins/:pluginId" element={<PluginSettings />} />
+            <Route path="adapters" element={<AdapterManager />} />
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
@@ -344,6 +349,7 @@ export function App() {
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
+          <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}

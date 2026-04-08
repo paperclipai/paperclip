@@ -25,5 +25,8 @@ export type {
   NativeContextManagement,
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,
+  ConfigFieldOption,
+  ConfigFieldSchema,
+  AdapterConfigSchema,
   ServerAdapterModule,
 } from "@paperclipai/adapter-utils";

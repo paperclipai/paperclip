@@ -1,6 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
 
 export function cn(...inputs: ClassValue[]) {
@@ -29,6 +29,13 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
+export function formatShortDate(date: Date | string): string {
+  return new Date(date).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
@@ -53,6 +60,7 @@ export function formatTokens(n: number): string {
 export function providerDisplayName(provider: string): string {
   const map: Record<string, string> = {
     anthropic: "Anthropic",
+    aws_bedrock: "AWS Bedrock",
     openai: "OpenAI",
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",
@@ -79,6 +87,7 @@ export function quotaSourceDisplayName(source: string): string {
   const map: Record<string, string> = {
     "anthropic-oauth": "Anthropic OAuth",
     "claude-cli": "Claude CLI",
+    "bedrock": "AWS Bedrock",
     "codex-rpc": "Codex app server",
     "codex-wham": "ChatGPT WHAM",
   };
@@ -156,9 +165,12 @@ export function agentUrl(agent: { id: string; urlKey?: string | null; name?: str
   return `/agents/${agentRouteRef(agent)}`;
 }
 
-/** Build a project route reference using the short URL key when available. */
+/** Build a project route reference, falling back to UUID when the derived key is ambiguous. */
 export function projectRouteRef(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  // Guard for rolling deploys or legacy data where the server returned a bare slug without UUID suffix.
+  if (key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name)) return project.id;
+  return key;
 }
 
 /** Build a project URL using the short URL key when available. */

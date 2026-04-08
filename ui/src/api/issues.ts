@@ -1,6 +1,9 @@
 import type {
   Approval,
   DocumentRevision,
+  FeedbackTargetType,
+  FeedbackTrace,
+  FeedbackVote,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -33,6 +36,7 @@ export const issuesApi = {
       originId?: string;
       includeRoutineExecutions?: boolean;
       q?: string;
+      limit?: number;
     },
   ) => {
     const params = new URLSearchParams();
@@ -50,6 +54,7 @@ export const issuesApi = {
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
+    if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
@@ -72,10 +77,30 @@ export const issuesApi = {
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,
-      expectedStatuses: ["todo", "backlog", "blocked"],
+      expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
   listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
+  listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+  listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters ?? {})) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return api.get<FeedbackTrace[]>(`/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`);
+  },
+  upsertFeedbackVote: (
+    id: string,
+    data: {
+      targetType: FeedbackTargetType;
+      targetId: string;
+      vote: "up" | "down";
+      reason?: string;
+      allowSharing?: boolean;
+    },
+  ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
   addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
@@ -91,6 +116,8 @@ export const issuesApi = {
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
   listDocumentRevisions: (id: string, key: string) =>
     api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
+  restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
   deleteDocument: (id: string, key: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
