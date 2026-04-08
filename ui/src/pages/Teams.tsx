@@ -23,6 +23,7 @@ import { formatDate, projectUrl } from "../lib/utils";
 import { Hexagon } from "lucide-react";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { useLocation } from "@/lib/router";
+import { MarkdownEditor } from "../components/MarkdownEditor";
 
 export function NewTeamPage() {
   const { selectedCompanyId } = useCompany();
@@ -484,15 +485,15 @@ export function TeamDocDetailPage() {
         </Button>
       </div>
       {error && <div className="text-xs text-destructive mb-2">{error}</div>}
-      <textarea
+      <MarkdownEditor
+        key={`${teamId}:${key}`}
         value={body}
-        onChange={(e) => {
-          setBody(e.target.value);
+        onChange={(next) => {
+          setBody(next);
           setDirty(true);
         }}
-        className="w-full min-h-[60vh] p-3 bg-background border border-border rounded text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-ring"
         placeholder="Write markdown…"
-        spellCheck={false}
+        contentClassName="min-h-[60vh] text-sm"
       />
     </div>
   );
