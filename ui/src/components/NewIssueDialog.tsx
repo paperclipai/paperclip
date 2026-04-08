@@ -1169,7 +1169,7 @@ export function NewIssueDialog() {
                 <>
                   <span>→</span>
                   <select
-                    className="rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none hover:bg-accent/50 transition-colors"
+                    className="rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground outline-none hover:bg-accent/50 transition-colors"
                     value={projectWorkspaceId}
                     onChange={(e) => {
                       setProjectWorkspaceId(e.target.value);
