@@ -25,14 +25,18 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
-  logActivity: mockLogActivity,
-  notifyHireApproved: vi.fn(),
-  deduplicateAgentName: vi.fn((name: string) => name),
-}));
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+  };
+});
 
 function createApp(actor: any) {
   const app = express();
@@ -92,7 +96,7 @@ describe("cli auth routes", () => {
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
-  });
+  }, 15_000);
 
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({

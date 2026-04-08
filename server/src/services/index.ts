@@ -11,6 +11,11 @@ export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
+export {
+  applyCreateDefaultsByAdapterType,
+  assertAdapterConfigConstraints,
+  prepareAdapterConfigForPersistence,
+} from "./agent-adapter-config.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
