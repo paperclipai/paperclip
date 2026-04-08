@@ -268,6 +268,22 @@ export {
 } from "./access.js";
 
 export {
+  departmentPermissionScopeSchema,
+  permissionScopeSchema,
+  permissionGrantSchema,
+  companyRoleStatusSchema,
+  createCompanyRoleSchema,
+  updateCompanyRoleSchema,
+  assignRoleSchema,
+  type DepartmentPermissionScopeInput,
+  type PermissionScopeInput,
+  type PermissionGrantInput,
+  type CreateCompanyRole,
+  type UpdateCompanyRole,
+  type AssignRole,
+} from "./rbac.js";
+
+export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,

@@ -20,17 +20,26 @@ import {
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
+  assignRoleSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
+  createCompanyRoleSchema,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   listJoinRequestsQuerySchema,
+  permissionScopeSchema,
   resolveCliAuthChallengeSchema,
+  updateCompanyRoleSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type {
+  DeploymentExposure,
+  DeploymentMode,
+  PermissionScope,
+  PrincipalType,
+} from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -46,7 +55,8 @@ import {
   boardAuthService,
   deduplicateAgentName,
   logActivity,
-  notifyHireApproved
+  notifyHireApproved,
+  rolesService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
@@ -1395,7 +1405,7 @@ function grantsFromDefaults(
   key: "human" | "agent"
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
+  scope: PermissionScope;
 }> {
   if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
   const scoped = defaultsPayload[key];
@@ -1405,21 +1415,17 @@ function grantsFromDefaults(
   const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
   const result: Array<{
     permissionKey: (typeof PERMISSION_KEYS)[number];
-    scope: Record<string, unknown> | null;
+    scope: PermissionScope;
   }> = [];
   for (const item of grants) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     if (typeof record.permissionKey !== "string") continue;
     if (!validPermissionKeys.has(record.permissionKey)) continue;
+    const parsedScope = permissionScopeSchema.safeParse(record.scope ?? null);
     result.push({
       permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
-      scope:
-        record.scope &&
-        typeof record.scope === "object" &&
-        !Array.isArray(record.scope)
-          ? (record.scope as Record<string, unknown>)
-          : null
+      scope: parsedScope.success ? parsedScope.data : null
     });
   }
   return result;
@@ -1429,7 +1435,7 @@ export function agentJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
+  scope: PermissionScope;
 }> {
   const grants = grantsFromDefaults(defaultsPayload, "agent");
   if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
@@ -1442,6 +1448,11 @@ export function agentJoinGrantsFromDefaults(
       scope: null
     }
   ];
+}
+
+function parsePrincipalType(value: string): PrincipalType {
+  if (value === "user" || value === "agent") return value;
+  throw badRequest("principalType must be user or agent");
 }
 
 type JoinRequestManagerCandidate = {
@@ -1579,6 +1590,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const roles = rolesService(db);
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -2891,6 +2903,169 @@ export function accessRoutes(
       );
       if (!updated) throw notFound("Member not found");
       res.json(updated);
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/roles/seed-system",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const seeded = await roles.seedSystemRoles(companyId);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.seeded_system",
+        entityType: "company",
+        entityId: companyId,
+        details: { roleKeys: seeded.map((role) => role.key) },
+      });
+      res.json(seeded);
+    }
+  );
+
+  router.get("/companies/:companyId/roles", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const roleList = await roles.listRoles(companyId);
+    res.json(roleList);
+  });
+
+  router.post(
+    "/companies/:companyId/roles",
+    validate(createCompanyRoleSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const created = await roles.createRole(companyId, req.body);
+      if (!created) throw conflict("Role could not be created");
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.created",
+        entityType: "company_role",
+        entityId: created.id,
+        details: { key: created.key, permissionKeys: created.permissionKeys },
+      });
+      res.status(201).json(created);
+    }
+  );
+
+  router.patch(
+    "/companies/:companyId/roles/:roleId",
+    validate(updateCompanyRoleSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const roleId = req.params.roleId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const existing = await roles.getRoleById(roleId);
+      if (!existing || existing.companyId !== companyId) throw notFound("Role not found");
+      const updated = await roles.updateRole(roleId, req.body);
+      if (!updated) throw notFound("Role not found");
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.updated",
+        entityType: "company_role",
+        entityId: updated.id,
+        details: { key: updated.key, status: updated.status },
+      });
+      res.json(updated);
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/roles/:roleId/archive",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const roleId = req.params.roleId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const existing = await roles.getRoleById(roleId);
+      if (!existing || existing.companyId !== companyId) throw notFound("Role not found");
+      const archived = await roles.archiveRole(roleId);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.archived",
+        entityType: "company_role",
+        entityId: archived.id,
+        details: { key: archived.key },
+      });
+      res.json(archived);
+    }
+  );
+
+  router.get(
+    "/companies/:companyId/principals/:principalType/:principalId/role-assignments",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const principalType = parsePrincipalType(req.params.principalType as string);
+      const principalId = req.params.principalId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const assignments = await roles.listRoleAssignments(companyId, principalType, principalId);
+      res.json(assignments);
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/principals/:principalType/:principalId/role-assignments",
+    validate(assignRoleSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const principalType = parsePrincipalType(req.params.principalType as string);
+      const principalId = req.params.principalId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const assignment = await roles.assignRole(
+        companyId,
+        principalType,
+        principalId,
+        req.body.roleId,
+        req.body.scope ?? null,
+        req.actor.userId ?? null,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.assigned",
+        entityType: "principal_role_assignment",
+        entityId: assignment.id,
+        details: {
+          principalType,
+          principalId,
+          roleId: assignment.roleId,
+          scope: assignment.scope,
+        },
+      });
+      res.status(201).json(assignment);
+    }
+  );
+
+  router.delete(
+    "/companies/:companyId/role-assignments/:assignmentId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const assignmentId = req.params.assignmentId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const removed = await roles.removeRoleAssignment(companyId, assignmentId);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "role.assignment_removed",
+        entityType: "principal_role_assignment",
+        entityId: removed.id,
+        details: {
+          principalType: removed.principalType,
+          principalId: removed.principalId,
+          roleId: removed.roleId,
+        },
+      });
+      res.json(removed);
     }
   );
 

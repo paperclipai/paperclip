@@ -35,7 +35,7 @@ describe("agentJoinGrantsFromDefaults", () => {
     ]);
   });
 
-  it("does not duplicate tasks:assign when invite defaults already include it", () => {
+  it("does not duplicate tasks:assign and normalizes invalid legacy scopes", () => {
     expect(
       agentJoinGrantsFromDefaults({
         agent: {
@@ -50,7 +50,7 @@ describe("agentJoinGrantsFromDefaults", () => {
     ).toEqual([
       {
         permissionKey: "tasks:assign",
-        scope: { projectId: "project-1" },
+        scope: null,
       },
     ]);
   });

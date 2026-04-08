@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
+import type { PermissionScope } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 
 export const principalPermissionGrants = pgTable(
@@ -9,7 +10,7 @@ export const principalPermissionGrants = pgTable(
     principalType: text("principal_type").notNull(),
     principalId: text("principal_id").notNull(),
     permissionKey: text("permission_key").notNull(),
-    scope: jsonb("scope").$type<Record<string, unknown> | null>(),
+    scope: jsonb("scope").$type<PermissionScope>(),
     grantedByUserId: text("granted_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

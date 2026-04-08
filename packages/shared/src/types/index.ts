@@ -171,6 +171,15 @@ export type {
   JoinRequest,
   InstanceUserRoleGrant,
 } from "./access.js";
+export type {
+  DepartmentPermissionScope,
+  PermissionScope,
+  CompanyRole,
+  CompanyRolePermission,
+  PrincipalRoleAssignment,
+  CompanyRoleWithPermissions,
+  PrincipalRoleAssignmentDetail,
+} from "./rbac.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {
   CompanyPortabilityInclude,

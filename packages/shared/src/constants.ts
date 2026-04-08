@@ -374,8 +374,27 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
+export const COMPANY_ROLE_STATUSES = ["active", "archived"] as const;
+export type CompanyRoleStatus = (typeof COMPANY_ROLE_STATUSES)[number];
+
+export const PERMISSION_SCOPE_KINDS = ["departments"] as const;
+export type PermissionScopeKind = (typeof PERMISSION_SCOPE_KINDS)[number];
+
 export const PERMISSION_KEYS = [
   "agents:create",
+  "roles:view",
+  "roles:manage",
+  "departments:view",
+  "departments:manage",
+  "teams:view",
+  "teams:manage",
+  "agents:view",
+  "agents:manage",
+  "projects:view",
+  "projects:manage",
+  "issues:view",
+  "issues:manage",
+  "org:view",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",

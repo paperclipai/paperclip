@@ -34,12 +34,25 @@ const mockBoardAuthService = vi.hoisted(() => ({
   revokeBoardApiKey: vi.fn(),
 }));
 
+const mockRolesService = vi.hoisted(() => ({
+  seedSystemRoles: vi.fn(),
+  listRoles: vi.fn(),
+  getRoleById: vi.fn(),
+  createRole: vi.fn(),
+  updateRole: vi.fn(),
+  archiveRole: vi.fn(),
+  assignRole: vi.fn(),
+  removeRoleAssignment: vi.fn(),
+  listRoleAssignments: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   boardAuthService: () => mockBoardAuthService,
+  rolesService: () => mockRolesService,
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),

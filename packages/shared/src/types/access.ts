@@ -9,6 +9,7 @@ import type {
   PermissionKey,
   PrincipalType,
 } from "../constants.js";
+import type { PermissionScope } from "./rbac.js";
 
 export interface CompanyMembership {
   id: string;
@@ -27,7 +28,7 @@ export interface PrincipalPermissionGrant {
   principalType: PrincipalType;
   principalId: string;
   permissionKey: PermissionKey;
-  scope: Record<string, unknown> | null;
+  scope: PermissionScope;
   grantedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;

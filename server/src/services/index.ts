@@ -33,3 +33,4 @@ export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServic
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { departmentService } from "./departments.js";
 export { teamService } from "./teams.js";
+export { rolesService } from "./roles.js";

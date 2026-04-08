@@ -379,6 +379,13 @@
       "when": 1775836800000,
       "tag": "0053_departments_and_teams",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775838600000,
+      "tag": "0054_department_scoped_rbac",
+      "breakpoints": true
     }
   ]
 }

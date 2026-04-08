@@ -3,9 +3,9 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
-  PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
+import { permissionGrantSchema } from "./rbac.js";
 
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
@@ -75,12 +75,7 @@ export const resolveCliAuthChallengeSchema = z.object({
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
 
 export const updateMemberPermissionsSchema = z.object({
-  grants: z.array(
-    z.object({
-      permissionKey: z.enum(PERMISSION_KEYS),
-      scope: z.record(z.string(), z.unknown()).optional().nullable(),
-    }),
-  ),
+  grants: z.array(permissionGrantSchema),
 });
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
