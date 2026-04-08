@@ -577,14 +577,34 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
-      .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
-      .catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
+    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty).
+    // Must complete before setInterval to prevent timer ticks from coalescing into zombies.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await heartbeat.reapOrphanedRuns();
+        logger.info(
+          { reaped: result.reaped, runIds: result.runIds },
+          "startup reap of orphaned heartbeat runs complete",
+        );
+        break;
+      } catch (err) {
+        if (attempt < 2) {
+          logger.warn({ err, attempt }, "startup reap failed, retrying");
+        } else {
+          logger.error(
+            { err },
+            "startup reap of orphaned heartbeat runs failed after retry — periodic reaper will serve as degraded backstop",
+          );
+        }
+      }
+    }
+
+    // Resume any persisted queued runs that were waiting on the previous process.
+    void heartbeat.resumeQueuedRuns().catch((err) => {
+      logger.error({ err }, "startup resumeQueuedRuns failed");
+    });
+
+    // Timer ticks start AFTER startup reap completes
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
