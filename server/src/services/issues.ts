@@ -1573,15 +1573,37 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
+      const normalizedIssueData = { ...issueData };
+
+      if (
+        normalizedIssueData.assigneeAgentId !== undefined &&
+        normalizedIssueData.assigneeAgentId !== null &&
+        normalizedIssueData.assigneeUserId === undefined
+      ) {
+        normalizedIssueData.assigneeUserId = null;
+      }
+
+      if (
+        normalizedIssueData.assigneeUserId !== undefined &&
+        normalizedIssueData.assigneeUserId !== null &&
+        normalizedIssueData.assigneeAgentId === undefined
+      ) {
+        normalizedIssueData.assigneeAgentId = null;
+      }
+
       const patch: Partial<typeof issues.$inferInsert> = {
-        ...issueData,
+        ...normalizedIssueData,
         updatedAt: new Date(),
       };
 
       const nextAssigneeAgentId =
-        issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
+        normalizedIssueData.assigneeAgentId !== undefined
+          ? normalizedIssueData.assigneeAgentId
+          : existing.assigneeAgentId;
       const nextAssigneeUserId =
-        issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+        normalizedIssueData.assigneeUserId !== undefined
+          ? normalizedIssueData.assigneeUserId
+          : existing.assigneeUserId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -1589,17 +1611,22 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      if (normalizedIssueData.assigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, normalizedIssueData.assigneeAgentId);
       }
-      if (issueData.assigneeUserId) {
-        await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      if (normalizedIssueData.assigneeUserId) {
+        await assertAssignableUser(existing.companyId, normalizedIssueData.assigneeUserId);
       }
-      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      const nextProjectId =
+        normalizedIssueData.projectId !== undefined ? normalizedIssueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
-        issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
+        normalizedIssueData.projectWorkspaceId !== undefined
+          ? normalizedIssueData.projectWorkspaceId
+          : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
-        issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+        normalizedIssueData.executionWorkspaceId !== undefined
+          ? normalizedIssueData.executionWorkspaceId
+          : existing.executionWorkspaceId;
       if (nextProjectWorkspaceId) {
         await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
       }
