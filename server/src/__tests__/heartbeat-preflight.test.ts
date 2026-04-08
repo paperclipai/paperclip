@@ -1,16 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   agents,
-  agentRuntimeState,
-  agentTaskSessions,
   agentWakeupRequests,
   approvals,
   companies,
-  costEvents,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -60,18 +57,9 @@ describeEmbeddedPostgres("heartbeat preflight check", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     delete process.env.HEARTBEAT_PREFLIGHT_ENABLED;
-    // Delete in FK-safe order: children before parents
-    await db.delete(issueComments);
-    await db.delete(approvals);
-    await db.delete(costEvents);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentTaskSessions);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
+    // TRUNCATE CASCADE handles all FK dependencies regardless of which
+    // tables the heartbeat service touched during the test.
+    await db.execute(sql`TRUNCATE companies CASCADE`);
   });
 
   afterAll(async () => {
