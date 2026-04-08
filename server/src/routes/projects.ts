@@ -77,6 +77,28 @@ export function projectRoutes(db: Db) {
     res.json(project);
   });
 
+  // Company-scoped project detail alias. Every other resource in COS v2
+  // uses `/companies/:companyId/:resource/:id` — projects had a legacy
+  // unscoped path that broke discoverability during dogfooding. The
+  // company-scoped variant rejects cross-tenant mismatches explicitly
+  // instead of relying on the access assertion inside the unscoped
+  // handler (which would return 404/403 without a clear tenant signal).
+  router.get("/companies/:companyId/projects/:id", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    if (project.companyId !== companyId) {
+      res.status(404).json({ error: "Project not found in this company" });
+      return;
+    }
+    res.json(project);
+  });
+
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

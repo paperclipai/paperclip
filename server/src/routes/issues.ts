@@ -411,7 +411,16 @@ export function issueRoutes(
   router.post("/companies/:companyId/labels", validate(createIssueLabelSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const label = await svc.createLabel(companyId, req.body);
+    let label;
+    try {
+      label = await svc.createLabel(companyId, req.body);
+    } catch (err: any) {
+      if (err?.status === 409) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,

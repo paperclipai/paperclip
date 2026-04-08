@@ -2169,17 +2169,32 @@ export function issueService(db: Db) {
         parentId?: string | null;
       },
     ) => {
-      const [created] = await db
-        .insert(labels)
-        .values({
-          companyId,
-          name: data.name.trim(),
-          color: data.color,
-          teamId: data.teamId ?? null,
-          parentId: data.parentId ?? null,
-        })
-        .returning();
-      return created;
+      try {
+        const [created] = await db
+          .insert(labels)
+          .values({
+            companyId,
+            name: data.name.trim(),
+            color: data.color,
+            teamId: data.teamId ?? null,
+            parentId: data.parentId ?? null,
+          })
+          .returning();
+        return created;
+      } catch (err: any) {
+        // Postgres 23505 = unique_violation. The labels table has a
+        // (company_id, name) unique index (`labels_company_name_idx`),
+        // so a duplicate name for the same company must surface as a
+        // 409 Conflict rather than a generic 500. Found during Phase 5
+        // dogfooding.
+        if (err?.code === "23505") {
+          throw Object.assign(
+            new Error(`Label with name "${data.name.trim()}" already exists in this company`),
+            { status: 409 },
+          );
+        }
+        throw err;
+      }
     },
 
     deleteLabel: async (id: string) =>
