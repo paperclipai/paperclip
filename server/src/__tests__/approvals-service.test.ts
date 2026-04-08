@@ -49,20 +49,38 @@ function createApproval(status: string): ApprovalRecord {
   };
 }
 
-function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
+function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[][]) {
   const pendingSelectResults = [...selectResults];
   const selectWhere = vi.fn(async () => pendingSelectResults.shift() ?? []);
   const from = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from }));
 
-  const returning = vi.fn(async () => updateResults);
-  const updateWhere = vi.fn(() => ({ returning }));
-  const set = vi.fn(() => ({ where: updateWhere }));
-  const update = vi.fn(() => ({ set }));
+  const pendingUpdateResults = [...updateResults];
+  const returning = vi.fn(async () => pendingUpdateResults.shift() ?? []);
+  const updateCalls: unknown[] = [];
+  const setCalls: unknown[] = [];
+  const whereCalls: unknown[] = [];
+  const updateWhere = (condition?: unknown) => {
+    whereCalls.push(condition);
+    return { returning };
+  };
+  const set = (values?: unknown) => {
+    setCalls.push(values);
+    return { where: updateWhere };
+  };
+  const update = (table?: unknown) => {
+    updateCalls.push(table);
+    return { set };
+  };
 
   return {
     db: { select, update },
     selectWhere,
+    update,
+    updateWhere,
+    updateCalls,
+    setCalls,
+    whereCalls,
     returning,
   };
 }
@@ -82,7 +100,7 @@ describe("approvalService resolution idempotency", () => {
   it("treats repeated approve retries as no-ops after another worker resolves the approval", async () => {
     const dbStub = createDbStub(
       [[createApproval("pending")], [createApproval("approved")]],
-      [],
+      [[]],
     );
 
     const svc = approvalService(dbStub.db as any);
@@ -97,7 +115,7 @@ describe("approvalService resolution idempotency", () => {
   it("treats repeated reject retries as no-ops after another worker resolves the approval", async () => {
     const dbStub = createDbStub(
       [[createApproval("pending")], [createApproval("rejected")]],
-      [],
+      [[]],
     );
 
     const svc = approvalService(dbStub.db as any);
@@ -110,7 +128,7 @@ describe("approvalService resolution idempotency", () => {
 
   it("still performs side effects when the resolution update is newly applied", async () => {
     const approved = createApproval("approved");
-    const dbStub = createDbStub([[createApproval("pending")], [createApproval("pending")]], [approved]);
+    const dbStub = createDbStub([[createApproval("pending")], [createApproval("pending")]], [[approved]]);
 
     const svc = approvalService(dbStub.db as any);
     const result = await svc.approve("approval-1", "board", "ship it");
@@ -129,7 +147,7 @@ describe("approvalService resolution idempotency", () => {
       adapterConfig: {},
     };
     const approved = { ...pending, status: "approved" };
-    const dbStub = createDbStub([[pending]], [approved]);
+    const dbStub = createDbStub([[pending]], [[approved]]);
     mockPrepareAdapterConfigForPersistence.mockRejectedValueOnce(
       new Error("OpenCode requires an explicit model in provider/model format."),
     );
@@ -150,7 +168,7 @@ describe("approvalService resolution idempotency", () => {
       adapterType: "opencode_local",
       adapterConfig: {},
     };
-    const dbStub = createDbStub([[approved], [approved]], []);
+    const dbStub = createDbStub([[approved], [approved]], [[]]);
     mockPrepareAdapterConfigForPersistence.mockRejectedValueOnce(
       new Error("OpenCode requires an explicit model in provider/model format."),
     );
@@ -164,5 +182,50 @@ describe("approvalService resolution idempotency", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
     expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
     expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+  });
+
+  it("rolls approval back when the payload changes after prevalidation and the latest payload is invalid", async () => {
+    const pending = createApproval("pending");
+    pending.payload = {
+      name: "OpenCode Agent",
+      role: "general",
+      adapterType: "opencode_local",
+      adapterConfig: { model: "openai/gpt-5-codex" },
+    };
+    const approved = {
+      ...pending,
+      status: "approved",
+      decidedByUserId: "board",
+      decidedAt: new Date("2026-04-08T15:00:00.000Z"),
+      payload: {
+        name: "OpenCode Agent",
+        role: "general",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+    };
+    const reverted = { ...pending, status: "pending" };
+    const dbStub = createDbStub(
+      [[pending], [pending]],
+      [[approved], [reverted]],
+    );
+    mockPrepareAdapterConfigForPersistence
+      .mockResolvedValueOnce({ model: "openai/gpt-5-codex" })
+      .mockRejectedValueOnce(new Error("OpenCode requires an explicit model in provider/model format."));
+
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.approve("approval-1", "board", "ship it")).rejects.toThrow(
+      "OpenCode requires an explicit model in provider/model format.",
+    );
+    expect(mockPrepareAdapterConfigForPersistence).toHaveBeenCalled();
+    expect(
+      mockPrepareAdapterConfigForPersistence.mock.calls.at(-1)?.[0],
+    ).toMatchObject({
+      adapterConfig: {},
+      adapterType: "opencode_local",
+      companyId: "company-1",
+    });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 });

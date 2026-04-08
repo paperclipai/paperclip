@@ -5,7 +5,6 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import { unprocessable } from "../errors.js";
 
 export type AdapterConfigSecretsService = {
@@ -96,21 +95,9 @@ export async function assertAdapterConfigConstraints(
 ) {
   if (adapterType !== "opencode_local") return;
   const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-  const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
   const configuredModel = asNonEmptyString(runtimeConfig.model);
   if (!configuredModel || !configuredModel.includes("/")) {
     throw unprocessable("OpenCode requires an explicit model in provider/model format.");
-  }
-  try {
-    await ensureOpenCodeModelConfiguredAndAvailable({
-      model: configuredModel,
-      command: runtimeConfig.command,
-      cwd: runtimeConfig.cwd,
-      env: runtimeEnv,
-    });
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
   }
 }
 

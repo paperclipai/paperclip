@@ -1,11 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockEnsureOpenCodeModelConfiguredAndAvailable = vi.hoisted(() => vi.fn());
-
-vi.mock("@paperclipai/adapter-opencode-local/server", () => ({
-  ensureOpenCodeModelConfiguredAndAvailable: mockEnsureOpenCodeModelConfiguredAndAvailable,
-}));
-
 const { prepareAdapterConfigForPersistence } = await import("../services/agent-adapter-config.js");
 
 describe("agent adapter config validation", () => {
@@ -31,23 +25,17 @@ describe("agent adapter config validation", () => {
         secretsSvc,
       }),
     ).rejects.toThrow("OpenCode requires an explicit model in provider/model format.");
-
-    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
   });
 
-  it("passes through normalized opencode_local config when the model is available", async () => {
+  it("passes through normalized opencode_local config when the model format is valid", async () => {
     secretsSvc.normalizeAdapterConfigForPersistence.mockResolvedValue({
       model: "openai/gpt-5-codex",
     });
     secretsSvc.resolveAdapterConfigForRuntime.mockResolvedValue({
       config: {
         model: "openai/gpt-5-codex",
-        command: "opencode",
-        cwd: "/tmp/workspace",
-        env: {},
       },
     });
-    mockEnsureOpenCodeModelConfiguredAndAvailable.mockResolvedValue([]);
 
     const result = await prepareAdapterConfigForPersistence({
       companyId: "company-1",
@@ -58,11 +46,5 @@ describe("agent adapter config validation", () => {
     });
 
     expect(result).toEqual({ model: "openai/gpt-5-codex" });
-    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).toHaveBeenCalledWith({
-      model: "openai/gpt-5-codex",
-      command: "opencode",
-      cwd: "/tmp/workspace",
-      env: {},
-    });
   });
 });
