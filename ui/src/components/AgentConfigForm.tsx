@@ -740,7 +740,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onChange={(v) =>
                   isCreate
                     ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
+                    : mark("adapterConfig", "model", v || null)
                 }
                 open={modelOpen}
                 onOpenChange={setModelOpen}
