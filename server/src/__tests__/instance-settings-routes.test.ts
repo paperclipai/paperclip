@@ -41,6 +41,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      serializeAgentRunsByProviderUrl: false,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
@@ -55,6 +56,7 @@ describe("instance settings routes", () => {
       experimental: {
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+        serializeAgentRunsByProviderUrl: false,
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
@@ -73,6 +75,7 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      serializeAgentRunsByProviderUrl: false,
     });
 
     const patchRes = await request(app)
@@ -101,6 +104,24 @@ describe("instance settings routes", () => {
 
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       autoRestartDevServerWhenIdle: true,
+    });
+  });
+
+  it("allows local board users to update provider-url serialization", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ serializeAgentRunsByProviderUrl: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      serializeAgentRunsByProviderUrl: true,
     });
   });
 

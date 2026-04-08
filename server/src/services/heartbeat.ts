@@ -71,6 +71,10 @@ const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const execFile = promisify(execFileCallback);
+const DEFAULT_OPENAI_PROVIDER_URL = "https://api.openai.com/v1";
+const DEFAULT_OPENROUTER_PROVIDER_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_ANTHROPIC_PROVIDER_URL = "https://api.anthropic.com";
+const DEFAULT_GEMINI_PROVIDER_URL = "https://generativelanguage.googleapis.com";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -348,6 +352,46 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export function normalizeModelProviderUrl(value: string | null | undefined): string | null {
+  const raw = readNonEmptyString(value);
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return raw.trim().replace(/\/+$/, "");
+  }
+}
+
+export function resolveModelProviderUrlFromEnv(env: Record<string, string>): string | null {
+  const explicitUrl =
+    readNonEmptyString(env.OPENAI_BASE_URL) ??
+    readNonEmptyString(env.OPENAI_API_BASE) ??
+    readNonEmptyString(env.OPENAI_API_BASE_URL) ??
+    readNonEmptyString(env.ANTHROPIC_BEDROCK_BASE_URL);
+  if (explicitUrl) return normalizeModelProviderUrl(explicitUrl);
+
+  if (readNonEmptyString(env.OPENROUTER_API_KEY)) {
+    return DEFAULT_OPENROUTER_PROVIDER_URL;
+  }
+  if (readNonEmptyString(env.OPENAI_API_KEY)) {
+    return DEFAULT_OPENAI_PROVIDER_URL;
+  }
+  if (readNonEmptyString(env.ANTHROPIC_API_KEY)) {
+    return DEFAULT_ANTHROPIC_PROVIDER_URL;
+  }
+  if (readNonEmptyString(env.GEMINI_API_KEY) || readNonEmptyString(env.GOOGLE_API_KEY)) {
+    return DEFAULT_GEMINI_PROVIDER_URL;
+  }
+
+  return null;
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -1735,12 +1779,104 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  async function getExperimentalSettings() {
+    return instanceSettings.getExperimental();
+  }
+
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
+  }
+
+  async function resolveSerializedProviderUrlForRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent?: typeof agents.$inferSelect | null,
+  ) {
+    const resolvedAgent = agent ?? await getAgent(run.agentId);
+    if (!resolvedAgent) return null;
+
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const issueContext = issueId
+      ? await db
+          .select({
+            projectId: issues.projectId,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, resolvedAgent.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const issueAssigneeOverrides =
+      issueContext && issueContext.assigneeAgentId === resolvedAgent.id
+        ? parseIssueAssigneeAdapterOverrides(issueContext.assigneeAdapterOverrides)
+        : null;
+    const projectId = issueContext?.projectId ?? readNonEmptyString(context.projectId);
+    const projectEnv = projectId
+      ? await db
+          .select({ env: projects.env })
+          .from(projects)
+          .where(and(eq(projects.id, projectId), eq(projects.companyId, resolvedAgent.companyId)))
+          .then((rows) => rows[0]?.env ?? null)
+      : null;
+
+    const mergedConfig = issueAssigneeOverrides?.adapterConfig
+      ? { ...parseObject(resolvedAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }
+      : parseObject(resolvedAgent.adapterConfig);
+    const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
+      companyId: resolvedAgent.companyId,
+      executionRunConfig: stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig),
+      projectEnv,
+      secretsSvc,
+    });
+
+    const resolvedEnv = Object.fromEntries(
+      Object.entries(parseObject(resolvedConfig.env)).filter(
+        (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
+      ),
+    );
+    return resolveModelProviderUrlFromEnv(resolvedEnv);
+  }
+
+  async function isRunBlockedByProviderUrlConcurrency(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent?: typeof agents.$inferSelect | null,
+  ) {
+    const experimental = await getExperimentalSettings();
+    if (!experimental.serializeAgentRunsByProviderUrl) return false;
+
+    const providerUrl = await resolveSerializedProviderUrlForRun(run, agent);
+    if (!providerUrl) return false;
+
+    const activeRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          sql`${heartbeatRuns.id} <> ${run.id}`,
+        ),
+      );
+
+    for (const activeRun of activeRuns) {
+      const activeProviderUrl = await resolveSerializedProviderUrlForRun(activeRun);
+      if (activeProviderUrl === providerUrl) return true;
+    }
+
+    return false;
+  }
+
+  async function kickQueuedRuns(agentId: string) {
+    const experimental = await getExperimentalSettings();
+    if (experimental.serializeAgentRunsByProviderUrl) {
+      await resumeQueuedRuns();
+      return;
+    }
+    await startNextQueuedRunForAgent(agentId);
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -1762,6 +1898,10 @@ export function heartbeatService(db: Db) {
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    if (await isRunBlockedByProviderUrlConcurrency(run, agent)) {
       return null;
     }
 
@@ -1940,7 +2080,7 @@ export function heartbeatService(db: Db) {
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      await kickQueuedRuns(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -2034,12 +2174,12 @@ export function heartbeatService(db: Db) {
         .select()
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
+        .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of queuedRuns) {
+        if (claimedRuns.length >= availableSlots) break;
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -2963,7 +3103,7 @@ export function heartbeatService(db: Db) {
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          await kickQueuedRuns(run.agentId);
         }
   }
 
@@ -3118,7 +3258,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    await kickQueuedRuns(promotedRun.agentId);
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -3503,7 +3643,7 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await kickQueuedRuns(agent.id);
       return newRun;
     }
 
@@ -3611,7 +3751,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await kickQueuedRuns(agent.id);
 
     return newRun;
   }
@@ -3754,7 +3894,7 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    await kickQueuedRuns(run.agentId);
     return cancelled;
   }
 

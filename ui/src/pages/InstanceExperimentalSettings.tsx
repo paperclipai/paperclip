@@ -24,7 +24,11 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
+    mutationFn: async (patch: {
+      enableIsolatedWorkspaces?: boolean;
+      autoRestartDevServerWhenIdle?: boolean;
+      serializeAgentRunsByProviderUrl?: boolean;
+    }) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -54,6 +58,7 @@ export function InstanceExperimentalSettings() {
 
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const serializeAgentRunsByProviderUrl = experimentalQuery.data?.serializeAgentRunsByProviderUrl === true;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -132,6 +137,25 @@ export function InstanceExperimentalSettings() {
               )}
             />
           </button>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Serialize Agent Runs By Provider URL</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              When enabled, Paperclip will avoid running heartbeats in parallel if they resolve to the same model
+              provider URL. Agents targeting different provider URLs can still run concurrently.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={serializeAgentRunsByProviderUrl}
+            onCheckedChange={() =>
+              toggleMutation.mutate({ serializeAgentRunsByProviderUrl: !serializeAgentRunsByProviderUrl })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle provider-url run serialization"
+          />
         </div>
       </section>
     </div>

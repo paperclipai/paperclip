@@ -9,6 +9,7 @@ export interface InstanceGeneralSettings {
 export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   autoRestartDevServerWhenIdle: boolean;
+  serializeAgentRunsByProviderUrl: boolean;
 }
 
 export interface InstanceSettings {
