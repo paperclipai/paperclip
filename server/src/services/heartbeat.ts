@@ -391,6 +391,36 @@ export function shouldResetTaskSessionForWake(
   return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
 }
 
+/**
+ * Error codes for failure modes that should NOT trigger a self-wake to
+ * process remaining inbox items. Adding a code here means "once this
+ * failure happens, retrying immediately is guaranteed to hit the same
+ * failure, so stop the loop and wait for external intervention".
+ *
+ * `"adapter_failed"` is a **display-layer fallback**, not a runtime value.
+ * When the adapter returns `errorCode: null` on a failed run, `setRunStatus`
+ * applies `?? "adapter_failed"` so the DB row has a non-null string for
+ * dashboards/UIs. But that fallback is applied at persistence time only —
+ * the runtime `shouldSelfWake` check below is passed `adapterResult.errorCode`
+ * directly (see the call site near `inbox_remaining`), which remains `null`
+ * for any generic failure the adapter didn't classify specifically.
+ *
+ * This means the `"adapter_failed"` entry in this set is effectively
+ * unreachable at runtime — it exists for consistency with the DB column
+ * and to keep the self-wake test suite exhaustive, not because any code
+ * path actually passes that string through. Runtime systemic gating
+ * relies on the other entries: `auth_failed`, `claude_auth_required`,
+ * `claude_usage_limited`, `timeout`. Each of those corresponds to an
+ * explicit errorCode the relevant adapter sets when it recognises a
+ * specific failure class.
+ *
+ * If you want a new failure mode to skip self-wake, do NOT add an entry
+ * here and expect null-coercion to pick it up — instead, detect the
+ * failure in the adapter, return an explicit errorCode, and add that code
+ * here. See the `claude_usage_limited` detector in
+ * packages/adapters/claude-local/src/server/parse.ts (isClaudeUsageLimitResult)
+ * for the reference pattern.
+ */
 const SYSTEMIC_ERROR_CODES = new Set([
   "auth_failed",
   "claude_auth_required",
@@ -402,6 +432,22 @@ const SYSTEMIC_ERROR_CODES = new Set([
 /**
  * Determines whether an agent should self-wake to process remaining inbox
  * items after a heartbeat run completes.
+ *
+ * Semantics:
+ *   - `outcome === "succeeded"` → always self-wake (keep draining the inbox)
+ *   - `outcome === "failed"` + errorCode in SYSTEMIC_ERROR_CODES → don't
+ *     self-wake (same failure will recur)
+ *   - `outcome === "failed"` + errorCode null/empty/other → self-wake
+ *     (assume task-level failure; retrying the NEXT inbox item is legit)
+ *   - `outcome === "cancelled"` or `"timed_out"` → don't self-wake
+ *
+ * Note the `null`/empty case: a generic `claude_local` failure where the
+ * adapter didn't recognise a specific error class currently results in
+ * self-wake because we can't distinguish "this specific task went wrong,
+ * try the next one" from "every future run will hit the same wall". The
+ * correct disambiguation is for adapters to detect known systemic failure
+ * modes explicitly and return a specific errorCode — see the
+ * `SYSTEMIC_ERROR_CODES` docstring above for the reference pattern.
  */
 export function shouldSelfWake(
   outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
@@ -1800,6 +1846,15 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      // NOTE: `adapterResult.errorCode ?? "adapter_failed"` is a
+      // display-layer fallback, applied only when writing to the DB here.
+      // The runtime `shouldSelfWake(outcome, adapterResult.errorCode)` check
+      // further below sees the raw (un-coerced) value, so a `null` errorCode
+      // from a generic `claude_local` failure is treated as task-level
+      // (retry-ok) there, even though the heartbeat_runs row will display
+      // "adapter_failed". This split is intentional — see the docstring on
+      // SYSTEMIC_ERROR_CODES for the full rationale and for the pattern
+      // adapters should follow when adding new systemic failure classes.
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error:
