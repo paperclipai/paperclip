@@ -1,0 +1,8 @@
+{
+  "files": [
+    "server/src/services/heartbeat.ts",
+    "server/src/routes/issues.ts",
+    "server/src/__tests__/issue-terminal-workspace-cleanup.test.ts",
+    "server/src/__tests__/issue-terminal-workspace-archive-helper.test.ts"
+  ]
+}

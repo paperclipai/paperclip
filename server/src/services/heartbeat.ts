@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -43,9 +44,11 @@ import {
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
+  stopRuntimeServicesForExecutionWorkspace,
 } from "./workspace-runtime.js";
+import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
-import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { executionWorkspaceService, mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -4298,6 +4301,168 @@ export function heartbeatService(db: Db) {
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+  /**
+   * Archives a runtime-created execution workspace when its linked issue
+   * transitions to a terminal state (`done` or `cancelled`).
+   *
+   * Idempotent: returns early if the workspace is already archived or
+   * if other linked issues are still active.
+   */
+  async function archiveTerminalIssueExecutionWorkspace(input: {
+    executionWorkspaceId: string;
+    companyId: string;
+    actor?: { actorType: "agent" | "user" | "system"; actorId: string; agentId?: string | null; runId?: string | null };
+  }): Promise<{ archived: boolean; warnings: string[] }> {
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!workspace) return { archived: false, warnings: ["workspace not found"] };
+    if (workspace.status === "archived") return { archived: false, warnings: [] };
+
+    const linkedIssues = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.executionWorkspaceId, workspace.id)));
+
+    const activeLinkedIssues = linkedIssues.filter((issue) => !TERMINAL_ISSUE_STATUSES.has(issue.status));
+    if (activeLinkedIssues.length > 0) {
+      return { archived: false, warnings: [`${activeLinkedIssues.length} linked issue(s) still active`] };
+    }
+
+    const closedAt = new Date();
+    await db
+      .update(executionWorkspaces)
+      .set({ status: "archived", closedAt, cleanupReason: null, updatedAt: closedAt })
+      .where(eq(executionWorkspaces.id, workspace.id));
+
+    const recorder = workspaceOperationsSvc.createRecorder({
+      companyId: input.companyId,
+      executionWorkspaceId: workspace.id,
+    });
+
+    let cleanupWarnings: string[] = [];
+    try {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      });
+
+      const projectWorkspace = workspace.projectWorkspaceId
+        ? await db
+            .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+                eq(projectWorkspaces.companyId, input.companyId),
+              ),
+            )
+            .then((rows) => rows[0] ?? null)
+        : null;
+
+      const projectPolicy = workspace.projectId
+        ? await db
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, input.companyId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+        : null;
+
+      const workspaceConfig = readExecutionWorkspaceConfig(
+        (workspace.metadata as Record<string, unknown> | null) ?? null,
+      );
+      const teardownCommand = workspaceConfig?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+
+      const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
+        workspace: {
+          id: workspace.id,
+          cwd: workspace.cwd,
+          providerType: workspace.providerType,
+          providerRef: workspace.providerRef,
+          branchName: workspace.branchName,
+          repoUrl: workspace.repoUrl,
+          baseRef: workspace.baseRef,
+          projectId: workspace.projectId,
+          projectWorkspaceId: workspace.projectWorkspaceId,
+          sourceIssueId: workspace.sourceIssueId,
+          metadata: workspace.metadata as Record<string, unknown> | null,
+        },
+        projectWorkspace,
+        teardownCommand,
+        cleanupCommand: workspaceConfig?.cleanupCommand ?? null,
+        recorder,
+      });
+
+      cleanupWarnings = cleanupResult.warnings;
+
+      if (!cleanupResult.cleaned) {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: "cleanup_failed",
+            closedAt,
+            cleanupReason: cleanupResult.warnings.join(" | ") || "cleanup failed",
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+      } else if (cleanupResult.warnings.length > 0) {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            cleanupReason: cleanupResult.warnings.join(" | "),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+      }
+    } catch (error) {
+      const failureReason = error instanceof Error ? error.message : String(error);
+      await db
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          closedAt,
+          cleanupReason: failureReason,
+          updatedAt: new Date(),
+        })
+        .where(eq(executionWorkspaces.id, workspace.id));
+      cleanupWarnings = [failureReason];
+      logger.warn(
+        { err: error, executionWorkspaceId: workspace.id },
+        "archiveTerminalIssueExecutionWorkspace: cleanup threw, set cleanup_failed",
+      );
+    }
+
+    if (input.actor) {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId ?? null,
+        runId: input.actor.runId ?? null,
+        action: "execution_workspace.updated",
+        entityType: "execution_workspace",
+        entityId: workspace.id,
+        details: {
+          trigger: "terminal_issue_transition",
+          ...(cleanupWarnings.length > 0 ? { cleanupWarnings } : {}),
+        },
+      });
+    }
+
+    return { archived: true, warnings: cleanupWarnings };
+  }
+
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const query = db
@@ -4432,6 +4597,8 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reportRunActivity: clearDetachedRunWarning,
+
+    archiveTerminalIssueExecutionWorkspace,
 
     reapOrphanedRuns,
 
