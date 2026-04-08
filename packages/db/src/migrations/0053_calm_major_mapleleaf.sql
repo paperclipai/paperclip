@@ -1,1 +1,0 @@
-ALTER TABLE "project_workspaces" ADD COLUMN "description" text;
