@@ -34,6 +34,31 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
+// Mock the adapter registry so executeRun (which fires in background after
+// a successful enqueue) does not try to spawn a real CLI process or resolve
+// company skills. We only care about the enqueue/preflight decision.
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: () => ({
+      execute: async () => ({
+        exitCode: 0,
+        errorMessage: null,
+        timedOut: false,
+        resultJson: null,
+        usage: null,
+        costUsd: null,
+        provider: "mock",
+        model: "mock",
+        signal: null,
+      }),
+      sessionCodec: null,
+      meta: { type: "mock", displayName: "Mock Adapter" },
+    }),
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
