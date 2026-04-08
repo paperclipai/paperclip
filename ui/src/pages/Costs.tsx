@@ -20,6 +20,8 @@ import { FinanceBillerCard } from "../components/FinanceBillerCard";
 import { FinanceKindCard } from "../components/FinanceKindCard";
 import { FinanceTimelineCard } from "../components/FinanceTimelineCard";
 import { Identity } from "../components/Identity";
+import { TokenUsageByAgentChart } from "../components/TokenUsageByAgentChart";
+import { TokenTimelineChart } from "../components/TokenTimelineChart";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
@@ -240,6 +242,12 @@ export function Costs() {
       ]);
       return { summary, byAgent, byProject, byAgentModel };
     },
+    enabled: !!selectedCompanyId && customReady,
+  });
+
+  const { data: agentDailyData } = useQuery({
+    queryKey: ["costs", "by-agent-daily", companyId, from, to],
+    queryFn: () => costsApi.byAgentDaily(companyId, from || undefined, to || undefined),
     enabled: !!selectedCompanyId && customReady,
   });
 
@@ -713,17 +721,30 @@ export function Costs() {
                 />
               </div>
 
+              <Card>
+                <CardHeader className="px-5 pt-5 pb-2">
+                  <CardTitle className="text-base">Token usage over time</CardTitle>
+                  <CardDescription>Daily token consumption stacked by agent (last 14 days).</CardDescription>
+                </CardHeader>
+                <CardContent className="px-5 pb-5 pt-2">
+                  <TokenTimelineChart rows={agentDailyData ?? []} />
+                </CardContent>
+              </Card>
+
               <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">By agent</CardTitle>
                     <CardDescription>What each agent consumed in the selected period.</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                  <CardContent className="space-y-4 px-5 pb-5 pt-2">
                     {(spendData?.byAgent.length ?? 0) === 0 ? (
                       <p className="text-sm text-muted-foreground">No cost events yet.</p>
                     ) : (
-                      spendData?.byAgent.map((row) => {
+                      <>
+                      <TokenUsageByAgentChart agents={spendData?.byAgent ?? []} />
+                      <div className="space-y-2">
+                      {spendData?.byAgent.map((row) => {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
@@ -796,7 +817,9 @@ export function Costs() {
                             ) : null}
                           </div>
                         );
-                      })
+                      })}
+                      </div>
+                      </>
                     )}
                   </CardContent>
                 </Card>

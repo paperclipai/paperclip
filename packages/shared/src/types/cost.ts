@@ -102,6 +102,18 @@ export interface CostWindowSpendRow {
   outputTokens: number;
 }
 
+/** per-agent, per-day token totals for time-series charts */
+export interface CostByAgentDaily {
+  date: string;
+  agentId: string;
+  agentName: string | null;
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+}
+
 /** cost attributed to a project via heartbeat run → activity log → issue → project chain */
 export interface CostByProject {
   projectId: string | null;
