@@ -715,7 +715,10 @@ export function buildHostServices(
         if (!inCompany(project, companyId)) return [];
         const rows = await projects.listWorkspaces(params.projectId);
         return rows.map((row) => {
-          const path = sanitizeWorkspacePath(row.cwd);
+          let path = sanitizeWorkspacePath(row.cwd);
+          if (!path && row.isPrimary) {
+            path = sanitizeWorkspacePath(project.codebase.effectiveLocalFolder);
+          }
           const name = sanitizeWorkspaceName(row.name, path);
           return {
             id: row.id,
