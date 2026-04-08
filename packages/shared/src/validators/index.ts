@@ -224,6 +224,27 @@ export {
 } from "./project-extras.js";
 
 export {
+  ROOM_STATUSES,
+  ROOM_MESSAGE_TYPES,
+  ROOM_ACTION_STATUSES,
+  createRoomSchema,
+  updateRoomSchema,
+  addRoomParticipantSchema,
+  sendRoomMessageSchema,
+  updateActionStatusSchema,
+  linkRoomIssueSchema,
+  type RoomStatus,
+  type RoomMessageType,
+  type RoomActionStatus,
+  type CreateRoom,
+  type UpdateRoom,
+  type AddRoomParticipant,
+  type SendRoomMessage,
+  type UpdateActionStatus,
+  type LinkRoomIssue,
+} from "./room.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

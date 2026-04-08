@@ -12,6 +12,7 @@ export { goalService } from "./goals.js";
 export { teamService } from "./teams.js";
 export { workflowStatusService } from "./workflow-statuses.js";
 export { projectExtrasService } from "./project-extras.js";
+export { roomService } from "./rooms.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";

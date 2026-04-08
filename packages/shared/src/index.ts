@@ -652,6 +652,27 @@ export {
   type CreateProjectUpdate,
 } from "./validators/index.js";
 
+export {
+  ROOM_STATUSES,
+  ROOM_MESSAGE_TYPES,
+  ROOM_ACTION_STATUSES,
+  createRoomSchema,
+  updateRoomSchema,
+  addRoomParticipantSchema,
+  sendRoomMessageSchema,
+  updateActionStatusSchema,
+  linkRoomIssueSchema,
+  type RoomStatus,
+  type RoomMessageType,
+  type RoomActionStatus,
+  type CreateRoom,
+  type UpdateRoom,
+  type AddRoomParticipant,
+  type SendRoomMessage,
+  type UpdateActionStatus,
+  type LinkRoomIssue,
+} from "./validators/index.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";

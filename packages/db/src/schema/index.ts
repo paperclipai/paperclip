@@ -67,3 +67,7 @@ export { projectTeams } from "./project_teams.js";
 export { projectMembers } from "./project_members.js";
 export { projectMilestones } from "./project_milestones.js";
 export { projectUpdates } from "./project_updates.js";
+export { rooms } from "./rooms.js";
+export { roomParticipants } from "./room_participants.js";
+export { roomMessages } from "./room_messages.js";
+export { roomIssues } from "./room_issues.js";

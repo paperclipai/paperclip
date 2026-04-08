@@ -414,6 +414,13 @@
       "when": 1775808500000,
       "tag": "0058_cos_phase2_projects",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1775808600000,
+      "tag": "0059_cos_phase3_rooms",
+      "breakpoints": true
     }
   ]
 }

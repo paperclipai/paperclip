@@ -19,6 +19,7 @@ import { RoutineDetail } from "./pages/RoutineDetail";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
 import { Goals } from "./pages/Goals";
 import { NewTeamPage, TeamDetailPage } from "./pages/Teams";
+import { NewRoomPage, RoomDetailPage } from "./pages/Rooms";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
@@ -165,6 +166,8 @@ function boardRoutes() {
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="teams/new" element={<NewTeamPage />} />
       <Route path="teams/:teamId" element={<TeamDetailPage />} />
+      <Route path="rooms/new" element={<NewRoomPage />} />
+      <Route path="rooms/:roomId" element={<RoomDetailPage />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
@@ -352,6 +355,8 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/new" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId" element={<UnprefixedBoardRedirect />} />
+          <Route path="rooms/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="rooms/:roomId" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}

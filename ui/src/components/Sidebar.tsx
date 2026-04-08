@@ -17,6 +17,7 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarTeams } from "./SidebarTeams";
+import { SidebarRooms } from "./SidebarRooms";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -105,6 +106,8 @@ export function Sidebar() {
         </SidebarSection>
 
         <SidebarTeams />
+
+        <SidebarRooms />
 
         <SidebarProjects />
 
