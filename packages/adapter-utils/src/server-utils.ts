@@ -5,6 +5,8 @@ import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+import { type SandboxConfig, wrapWithSandbox } from "./sandbox.js";
+export type { SandboxConfig } from "./sandbox.js";
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -414,6 +416,60 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+/**
+ * Build a SandboxConfig from adapter execution context.
+ *
+ * Reads `filesystemSandbox` (boolean) from the adapter config and workspace
+ * context fields from the execution context. Returns `undefined` when
+ * sandboxing is disabled or the required context fields are missing.
+ *
+ * The config key is `filesystemSandbox` (not `sandbox`) to avoid collision
+ * with adapter-specific sandbox flags (e.g. Gemini's `--sandbox` CLI option).
+ */
+export function buildSandboxConfig(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+  cwd: string,
+  opts?: {
+    /** Additional paths to mount read-write (e.g. git worktrees). */
+    additionalRwPaths?: string[];
+    /** Additional paths to mount read-only (e.g. skill temp dirs). */
+    additionalRoPaths?: string[];
+  },
+): SandboxConfig | undefined {
+  const sandboxEnabled = asBoolean(config.filesystemSandbox, true);
+  if (!sandboxEnabled) return undefined;
+
+  // Skip sandbox on non-Linux (bwrap is Linux-only)
+  if (process.platform !== "linux") return undefined;
+
+  const workspace = parseObject(context.paperclipWorkspace);
+  const instanceRoot = asString(workspace.instanceRoot, "");
+  const agentHome = asString(workspace.agentHome, "");
+
+  // Cannot sandbox without knowing the instance root and agent workspace
+  if (!instanceRoot || !agentHome) return undefined;
+
+  const additionalRwPaths = [...(opts?.additionalRwPaths ?? [])];
+  const additionalRoPaths = [...(opts?.additionalRoPaths ?? [])];
+
+  // If the workspace has a worktree path, add it as rw
+  const worktreePath = asString(workspace.worktreePath, "");
+  if (worktreePath) {
+    additionalRwPaths.push(worktreePath);
+  }
+
+  return {
+    enabled: true,
+    instanceRoot,
+    agentWorkspace: agentHome,
+    cwd,
+    additionalRwPaths: additionalRwPaths.length > 0 ? additionalRwPaths : undefined,
+    additionalRoPaths: additionalRoPaths.length > 0 ? additionalRoPaths : undefined,
+    fallback: asString(config.filesystemSandboxFallback, "warn") as "refuse" | "warn",
+  };
 }
 
 export function defaultPathForPlatform() {
@@ -934,6 +990,8 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     stdin?: string;
+    /** When set, wraps the child process in a bubblewrap sandbox for filesystem isolation. */
+    sandbox?: SandboxConfig;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -956,10 +1014,25 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Strip host ANTHROPIC_API_KEY when the adapter didn't explicitly set it.
+    // Without this, the server's own ANTHROPIC_API_KEY leaks into agent
+    // subprocesses, causing Claude Code to switch from subscription auth to
+    // API-key auth against a key that may have low/no balance.
+    if (!opts.env.ANTHROPIC_API_KEY) {
+      delete rawMerged.ANTHROPIC_API_KEY;
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
-        const child = spawn(target.command, target.args, {
+        // Apply sandbox wrapping if configured
+        const spawnTarget = opts.sandbox
+          ? wrapWithSandbox(opts.sandbox, target.command, target.args, {
+              onWarn: (msg) => onLogError(null, runId, `[sandbox] ${msg}`),
+            })
+          : target;
+
+        const child = spawn(spawnTarget.command, spawnTarget.args, {
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,

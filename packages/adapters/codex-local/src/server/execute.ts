@@ -9,6 +9,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildSandboxConfig,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -530,6 +531,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const sandbox = buildSandboxConfig(config, context, cwd, {
+      additionalRwPaths: [effectiveCodexHome],
+    });
+
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env,
@@ -546,6 +551,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
+      sandbox,
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {

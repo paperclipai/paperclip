@@ -9,6 +9,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildSandboxConfig,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -405,6 +406,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
+    const sandbox = buildSandboxConfig(config, context, cwd);
+
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env: runtimeEnv,
@@ -412,6 +415,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog: bufferedOnLog,
+      sandbox,
     });
     
     // Flush any remaining buffer content
