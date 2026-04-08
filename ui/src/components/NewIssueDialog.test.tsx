@@ -222,6 +222,20 @@ async function flush() {
   });
 }
 
+async function waitForCondition(
+  condition: () => boolean,
+  timeoutMs = 5_000,
+  intervalMs = 25,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await flush();
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -421,15 +435,19 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
 
-    const selects = Array.from(container.querySelectorAll("select"));
-    const modeSelect = selects[0] as HTMLSelectElement | undefined;
-    expect(modeSelect).not.toBeUndefined();
+    await waitForCondition(() => container.querySelector("select") !== null);
+
+    const modeSelect = container.querySelector("select");
+    expect(modeSelect).not.toBeNull();
 
     await act(async () => {
-      modeSelect!.value = "shared_workspace";
-      modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+      const element = modeSelect as HTMLSelectElement;
+      element.value = "shared_workspace";
+      element.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await flush();
+    await waitForCondition(() =>
+      container.textContent?.includes("will no longer use the parent issue workspace") ?? false,
+    );
 
     expect(container.textContent).toContain("will no longer use the parent issue workspace");
     expect(container.textContent).toContain("Parent workspace");
