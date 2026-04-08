@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Plus, Trash2, Users } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team, type WorkflowStatus, type TeamMember } from "../api/teams";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { PageSkeleton } from "../components/PageSkeleton";
 
 export function NewTeamPage() {
   const { selectedCompanyId } = useCompany();
@@ -94,32 +95,38 @@ export function TeamDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  // placeholderData keeps previous team data while the new team fetches,
-  // so navigating between teams is flicker-free (the layout stays put and
-  // only the content transitions). Also use the cached team from the
-  // sidebar teams list as the initial placeholder for the very first load.
+  // keepPreviousData is the v5 helper that keeps the *previous queryKey*'s
+  // data visible while the new queryKey fetches. That's what makes team→team
+  // navigation flicker-free: the old team stays on screen for the ~30ms fetch
+  // window, then the content swaps in place.
+  //
+  // For the very first click (no prev data of any kind), seed from the cached
+  // sidebar teams list so we at least get name/color/identifier without any
+  // HTTP roundtrip.
   const sidebarTeams = qc.getQueryData<Team[]>(["teams", selectedCompanyId]);
   const teamFromList = sidebarTeams?.find((t) => t.id === teamId) ?? null;
 
-  const { data: team } = useQuery({
+  const { data: team, isLoading: isTeamLoading } = useQuery({
     queryKey: ["team", selectedCompanyId, teamId],
     queryFn: () => teamsApi.get(selectedCompanyId!, teamId!),
     enabled: !!selectedCompanyId && !!teamId,
-    placeholderData: (prev) => prev ?? teamFromList ?? undefined,
+    placeholderData: keepPreviousData,
+    initialData: teamFromList ?? undefined,
+    initialDataUpdatedAt: 0, // marks as stale so the real fetch still fires
   });
 
   const { data: members } = useQuery({
     queryKey: ["team-members", selectedCompanyId, teamId],
     queryFn: () => teamsApi.listMembers(selectedCompanyId!, teamId!),
     enabled: !!selectedCompanyId && !!teamId,
-    placeholderData: (prev) => prev,
+    placeholderData: keepPreviousData,
   });
 
   const { data: statuses } = useQuery({
     queryKey: ["team-workflow-statuses", selectedCompanyId, teamId],
     queryFn: () => teamsApi.listWorkflowStatuses(selectedCompanyId!, teamId!),
     enabled: !!selectedCompanyId && !!teamId,
-    placeholderData: (prev) => prev,
+    placeholderData: keepPreviousData,
   });
 
   const deleteMutation = useMutation({
@@ -130,26 +137,17 @@ export function TeamDetailPage() {
     },
   });
 
-  // No loading flash: render skeleton layout with stable dimensions while
-  // the query fetches. teamFromList gives us name/color/identifier from
-  // the sidebar cache so even the first click shows real metadata.
-  if (!team) {
+  // Only show the skeleton when we genuinely have nothing to render yet
+  // (first page load, no sidebar cache, no placeholder). Use the shared
+  // PageSkeleton variant="detail" to match ProjectDetail.
+  if (isTeamLoading && !team) {
     return (
       <div className="max-w-4xl mx-auto p-8">
-        <div className="flex items-center gap-3 mb-6">
-          <span className="h-10 w-10 rounded-md bg-muted/40 animate-pulse" />
-          <div className="flex-1">
-            <div className="h-7 w-48 bg-muted/40 animate-pulse rounded" />
-            <div className="h-4 w-24 bg-muted/30 animate-pulse rounded mt-2" />
-          </div>
-        </div>
-        <div className="space-y-2">
-          <div className="h-4 w-64 bg-muted/30 animate-pulse rounded" />
-          <div className="h-4 w-80 bg-muted/30 animate-pulse rounded" />
-        </div>
+        <PageSkeleton variant="detail" />
       </div>
     );
   }
+  if (!team) return null;
 
   return (
     <div className="max-w-4xl mx-auto p-8">

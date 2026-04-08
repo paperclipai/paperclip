@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Send, Trash2, Check, CheckCheck, X, Zap, Paperclip, FileIcon, Download } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
-import { roomsApi, type RoomMessage, type RoomParticipant, type RoomAttachment } from "../api/rooms";
+import { roomsApi, type Room, type RoomMessage, type RoomParticipant, type RoomAttachment } from "../api/rooms";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { Button } from "@/components/ui/button";
@@ -241,10 +241,20 @@ export function RoomDetailPage() {
   const qc = useQueryClient();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // keepPreviousData makes switching rooms flicker-free: the old room's
+  // messages/participants stay on screen until the new room's data arrives.
+  // Initial data pulled from the cached sidebar rooms list gives us
+  // name/description/status with no HTTP roundtrip on first click.
+  const sidebarRooms = qc.getQueryData<Room[]>(["rooms", selectedCompanyId]);
+  const roomFromList = sidebarRooms?.find((r) => r.id === roomId) ?? null;
+
   const room = useQuery({
     queryKey: ["room", selectedCompanyId, roomId],
     queryFn: () => roomsApi.get(selectedCompanyId!, roomId!),
     enabled: !!selectedCompanyId && !!roomId,
+    placeholderData: keepPreviousData,
+    initialData: roomFromList ?? undefined,
+    initialDataUpdatedAt: 0,
   });
 
   const messages = useQuery({
@@ -255,18 +265,21 @@ export function RoomDetailPage() {
     // per-socket room membership cache. Phase 3c (WS push) can replace
     // this once the backplane/fan-out story is decided.
     refetchInterval: 300,
+    placeholderData: keepPreviousData,
   });
 
   const participants = useQuery({
     queryKey: ["room-participants", selectedCompanyId, roomId],
     queryFn: () => roomsApi.listParticipants(selectedCompanyId!, roomId!),
     enabled: !!selectedCompanyId && !!roomId,
+    placeholderData: keepPreviousData,
   });
 
   const issues = useQuery({
     queryKey: ["room-issues", selectedCompanyId, roomId],
     queryFn: () => roomsApi.listIssues(selectedCompanyId!, roomId!),
     enabled: !!selectedCompanyId && !!roomId,
+    placeholderData: keepPreviousData,
   });
 
   const allAgents = useQuery({
