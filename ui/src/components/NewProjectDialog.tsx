@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -48,6 +49,7 @@ const projectStatuses = [
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -95,6 +97,9 @@ export function NewProjectDialog() {
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.create(selectedCompanyId!, data),
+    onError: (err) => {
+      pushToast({ title: "Failed to create project", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
