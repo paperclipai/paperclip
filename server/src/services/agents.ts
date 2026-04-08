@@ -394,9 +394,20 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+
+      // Align runtimeConfig defaults with the UI form:
+      // heartbeat enabled with 300s interval, matching the UI Run Policy form.
+      const defaultRuntimeConfig = {
+        heartbeat: { enabled: true, intervalSec: 300 },
+      };
+      const mergedRuntimeConfig =
+        data.runtimeConfig
+          ? { ...defaultRuntimeConfig, ...data.runtimeConfig }
+          : defaultRuntimeConfig;
+
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
+        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig: mergedRuntimeConfig })
         .returning()
         .then((rows) => rows[0]);
 

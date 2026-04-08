@@ -10,7 +10,9 @@
       "Bash(npx *)",
       "Bash(git add *)",
       "Bash(git push)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(curl *)",
+      "Bash(jq *)"
     ]
   },
   "$version": 3
