@@ -30,6 +30,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -96,6 +97,24 @@ export async function writePaperclipEnvFile(cwd: string, env: Record<string, str
   if (lines.length === 0) return;
   const envFilePath = path.join(cwd, ".paperclip-env");
   await fs.writeFile(envFilePath, lines.join("\n") + "\n", "utf8");
+}
+
+/**
+ * Parse a quota reset delay string like "15h5m10s" into seconds.
+ * Returns null if no parseable duration is found.
+ */
+export function parseQuotaResetDelaySec(stderr: string): number | null {
+  const match = stderr.match(/reset\s+after\s+([\dhms]+)/i);
+  if (!match) return null;
+  const duration = match[1];
+  let totalSec = 0;
+  const hours = duration.match(/(\d+)h/);
+  const minutes = duration.match(/(\d+)m/);
+  const seconds = duration.match(/(\d+)s/);
+  if (hours) totalSec += parseInt(hours[1], 10) * 3600;
+  if (minutes) totalSec += parseInt(minutes[1], 10) * 60;
+  if (seconds) totalSec += parseInt(seconds[1], 10);
+  return totalSec > 0 ? totalSec : null;
 }
 
 function geminiSkillsHome(): string {
@@ -416,6 +435,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const quotaMeta = detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
 
     if (attempt.proc.timedOut) {
       return {
@@ -459,7 +483,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorCode: (attempt.proc.exitCode ?? 0) !== 0
+        ? (quotaMeta.exhausted
+          ? "quota_exhausted"
+          : authMeta.requiresAuth
+            ? "gemini_auth_required"
+            : null)
+        : null,
+      errorMeta: quotaMeta.exhausted
+        ? { retryAfterSec: parseQuotaResetDelaySec(attempt.proc.stderr) }
+        : undefined,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

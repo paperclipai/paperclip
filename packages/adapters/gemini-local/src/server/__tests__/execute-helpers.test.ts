@@ -2,7 +2,77 @@ import { describe, expect, it, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { writePaperclipEnvFile } from "../execute.js";
+import { parseQuotaResetDelaySec, writePaperclipEnvFile } from "../execute.js";
+import { detectGeminiQuotaExhausted } from "../parse.js";
+
+describe("parseQuotaResetDelaySec", () => {
+  it("parses hours, minutes, and seconds", () => {
+    expect(
+      parseQuotaResetDelaySec("Your quota will reset after 15h5m10s."),
+    ).toBe(15 * 3600 + 5 * 60 + 10);
+  });
+
+  it("parses hours only", () => {
+    expect(parseQuotaResetDelaySec("reset after 2h")).toBe(7200);
+  });
+
+  it("parses minutes and seconds", () => {
+    expect(parseQuotaResetDelaySec("reset after 30m45s")).toBe(30 * 60 + 45);
+  });
+
+  it("returns null when no reset duration found", () => {
+    expect(parseQuotaResetDelaySec("some random error")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(parseQuotaResetDelaySec("")).toBeNull();
+  });
+
+  it("handles real Gemini error message", () => {
+    const stderr =
+      "TerminalQuotaError: You have exhausted your capacity on this model. " +
+      "Your quota will reset after 15h5m10s.";
+    expect(parseQuotaResetDelaySec(stderr)).toBe(54310);
+  });
+});
+
+describe("detectGeminiQuotaExhausted", () => {
+  it("detects quota exhaustion from stderr", () => {
+    const result = detectGeminiQuotaExhausted({
+      parsed: null,
+      stdout: "",
+      stderr: "TerminalQuotaError: You have exhausted your capacity on this model.",
+    });
+    expect(result.exhausted).toBe(true);
+  });
+
+  it("detects 429 status code", () => {
+    const result = detectGeminiQuotaExhausted({
+      parsed: null,
+      stdout: "",
+      stderr: "Error: 429 Too Many Requests",
+    });
+    expect(result.exhausted).toBe(true);
+  });
+
+  it("detects resource_exhausted", () => {
+    const result = detectGeminiQuotaExhausted({
+      parsed: null,
+      stdout: '{"error":{"code":"RESOURCE_EXHAUSTED"}}',
+      stderr: "",
+    });
+    expect(result.exhausted).toBe(true);
+  });
+
+  it("returns false for non-quota errors", () => {
+    const result = detectGeminiQuotaExhausted({
+      parsed: null,
+      stdout: "",
+      stderr: "Error: network timeout",
+    });
+    expect(result.exhausted).toBe(false);
+  });
+});
 
 describe("writePaperclipEnvFile", () => {
   let tmpDir: string;
