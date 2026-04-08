@@ -24,6 +24,7 @@ import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceC
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
+import { NewWorkspaceDialog } from "../components/NewWorkspaceDialog";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
@@ -31,7 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
+import { Copy, FolderOpen, GitBranch, Loader2, Play, Plus, Square } from "lucide-react";
 import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
@@ -216,11 +217,13 @@ function ProjectWorkspacesContent({
   projectId,
   projectRef,
   summaries,
+  projectWorkspaces,
 }: {
   companyId: string;
   projectId: string;
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
+  projectWorkspaces: Array<{ id: string; name: string; isPrimary: boolean; cwd?: string | null; repoUrl?: string | null }>;
 }) {
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
@@ -229,6 +232,8 @@ function ProjectWorkspacesContent({
     name: string;
     status: ExecutionWorkspace["status"];
   } | null>(null);
+  const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
+  const primaryWorkspaceId = projectWorkspaces.find((w) => w.isPrimary)?.id ?? null;
   const controlWorkspaceRuntime = useMutation({
     mutationFn: async (input: {
       key: string;
@@ -251,7 +256,24 @@ function ProjectWorkspacesContent({
   });
 
   if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+    return (
+      <>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+          <Button size="sm" onClick={() => setAddWorkspaceOpen(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            Add workspace
+          </Button>
+        </div>
+        <NewWorkspaceDialog
+          open={addWorkspaceOpen}
+          onOpenChange={setAddWorkspaceOpen}
+          projectId={projectId}
+          companyId={companyId}
+          primaryWorkspaceId={primaryWorkspaceId}
+        />
+      </>
+    );
   }
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
@@ -403,6 +425,15 @@ function ProjectWorkspacesContent({
   return (
     <>
       <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            Workspaces
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setAddWorkspaceOpen(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            Add workspace
+          </Button>
+        </div>
         <div className="overflow-hidden rounded-xl border border-border bg-card">
           {activeSummaries.map(renderSummaryRow)}
         </div>
@@ -434,6 +465,13 @@ function ProjectWorkspacesContent({
           }}
         />
       ) : null}
+      <NewWorkspaceDialog
+        open={addWorkspaceOpen}
+        onOpenChange={setAddWorkspaceOpen}
+        projectId={projectId}
+        companyId={companyId}
+        primaryWorkspaceId={primaryWorkspaceId}
+      />
     </>
   );
 }
@@ -892,6 +930,7 @@ export function ProjectDetail() {
               projectId={project.id}
               projectRef={canonicalProjectRef}
               summaries={workspaceSummaries}
+              projectWorkspaces={project.workspaces ?? []}
             />
           )
         ) : (
