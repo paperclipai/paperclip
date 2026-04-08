@@ -85,6 +85,7 @@ const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
 const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
+const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -265,13 +266,27 @@ export function isOperationsOrchestratorAgent(agent: {
   capabilities?: string | null;
   runtimeConfig?: Record<string, unknown> | null;
 }) {
-  return isOrchestratorOnlyAgent(agent);
+  return isOrchestratorOnlyAgent({
+    role: agent.role ?? "",
+    name: agent.name ?? "",
+    title: agent.title ?? "",
+    capabilities: agent.capabilities ?? "",
+    runtimeConfig: agent.runtimeConfig ?? null,
+  });
 }
 
 export async function resolveOperationsHeartbeatTarget(
   db: Db,
   input: { companyId: string; operationsAgentId: string },
 ): Promise<OperationsHeartbeatTarget | null> {
+  const [first] = await resolveOperationsHeartbeatTargets(db, input);
+  return first ?? null;
+}
+
+async function resolveOperationsHeartbeatTargets(
+  db: Db,
+  input: { companyId: string; operationsAgentId: string },
+): Promise<OperationsHeartbeatTarget[]> {
   const now = Date.now();
 
   const openAssignedIssues = await db
@@ -475,32 +490,14 @@ export async function resolveOperationsHeartbeatTarget(
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score || b.issueAgeHours - a.issueAgeHours);
 
-    const top = ranked[0];
-    if (top) {
-      const strongestAssignedRecovery = ranked.find(
-        (entry) =>
-          !entry.isWatchdogIssue
-          && !entry.reasons.some((reason) => /fresh (blocker|handoff) truth already present/.test(reason))
-          && (entry.hasFalseCompleteSignals || entry.hasStuckAssignedSignals || entry.hasContradictoryTruthSignals),
-      );
-
-      let selected = top;
-      if (
-        top.isWatchdogIssue
-        && strongestAssignedRecovery
-        && (
-          !top.hasFalseCompleteSignals
-          || top.score - strongestAssignedRecovery.score <= 180
-        )
-      ) {
-        selected = strongestAssignedRecovery;
-      }
-
-      return {
-        issueId: selected.issue.id,
-        mode: selected.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
-        reason: selected.reasons.join("; "),
-      };
+    if (ranked.length > 0) {
+      return ranked
+        .slice(0, MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP)
+        .map((entry) => ({
+          issueId: entry.issue.id,
+          mode: entry.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
+          reason: entry.reasons.join("; "),
+        }));
     }
   }
 
@@ -523,14 +520,14 @@ export async function resolveOperationsHeartbeatTarget(
     .then((rows) => rows[0] ?? null);
 
   if (readyUnassigned) {
-    return {
+    return [{
       issueId: readyUnassigned.id,
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
-    };
+    }];
   }
 
-  return null;
+  return [];
 }
 type OperationsHeartbeatTarget = {
   issueId: string;
@@ -3128,8 +3125,8 @@ export function heartbeatService(db: Db) {
     const companyId = input.agent.companyId;
     const nowMs = Date.now();
 
-    const [target, boardRows, openAssignedIssues, openUnassignedIssues] = await Promise.all([
-      resolveOperationsHeartbeatTarget(db, {
+    const [targets, boardRows, openAssignedIssues, openUnassignedIssues] = await Promise.all([
+      resolveOperationsHeartbeatTargets(db, {
         companyId,
         operationsAgentId: input.agent.id,
       }),
@@ -3345,29 +3342,45 @@ export function heartbeatService(db: Db) {
     let assignmentWakeupCount = 0;
     const idleHandledIssueIds = new Set(idleOwnedIssues.map((issue) => issue.id));
     const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
-    const targetIssue =
-      target
-        ? (
-            openAssignedIssueById.get(target.issueId)
-            ?? openUnassignedIssues.find((issue) => issue.id === target.issueId)
-            ?? null
-          )
-        : null;
-    const latestOpsTargetComment = targetIssue ? latestOpsCommentByIssueId.get(targetIssue.id) : null;
-    const targetRecoveryCooldownActive =
-      Boolean(latestOpsTargetComment?.body) &&
-      (
-        latestOpsTargetComment.body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
-        || latestOpsTargetComment.body.includes(OPERATIONS_REQUEUE_MARKER)
-      ) &&
-      nowMs - latestOpsTargetComment.createdAt.getTime() < OPERATIONS_IDLE_WAKE_COOLDOWN_MS;
+    const targetReasonByIssueId = new Map<string, string>();
+    const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+    for (const target of targets) {
+      if (!targetReasonByIssueId.has(target.issueId)) {
+        targetReasonByIssueId.set(target.issueId, target.reason);
+      }
+      if (target.mode !== "ops_active") continue;
+      const targetIssue = openAssignedIssueById.get(target.issueId);
+      if (!targetIssue) continue;
+      if (targetIssue.assigneeAgentId !== input.agent.id) continue;
+      if (isWatchdogIssueLabel(`${targetIssue.identifier ?? ""} ${targetIssue.title}`)) continue;
+      opsActiveTargetIssueIdsForAssignment.add(targetIssue.id);
+    }
 
-    if (
-      target
-      && targetIssue
-      && !idleHandledIssueIds.has(targetIssue.id)
-      && !targetRecoveryCooldownActive
-    ) {
+    const handledTargetIssueIds = new Set<string>();
+    for (const target of targets) {
+      if (handledTargetIssueIds.has(target.issueId)) continue;
+      const targetIssue = openAssignedIssueById.get(target.issueId) ?? null;
+      if (!targetIssue) continue;
+      if (idleHandledIssueIds.has(targetIssue.id)) {
+        handledTargetIssueIds.add(targetIssue.id);
+        continue;
+      }
+      const latestOpsTargetComment = latestOpsCommentByIssueId.get(targetIssue.id);
+      const targetRecoveryCooldownActive =
+        Boolean(
+          latestOpsTargetComment?.body
+          && (
+          latestOpsTargetComment.body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
+          || latestOpsTargetComment.body.includes(OPERATIONS_REQUEUE_MARKER)
+          ) &&
+          nowMs - latestOpsTargetComment.createdAt.getTime() < OPERATIONS_IDLE_WAKE_COOLDOWN_MS,
+        );
+      if (targetRecoveryCooldownActive) {
+        handledTargetIssueIds.add(targetIssue.id);
+        continue;
+      }
+      handledTargetIssueIds.add(targetIssue.id);
+
       if (target.mode === "cross_agent_recovery" && targetIssue.assigneeAgentId) {
         try {
           await issuesSvc.addComment(
@@ -3509,15 +3522,17 @@ export function heartbeatService(db: Db) {
 
     const issuesNeedingAssignment = [
       ...openUnassignedIssues,
-      ...(target && target.mode === "ops_active" && targetIssue && targetIssue.assigneeAgentId === input.agent.id
-        ? [{
-            id: targetIssue.id,
-            status: targetIssue.status,
-            identifier: targetIssue.identifier,
-            title: targetIssue.title,
-            projectId: targetIssue.projectId,
-          }]
-        : []),
+      ...Array.from(opsActiveTargetIssueIdsForAssignment).flatMap((issueId) => {
+        const issue = openAssignedIssueById.get(issueId);
+        if (!issue) return [];
+        return [{
+          id: issue.id,
+          status: issue.status,
+          identifier: issue.identifier,
+          title: issue.title,
+          projectId: issue.projectId,
+        }];
+      }),
     ];
     const assignedIssueIds = new Set<string>();
 
@@ -3545,7 +3560,7 @@ export function heartbeatService(db: Db) {
           buildOperationsAssignmentComment({
             assigneeAgentId: candidate.id,
             assigneeName: candidate.name,
-            reason: issue.id === target?.issueId ? target.reason : "ready unassigned work requires ownership",
+            reason: targetReasonByIssueId.get(issue.id) ?? "ready unassigned work requires ownership",
           }),
           { agentId: input.agent.id, runId: input.run.id },
         );
@@ -3585,8 +3600,10 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const primaryTarget = targets[0] ?? null;
+
     return {
-      target,
+      target: primaryTarget,
       sweep: {
         boardCount: boardRows.length,
         assignedOpenCount: openAssignedIssues.length,
