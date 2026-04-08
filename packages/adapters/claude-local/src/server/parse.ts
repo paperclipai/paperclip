@@ -177,3 +177,29 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
 }
+
+/**
+ * Returns true when a session-resume attempt should be retried as a fresh session.
+ *
+ * This handles two failure modes:
+ * 1. API-level failure before any JSON is emitted (parsed === null) — e.g. a proxy
+ *    returning HTTP 500 for an invalid/expired model before Claude processes anything.
+ * 2. Claude returning a structured "unknown session" error in the result JSON.
+ *
+ * Timed-out runs and successful runs are never retried as fresh sessions.
+ */
+export function shouldFallbackToFreshSession(
+  sessionId: string | null,
+  proc: { exitCode?: number | null; timedOut: boolean },
+  parsed: Record<string, unknown> | null,
+): boolean {
+  if (!sessionId) return false;
+  if (proc.timedOut) return false;
+  if ((proc.exitCode ?? 0) === 0) return false;
+
+  // API-level failure: no JSON was emitted at all
+  if (parsed === null) return true;
+
+  // Claude returned a structured unknown-session error
+  return isClaudeUnknownSessionError(parsed);
+}
