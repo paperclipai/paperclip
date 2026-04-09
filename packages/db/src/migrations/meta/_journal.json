@@ -470,6 +470,13 @@
       "when": 1775809300000,
       "tag": "0066_cos_team_routines",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1775809400000,
+      "tag": "0067_cos_room_action_approvals",
+      "breakpoints": true
     }
   ]
 }

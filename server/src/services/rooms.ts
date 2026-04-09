@@ -2,6 +2,7 @@ import { and, asc, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   companyMemberships,
   issues,
   rooms,
@@ -650,6 +651,11 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
         replyToId?: string | null;
         senderAgentId?: string | null;
         senderUserId?: string | null;
+        // Phase 5.2f — when true on an action message, the service
+        // creates a companion `approvals` row and links it via
+        // `approvalId`. The "Mark executed" UI button is gated on that
+        // approval reaching the `approved` state.
+        requiresApproval?: boolean;
       },
     ) => {
       const row = await db.transaction(async (tx) => {
@@ -698,6 +704,33 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
           }
         }
         const type = data.type ?? "text";
+
+        // Phase 5.2f — auto-create an approvals row for gated action
+        // messages. We insert the approval BEFORE the message so the
+        // message can carry the FK atomically in the same transaction.
+        // Non-action messages + plain action messages without the flag
+        // keep `approvalId = null`.
+        let approvalId: string | null = null;
+        if (type === "action" && data.requiresApproval) {
+          const [approvalRow] = await tx
+            .insert(approvals)
+            .values({
+              companyId,
+              type: "action_execution",
+              status: "pending",
+              requestedByAgentId: data.senderAgentId ?? null,
+              requestedByUserId: data.senderUserId ?? null,
+              payload: {
+                roomId,
+                actionTargetAgentId: data.actionTargetAgentId ?? null,
+                body: data.body,
+                actionPayload: data.actionPayload ?? null,
+              },
+            })
+            .returning({ id: approvals.id });
+          approvalId = approvalRow?.id ?? null;
+        }
+
         const [row] = await tx
           .insert(roomMessages)
           .values({
@@ -709,6 +742,7 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
             actionPayload: data.actionPayload ?? null,
             actionTargetAgentId: data.actionTargetAgentId ?? null,
             actionStatus: type === "action" ? "pending" : null,
+            approvalId,
             replyToId: data.replyToId ?? null,
             senderAgentId: data.senderAgentId ?? null,
             senderUserId: data.senderUserId ?? null,
@@ -768,6 +802,7 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
             type: roomMessages.type,
             actionStatus: roomMessages.actionStatus,
             actionTargetAgentId: roomMessages.actionTargetAgentId,
+            approvalId: roomMessages.approvalId,
           })
           .from(roomMessages)
           .where(
@@ -783,6 +818,33 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
           throw Object.assign(new Error(`Action message not found in this room`), {
             status: 404,
           });
+        }
+
+        // Phase 5.2f — if the action message is gated by an approval,
+        // block the terminal transition until the approval is in the
+        // `approved` state. A `rejected` approval blocks forever (the
+        // operator must create a new action). Ungated messages (null
+        // approvalId) skip this check.
+        if (msg.approvalId && nextStatus === "executed") {
+          const [gate] = await tx
+            .select({ status: approvals.status })
+            .from(approvals)
+            .where(eq(approvals.id, msg.approvalId))
+            .limit(1);
+          if (!gate) {
+            throw Object.assign(
+              new Error(`Linked approval not found`),
+              { status: 409 },
+            );
+          }
+          if (gate.status !== "approved") {
+            throw Object.assign(
+              new Error(
+                `Action requires approval (current state: ${gate.status}). Approve it first.`,
+              ),
+              { status: 409 },
+            );
+          }
         }
 
         // Authorization: only the target agent or a room owner may update

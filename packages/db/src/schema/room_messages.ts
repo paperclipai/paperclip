@@ -2,6 +2,7 @@ import { type AnyPgColumn, pgTable, uuid, text, jsonb, timestamp, index } from "
 import { rooms } from "./rooms.js";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { approvals } from "./approvals.js";
 
 export const roomMessages = pgTable(
   "room_messages",
@@ -23,6 +24,11 @@ export const roomMessages = pgTable(
     actionExecutedAt: timestamp("action_executed_at", { withTimezone: true }),
     actionExecutedByAgentId: uuid("action_executed_by_agent_id").references(() => agents.id),
     actionExecutedByUserId: text("action_executed_by_user_id"),
+    // Phase 5.2f — when an action message requires human sign-off, the
+    // message carries a FK to the `approvals` row that gates it. Null
+    // for text messages and for action messages created without a
+    // requires_approval flag.
+    approvalId: uuid("approval_id").references(() => approvals.id, { onDelete: "set null" }),
     attachments: jsonb("attachments").$type<
       Array<{
         assetId: string;
@@ -40,5 +46,6 @@ export const roomMessages = pgTable(
     roomCreatedIdx: index("room_messages_room_created_idx").on(table.roomId, table.createdAt),
     companyIdx: index("room_messages_company_idx").on(table.companyId),
     actionStatusIdx: index("room_messages_action_status_idx").on(table.companyId, table.actionStatus),
+    approvalIdx: index("room_messages_approval_idx").on(table.approvalId),
   }),
 );

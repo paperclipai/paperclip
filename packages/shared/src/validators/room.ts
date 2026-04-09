@@ -47,6 +47,10 @@ export const sendRoomMessageSchema = z
     actionPayload: z.record(z.unknown()).optional().nullable(),
     actionTargetAgentId: z.string().uuid().optional().nullable(),
     replyToId: z.string().uuid().optional().nullable(),
+    // Phase 5.2f — when true on an action message, the service creates
+    // a companion approvals row and gates the "Mark executed" button
+    // until the approval is approved.
+    requiresApproval: z.boolean().optional().default(false),
   })
   .refine(
     (data) => {

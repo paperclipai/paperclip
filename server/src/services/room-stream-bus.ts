@@ -34,6 +34,7 @@ export interface RoomMessageLike {
   actionExecutedAt: Date | string | null;
   actionExecutedByAgentId: string | null;
   actionExecutedByUserId: string | null;
+  approvalId: string | null;
   replyToId: string | null;
   createdAt: Date | string;
 }
