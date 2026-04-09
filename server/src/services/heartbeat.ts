@@ -1807,7 +1807,7 @@ export function heartbeatService(db: Db) {
 
     const claimedAt = new Date();
     const claimed = await instrumentQuery(
-      { operation: "update", table: "heartbeat_runs", description: "run claim", agentId: run.agentId, runId: run.id },
+      { operation: "update", table: "heartbeat_runs", description: "run claim", companyId: run.companyId, agentId: run.agentId, runId: run.id },
       () => db
         .update(heartbeatRuns)
         .set({

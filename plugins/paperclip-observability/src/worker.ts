@@ -88,7 +88,6 @@ import {
 
 // DB query handlers
 import {
-  handleDbQueryTraces,
   handleDbQueryMetrics,
 } from "./telemetry/db-query-handlers.js";
 
@@ -276,8 +275,8 @@ function createRouter(): EventTelemetryRouter {
   router.register("agent.session.error", handleSessionErrorMetrics);
   router.register("agent.session.error", handleSessionErrorLogs);
 
-  // db.query.completed
-  router.register("db.query.completed", handleDbQueryTraces);
+  // db.query.completed — traces are created server-side by instrumentQuery;
+  // only record metrics in the plugin to avoid duplicate spans.
   router.register("db.query.completed", handleDbQueryMetrics);
 
   return router;
