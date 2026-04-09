@@ -7,6 +7,10 @@ export {
   patchInstanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  instanceBackupSettingsSchema,
+  patchInstanceBackupSettingsSchema,
+  type InstanceBackupSettings,
+  type PatchInstanceBackupSettings,
 } from "./instance.js";
 
 export {
