@@ -17,7 +17,13 @@
 | **팀 문서(.md)** Wiki per team | ✅ 완료 |
 | **Phase 4** Leader CLI 프로그래매틱 관리 (PM2 + MCP channel-bridge + SSE) | ✅ **완료** — infra/보안 hardened, 62/62 검증 통과 |
 | **Phase 5.1** Claude prompt tuning (8-섹션 instructions + sanitizer) | ✅ **완료** — live Claude 3회 reply 사이클 + P0 injection 방어 검증 |
-| **Phase 5.2+** Cycles + GitHub PR + 채용 에이전트 + Multi-leader 조정 | ⏳ 시작 안 함 |
+| **Phase 5.2a** Multi-leader mention routing runtime | ✅ **완료** — `@mention` hard guard, 6 reviewer findings 전부 fix |
+| **Phase 5.2b** Team routines (cycles = 팀 recurring work) | ✅ **완료** — migration 0066, Cyrus 자율 pick-up 검증, 5 hardening fix |
+| **Phase 5.2c** Team approvals queue | ✅ **완료** — `issue_approvals` 조인 필터, cross-team isolation, 3 hardening fix |
+| **Phase 5.2d** GitHub PR webhook → issue auto-sync | ✅ **완료** — HMAC + `issue_work_products` + merge transition, 5 hardening fix |
+| **Phase 5.2e** Recruiting (hire proposal UI) | ✅ **완료** — 기존 hire_agent flow wrap, 3 hardening fix (P0 × 2) |
+| **Phase 5.2f** Action message ↔ approval gate | ✅ **완료** — migration 0067 + 0068 (FK RESTRICT), UI polish 포함 |
+| **Phase 5.3+** Initiatives + Custom Views + Agent metrics | ⏳ 시작 안 함 |
 
 ---
 
@@ -66,6 +72,19 @@
 | `7b761b53` | **Phase 4 E2E verification — 2 fix (SSE μs precision + pty-runner env allowlist)** |
 | `068fe737` | Phase 4 docs + progress + skill |
 | `d665540e` | **Phase 5.1 — Claude prompt tuning + leader instructions** (8-섹션 템플릿 + sanitizer + size cap + pty-runner needle fix) |
+| `417af28e` | Phase 5.1 progress docs |
+| `b6d1bd3d` | Dogfood fixes — Label 409, project detail endpoint 일관성 |
+| `c8b71589` | **Phase 5.2a — Multi-leader mention routing runtime** (`@mention` hard guard + action target override) |
+| `3a350615` | Phase 5.2a hardening — 6 findings (Non-Latin names P0, cross-tenant, markdown link, empty body, DoS caps, consecutive @A@B) |
+| `eb99cc81` | **Phase 5.2b — Team routines** (migration 0066, `teams.id` FK nullable project_id, scope CHECK, TeamRoutinesPage) |
+| `8a307de4` | Phase 5.2b hardening — 5 findings (Zod refine split, project+team consistency, leader-only owner, dispatch guard for deleted team, cross-tenant 404) |
+| `a1802755` | **Phase 5.2c — Team approvals queue** (`approvalService.list`에 teamId filter via issue_approvals join, TeamApprovalsPage) |
+| `921d1ca2` | Phase 5.2c hardening — 3 findings (UUID 400, Button 컴포넌트, cross-tenant defence) |
+| `812bef98` | **Phase 5.2d — GitHub PR webhook** (`/webhooks/github`, HMAC + issue_work_products upsert + completed transition + IssueWorkProductsSection UI) |
+| `6faa4088` | **Phase 5.2e — Recruiting** (`/recruiting/propose` + 기존 hire_agent flow wrap + Recruiting 페이지) |
+| `abdeb2e9` | **Phase 5.2f — Action ↔ approval gate** (migration 0067, room_messages.approval_id FK, updateActionStatus gate) |
+| `9775cdf7` | Phase 5.2d/e/f hardening — 10 findings (HMAC length oracle, URL scheme XSS, PR field validation, batch query, orphan txn P0, cross-tenant reportsTo P0, Textarea/Select shadcn, validator refine, actionExecutedAt fix, FK RESTRICT migration 0068) |
+| `9441ce24` | UI polish — requiresApproval 체크박스 + approval badge + "View approval" 링크 |
 
 ---
 
@@ -427,6 +446,193 @@ Fix 방식 (전부 같은 커밋에서):
 | Commit | 내용 |
 |--------|------|
 | `d665540e` | Phase 5.1 전체 (8-섹션 템플릿 + sanitizer + size cap + pty-runner needle fix + UI 프리뷰 개선) |
+
+---
+
+## Phase 5.2 — ✅ 완료 (운영 루프 완성)
+
+Phase 5.1에서 리더 CLI가 실제 Claude reply를 할 수 있게 됐지만,
+혼자 동작하는 에이전트 하나로는 팀 협업이 안 됐다. Phase 5.2는 **팀
+단위의 운영 루프**를 채움:
+
+- **5.2a** 리더 여러 명 있는 룸에서 `@mention` 라우팅을 서버에서 강제
+- **5.2b** 팀별 recurring work (user가 정의한 "Cycles")
+- **5.2c** 승인이 필요한 작업을 팀 스코프 큐에서 관리
+- **5.2d** GitHub PR 이벤트를 이슈에 자동 연결 + 완료 전이
+- **5.2e** 채용 에이전트 제안 → 승인 → 활성화
+- **5.2f** 룸의 action 메시지가 승인을 기다릴 수 있음
+
+### 5.2a — Multi-leader mention routing runtime
+
+5.1에선 instructions prompt가 "only the mentioned leader replies" 를
+가이드라인으로만 줬음. 5.2a는 서버 `fanoutMessageEvent`에서 메시지
+body를 파싱해 `parseMentions`로 토큰 추출 → `resolveMessageAudience`가
+`leaders` / `others` / `mentionHit` 계산 → 지정 리더에게만 notification
+publish.
+
+**hardening 포인트** (6 findings):
+- **P0** Non-Latin 이름 (`@한국`, `@Léon`) 라우팅 우회 — ASCII regex를
+  `\p{L}\p{N}_-` + `/u` + NFKC normalize로 교체
+- Cross-tenant `issue_approvals` join 방어
+- Markdown 링크 `[label](@hana)` 내부 mention leak — `\]\([^)]*\)` pre-strip
+- Empty body broadcast — `body.trim().length === 0` short-circuit
+- DoS cap — 16KB scan + 64 distinct tokens
+- Consecutive `@A@B` false negative — manual scan loop + `justConsumedEnd`
+  tracking
+
+**검증**: Cyrus + Hana 동시 룸에서 `@Cyrus@Hana` → 둘 다 reply, `@Cyrus` →
+Cyrus 하나만, empty → 0, browser composer E2E.
+
+### 5.2b — Team routines (user 정의 "Cycles")
+
+Paperclip의 기존 `routines` 테이블을 팀 scope로 확장. 사용자 요구:
+"팀별로 매일 해야할 일, 주기적으로 해야할 일".
+
+**Migration 0066**:
+- `routines.team_id` 추가 (nullable, FK to teams)
+- `routines.project_id` NOT NULL → nullable
+- `CHECK (project_id IS NOT NULL OR team_id IS NOT NULL)` — scope 보장
+- `routines_company_team_idx` 추가
+
+**서비스**:
+- `create`: projectId/teamId 중 하나 필수, 둘 다 있으면 일관성 검증
+  (`project_teams` 조인 링크 확인)
+- `dispatchRoutineRun`: issue 생성 시 `teamId` 전달 → `issues.team_id`에
+  저장 → 팀 이슈 보드에 자동 노출
+- **Dispatch pre-check**: 연결된 team이 deleted/archived면 routine 자동
+  paused + failed run 로그 (infinite fail loop 방지)
+- **leader-only assignee** for team routines — sub-agent는 heartbeat
+  없어서 rot
+
+**UI**:
+- 팀 사이드바 sub-menu에 "Routines"
+- `TeamRoutinesPage` — 리스트 + inline "New routine" 폼
+- Paperclip의 기존 `/routines/:id` detail 페이지 재사용
+
+**검증**: DOG 팀에 "Daily engine standup" routine 생성 → manual fire →
+DOG-4 issue 생성 → Cyrus CLI heartbeat가 자율적으로 pick up → standup
+리포트 작성 → status=done. 브라우저에서 Weekly QA retro 직접 생성도.
+
+### 5.2c — Team approvals queue
+
+사용자가 루틴하게 해야할 결재 업무를 팀별로 분리. `approvalService.list`
+에 `teamId` 필터 추가:
+
+```ts
+approvals → issue_approvals → issues (where team_id = X)
+```
+
+- **새 스키마 0개** — 조인 경로만 추가
+- Cross-team isolation: DOG approval이 ENG3 queue에 나타나지 않음
+- 기존 `ApprovalCard` 컴포넌트 재사용 (global Approvals 페이지와 동일 UX)
+- Cross-tenant defence in depth: `issueApprovals.companyId` + `issues.companyId`
+  명시적 join 조건
+
+**UI**: 팀 사이드바에 "Approvals" sub-menu + `TeamApprovalsPage` (Pending /
+All 탭, approve/reject mutation, empty state).
+
+### 5.2d — GitHub PR webhook → issue auto-sync
+
+`POST /api/companies/:cid/webhooks/github` — HMAC 인증 (`X-Hub-Signature-256`),
+기존 `issue_work_products` 테이블 재활용 (PR 저장 설계가 이미 완벽).
+
+**흐름**:
+1. `X-Hub-Signature-256` 검증 (sha256= 고정, 72-byte timing-safe compare)
+2. `pull_request` 이벤트만 처리, 나머지는 202 ignored
+3. `pr.title + pr.body`에서 `DOG-1`, `ENG3-42` 등 식별자 추출
+   (word-boundary regex, 50개 cap, case-insensitive)
+4. `inArray(issues.identifier, ...)` 단일 쿼리로 batch 조회 + `companyId`
+   guard (cross-tenant 차단)
+5. 각 issue마다 `issue_work_products` upsert (URL-based dedup, status
+   open→merged→closed)
+6. `action=closed && merged=true` 이면 팀의 `completed-category` slug로
+   transition (slug 없으면 skip — literal "done" fallback 제거)
+7. Activity log
+
+**Secret**: `company_secrets` 우선, `GITHUB_WEBHOOK_SECRET` env fallback
+
+**UI**: `IssueWorkProductsSection` — DOG-1 detail 페이지에 "Work Products"
+카드 (PR 링크, merged 배지, external link)
+
+**Hardening**:
+- HMAC length oracle 제거 (raw hex fallback 삭제)
+- `html_url` scheme validation (`javascript:alert(1)` 차단)
+- 필수 PR 필드 검증 (minimal `{ pull_request: {} }` crash 방지)
+- Identifier cap 50 + batch query (`.limit(1)` false negative 수정)
+
+### 5.2e — Recruiting (hire proposal UI)
+
+`POST /companies/:cid/recruiting/propose` — 얇은 wrapper. 기존
+`approvals.type = 'hire_agent'` 플로우 완전 재활용:
+
+1. `db.transaction(tx => ...)` 안에서
+2. `agentsSvc.create(..., status='pending_approval')` +
+3. `approvalsSvc.create({type:'hire_agent', payload:{agentId,...}})`
+
+승인 시 기존 `approvalService.approve`가 `activatePendingApproval`을
+호출 → `status=idle`.
+
+**UI**: `/recruiting` 페이지 — Pending hires 리스트 (ApprovalCard 재사용),
+Recently decided 섹션, inline Propose 폼 (shadcn Textarea/Select), 사이드바
+Company 섹션에 "Recruiting" 링크.
+
+**Hardening (P0 × 2 + 3 P1)**:
+- **P0** Cross-tenant `reportsTo` — `assertAgentInCompany` 누락 수정
+- **P0** Orphan pending agent — `db.transaction` wrapper 추가 (이전엔
+  sequential await로 create 중간에 실패 시 ghost agent 남음)
+- `<textarea>` / `<select>` → `Textarea`, `Select` shadcn 컴포넌트
+- `isPending` all-cards-disabled → `pendingApprovalId` state per-card
+- `Number("1e999")` Infinity guard
+
+### 5.2f — Action message ↔ approval gate
+
+5.2c에서 out-of-scope로 남긴 것. 룸의 action 메시지가 `requiresApproval:true`
+면 서버가 같은 트랜잭션에서 `approvals` 로우 생성 + `room_messages.approval_id`
+FK 저장 → `updateActionStatus` 가 approval 상태를 확인해서 `approved`가
+아니면 409로 거부.
+
+**Migration 0067 + 0068**:
+- 0067: `room_messages.approval_id UUID REFERENCES approvals(id)` + index
+- 0068 (hardening): `ON DELETE SET NULL` → `RESTRICT` (latent bypass 수정:
+  approval 삭제 시 gate 우회되는 경로)
+
+**UI polish**:
+- Composer: msgType=action 시 "Require approval" 체크박스 노출
+- Action message 카드:
+  - Gate badge: `⏸ awaiting approval` / `✓ approved` / `✗ rejected`
+  - Mark executed 버튼 `disabled={!!approvalId && gate !== "approved"}`
+  - "View approval →" 링크 (detail 페이지)
+  - 3초 refetchInterval로 다른 탭의 approve가 자동 반영
+
+**Hardening**:
+- Validator refine: `requiresApproval=true` on non-action → 400
+- `actionExecutedAt` 은 `executed` 전이일 때만 set (failed는 null)
+- FK RESTRICT (migration 0068)
+
+### Phase 5.2 통합 dogfooding (end-to-end)
+
+| Step | 결과 |
+|------|------|
+| 1. Release(RLS) 팀 생성 | ✅ |
+| 2. Cyrus as lead | ✅ |
+| 3. Daily routine "Daily release checklist" 생성 | ✅ |
+| 4. Manual fire → issue RLS-1 생성 | ✅ |
+| 5. GitHub webhook PR opened → work_product 생성 | ✅ |
+| 6. GitHub webhook PR merged → RLS-1 status=done + completedAt | ✅ |
+| 7. 룸에 `requiresApproval:true` action 메시지 | ✅ |
+| 8. 승인 전 execute → 409 blocked | ✅ |
+| 9. Approve → gate 통과 | ✅ |
+| 10. Execute → actionStatus=executed | ✅ |
+| 11. Recruiting propose Release Manager | ✅ |
+| 12. Approve → agent status=idle | ✅ |
+| 13. 브라우저 composer에 "Require approval" 체크박스 렌더 | ✅ |
+| 14. Action 카드에 ✓ approved / ✗ rejected 배지 | ✅ |
+
+### 마이그레이션 (phase 5.2)
+
+- 0066 `cos_team_routines.sql` — routines.team_id + project_id nullable + CHECK
+- 0067 `cos_room_action_approvals.sql` — room_messages.approval_id FK
+- 0068 `cos_room_approval_restrict.sql` — FK RESTRICT (hardening)
 
 ---
 
