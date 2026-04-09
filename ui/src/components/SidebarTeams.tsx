@@ -287,7 +287,7 @@ export function SidebarTeams() {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
-        <div className="flex items-center py-1.5 cursor-pointer">
+        <div className="flex items-center px-3 py-1.5 cursor-pointer">
           <span className="flex-1 text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
             Teams
           </span>
