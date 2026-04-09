@@ -11,6 +11,7 @@
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { callMiniMax } from "./ai-review.mjs";
 
 const MAX_AFFECTED_FILES = 5;
@@ -144,13 +145,21 @@ export async function runRemediation({ apiKey, findings, fileContents, diff }) {
   return result;
 }
 
+function readInput(name, fallback = "") {
+  const filePath = process.env[`${name}_FILE`];
+  if (filePath) {
+    return readFileSync(filePath, "utf8");
+  }
+  return process.env[name] || fallback;
+}
+
 async function main() {
   try {
     const result = await runRemediation({
       apiKey: process.env.MINIMAX_API_KEY,
-      findings: JSON.parse(process.env.REMEDIATION_FINDINGS || "[]"),
-      fileContents: JSON.parse(process.env.REMEDIATION_FILE_CONTENTS || "{}"),
-      diff: process.env.REMEDIATION_DIFF || "",
+      findings: JSON.parse(readInput("REMEDIATION_FINDINGS", "[]")),
+      fileContents: JSON.parse(readInput("REMEDIATION_FILE_CONTENTS", "{}")),
+      diff: readInput("REMEDIATION_DIFF"),
     });
     console.log(JSON.stringify(result));
   } catch (error) {

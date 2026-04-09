@@ -69,6 +69,8 @@ jobs:
       - name: Run AI review
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          PR_BODY_FILE: /tmp/pr-body.txt
+          PR_DIFF_FILE: /tmp/pr-diff.txt
         run: |
           if [ -z "${MINIMAX_API_KEY:-}" ]; then
             echo "HAS_MINIMAX_KEY=false" >> "$GITHUB_ENV"
@@ -79,8 +81,6 @@ jobs:
           if [ -z "${MINIMAX_API_KEY:-}" ]; then
             echo '{"verdict":"HIGH_RISK","summary":"MINIMAX_API_KEY not configured","findings":[{"severity":"note","message":"AI review secret missing; manual review required.","file":"","line":0}]}' > /tmp/review-result.json
           else
-            export PR_DIFF="$(cat /tmp/pr-diff.txt)"
-            export PR_BODY="$(cat /tmp/pr-body.txt)"
             node scripts/ai-review.mjs > /tmp/review-result.json || true
           fi
 
@@ -122,9 +122,12 @@ jobs:
             fi
           done
 
-          REMEDIATION_FINDINGS="$(jq -c '.findings' /tmp/review-result.json)" \
-          REMEDIATION_FILE_CONTENTS="$FILE_CONTENTS" \
-          REMEDIATION_DIFF="$(cat /tmp/pr-diff.txt)" \
+          printf '%s' "$FILE_CONTENTS" > /tmp/remediation-file-contents.json
+          jq -c '.findings' /tmp/review-result.json > /tmp/remediation-findings.json
+
+          REMEDIATION_FINDINGS_FILE=/tmp/remediation-findings.json \
+          REMEDIATION_FILE_CONTENTS_FILE=/tmp/remediation-file-contents.json \
+          REMEDIATION_DIFF_FILE=/tmp/pr-diff.txt \
           node scripts/ai-remediate.mjs > /tmp/remediation-result.json || true
 
           if [ ! -s /tmp/remediation-result.json ]; then
