@@ -56,7 +56,7 @@ export function IssueRow({
       data-inbox-issue-link
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, issueLinkState)}
       className={cn(
-        "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
+        "group flex items-start gap-2 py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
         className,
       )}

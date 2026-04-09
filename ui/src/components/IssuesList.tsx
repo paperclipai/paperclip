@@ -713,6 +713,7 @@ export function IssuesList({
               </div>
             )}
             <CollapsibleContent>
+              <div className="rounded-lg bg-card shadow-sm overflow-hidden">
               {(() => {
                 const { roots, childMap } = buildIssueTree(group.items);
 
@@ -921,6 +922,7 @@ export function IssuesList({
 
                 return roots.map((issue) => renderIssueRow(issue, 0));
               })()}
+              </div>
             </CollapsibleContent>
           </Collapsible>
         ))
