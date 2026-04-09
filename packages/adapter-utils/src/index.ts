@@ -54,3 +54,9 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  inferLegacyAgentExecutionBoundary,
+  resolveAgentExecutionBoundary,
+  isOrchestratorOnlyAgent,
+} from "./execution-boundary.js";
+export type { AgentExecutionBoundary } from "./execution-boundary.js";

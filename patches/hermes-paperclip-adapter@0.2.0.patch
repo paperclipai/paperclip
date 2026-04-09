@@ -1,26 +1,22 @@
-diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2c2b6870a 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -41,6 +41,34 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
+@@ -43,14 +43,32 @@
  
- IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
- 
-+Command safety (mandatory):
-+- Never pipe downloaded/remote content into interpreters or shells (no \`curl|python\`, \`curl|bash\`, \`curl|sh\`, \`curl|perl\`, \`wget|*\`).
+ Command safety (mandatory):
+ - Never pipe downloaded/remote content into interpreters or shells (no \`curl|python\`, \`curl|bash\`, \`curl|sh\`, \`curl|perl\`, \`wget|*\`).
 +- Avoid inline interpreter execution flags (no \`python -c\`, \`python3 -c\`, \`node -e\`, \`bash -c\`, \`sh -c\`, \`perl -e\`).
-+- Download to a local file first, then inspect/parse from that file.
-+- Prefer \`jq\` for JSON filtering.
+ - Download to a local file first, then inspect/parse from that file.
+ - Prefer \`jq\` for JSON filtering.
 +- If a script is necessary, write it to a local file first (for example \`/tmp/paperclip_auth.py\`) and execute that file explicitly.
-+
-+Output style (mandatory):
-+- Be concise. Keep heartbeat updates short and focused.
-+- Do not print full scripts unless explicitly requested.
-+- Summarize results in a few lines with key outcomes only.
+ 
+ Output style (mandatory):
+ - Be concise. Keep heartbeat updates short and focused.
+ - Do not print full scripts unless explicitly requested.
+ - Summarize results in a few lines with key outcomes only.
 +- Emit one final summary block only; do not repeat the same summary text.
 +- Prefer jq over inline Python for JSON reading/filtering.
 +- In jq strings, use interpolation like \`"\\(.field)"\` (never literal \`"(.field)"\`).
-+
+ 
 +Auth + headers (mandatory):
 +- Bootstrap auth once per run, then reuse it for every API call.
 +- Use injected \`$PAPERCLIP_API_KEY\` directly when present (preferred).
@@ -37,7 +33,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2
  Your Paperclip identity:
    Agent ID: {{agentId}}
    Company ID: {{companyId}}
-@@ -58,18 +86,19 @@ Title: {{taskTitle}}
+@@ -68,18 +86,18 @@
  
  1. Work on the task using your tools
  2. When done, mark the issue as completed:
@@ -54,21 +50,18 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2
  {{#commentId}}
  ## Comment on This Issue
  
--Someone commented. Read it:
--   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
-+Someone commented. Read it safely (no interpreter pipes):
+ Someone commented. Read it safely (no interpreter pipes):
+-   \`curl -fsS -o /tmp/paperclip-comment.json "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}"\`
 +   \`curl -fsS "\${AUTH[@]}" -o /tmp/paperclip-comment.json "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}"\`
-+   \`python3 -m json.tool /tmp/paperclip-comment.json\`
+    \`python3 -m json.tool /tmp/paperclip-comment.json\`
  
  Address the comment, POST a reply if needed, then continue working.
- {{/commentId}}
-@@ -77,28 +106,32 @@ Address the comment, POST a reply if needed, then continue working.
- {{#noTask}}
+@@ -89,29 +107,31 @@
  ## Heartbeat Wake — Check for Work
  
--1. List ALL open issues assigned to you (todo, backlog, in_progress):
--   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
-+1. List ALL open issues assigned to you (todo, backlog, in_progress) safely:
+ 1. List ALL open issues assigned to you (todo, backlog, in_progress) safely:
+-   \`curl -fsS -o /tmp/paperclip-issues.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}"\`
+-   \`jq -r '.[] | select(.status != "done" and .status != "cancelled") | "\(.identifier) \(.status) \(.priority) \(.title)"' /tmp/paperclip-issues.json\`
 +   \`curl -fsS "\${AUTH[@]}" -o /tmp/paperclip-issues.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}"\`
 +   \`jq -r '.[] | select(.status != "done" and .status != "cancelled") | "\\(.identifier) \\(.status) \\(.priority) \\(.title)"' /tmp/paperclip-issues.json\`
  
@@ -79,9 +72,9 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2
     - Do the work in the project directory: {{projectName}}
     - When done, mark complete and post a comment (see Workflow steps 2-4 above)
  
--3. If no issues assigned to you, check for unassigned issues:
--   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
-+3. If no issues assigned to you, check for unassigned issues safely:
+ 3. If no issues assigned to you, check for unassigned issues safely:
+-   \`curl -fsS -o /tmp/paperclip-backlog.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog"\`
+-   \`jq -r '.[] | select((.assigneeAgentId // "") == "") | "\(.identifier) \(.title)"' /tmp/paperclip-backlog.json\`
 +   \`curl -fsS "\${AUTH[@]}" -o /tmp/paperclip-backlog.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog"\`
 +   \`jq -r '.[] | select((.assigneeAgentId // "") == "") | "\\(.identifier) \\(.title)"' /tmp/paperclip-backlog.json\`
     If you find a relevant issue, assign it to yourself:
@@ -106,7 +99,66 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2
      const agentName = ctx.agent?.name || "Hermes Agent";
      const companyName = cfgString(ctx.config?.companyName) || "";
      const projectName = cfgString(ctx.config?.projectName) || "";
-@@ -293,11 +326,28 @@ export async function execute(ctx) {
+@@ -154,11 +174,15 @@
+ /** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
+ const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+ /** Regex for legacy session output format */
+-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
++const SESSION_ID_REGEX_LEGACY = /(?:^|\n)\s*session[_ ](?:id|saved):\s*([a-zA-Z0-9_-]+)/i;
++const INVALID_SESSION_ID_REGEX = /^(from|a|an|the)$/i;
+ /** Regex to extract token usage from Hermes output. */
+ const TOKEN_USAGE_REGEX = /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
+ /** Regex to extract cost from Hermes output. */
+ const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
++function isHermesUnknownSessionError(stdout, stderr) {
++    return /session not found|use a session id from a previous cli run|unknown session|failed to resume/i.test(`${stdout}\n${stderr}`);
++}
+ // ---------------------------------------------------------------------------
+ // Response cleaning
+ // ---------------------------------------------------------------------------
+@@ -266,51 +290,37 @@
+     const persistSession = cfgBoolean(config.persistSession) !== false;
+     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
+     const checkpoints = cfgBoolean(config.checkpoints) === true;
++    const prevSessionIdRaw = cfgString(ctx.runtime?.sessionParams?.sessionId);
++    const prevSessionId = prevSessionIdRaw && !INVALID_SESSION_ID_REGEX.test(prevSessionIdRaw) ? prevSessionIdRaw : null;
+     // ── Build prompt ───────────────────────────────────────────────────────
+     const prompt = buildPrompt(ctx, config);
+-    // ── Build command args ─────────────────────────────────────────────────
+-    // Use -Q (quiet) to get clean output: just response + session_id line
+-    const useQuiet = cfgBoolean(config.quiet) !== false; // default true
+-    const args = ["chat", "-q", prompt];
+-    if (useQuiet)
+-        args.push("-Q");
+-    if (model) {
+-        args.push("-m", model);
+-    }
+-    // Only pass --provider if it's a valid Hermes provider choice.
+-    if (provider && VALID_PROVIDERS.includes(provider)) {
+-        args.push("--provider", provider);
+-    }
+-    if (toolsets) {
+-        args.push("-t", toolsets);
+-    }
+-    if (worktreeMode)
+-        args.push("-w");
+-    if (checkpoints)
+-        args.push("--checkpoints");
+-    if (cfgBoolean(config.verbose) === true)
+-        args.push("-v");
+-    // Tag sessions as "tool" source so they don't clutter the user's session history.
+-    // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
+-    args.push("--source", "tool");
+-    // Session resume
+-    const prevSessionId = cfgString(ctx.runtime?.sessionParams?.sessionId);
+-    if (persistSession && prevSessionId) {
+-        args.push("--resume", prevSessionId);
+-    }
+-    if (extraArgs?.length) {
+-        args.push(...extraArgs);
+-    }
+     // ── Build environment ──────────────────────────────────────────────────
+     const env = {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
      };
@@ -136,3 +188,95 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..7e7669cde5a2ad416e1798caf68653f2
      const userEnv = config.env;
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
+@@ -325,9 +335,49 @@
+     }
+     // ── Log start ──────────────────────────────────────────────────────────
+     await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model ?? "configured-default"}, timeout=${timeoutSec}s)\n`);
+-    if (prevSessionId) {
+-        await ctx.onLog("stdout", `[hermes] Resuming session: ${prevSessionId}\n`);
++    if (prevSessionIdRaw && !prevSessionId) {
++        await ctx.onLog("stdout", `[paperclip] Skipping suspicious Hermes session id "${prevSessionIdRaw}" and starting fresh.\n`);
+     }
++    const useQuiet = cfgBoolean(config.quiet) !== false;
++    const buildArgs = (resumeSessionId) => {
++        const args = ["chat", "-q", prompt];
++        if (useQuiet)
++            args.push("-Q");
++        if (model)
++            args.push("-m", model);
++        if (provider && VALID_PROVIDERS.includes(provider)) {
++            args.push("--provider", provider);
++        }
++        if (toolsets) {
++            args.push("-t", toolsets);
++        }
++        if (worktreeMode)
++            args.push("-w");
++        if (checkpoints)
++            args.push("--checkpoints");
++        if (cfgBoolean(config.verbose) === true)
++            args.push("-v");
++        args.push("--source", "tool");
++        if (persistSession && resumeSessionId) {
++            args.push("--resume", resumeSessionId);
++        }
++        if (extraArgs?.length) {
++            args.push(...extraArgs);
++        }
++        return args;
++    };
++    const runAttempt = async (resumeSessionId) => {
++        if (resumeSessionId) {
++            await ctx.onLog("stdout", `[hermes] Resuming session: ${resumeSessionId}\n`);
++        }
++        return runChildProcess(ctx.runId, hermesCmd, buildArgs(resumeSessionId), {
++            cwd,
++            env,
++            timeoutSec,
++            graceSec,
++            onLog: wrappedOnLog,
++        });
++    };
+     // ── Execute ────────────────────────────────────────────────────────────
+     // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
+     // Paperclip renders all stderr as red/error in the UI.
+@@ -351,15 +401,19 @@
+         }
+         return ctx.onLog(stream, chunk);
+     };
+-    const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+-        cwd,
+-        env,
+-        timeoutSec,
+-        graceSec,
+-        onLog: wrappedOnLog,
+-    });
++    let result = await runAttempt(prevSessionId);
+     // ── Parse output ───────────────────────────────────────────────────────
+-    const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
++    let parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
++    let clearedSessionOnMissingSession = false;
++    if (prevSessionId &&
++        !result.timedOut &&
++        (result.exitCode ?? 0) !== 0 &&
++        isHermesUnknownSessionError(result.stdout || "", result.stderr || "")) {
++        await ctx.onLog("stdout", `[paperclip] Hermes resume session "${prevSessionId}" is unavailable; retrying with a fresh session.\n`);
++        result = await runAttempt(null);
++        parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
++        clearedSessionOnMissingSession = true;
++    }
+     await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
+     if (parsed.sessionId) {
+         await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+@@ -397,6 +451,9 @@
+         executionResult.sessionParams = { sessionId: parsed.sessionId };
+         executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+     }
++    if (clearedSessionOnMissingSession && !parsed.sessionId) {
++        executionResult.clearSession = true;
++    }
+     return executionResult;
+ }
+-//# sourceMappingURL=execute.js.map
+\ No newline at end of file
++//# sourceMappingURL=execute.js.map

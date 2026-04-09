@@ -3,7 +3,7 @@ import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { isOrchestratorOnlyAgent, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
   asNumber,
@@ -81,6 +81,23 @@ function geminiSkillsHome(): string {
   return path.join(os.homedir(), ".gemini", "skills");
 }
 
+function blockOrchestratorOnlyExecution(agent: AdapterExecutionContext["agent"]): AdapterExecutionResult | null {
+  if (!isOrchestratorOnlyAgent(agent)) return null;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage:
+      "Orchestrator-only agents cannot use Gemini specialist execution. This run must stay in the Paperclip orchestration path.",
+    errorCode: "orchestrator_only_specialist_execution_blocked",
+    resultJson: {
+      blocked: true,
+      adapterType: "gemini_local",
+      reason: "orchestrator_only_specialist_execution_blocked",
+    },
+  };
+}
+
 /**
  * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
@@ -137,6 +154,8 @@ async function ensureGeminiSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const blockedResult = blockOrchestratorOnlyExecution(agent);
+  if (blockedResult) return blockedResult;
 
   const promptTemplate = asString(
     config.promptTemplate,

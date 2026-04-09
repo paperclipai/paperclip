@@ -9,6 +9,9 @@ export const hermesLocalUIAdapter: UIAdapterModule = {
   ConfigFields: SchemaConfigFields,
   buildAdapterConfig: (values) => {
     const config = buildSchemaAdapterConfig(values);
+    if (config.timeoutSec == null) {
+      config.timeoutSec = 0;
+    }
     const effectCommand = config.hermesCommand ?? config.command;
     if (effectCommand) {
       config.hermesCommand = effectCommand;

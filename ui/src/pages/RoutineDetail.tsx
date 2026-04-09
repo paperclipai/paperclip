@@ -63,6 +63,20 @@ const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
 const routineTabs = ["triggers", "runs", "activity"] as const;
+const defaultNewTrigger = {
+  kind: "schedule",
+  cronExpression: "0 10 * * *",
+  signingMode: "bearer",
+  replayWindowSec: "300",
+} as const;
+type NewTriggerKind = (typeof triggerKinds)[number];
+type NewTriggerDraft = {
+  kind: NewTriggerKind;
+  cronExpression: string;
+  signingMode: string;
+  replayWindowSec: string;
+};
+
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
   always_enqueue: "Queue every trigger occurrence, even if several runs stack up.",
@@ -98,6 +112,21 @@ function isRoutineTab(value: string | null): value is RoutineTab {
   return value !== null && routineTabs.includes(value as RoutineTab);
 }
 
+function sanitizeTimeZone(timeZone: string | undefined | null): string {
+  if (!timeZone || !timeZone.trim()) return "UTC";
+  const normalizedInput = timeZone.trim();
+  if (!normalizedInput) return "UTC";
+  try {
+    // Ensure the timezone is supported by the browser's Intl implementation before sending
+    // it to the server. Some environments (notably older/embedded runtimes) emit
+    // short-form values that can fail server-side validation.
+    new Intl.DateTimeFormat("en-US", { timeZone: normalizedInput }).format(new Date());
+    return normalizedInput;
+  } catch {
+    return "UTC";
+  }
+}
+
 function getRoutineTabFromSearch(search: string): RoutineTab {
   const tab = new URLSearchParams(search).get("tab");
   return isRoutineTab(tab) ? tab : "triggers";
@@ -117,10 +146,37 @@ function formatActivityDetailValue(value: unknown): string {
 
 function getLocalTimezone(): string {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return sanitizeTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone?.trim());
   } catch {
     return "UTC";
   }
+}
+
+function buildNewTriggerPayload(newTrigger: NewTriggerDraft, routineTriggerCountByKind: number): {
+  kind: "schedule" | "webhook";
+  label: string;
+  cronExpression?: string;
+  timezone?: string;
+  signingMode?: "bearer" | "hmac_sha256" | "github_hmac" | "none";
+  replayWindowSec?: number;
+} {
+  const label = routineTriggerCountByKind > 0 ? `${newTrigger.kind}-${routineTriggerCountByKind + 1}` : newTrigger.kind;
+
+  if (newTrigger.kind === "webhook") {
+    return {
+      kind: "webhook",
+      label,
+      signingMode: newTrigger.signingMode as "bearer" | "hmac_sha256" | "github_hmac" | "none",
+      replayWindowSec: Number(newTrigger.replayWindowSec || "300"),
+    };
+  }
+
+  return {
+    kind: "schedule",
+    label,
+    cronExpression: newTrigger.cronExpression.trim(),
+    timezone: getLocalTimezone(),
+  };
 }
 
 function TriggerEditor({
@@ -134,6 +190,15 @@ function TriggerEditor({
   onRotate: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const triggerSummary =
+    trigger.kind === "schedule"
+      ? trigger.cronExpression
+        ? describeSchedule(trigger.cronExpression)
+        : "No schedule"
+      : trigger.kind === "webhook"
+        ? "Webhook"
+        : "API";
+
   const [draft, setDraft] = useState({
     label: trigger.label ?? "",
     cronExpression: trigger.cronExpression ?? "",
@@ -155,14 +220,15 @@ function TriggerEditor({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
           {trigger.kind === "schedule" ? <Clock3 className="h-3.5 w-3.5" /> : trigger.kind === "webhook" ? <Webhook className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
-          {trigger.label ?? trigger.kind}
+          <div className="space-y-0.5">
+            <p>{trigger.label ?? trigger.kind}</p>
+            <p className="font-normal text-xs text-muted-foreground">{triggerSummary}</p>
+          </div>
         </div>
         <span className="text-xs text-muted-foreground">
           {trigger.kind === "schedule" && trigger.nextRunAt
             ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
-            : trigger.kind === "webhook"
-              ? "Webhook"
-              : "API"}
+            : triggerSummary}
         </span>
       </div>
 
@@ -261,12 +327,14 @@ export function RoutineDetail() {
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
-  const [newTrigger, setNewTrigger] = useState({
-    kind: "schedule",
-    cronExpression: "0 10 * * *",
-    signingMode: "bearer",
-    replayWindowSec: "300",
+  const [isAddingNewTrigger, setIsAddingNewTrigger] = useState(false);
+  const [newTrigger, setNewTrigger] = useState<NewTriggerDraft>({
+    kind: defaultNewTrigger.kind,
+    cronExpression: defaultNewTrigger.cronExpression,
+    signingMode: defaultNewTrigger.signingMode,
+    replayWindowSec: defaultNewTrigger.replayWindowSec,
   });
+  const [hasUnsavedNewTrigger, setHasUnsavedNewTrigger] = useState(false);
   const [editDraft, setEditDraft] = useState<{
     title: string;
     description: string;
@@ -416,14 +484,66 @@ export function RoutineDetail() {
     );
   };
 
+  const resetNewTrigger = () => {
+    setNewTrigger({
+      kind: defaultNewTrigger.kind,
+      cronExpression: defaultNewTrigger.cronExpression,
+      signingMode: defaultNewTrigger.signingMode,
+      replayWindowSec: defaultNewTrigger.replayWindowSec,
+    });
+    setHasUnsavedNewTrigger(false);
+  };
+
+  const updateNewTrigger = (patch: Partial<typeof newTrigger>) => {
+    setNewTrigger((current) => ({ ...current, ...patch }));
+    setHasUnsavedNewTrigger(true);
+  };
+
+  const createNewTrigger = async () => {
+    const existingKindCount = (routine?.triggers ?? []).filter((trigger) => trigger.kind === newTrigger.kind).length;
+    const payload = buildNewTriggerPayload(newTrigger, existingKindCount);
+    return routinesApi.createTrigger(routineId!, payload);
+  };
+
   const saveRoutine = useMutation({
-    mutationFn: () => {
-      return routinesApi.update(routineId!, {
+    mutationFn: async () => {
+      const updated = await routinesApi.update(routineId!, {
         ...editDraft,
         description: editDraft.description.trim() || null,
       });
+      if (!hasUnsavedNewTrigger) {
+        return { updatedRoutine: updated, addedTrigger: null };
+      }
+
+      const addedTrigger = await createNewTrigger();
+      return { updatedRoutine: updated, addedTrigger };
     },
-    onSuccess: async () => {
+    onSuccess: async ({ addedTrigger }) => {
+      if (addedTrigger?.secretMaterial) {
+        setSecretMessage({
+          title: "Trigger added",
+          webhookUrl: addedTrigger.secretMaterial.webhookUrl,
+          webhookSecret: addedTrigger.secretMaterial.webhookSecret,
+        });
+      } else if (addedTrigger) {
+        pushToast({
+          title: "Trigger added",
+          body: "The routine trigger was saved.",
+          tone: "success",
+        });
+      } else {
+        pushToast({
+          title: "Routine saved",
+          body: "Your routine settings were saved.",
+          tone: "success",
+        });
+      }
+
+      if (addedTrigger) {
+        resetNewTrigger();
+        setIsAddingNewTrigger(false);
+      }
+
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -438,6 +558,35 @@ export function RoutineDetail() {
       });
     },
   });
+
+  const createRoutineSaveLabel = hasUnsavedNewTrigger ? "Save routine and trigger" : "Save routine";
+
+  const newTriggerSummary = useMemo(() => {
+    return newTrigger.kind === "schedule"
+      ? newTrigger.cronExpression
+        ? describeSchedule(newTrigger.cronExpression)
+        : "No schedule"
+      : newTrigger.kind === "webhook"
+        ? "Webhook"
+        : "API";
+  }, [newTrigger.kind, newTrigger.cronExpression]);
+
+  const savedTriggers = useMemo(
+    () =>
+      [...(routine?.triggers ?? [])].sort((left, right) => {
+        const leftCreatedAt = new Date(left.createdAt).getTime();
+        const rightCreatedAt = new Date(right.createdAt).getTime();
+        return rightCreatedAt - leftCreatedAt;
+      }),
+    [routine?.triggers],
+  );
+  const hasSavedTriggers = useMemo(() => savedTriggers.length > 0, [savedTriggers]);
+  const shouldShowNewTriggerForm = isAddingNewTrigger || !hasSavedTriggers;
+
+  useEffect(() => {
+    if (!routine) return;
+    setIsAddingNewTrigger((routine?.triggers ?? []).length === 0);
+  }, [routine?.id, routine?.triggers?.length, setIsAddingNewTrigger]);
 
   const runRoutine = useMutation({
     mutationFn: (data?: RoutineRunDialogSubmitData) =>
@@ -495,21 +644,8 @@ export function RoutineDetail() {
 
   const createTrigger = useMutation({
     mutationFn: async (): Promise<RoutineTriggerResponse> => {
-      const existingOfKind = (routine?.triggers ?? []).filter((t) => t.kind === newTrigger.kind).length;
-      const autoLabel = existingOfKind > 0 ? `${newTrigger.kind}-${existingOfKind + 1}` : newTrigger.kind;
-      return routinesApi.createTrigger(routineId!, {
-        kind: newTrigger.kind,
-        label: autoLabel,
-        ...(newTrigger.kind === "schedule"
-          ? { cronExpression: newTrigger.cronExpression.trim(), timezone: getLocalTimezone() }
-          : {}),
-        ...(newTrigger.kind === "webhook"
-          ? {
-            signingMode: newTrigger.signingMode,
-            replayWindowSec: Number(newTrigger.replayWindowSec || "300"),
-          }
-          : {}),
-      });
+      const created = await createNewTrigger();
+      return created;
     },
     onSuccess: async (result) => {
       if (result.secretMaterial) {
@@ -525,6 +661,8 @@ export function RoutineDetail() {
           tone: "success",
         });
       }
+      resetNewTrigger();
+      setIsAddingNewTrigger(false);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -923,7 +1061,7 @@ export function RoutineDetail() {
           disabled={saveRoutine.isPending || !editDraft.title.trim() || !editDraft.projectId || !editDraft.assigneeAgentId}
         >
           <Save className="mr-2 h-4 w-4" />
-          Save routine
+          {createRoutineSaveLabel}
         </Button>
       </div>
 
@@ -948,81 +1086,136 @@ export function RoutineDetail() {
         </TabsList>
 
         <TabsContent value="triggers" className="space-y-4">
-          {/* Add trigger form */}
-          <div className="rounded-lg border border-border p-4 space-y-3">
-            <p className="text-sm font-medium">Add trigger</p>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Kind</Label>
-                <Select value={newTrigger.kind} onValueChange={(kind) => setNewTrigger((current) => ({ ...current, kind }))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {triggerKinds.map((kind) => (
-                      <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
-                        {kind}{kind === "webhook" ? " — COMING SOON" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {newTrigger.kind === "schedule" && (
-                <div className="md:col-span-2 space-y-1.5">
-                  <Label className="text-xs">Schedule</Label>
-                  <ScheduleEditor
-                    value={newTrigger.cronExpression}
-                    onChange={(cronExpression) => setNewTrigger((current) => ({ ...current, cronExpression }))}
-                  />
-                </div>
-              )}
-              {newTrigger.kind === "webhook" && (
-                <>
+          {shouldShowNewTriggerForm ? (
+            <>
+              <div className="rounded-lg border border-border p-4 space-y-3">
+                <p className="text-sm font-medium">
+                  {hasSavedTriggers ? "Add another trigger (not saved)" : "Add trigger (not saved)"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Configure this trigger, then save it with <span className="font-medium">Add trigger now</span>
+                  {hasUnsavedNewTrigger ? " or with Save routine and trigger." : "."}
+                </p>
+                {hasUnsavedNewTrigger ? (
+                  <p className="text-xs text-amber-600">
+                    Current draft: {newTriggerSummary}
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Edit fields below to configure a new trigger draft.
+                  </p>
+                )}
+                <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Signing mode</Label>
-                    <Select value={newTrigger.signingMode} onValueChange={(signingMode) => setNewTrigger((current) => ({ ...current, signingMode }))}>
+                    <Label className="text-xs">Kind</Label>
+                    <Select
+                      value={newTrigger.kind}
+                      onValueChange={(kind) => updateNewTrigger({ kind: kind as NewTriggerKind })}
+                    >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {signingModes.map((mode) => (
-                          <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+                        {triggerKinds.map((kind) => (
+                          <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
+                            {kind}{kind === "webhook" ? " — COMING SOON" : ""}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">{signingModeDescriptions[newTrigger.signingMode]}</p>
                   </div>
-                  {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(newTrigger.signingMode) && (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">Replay window (seconds)</Label>
-                      <Input value={newTrigger.replayWindowSec} onChange={(event) => setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))} />
+                  {newTrigger.kind === "schedule" && (
+                    <div className="md:col-span-2 space-y-1.5">
+                      <Label className="text-xs">Schedule</Label>
+                      <ScheduleEditor
+                        value={newTrigger.cronExpression}
+                        onChange={(cronExpression) => updateNewTrigger({ cronExpression })}
+                      />
                     </div>
                   )}
-                </>
-              )}
-            </div>
-            <div className="flex items-center justify-end">
-              <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
-                {createTrigger.isPending ? "Adding..." : "Add trigger"}
-              </Button>
-            </div>
-          </div>
+                  {newTrigger.kind === "webhook" && (
+                    <>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Signing mode</Label>
+                        <Select
+                          value={newTrigger.signingMode}
+                          onValueChange={(signingMode) => updateNewTrigger({ signingMode })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {signingModes.map((mode) => (
+                              <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">{signingModeDescriptions[newTrigger.signingMode]}</p>
+                      </div>
+                      {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(newTrigger.signingMode) && (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Replay window (seconds)</Label>
+                          <Input
+                            value={newTrigger.replayWindowSec}
+                            onChange={(event) => updateNewTrigger({ replayWindowSec: event.target.value })}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center justify-end">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      resetNewTrigger();
+                      if (hasSavedTriggers) {
+                        setIsAddingNewTrigger(false);
+                      }
+                    }}
+                    className="mr-2"
+                    disabled={createTrigger.isPending}
+                  >
+                    {hasSavedTriggers ? "Cancel" : "Discard draft"}
+                  </Button>
+                  <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
+                    {createTrigger.isPending ? "Adding trigger..." : "Add trigger now"}
+                  </Button>
+                </div>
+              </div>
+              {hasSavedTriggers ? <Separator /> : null}
+            </>
+          ) : null}
 
-          {/* Existing triggers */}
-          {routine.triggers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No triggers configured yet.</p>
+          {hasSavedTriggers ? (
+            <>
+              {/* Saved triggers */}
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Saved triggers</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIsAddingNewTrigger(true)}
+                  disabled={createTrigger.isPending}
+                >
+                  Add trigger
+                </Button>
+              </div>
+              <div className="space-y-3">
+                {savedTriggers.map((trigger) => (
+                  <TriggerEditor
+                    key={trigger.id}
+                    trigger={trigger}
+                    onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
+                    onRotate={(id) => rotateTrigger.mutate(id)}
+                    onDelete={(id) => deleteTrigger.mutate(id)}
+                  />
+                ))}
+              </div>
+            </>
           ) : (
-            <div className="space-y-3">
-              {routine.triggers.map((trigger) => (
-                <TriggerEditor
-                  key={trigger.id}
-                  trigger={trigger}
-                  onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
-                  onRotate={(id) => rotateTrigger.mutate(id)}
-                  onDelete={(id) => deleteTrigger.mutate(id)}
-                />
-              ))}
-            </div>
+            <p className="text-xs text-muted-foreground">No triggers configured yet.</p>
           )}
         </TabsContent>
 

@@ -9,6 +9,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mapHermesCommandForRuntimeConfig,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -123,6 +124,20 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("mapHermesCommandForRuntimeConfig", () => {
+  it("converts a missing Hermes timeout into the runtime sentinel that bypasses the package default", () => {
+    expect(mapHermesCommandForRuntimeConfig("hermes_local", {})).toMatchObject({
+      timeoutSec: -1,
+    });
+  });
+
+  it("converts an explicit no-timeout Hermes config into the runtime sentinel", () => {
+    expect(mapHermesCommandForRuntimeConfig("hermes_local", { timeoutSec: 0 })).toMatchObject({
+      timeoutSec: -1,
+    });
   });
 });
 

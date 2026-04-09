@@ -1,8 +1,24 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import { isOrchestratorOnlyAgent } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context } = ctx;
+  if (isOrchestratorOnlyAgent(agent)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Orchestrator-only agents cannot use HTTP specialist execution. This run must stay in the Paperclip orchestration path.",
+      errorCode: "orchestrator_only_specialist_execution_blocked",
+      resultJson: {
+        blocked: true,
+        adapterType: "http",
+        reason: "orchestrator_only_specialist_execution_blocked",
+      },
+    };
+  }
   const url = asString(config.url, "");
   if (!url) throw new Error("HTTP adapter missing url");
 

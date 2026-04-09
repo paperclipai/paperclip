@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { isOrchestratorOnlyAgent, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -114,6 +114,23 @@ function isBedrockAuth(env: Record<string, string>): boolean {
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+function blockOrchestratorOnlyExecution(agent: AdapterExecutionContext["agent"]): AdapterExecutionResult | null {
+  if (!isOrchestratorOnlyAgent(agent)) return null;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage:
+      "Orchestrator-only agents cannot use Claude specialist execution. This run must stay in the Paperclip orchestration path.",
+    errorCode: "orchestrator_only_specialist_execution_blocked",
+    resultJson: {
+      blocked: true,
+      adapterType: "claude_local",
+      reason: "orchestrator_only_specialist_execution_blocked",
+    },
+  };
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -323,6 +340,8 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const blockedResult = blockOrchestratorOnlyExecution(agent);
+  if (blockedResult) return blockedResult;
 
   const promptTemplate = asString(
     config.promptTemplate,

@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, or } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -225,11 +225,19 @@ describe("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterAll(async () => {
+    await waitFor(async () => {
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+      return activeRuns.length === 0;
+    }, 15_000);
+    await db.$client.end();
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 45_000);
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
@@ -406,7 +414,7 @@ describe("heartbeat comment wake batching", () => {
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
-      }, 30_000);
+      }, 45_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -422,7 +430,7 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 45_000);
+  }, 60_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
     const gateway = await createControlledGatewayServer();

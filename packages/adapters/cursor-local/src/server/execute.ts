@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  isOrchestratorOnlyAgent,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -76,6 +81,23 @@ function normalizeMode(rawMode: string): "plan" | "ask" | null {
   const mode = rawMode.trim().toLowerCase();
   if (mode === "plan" || mode === "ask") return mode;
   return null;
+}
+
+function blockOrchestratorOnlyExecution(agent: AdapterExecutionContext["agent"]): AdapterExecutionResult | null {
+  if (!isOrchestratorOnlyAgent(agent)) return null;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage:
+      "Orchestrator-only agents cannot use Cursor specialist execution. This run must stay in the Paperclip orchestration path.",
+    errorCode: "orchestrator_only_specialist_execution_blocked",
+    resultJson: {
+      blocked: true,
+      adapterType: "cursor",
+      reason: "orchestrator_only_specialist_execution_blocked",
+    },
+  };
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -161,6 +183,8 @@ export async function ensureCursorSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const blockedResult = blockOrchestratorOnlyExecution(agent);
+  if (blockedResult) return blockedResult;
 
   const promptTemplate = asString(
     config.promptTemplate,

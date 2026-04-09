@@ -3,6 +3,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
 } from "@paperclipai/adapter-utils";
+import { isOrchestratorOnlyAgent } from "@paperclipai/adapter-utils";
 import {
   asNumber,
   asString,
@@ -331,9 +332,27 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 }
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+const OPEN_ISSUE_STATUS_FILTER = "backlog,todo,in_progress,in_review,blocked";
 
 function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+}
+
+function blockOrchestratorOnlyExecution(agent: AdapterExecutionContext["agent"]): AdapterExecutionResult | null {
+  if (!isOrchestratorOnlyAgent(agent)) return null;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage:
+      "Orchestrator-only agents cannot use OpenClaw specialist execution. This run must stay in the Paperclip orchestration path.",
+    errorCode: "orchestrator_only_specialist_execution_blocked",
+    resultJson: {
+      blocked: true,
+      adapterType: "openclaw_gateway",
+      reason: "orchestrator_only_specialist_execution_blocked",
+    },
+  };
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
@@ -359,6 +378,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(
+  ctx: AdapterExecutionContext,
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
@@ -386,6 +406,28 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const operationsNoIssueContext = isOrchestratorOnlyAgent(ctx.agent) && !issueIdHint;
+  const noIssueWorkflow = operationsNoIssueContext
+    ? [
+        "4) If issueId does not exist and you are acting as Operations:",
+        "   - Do NOT fetch only your own assignments or only unassigned backlog.",
+        "   - Enumerate every board first:",
+        "     curl -fsS -o /tmp/paperclip-projects.json \"$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/projects\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"",
+        "     jq -r '.[] | \"\\(.id) \\(.name) \\(.status)\"' /tmp/paperclip-projects.json",
+        `   - For each board, fetch all open issues: GET /api/companies/{companyId}/issues?projectId={projectId}&status=${OPEN_ISSUE_STATUS_FILTER}`,
+        `   - After the board sweep, fetch company-wide open issues once: GET /api/companies/{companyId}/issues?status=${OPEN_ISSUE_STATUS_FILTER}`,
+        "   - Inspect both assigned and unassigned open issues across the company.",
+        "   - For assigned issues, inspect latest issue comments before deciding they are blocked, handed off, completed, or waiting.",
+        "   - If an assigned owner appears idle and the issue lacks blocker, handoff, completion, or wait-state truth, POST /api/issues/{issueId}/comments mentioning the assigned agent and instructing them to resume work or leave issue-level truth.",
+        "   - Only conclude idle/standby after the full board sweep finds no recovery, wake-up, or assignment action.",
+      ]
+    : [
+        "4) If issueId does not exist:",
+        "   - Fetch assignments safely (no interpreter pipes):",
+        `     curl -fsS -o /tmp/paperclip-issues.json \"$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=${OPEN_ISSUE_STATUS_FILTER}\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"`,
+        "     jq -r '.[] | \"\\(.identifier) \\(.status) \\(.priority) \\(.title)\"' /tmp/paperclip-issues.json",
+        "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
+      ];
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -428,13 +470,11 @@ function buildWakeText(
     "   - Execute the issue instructions exactly.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
-    "4) If issueId does not exist:",
-    "   - Fetch assignments safely (no interpreter pipes):",
-    "     curl -fsS -o /tmp/paperclip-issues.json \"$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"",
-    "     jq -r '.[] | \"\\(.identifier) \\(.status) \\(.priority) \\(.title)\"' /tmp/paperclip-issues.json",
-    "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
+    ...noIssueWorkflow,
     "",
     "Useful endpoints for issue work:",
+    "- GET /api/companies/{companyId}/projects",
+    "- GET /api/companies/{companyId}/issues",
     "- POST /api/issues/{issueId}/comments",
     "- PATCH /api/issues/{issueId}",
     "- POST /api/companies/{companyId}/issues (when asked to create a new issue)",
@@ -1049,6 +1089,9 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const blockedResult = blockOrchestratorOnlyExecution(ctx.agent);
+  if (blockedResult) return blockedResult;
+
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
     return {
@@ -1111,6 +1154,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
+    ctx,
     wakePayload,
     paperclipEnv,
     structuredWakeJson

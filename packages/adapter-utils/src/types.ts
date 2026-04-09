@@ -6,8 +6,12 @@ export interface AdapterAgent {
   id: string;
   companyId: string;
   name: string;
+  role?: string | null;
+  title?: string | null;
+  capabilities?: string | null;
   adapterType: string | null;
   adapterConfig: unknown;
+  runtimeConfig?: Record<string, unknown> | null;
 }
 
 export interface AdapterRuntime {

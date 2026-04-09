@@ -58,6 +58,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
+  isOrchestratorOnlyAgent,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
@@ -71,13 +72,20 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+const ACTIVE_ASSIGNEE_HEARTBEAT_RUN_STATUSES = ["running"] as const;
 const HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS = 30 * 1000;
 const WATCHDOG_RECOVERY_COOLDOWN_HOURS = 12;
 const WATCHDOG_RECOVERY_REPEAT_THRESHOLD = 1;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
 const OPERATIONS_IDLE_WAKE_MARKER = "[operations-heartbeat-wakeup]";
+const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
+const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
+const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
+const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
+const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -88,22 +96,26 @@ const execFile = promisify(execFileCallback);
 
 const POSTGRES_TEXT_NULL_BYTE = /\u0000/g;
 
-function mapHermesCommandForRuntimeConfig(
+export function mapHermesCommandForRuntimeConfig(
   adapterType: string,
   config: Record<string, unknown>,
 ): Record<string, unknown> {
   if (adapterType !== "hermes_local") return config;
 
+  const newConfig = { ...config };
+  if (newConfig.timeoutSec == null || newConfig.timeoutSec === 0) {
+    // Hermes currently treats `0` as falsy and falls back to its internal
+    // 300-second default. Pass `-1` at runtime so Paperclip's "no timeout"
+    // intent survives until the adapter package is fixed upstream.
+    newConfig.timeoutSec = -1;
+  }
   const effectiveCommand = config.hermesCommand ?? config.command;
   if (!effectiveCommand) {
-    return config;
+    return newConfig;
   }
 
-  const newConfig = {
-    ...config,
-    command: effectiveCommand,
-    hermesCommand: effectiveCommand,
-  };
+  newConfig.command = effectiveCommand;
+  newConfig.hermesCommand = effectiveCommand;
   return newConfig;
 }
 
@@ -156,16 +168,20 @@ function classifyIssueTruthFromCommentBody(body: string | null | undefined): "co
   const completionSignals = [
     /\b(status|outcome)\s*:\s*(done|completed|resolved)\b/,
     /\bissue\s+resolved\b/,
-    /\bcompleted\b/,
+    /(^|\n)\s*done\s*:/,
+    /(^|\n)\s*completed\s*:/,
+    /(^|\n)\s*resolved\s*:/,
   ];
   const blockerSignals = [
     /\b(status|outcome)\s*:\s*(blocked|needs[_ -]?help|blocked_on_external)\b/,
-    /\bblocked\b/,
-    /\bwaiting on\b/,
+    /(^|\n)\s*blocked\s*:/,
+    /(^|\n)\s*blocker\s*:/,
+    /(^|\n)\s*waiting on\s*:/,
   ];
   const handoffSignals = [
     /\b(status|outcome)\s*:\s*(handoff|needs_review|needs_handoff)\b/,
-    /\bhandoff\b/,
+    /(^|\n)\s*handoff\s*:/,
+    /(^|\n)\s*needs review\s*:/,
     /\bready for review\b/,
   ];
 
@@ -180,9 +196,15 @@ function hasWaitStateTruthFromCommentBody(body: string | null | undefined): bool
   const text = body.toLowerCase();
   const waitSignals = [
     /\b(status|outcome)\s*:\s*(waiting|wait|standby|paused|blocked_on_external|waiting_on)\b/,
-    /\b(waiting on|awaiting|standing by|stand by)\b/,
+    /(^|\n)\s*waiting\s*:/,
+    /(^|\n)\s*standby\s*:/,
+    /(^|\n)\s*paused\s*:/,
   ];
   return waitSignals.some((rx) => rx.test(text));
+}
+
+function isWatchdogIssueLabel(label: string | null | undefined): boolean {
+  return WATCHDOG_ISSUE_PATTERN.test((label ?? "").toLowerCase());
 }
 
 function buildOperationsIdleWakeComment(input: {
@@ -198,16 +220,73 @@ function buildOperationsIdleWakeComment(input: {
   ].join("\n");
 }
 
-export function isOperationsOrchestratorAgent(agent: { role?: string | null; name?: string | null }) {
-  const role = (agent.role ?? "").toLowerCase();
-  const name = (agent.name ?? "").toLowerCase();
-  return role.includes("operat") || role === "coo" || name.includes("operations");
+function buildOperationsRecoveryWakeComment(input: {
+  assigneeAgentId: string;
+  assigneeName: string | null;
+  reason: string;
+}) {
+  const mentionLabel = `@${(input.assigneeName ?? "assigned-agent").trim() || "assigned-agent"}`;
+  const mention = `[${mentionLabel}](${buildAgentMentionHref(input.assigneeAgentId)})`;
+  return [
+    OPERATIONS_RECOVERY_WAKE_MARKER,
+    `${mention} operations heartbeat detected assigned work that needs issue-level recovery.`,
+    `Detected signal: ${input.reason}.`,
+    "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
+  ].join("\n");
+}
+
+function buildOperationsRequeueComment(input: { reason: string }) {
+  return [
+    OPERATIONS_REQUEUE_MARKER,
+    "Operations heartbeat detected specialist work assigned to an orchestrator-only agent.",
+    `Detected signal: ${input.reason}.`,
+    "Returning this issue to the unassigned queue for specialist reassignment.",
+  ].join("\n");
+}
+
+function buildOperationsAssignmentComment(input: {
+  assigneeAgentId: string;
+  assigneeName: string | null;
+  reason: string;
+}) {
+  const mentionLabel = `@${(input.assigneeName ?? "assigned-agent").trim() || "assigned-agent"}`;
+  const mention = `[${mentionLabel}](${buildAgentMentionHref(input.assigneeAgentId)})`;
+  return [
+    OPERATIONS_ASSIGNMENT_MARKER,
+    `${mention} operations heartbeat assigned this issue for active work.`,
+    `Reason: ${input.reason}.`,
+    "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
+  ].join("\n");
+}
+
+export function isOperationsOrchestratorAgent(agent: {
+  role?: string | null;
+  name?: string | null;
+  title?: string | null;
+  capabilities?: string | null;
+  runtimeConfig?: Record<string, unknown> | null;
+}) {
+  return isOrchestratorOnlyAgent({
+    role: agent.role ?? "",
+    name: agent.name ?? "",
+    title: agent.title ?? "",
+    capabilities: agent.capabilities ?? "",
+    runtimeConfig: agent.runtimeConfig ?? null,
+  });
 }
 
 export async function resolveOperationsHeartbeatTarget(
   db: Db,
   input: { companyId: string; operationsAgentId: string },
 ): Promise<OperationsHeartbeatTarget | null> {
+  const [first] = await resolveOperationsHeartbeatTargets(db, input);
+  return first ?? null;
+}
+
+async function resolveOperationsHeartbeatTargets(
+  db: Db,
+  input: { companyId: string; operationsAgentId: string },
+): Promise<OperationsHeartbeatTarget[]> {
   const now = Date.now();
 
   const openAssignedIssues = await db
@@ -263,7 +342,7 @@ export async function resolveOperationsHeartbeatTarget(
     const watchdogIssueIds = openAssignedIssues
       .filter((issue) => {
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
-        return /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/.test(watchdogLabel);
+        return isWatchdogIssueLabel(watchdogLabel);
       })
       .map((issue) => issue.id);
 
@@ -306,9 +385,7 @@ export async function resolveOperationsHeartbeatTarget(
         const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
         const isOperationsOwned = issue.assigneeAgentId === input.operationsAgentId;
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
-        const isWatchdogIssue = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/.test(
-          watchdogLabel,
-        );
+        const isWatchdogIssue = isWatchdogIssueLabel(watchdogLabel);
 
         let score = 0;
         const reasons: string[] = [];
@@ -413,32 +490,14 @@ export async function resolveOperationsHeartbeatTarget(
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score || b.issueAgeHours - a.issueAgeHours);
 
-    const top = ranked[0];
-    if (top) {
-      const strongestAssignedRecovery = ranked.find(
-        (entry) =>
-          !entry.isWatchdogIssue
-          && !entry.reasons.some((reason) => /fresh (blocker|handoff) truth already present/.test(reason))
-          && (entry.hasFalseCompleteSignals || entry.hasStuckAssignedSignals || entry.hasContradictoryTruthSignals),
-      );
-
-      let selected = top;
-      if (
-        top.isWatchdogIssue
-        && strongestAssignedRecovery
-        && (
-          !top.hasFalseCompleteSignals
-          || top.score - strongestAssignedRecovery.score <= 180
-        )
-      ) {
-        selected = strongestAssignedRecovery;
-      }
-
-      return {
-        issueId: selected.issue.id,
-        mode: selected.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
-        reason: selected.reasons.join("; "),
-      };
+    if (ranked.length > 0) {
+      return ranked
+        .slice(0, MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP)
+        .map((entry) => ({
+          issueId: entry.issue.id,
+          mode: entry.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
+          reason: entry.reasons.join("; "),
+        }));
     }
   }
 
@@ -461,14 +520,14 @@ export async function resolveOperationsHeartbeatTarget(
     .then((rows) => rows[0] ?? null);
 
   if (readyUnassigned) {
-    return {
+    return [{
       issueId: readyUnassigned.id,
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
-    };
+    }];
   }
 
-  return null;
+  return [];
 }
 type OperationsHeartbeatTarget = {
   issueId: string;
@@ -851,6 +910,38 @@ type ResumeSessionRow = {
   lastRunId: string | null;
 };
 
+function isSuspiciousRuntimeSessionId(value: string | null | undefined) {
+  const normalized = readNonEmptyString(value)?.toLowerCase() ?? null;
+  return normalized === "from" || normalized === "a" || normalized === "an" || normalized === "the";
+}
+
+function sanitizeRuntimeSessionDisplayId(value: string | null | undefined) {
+  const normalized = truncateDisplayId(value);
+  return isSuspiciousRuntimeSessionId(normalized) ? null : normalized;
+}
+
+function sanitizeRuntimeSessionParams(params: Record<string, unknown> | null | undefined) {
+  const normalized = normalizeSessionParams(params ?? null);
+  if (!normalized) return null;
+  const sessionId = readNonEmptyString(normalized.sessionId);
+  if (!sessionId || !isSuspiciousRuntimeSessionId(sessionId)) return normalized;
+  const next = { ...normalized };
+  delete next.sessionId;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function hasMissingSessionAdapterFailure(adapterResult: AdapterExecutionResult) {
+  const resultRecord = parseObject(adapterResult.resultJson);
+  const messages = [
+    adapterResult.errorMessage,
+    readNonEmptyString(resultRecord.result),
+    readNonEmptyString(resultRecord.stderr),
+    readNonEmptyString(resultRecord.stdout),
+    readNonEmptyString(resultRecord.message),
+  ].filter((value): value is string => Boolean(value));
+  return messages.some((value) => /session not found|use a session id from a previous cli run|unknown session|failed to resume/i.test(value));
+}
+
 export function buildExplicitResumeSessionOverride(input: {
   resumeFromRunId: string;
   resumeRunSessionIdBefore: string | null;
@@ -858,13 +949,13 @@ export function buildExplicitResumeSessionOverride(input: {
   taskSession: ResumeSessionRow | null;
   sessionCodec: AdapterSessionCodec;
 }) {
-  const desiredDisplayId = truncateDisplayId(
+  const desiredDisplayId = sanitizeRuntimeSessionDisplayId(
     input.resumeRunSessionIdAfter ?? input.resumeRunSessionIdBefore,
   );
-  const taskSessionParams = normalizeSessionParams(
+  const taskSessionParams = sanitizeRuntimeSessionParams(
     input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
   );
-  const taskSessionDisplayId = truncateDisplayId(
+  const taskSessionDisplayId = sanitizeRuntimeSessionDisplayId(
     input.taskSession?.sessionDisplayId ??
       (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
       readNonEmptyString(taskSessionParams?.sessionId),
@@ -1445,7 +1536,19 @@ function resolveNextSessionState(input: {
 }) {
   const { codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
 
-  if (adapterResult.clearSession) {
+  const explicitParams = adapterResult.sessionParams;
+  const hasExplicitParams = adapterResult.sessionParams !== undefined;
+  const hasExplicitSessionId = adapterResult.sessionId !== undefined;
+  const explicitSessionId = sanitizeRuntimeSessionDisplayId(readNonEmptyString(adapterResult.sessionId));
+  const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
+  const explicitDisplayId = sanitizeRuntimeSessionDisplayId(readNonEmptyString(adapterResult.sessionDisplayId));
+  const shouldClearMissingSession =
+    hasMissingSessionAdapterFailure(adapterResult) &&
+    !sanitizeRuntimeSessionParams(hasExplicitParams ? explicitParams ?? null : null) &&
+    !explicitSessionId &&
+    !explicitDisplayId;
+
+  if (adapterResult.clearSession || shouldClearMissingSession) {
     return {
       params: null as Record<string, unknown> | null,
       displayId: null as string | null,
@@ -1453,25 +1556,19 @@ function resolveNextSessionState(input: {
     };
   }
 
-  const explicitParams = adapterResult.sessionParams;
-  const hasExplicitParams = adapterResult.sessionParams !== undefined;
-  const hasExplicitSessionId = adapterResult.sessionId !== undefined;
-  const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
-  const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
-  const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
   const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
 
   const candidateParams =
     hasExplicitParams
-      ? explicitParams
+      ? sanitizeRuntimeSessionParams(explicitParams ?? null)
       : hasExplicitSessionId
         ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
-        : previousParams;
+        : sanitizeRuntimeSessionParams(previousParams);
 
-  const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
-  const deserialized = normalizeSessionParams(codec.deserialize(serialized));
+  const serialized = sanitizeRuntimeSessionParams(codec.serialize(sanitizeRuntimeSessionParams(candidateParams) ?? null));
+  const deserialized = sanitizeRuntimeSessionParams(codec.deserialize(serialized));
 
-  const displayId = truncateDisplayId(
+  const displayId = sanitizeRuntimeSessionDisplayId(
     explicitDisplayId ??
       (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
       readNonEmptyString(deserialized?.sessionId) ??
@@ -1484,7 +1581,7 @@ function resolveNextSessionState(input: {
     explicitSessionId ??
     readNonEmptyString(deserialized?.sessionId) ??
     displayId ??
-    (shouldUsePrevious ? previousLegacySessionId : null);
+    (shouldUsePrevious ? sanitizeRuntimeSessionDisplayId(previousLegacySessionId) : null);
 
   return {
     params: serialized,
@@ -3028,8 +3125,8 @@ export function heartbeatService(db: Db) {
     const companyId = input.agent.companyId;
     const nowMs = Date.now();
 
-    const [target, boardRows, openAssignedIssues, openUnassignedCountRow] = await Promise.all([
-      resolveOperationsHeartbeatTarget(db, {
+    const [targets, boardRows, openAssignedIssues, openUnassignedIssues] = await Promise.all([
+      resolveOperationsHeartbeatTargets(db, {
         companyId,
         operationsAgentId: input.agent.id,
       }),
@@ -3043,6 +3140,7 @@ export function heartbeatService(db: Db) {
           status: issues.status,
           identifier: issues.identifier,
           title: issues.title,
+          projectId: issues.projectId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeName: agents.name,
           assigneeStatus: agents.status,
@@ -3058,7 +3156,13 @@ export function heartbeatService(db: Db) {
           ),
         ),
       db
-        .select({ count: sql<number>`count(*)::int` })
+        .select({
+          id: issues.id,
+          status: issues.status,
+          identifier: issues.identifier,
+          title: issues.title,
+          projectId: issues.projectId,
+        })
         .from(issues)
         .where(
           and(
@@ -3068,7 +3172,7 @@ export function heartbeatService(db: Db) {
             sql`${issues.assigneeAgentId} is null`,
           ),
         )
-        .then((rows) => rows[0]),
+        .orderBy(desc(issues.updatedAt)),
     ]);
 
     const issueIds = openAssignedIssues.map((issue) => issue.id);
@@ -3076,7 +3180,7 @@ export function heartbeatService(db: Db) {
       new Set(openAssignedIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
     );
 
-    const [liveRunRows, latestCommentRows, latestOpsCommentRows] = await Promise.all([
+    const [liveRunRows, latestAssigneeRunRows, latestCommentRows, latestOpsCommentRows] = await Promise.all([
       assigneeAgentIds.length > 0
         ? db
             .select({ agentId: heartbeatRuns.agentId })
@@ -3085,9 +3189,30 @@ export function heartbeatService(db: Db) {
               and(
                 eq(heartbeatRuns.companyId, companyId),
                 inArray(heartbeatRuns.agentId, assigneeAgentIds),
-                inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES as unknown as string[]),
+                // Queued runs have not resumed work yet and should not suppress idle wake-ups.
+                inArray(
+                  heartbeatRuns.status,
+                  ACTIVE_ASSIGNEE_HEARTBEAT_RUN_STATUSES as unknown as string[],
+                ),
               ),
             )
+        : Promise.resolve([]),
+      assigneeAgentIds.length > 0
+        ? db
+            .selectDistinctOn([heartbeatRuns.agentId], {
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+              finishedAt: heartbeatRuns.finishedAt,
+              createdAt: heartbeatRuns.createdAt,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, companyId),
+                inArray(heartbeatRuns.agentId, assigneeAgentIds),
+              ),
+            )
+            .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt))
         : Promise.resolve([]),
       issueIds.length > 0
         ? db
@@ -3120,6 +3245,7 @@ export function heartbeatService(db: Db) {
     ]);
 
     const activeAssigneeIds = new Set(liveRunRows.map((row) => row.agentId));
+    const latestRunByAssigneeId = new Map(latestAssigneeRunRows.map((row) => [row.agentId, row]));
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
     const latestOpsCommentByIssueId = new Map(latestOpsCommentRows.map((row) => [row.issueId, row]));
 
@@ -3143,7 +3269,18 @@ export function heartbeatService(db: Db) {
 
       const latestOpsComment = latestOpsCommentByIssueId.get(issue.id);
       if (!latestOpsComment?.body.includes(OPERATIONS_IDLE_WAKE_MARKER)) return true;
-      return nowMs - latestOpsComment.createdAt.getTime() >= OPERATIONS_IDLE_WAKE_COOLDOWN_MS;
+      const latestAssigneeRun = latestRunByAssigneeId.get(assigneeAgentId);
+      const latestOpsWakeAtMs = latestOpsComment.createdAt.getTime();
+      const assigneeFailedSinceLastWake = Boolean(
+        latestAssigneeRun &&
+        ["failed", "timed_out", "cancelled"].includes(latestAssigneeRun.status) &&
+        (latestAssigneeRun.finishedAt?.getTime() ?? latestAssigneeRun.createdAt.getTime()) >= latestOpsWakeAtMs
+      );
+      const wakeCooldownMs =
+        issue.assigneeStatus === "error" || assigneeFailedSinceLastWake
+          ? OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS
+          : OPERATIONS_IDLE_WAKE_COOLDOWN_MS;
+      return nowMs - latestOpsComment.createdAt.getTime() >= wakeCooldownMs;
     });
 
     let wakeCommentCount = 0;
@@ -3197,17 +3334,370 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    let recoveryCommentCount = 0;
+    let recoveryWakeupCount = 0;
+    let requeuedOperationsIssueCount = 0;
+    let assignedIssueCount = 0;
+    let assignmentCommentCount = 0;
+    let assignmentWakeupCount = 0;
+    const idleHandledIssueIds = new Set(idleOwnedIssues.map((issue) => issue.id));
+    const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
+    const targetReasonByIssueId = new Map<string, string>();
+    const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+    for (const target of targets) {
+      if (!targetReasonByIssueId.has(target.issueId)) {
+        targetReasonByIssueId.set(target.issueId, target.reason);
+      }
+      if (target.mode !== "ops_active") continue;
+      const targetIssue = openAssignedIssueById.get(target.issueId);
+      if (!targetIssue) continue;
+      if (targetIssue.assigneeAgentId !== input.agent.id) continue;
+      if (isWatchdogIssueLabel(`${targetIssue.identifier ?? ""} ${targetIssue.title}`)) continue;
+      opsActiveTargetIssueIdsForAssignment.add(targetIssue.id);
+    }
+
+    const handledTargetIssueIds = new Set<string>();
+    for (const target of targets) {
+      if (handledTargetIssueIds.has(target.issueId)) continue;
+      const targetIssue = openAssignedIssueById.get(target.issueId) ?? null;
+      if (!targetIssue) continue;
+      if (idleHandledIssueIds.has(targetIssue.id)) {
+        handledTargetIssueIds.add(targetIssue.id);
+        continue;
+      }
+      const latestOpsTargetComment = latestOpsCommentByIssueId.get(targetIssue.id);
+      const targetRecoveryCooldownActive =
+        Boolean(
+          latestOpsTargetComment?.body
+          && (
+          latestOpsTargetComment.body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
+          || latestOpsTargetComment.body.includes(OPERATIONS_REQUEUE_MARKER)
+          ) &&
+          nowMs - latestOpsTargetComment.createdAt.getTime() < OPERATIONS_IDLE_WAKE_COOLDOWN_MS,
+        );
+      if (targetRecoveryCooldownActive) {
+        handledTargetIssueIds.add(targetIssue.id);
+        continue;
+      }
+      handledTargetIssueIds.add(targetIssue.id);
+
+      if (target.mode === "cross_agent_recovery" && targetIssue.assigneeAgentId) {
+        try {
+          await issuesSvc.addComment(
+            targetIssue.id,
+            buildOperationsRecoveryWakeComment({
+              assigneeAgentId: targetIssue.assigneeAgentId,
+              assigneeName: targetIssue.assigneeName,
+              reason: target.reason,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          recoveryCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+            "operations heartbeat failed to post recovery wake comment",
+          );
+        }
+
+        try {
+          await enqueueWakeup(targetIssue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "operations_cross_agent_recovery",
+            payload: {
+              issueId: targetIssue.id,
+              mutation: "operations_cross_agent_recovery",
+              sourceRunId: input.run.id,
+            },
+            requestedByActorType: "agent",
+            requestedByActorId: input.agent.id,
+            contextSnapshot: {
+              issueId: targetIssue.id,
+              taskId: targetIssue.id,
+              source: "operations.heartbeat",
+              wakeReason: "operations_cross_agent_recovery",
+            },
+          });
+          recoveryWakeupCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+            "operations heartbeat failed to enqueue cross-agent recovery wakeup",
+          );
+        }
+      }
+
+      if (
+        target.mode === "ops_active"
+        && targetIssue.assigneeAgentId === input.agent.id
+        && !isWatchdogIssueLabel(`${targetIssue.identifier ?? ""} ${targetIssue.title}`)
+      ) {
+        try {
+          await issuesSvc.addComment(
+            targetIssue.id,
+            buildOperationsRequeueComment({ reason: target.reason }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+        } catch (err) {
+          logger.warn({ err, issueId: targetIssue.id }, "operations heartbeat failed to post requeue comment");
+        }
+
+        try {
+          await issuesSvc.update(targetIssue.id, {
+            assigneeAgentId: null,
+            ...(targetIssue.status === "in_progress" ? { status: "todo" } : {}),
+            actorAgentId: input.agent.id,
+          });
+          requeuedOperationsIssueCount += 1;
+        } catch (err) {
+          logger.warn({ err, issueId: targetIssue.id }, "operations heartbeat failed to requeue ops-owned issue");
+        }
+      }
+    }
+
+    const availableAssignmentCandidates = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        capabilities: agents.capabilities,
+        status: agents.status,
+        runtimeConfig: agents.runtimeConfig,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.filter((row) => (
+        row.id !== input.agent.id &&
+        row.status !== "paused" &&
+        row.status !== "terminated" &&
+        row.status !== "pending_approval" &&
+        !isOrchestratorOnlyAgent(row)
+      )));
+
+    function pickAssignmentCandidate(issue: {
+      id: string;
+      identifier: string | null;
+      title: string;
+      projectId: string | null;
+    }) {
+      const sameProjectCounts = new Map<string, number>();
+      for (const candidateIssue of openAssignedIssues) {
+        if (!candidateIssue.assigneeAgentId) continue;
+        if (candidateIssue.projectId !== issue.projectId) continue;
+        sameProjectCounts.set(
+          candidateIssue.assigneeAgentId,
+          (sameProjectCounts.get(candidateIssue.assigneeAgentId) ?? 0) + 1,
+        );
+      }
+
+      const issueText = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
+      const healthyCandidates = availableAssignmentCandidates.filter((candidate) => candidate.status !== "error");
+      const candidatePool = healthyCandidates.length > 0 ? healthyCandidates : availableAssignmentCandidates;
+
+      const ranked = candidatePool
+        .map((candidate) => {
+          let score = (sameProjectCounts.get(candidate.id) ?? 0) * 100;
+          const candidateText = `${candidate.name ?? ""} ${candidate.title ?? ""} ${candidate.capabilities ?? ""}`.toLowerCase();
+
+          if (candidate.status === "idle") score += 25;
+          else if (candidate.status === "running") score += 10;
+          else if (candidate.status === "error") score -= 200;
+
+          if (/\bqa|release|audit|verify|test\b/.test(issueText)) {
+            if (candidate.role === "qa" || /\bqa|release\b/.test(candidateText)) score += 120;
+          } else if (/\blead|restaurant|prospect|sheet\b/.test(issueText)) {
+            if (candidate.role === "researcher" || /lead generation|sales/.test(candidateText)) score += 120;
+          } else if (candidate.role === "engineer" || /\bengineer|app|web|platform\b/.test(candidateText)) {
+            score += 90;
+          }
+
+          return { candidate, score };
+        })
+        .sort((a, b) => b.score - a.score || a.candidate.name.localeCompare(b.candidate.name));
+
+      return ranked[0]?.candidate ?? null;
+    }
+
+    const issuesNeedingAssignment = [
+      ...openUnassignedIssues,
+      ...Array.from(opsActiveTargetIssueIdsForAssignment).flatMap((issueId) => {
+        const issue = openAssignedIssueById.get(issueId);
+        if (!issue) return [];
+        return [{
+          id: issue.id,
+          status: issue.status,
+          identifier: issue.identifier,
+          title: issue.title,
+          projectId: issue.projectId,
+        }];
+      }),
+    ];
+    const assignedIssueIds = new Set<string>();
+
+    for (const issue of issuesNeedingAssignment) {
+      if (assignedIssueIds.has(issue.id)) continue;
+      const candidate = pickAssignmentCandidate(issue);
+      if (!candidate) continue;
+
+      try {
+        await issuesSvc.update(issue.id, {
+          assigneeAgentId: candidate.id,
+          ...(issue.status === "backlog" ? { status: "todo" } : {}),
+          actorAgentId: input.agent.id,
+        });
+        assignedIssueCount += 1;
+        assignedIssueIds.add(issue.id);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, assigneeAgentId: candidate.id }, "operations heartbeat failed to assign issue");
+        continue;
+      }
+
+      try {
+        await issuesSvc.addComment(
+          issue.id,
+          buildOperationsAssignmentComment({
+            assigneeAgentId: candidate.id,
+            assigneeName: candidate.name,
+            reason: targetReasonByIssueId.get(issue.id) ?? "ready unassigned work requires ownership",
+          }),
+          { agentId: input.agent.id, runId: input.run.id },
+        );
+        assignmentCommentCount += 1;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, assigneeAgentId: candidate.id },
+          "operations heartbeat failed to post assignment comment",
+        );
+      }
+
+      try {
+        await enqueueWakeup(candidate.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "operations_assignment",
+          payload: {
+            issueId: issue.id,
+            mutation: "operations_assignment",
+            sourceRunId: input.run.id,
+          },
+          requestedByActorType: "agent",
+          requestedByActorId: input.agent.id,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            source: "operations.heartbeat",
+            wakeReason: "operations_assignment",
+          },
+        });
+        assignmentWakeupCount += 1;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, assigneeAgentId: candidate.id },
+          "operations heartbeat failed to enqueue assignment wakeup",
+        );
+      }
+    }
+
+    const primaryTarget = targets[0] ?? null;
+
     return {
-      target,
+      target: primaryTarget,
       sweep: {
         boardCount: boardRows.length,
         assignedOpenCount: openAssignedIssues.length,
-        unassignedOpenCount: Number(openUnassignedCountRow?.count ?? 0),
+        unassignedOpenCount: openUnassignedIssues.length,
         idleOwnedAssignedCount: idleOwnedIssues.length,
         wakeCommentCount,
         wakeupCount,
+        recoveryCommentCount,
+        recoveryWakeupCount,
+        requeuedOperationsIssueCount,
+        assignedIssueCount,
+        assignmentCommentCount,
+        assignmentWakeupCount,
       },
     };
+  }
+
+  async function finalizeOperationsOrchestratorRun(input: {
+    agent: typeof agents.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+  }) {
+    const operationsHeartbeatSweep = parseObject(input.context.operationsHeartbeatSweep);
+    const blockedTargetIssueId =
+      Number(operationsHeartbeatSweep.recoveryCommentCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.recoveryWakeupCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.requeuedOperationsIssueCount ?? 0) > 0
+        ? null
+        : (readNonEmptyString(operationsHeartbeatSweep.targetIssueId) ?? input.issueId);
+    const resultJson = sanitizePostgresTextValue({
+      mode: "orchestrator_only",
+      specialistExecutionBlocked: true,
+      blockedIssueId: blockedTargetIssueId,
+      operationsHeartbeatSweep,
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: sanitizePostgresTextValue(input.context),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, input.run.id));
+
+    const finalizedRun = await setRunStatus(input.run.id, "succeeded", {
+      finishedAt: new Date(),
+      error: null,
+      resultJson,
+    });
+
+    await setWakeupStatus(input.run.wakeupRequestId, "completed", {
+      finishedAt: new Date(),
+      error: null,
+    });
+
+    if (finalizedRun) {
+      await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message:
+          blockedTargetIssueId
+            ? "operations run completed orchestration-only sweep; specialist issue execution was blocked"
+            : "operations run completed orchestration-only sweep",
+        payload: {
+          blockedIssueId: blockedTargetIssueId,
+          operationsHeartbeatSweep,
+        },
+      });
+      await finalizeIssueCommentPolicy(finalizedRun, input.agent);
+      await releaseIssueExecutionAndPromote(finalizedRun);
+      await updateRuntimeState(
+        input.agent,
+        finalizedRun,
+        {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          resultJson,
+          provider: "paperclip",
+          biller: "paperclip",
+          model: "operations-orchestrator",
+          billingType: "fixed",
+          costUsd: 0,
+          summary: "Operations run completed without adapter execution.",
+        },
+        { legacySessionId: null },
+        null,
+      );
+    }
+
+    await finalizeAgentStatus(input.agent.id, "succeeded");
   }
 
   async function executeRun(runId: string) {
@@ -3275,13 +3765,13 @@ export function heartbeatService(db: Db) {
         targetMode: operationsSweep.target?.mode ?? null,
         targetReason: operationsSweep.target?.reason ?? null,
       };
-      if (!issueId && operationsSweep.target?.issueId) {
-        issueId = operationsSweep.target.issueId;
-        context.issueId = operationsSweep.target.issueId;
-        if (!readNonEmptyString(context.taskId)) {
-          context.taskId = operationsSweep.target.issueId;
-        }
-      }
+      await finalizeOperationsOrchestratorRun({
+        agent,
+        run,
+        context,
+        issueId,
+      });
+      return;
     }
 
     const wakeReason = readNonEmptyString(context.wakeReason);
@@ -3645,7 +4135,7 @@ export function heartbeatService(db: Db) {
         cwd: executionWorkspace.cwd,
       },
     });
-    const runtimeSessionParams = runtimeSessionResolution.sessionParams;
+    const runtimeSessionParams = sanitizeRuntimeSessionParams(runtimeSessionResolution.sessionParams);
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
@@ -3692,8 +4182,8 @@ export function heartbeatService(db: Db) {
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    let previousSessionDisplayId = truncateDisplayId(
+    const runtimeSessionFallback = taskKey || resetTaskSession ? null : sanitizeRuntimeSessionDisplayId(runtime.sessionId);
+    let previousSessionDisplayId = sanitizeRuntimeSessionDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
@@ -3701,7 +4191,7 @@ export function heartbeatService(db: Db) {
         runtimeSessionFallback,
     );
     let runtimeSessionIdForAdapter =
-      readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
+      sanitizeRuntimeSessionDisplayId(readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback);
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
 
     const sessionCompaction = await evaluateSessionCompaction({
