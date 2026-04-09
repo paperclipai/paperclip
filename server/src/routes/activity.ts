@@ -23,6 +23,7 @@ export function activityRoutes(db: Db) {
   const svc = activityService(db);
   const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
+  const threadSvc = executionThreadService(db);
 
   async function resolveIssueByRef(rawId: string) {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
@@ -89,7 +90,6 @@ export function activityRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const threadSvc = executionThreadService(db);
     const result = await threadSvc.getThread(issue.id);
     res.json(result);
   });
