@@ -60,4 +60,4 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
-packages/plugins/youtube-intelligence/
+packages/plugins/harper-cmo/
