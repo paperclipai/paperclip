@@ -127,9 +127,9 @@ export function GlobalChatBubble() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col w-96 h-[560px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col w-96 h-[560px] bg-card border border-border rounded-xl shadow-2xl">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/30 shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/30 shrink-0 rounded-t-xl">
         {/* Agent selector */}
         <div className="relative flex-1 min-w-0" ref={agentPickerRef}>
           <button
@@ -194,7 +194,7 @@ export function GlobalChatBubble() {
       </div>
 
       {/* Chat body */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden rounded-b-xl">
         {selectedAgent && selectedChatId ? (
           <AgentChatThread
             agentId={selectedAgent.id}
