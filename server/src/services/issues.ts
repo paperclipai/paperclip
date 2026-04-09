@@ -1779,9 +1779,11 @@ export function issueService(db: Db) {
           or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
         )
         : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
-      const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
-        : isNull(issues.executionRunId);
+      // `checkoutRunId` is the authoritative "active checkout" indicator.
+      // `executionRunId` may linger after a run ends; it must not block new checkouts.
+      const checkoutLockCondition = checkoutRunId
+        ? or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId))
+        : isNull(issues.checkoutRunId);
       const updated = await db
         .update(issues)
         .set({
@@ -1798,7 +1800,7 @@ export function issueService(db: Db) {
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
+            checkoutLockCondition,
           ),
         )
         .returning()
@@ -1979,6 +1981,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
+          executionAgentNameKey: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
