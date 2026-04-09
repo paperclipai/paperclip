@@ -708,6 +708,7 @@ export const PLUGIN_EVENT_TYPES = [
   "approval.decided",
   "cost_event.created",
   "activity.logged",
+  "agent.delegation.created",
 ] as const;
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 
