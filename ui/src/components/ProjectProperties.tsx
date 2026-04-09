@@ -634,10 +634,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         )}
       </div>
 
-      </div>
-      <div className="rounded-lg bg-card p-4">
-
-      <div className="space-y-1 py-4">
+      <div className="rounded-lg bg-card p-4 space-y-1">
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Codebase</span>
@@ -895,10 +892,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
         {isolatedWorkspacesEnabled ? (
           <>
-            </div>
-      <div className="rounded-lg bg-card p-4">
-
-            <div className="py-1.5 space-y-2">
+            <div className="mt-4 pt-4 border-t border-border/30 space-y-2">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span>Execution Workspaces</span>
                 <Tooltip>
@@ -1119,8 +1113,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </div>
           </>
         ) : null}
-
-      </div>
 
       </div>
 
