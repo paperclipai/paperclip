@@ -1409,6 +1409,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        if (!claimedNextRunAt) continue;
 
         const dispatchTimes: Date[] = [];
         let scheduleTimeISO = claimedNextRunAt.toISOString();
