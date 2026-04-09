@@ -25,9 +25,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
-import { getUIAdapter, buildTranscript } from "../adapters";
+import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -263,12 +264,16 @@ function runMetrics(run: HeartbeatRun) {
   );
   const cost =
     visibleRunCostUsd(usage, result);
+  const provider = asNonEmptyString(usage?.provider) ?? null;
+  const model = asNonEmptyString(usage?.model) ?? null;
   return {
     input,
     output,
     cached,
     cost,
     totalTokens: input + output,
+    provider,
+    model,
   };
 }
 
@@ -283,6 +288,98 @@ function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+export function RunInvocationCard({
+  payload,
+  censorUsernameInLogs,
+}: {
+  payload: Record<string, unknown>;
+  censorUsernameInLogs: boolean;
+}) {
+  const commandLine = [
+    typeof payload.command === "string" ? payload.command : null,
+    ...(Array.isArray(payload.commandArgs)
+      ? payload.commandArgs.filter((value): value is string => typeof value === "string")
+      : []),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  const hasAdvancedDetails =
+    commandLine.length > 0
+    || (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0)
+    || payload.prompt !== undefined
+    || payload.context !== undefined
+    || payload.env !== undefined;
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      {typeof payload.adapterType === "string" && (
+        <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{payload.adapterType}</div>
+      )}
+      {typeof payload.cwd === "string" && (
+        <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
+      )}
+      {hasAdvancedDetails && (
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
+            <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+            Details
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2 space-y-2">
+            {commandLine && (
+              <div className="text-xs break-all">
+                <span className="text-muted-foreground">Command: </span>
+                <span className="font-mono">{commandLine}</span>
+              </div>
+            )}
+            {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  {payload.commandNotes
+                    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                    .map((note, idx) => (
+                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                        {note}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+            {payload.prompt !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {typeof payload.prompt === "string"
+                    ? redactPathText(payload.prompt, censorUsernameInLogs)
+                    : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.context !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Context</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.env !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                  {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
+                </pre>
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
 }
 
 function parseStoredLogContent(content: string): RunLogChunk[] {
@@ -1035,6 +1132,7 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+          adapterConfig={agent.adapterConfig}
         />
       )}
 
@@ -1075,9 +1173,27 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const isLive = run.status === "running" || run.status === "queued";
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
-  const summary = run.resultJson
+  const summaryRaw = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
     : run.error ?? "";
+
+  // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
+  const summary = useMemo(() => {
+    if (!summaryRaw) return "";
+    const lines = summaryRaw
+      .replace(/^#{1,6}\s+/gm, "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+    const excerpt: string[] = [];
+    let chars = 0;
+    for (const line of lines) {
+      if (excerpt.length >= 3 || chars + line.length > 280) break;
+      excerpt.push(line);
+      chars += line.length;
+    }
+    return excerpt.join(" ");
+  }, [summaryRaw]);
 
   return (
     <div className="space-y-3">
@@ -1512,30 +1628,16 @@ function ConfigurationTab({
                 Lets this agent create or hire agents and implicitly assign tasks.
               </p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              data-slot="toggle"
-              aria-checked={canCreateAgents}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canCreateAgents ? "bg-green-600" : "bg-muted",
-              )}
-              onClick={() =>
+            <ToggleSwitch
+              checked={canCreateAgents}
+              onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending}
-            >
-              <span
-                className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                  canCreateAgents ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
+            />
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
@@ -1544,30 +1646,16 @@ function ConfigurationTab({
                 {taskAssignHint}
               </p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              data-slot="toggle"
-              aria-checked={canAssignTasks}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canAssignTasks ? "bg-green-600" : "bg-muted",
-              )}
-              onClick={() =>
+            <ToggleSwitch
+              checked={canAssignTasks}
+              onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,
                   canAssignTasks: !canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending || taskAssignLocked}
-            >
-              <span
-                className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                  canAssignTasks ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
+            />
           </div>
         </div>
       </div>
@@ -1899,7 +1987,7 @@ function PromptsTab({
   }
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6">
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
@@ -2351,6 +2439,7 @@ function AgentSkillsTab({
   const queryClient = useQueryClient();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const [unmanagedOpen, setUnmanagedOpen] = useState(false);
   const lastSavedSkillsRef = useRef<string[]>([]);
   const hasHydratedSkillSnapshotRef = useRef(false);
   const skipNextSkillAutosaveRef = useRef(true);
@@ -2680,12 +2769,19 @@ function AgentSkillsTab({
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">
-                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="flex cursor-pointer items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 select-none"
+                      onClick={() => setUnmanagedOpen((v) => !v)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
+                    >
                       <span className="text-xs font-medium text-muted-foreground">
-                        User-installed skills, not managed by Paperclip
+                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
                       </span>
+                      {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
-                    {unmanagedSkillRows.map(renderSkillRow)}
+                    {unmanagedOpen && unmanagedSkillRows.map(renderSkillRow)}
                   </section>
                 )}
               </>
@@ -2787,6 +2883,7 @@ function RunsTab({
   agentRouteId,
   selectedRunId,
   adapterType,
+  adapterConfig,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -2794,6 +2891,7 @@ function RunsTab({
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
+  adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
 
@@ -2822,7 +2920,7 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to runs
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       );
     }
@@ -2853,7 +2951,7 @@ function RunsTab({
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       )}
     </div>
@@ -2862,7 +2960,7 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -2911,7 +3009,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: resumePayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error("Resume request was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Resume request was skipped.");
       }
       return result;
     },
@@ -2943,7 +3041,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: retryPayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error("Retry was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Retry was skipped.");
       }
       return result;
     },
@@ -3056,6 +3154,27 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 </Button>
               )}
             </div>
+            {/* Adapter type · provider · model */}
+            {(() => {
+              const displayProvider = metrics.provider
+                ?? asNonEmptyString(adapterConfig?.provider);
+              const displayModel = metrics.model
+                ?? asNonEmptyString(adapterConfig?.model);
+              if (!adapterType && !displayProvider && !displayModel) return null;
+              return (
+                <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
+                  {adapterType && (
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
+                  )}
+                  {displayProvider && displayModel && (
+                    <span>{displayProvider}/{displayModel}</span>
+                  )}
+                  {!displayProvider && displayModel && (
+                    <span>{displayModel}</span>
+                  )}
+                </div>
+              );
+            })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
@@ -3644,10 +3763,20 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
   }, [censorUsernameInLogs, events]);
 
-  const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  // NOTE: adapter is NOT memoized because external adapters replace their
+  // parseStdoutLine asynchronously after dynamic parser loading. Memoizing
+  // on adapterType alone would stale the transcript with the fallback parser.
+  // We subscribe to adapter registry changes to force transcript recomputation.
+  const [parserTick, setParserTick] = useState(0);
+  const adapter = getUIAdapter(adapterType);
+
+  useEffect(() => {
+    return onAdapterChange(() => setParserTick((t) => t + 1));
+  }, []);
+
   const transcript = useMemo(
-    () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
-    [adapter, censorUsernameInLogs, logLines],
+    () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
+    [adapter, censorUsernameInLogs, logLines, parserTick],
   );
 
   useEffect(() => {
@@ -3681,68 +3810,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? redactPathText(adapterInvokePayload.prompt, censorUsernameInLogs)
-                  : JSON.stringify(redactPathValue(adapterInvokePayload.prompt, censorUsernameInLogs), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(redactPathValue(adapterInvokePayload.context, censorUsernameInLogs), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env, censorUsernameInLogs)}
-              </pre>
-            </div>
-          )}
-        </div>
+        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
       )}
 
       <div className="flex items-center justify-between">

@@ -73,7 +73,7 @@ POST /api/issues/{issueId}/checkout
 Headers: X-Paperclip-Run-Id: {runId}
 {
   "agentId": "{yourAgentId}",
-  "expectedStatuses": ["todo", "backlog", "blocked"]
+  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
 }
 ```
 

@@ -177,6 +177,8 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
+If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
+
 Or manually:
 
 ```bash
@@ -234,15 +236,39 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 ## Roadmap
 
-- ⚪ Get OpenClaw onboarding easier
-- ⚪ Get cloud agents working e.g. Cursor / e2b agents
-- ⚪ ClipMart - buy and sell entire agent companies
-- ⚪ Easy agent configurations / easier to understand
-- ⚪ Better support for harness engineering
-- 🟢 Plugin system (e.g. if you want to add a knowledgebase, custom tracing, queues, etc)
-- ⚪ Better docs
+- ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
+- ✅ Get OpenClaw / claw-style agent employees
+- ✅ companies.sh - import and export entire organizations
+- ✅ Easy AGENTS.md configurations
+- ✅ Skills Manager
+- ✅ Scheduled Routines
+- ✅ Better Budgeting
+- ⚪ Artifacts & Deployments
+- ⚪ CEO Chat
+- ⚪ MAXIMIZER MODE
+- ⚪ Multiple Human Users
+- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud deployments
+- ⚪ Desktop App
 
 <br/>
+
+## Community & Plugins
+
+Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+
+## Telemetry
+
+Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
+
+Telemetry is **enabled by default** and can be disabled with any of the following:
+
+| Method | How |
+|---|---|
+| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1` |
+| Standard convention | `DO_NOT_TRACK=1` |
+| CI environments | Automatically disabled when `CI=true` |
+| Config file | Set `telemetry.enabled: false` in your Paperclip config |
 
 ## Contributing
 

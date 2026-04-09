@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { activityRoutes } from "../routes/activity.js";
 
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -17,15 +15,21 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
-vi.mock("../services/activity.js", () => ({
-  activityService: () => mockActivityService,
-}));
+function registerRouteMocks() {
+  vi.doMock("../services/activity.js", () => ({
+    activityService: () => mockActivityService,
+  }));
 
-vi.mock("../services/index.js", () => ({
-  issueService: () => mockIssueService,
-}));
+  vi.doMock("../services/index.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+}
 
-function createApp() {
+async function createApp() {
+  const [{ errorHandler }, { activityRoutes }] = await Promise.all([
+    import("../middleware/index.js"),
+    import("../routes/activity.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -45,6 +49,8 @@ function createApp() {
 
 describe("activity routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerRouteMocks();
     vi.clearAllMocks();
   });
 
@@ -56,15 +62,17 @@ describe("activity routes", () => {
     mockActivityService.runsForIssue.mockResolvedValue([
       {
         runId: "run-1",
+        adapterType: "codex_local",
       },
     ]);
 
-    const res = await request(createApp()).get("/api/issues/PAP-475/runs");
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/PAP-475/runs");
 
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
-    expect(res.body).toEqual([{ runId: "run-1" }]);
+    expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 });
