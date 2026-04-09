@@ -1798,7 +1798,16 @@ function PromptsTab({
   useEffect(() => {
     if (!bundle) return;
     setBundleDraft((current) => {
-      if (current) return current;
+      // Preserve draft only if user has unsaved edits (draft differs from persisted state)
+      if (
+        current &&
+        (current.mode !== persistedMode ||
+         current.rootPath !== persistedRootPath ||
+         current.entryFile !== bundle.entryFile)
+      ) {
+        return current;
+      }
+      // Initialize or re-sync to latest persisted state
       return {
         mode: persistedMode,
         rootPath: persistedRootPath,
