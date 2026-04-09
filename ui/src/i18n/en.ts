@@ -1,0 +1,140 @@
+export const en = {
+  // Sidebar
+  "sidebar.newIssue": "New Issue",
+  "sidebar.dashboard": "Dashboard",
+  "sidebar.inbox": "Inbox",
+  "sidebar.work": "Work",
+  "sidebar.issues": "Issues",
+  "sidebar.cycles": "Cycles",
+  "sidebar.approvals": "Approvals",
+  "sidebar.goals": "Goals",
+  "sidebar.teams": "Teams",
+  "sidebar.rooms": "Rooms",
+  "sidebar.projects": "Projects",
+  "sidebar.workers": "Workers",
+  "sidebar.agents": "Agents",
+  "sidebar.company": "Company",
+  "sidebar.org": "Org",
+  "sidebar.recruiting": "Recruiting",
+  "sidebar.skills": "Skills",
+  "sidebar.costs": "Costs",
+  "sidebar.activity": "Activity",
+  "sidebar.settings": "Settings",
+
+  // Page titles & descriptions
+  "page.issues.title": "Issues",
+  "page.issues.description": "Track and manage all work items across your organization.",
+  "page.cycles.title": "Cycles",
+  "page.cycles.description": "Recurring work definitions that materialize into auditable execution issues.",
+  "page.approvals.title": "Approvals",
+  "page.approvals.description": "Review and approve agent actions, hiring proposals, and execution requests.",
+  "page.goals.title": "Goals",
+  "page.goals.description": "Company-wide objectives that guide team priorities and project alignment.",
+  "page.dashboard.title": "Dashboard",
+  "page.dashboard.description": "Overview of key metrics and recent activity.",
+  "page.orgChart.title": "Org Chart",
+  "page.orgChart.description": "Visualize the organizational structure and reporting lines.",
+  "page.agents.title": "Agents",
+  "page.agents.description": "Manage AI agents and monitor their execution status.",
+  "page.recruiting.title": "Recruiting",
+  "page.recruiting.description": "Manage hiring pipelines and candidate evaluations.",
+  "page.skills.title": "Skills",
+  "page.skills.description": "Define and track skill capabilities across the organization.",
+  "page.costs.title": "Costs",
+  "page.costs.description": "Track spending, budgets, and resource allocation.",
+  "page.activity.title": "Activity",
+  "page.activity.description": "Recent actions and events across all teams.",
+  "page.inbox.title": "Inbox",
+  "page.inbox.description": "Notifications and messages requiring your attention.",
+
+  // Actions
+  "action.create": "Create",
+  "action.save": "Save",
+  "action.cancel": "Cancel",
+  "action.delete": "Delete",
+  "action.edit": "Edit",
+  "action.add": "Add",
+  "action.remove": "Remove",
+  "action.close": "Close",
+  "action.confirm": "Confirm",
+  "action.approve": "Approve",
+  "action.reject": "Reject",
+  "action.newIssue": "New Issue",
+  "action.newGoal": "New Goal",
+  "action.createRoutine": "Create routine",
+  "action.createRoom": "Create room",
+  "action.createTeam": "Create team",
+  "action.createProject": "Create project",
+
+  // Tabs
+  "tab.pending": "Pending",
+  "tab.all": "All",
+  "tab.routines": "Routines",
+  "tab.runs": "Recent Runs",
+  "tab.active": "Active",
+  "tab.paused": "Paused",
+  "tab.error": "Error",
+
+  // Empty states
+  "empty.noIssues": "No issues match the current filters or search.",
+  "empty.noGoals": "No goals yet. Create one to align your teams.",
+  "empty.noPendingApprovals": "No pending approvals.",
+  "empty.noApprovals": "No approvals yet.",
+  "empty.noRooms": "No rooms yet.",
+  "empty.noTeams": "No teams yet.",
+  "empty.noMessages": "No messages yet.",
+  "empty.selectCompany": "Select a company to get started.",
+
+  // Room
+  "room.participants": "Participants",
+  "room.linkedIssues": "Linked Issues",
+  "room.addAgent": "Add agent",
+  "room.compose": "Type a message\u2026",
+  "room.you": "You",
+
+  // Agent
+  "agent.online": "online",
+  "agent.idle": "idle",
+  "agent.live": "live",
+
+  // Settings
+  "settings.general": "General",
+  "settings.language": "Language",
+  "settings.languageDescription": "Select the display language for the interface.",
+
+  // Project
+  "project.overview": "Overview",
+  "project.configuration": "Configuration",
+  "project.budget": "Budget",
+  "project.linkedTeams": "Linked Teams",
+  "project.members": "Members",
+  "project.milestones": "Milestones",
+  "project.healthUpdates": "Health Updates",
+  "project.addMilestone": "Add milestone...",
+  "project.postHealthUpdate": "What's the latest status?",
+  "project.dangerZone": "Danger Zone",
+  "project.linkTeam": "Link Team",
+  "project.addMember": "Add Member",
+
+  // Misc
+  "misc.beta": "Beta",
+  "misc.filter": "Filter",
+  "misc.search": "Search",
+  "misc.noData": "No data",
+
+  // Dialogs
+  "dialog.newRoom": "New Room",
+  "dialog.newTeam": "New Team",
+  "dialog.newProject": "New Project",
+  "dialog.newIssue": "New Issue",
+  "dialog.newSubIssue": "New Sub-Issue",
+
+  // Placeholders
+  "placeholder.roomName": "Room name",
+  "placeholder.teamName": "Team name",
+  "placeholder.projectName": "Project name",
+  "placeholder.issueTitle": "Issue title",
+  "placeholder.addDescription": "Add description...",
+} as const;
+
+export type TranslationKey = keyof typeof en;

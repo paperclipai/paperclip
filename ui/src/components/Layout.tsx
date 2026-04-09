@@ -20,6 +20,7 @@ import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { useDialog } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
+import { LocaleProvider } from "../i18n";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -269,6 +270,7 @@ export function Layout() {
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
+      <LocaleProvider>
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
@@ -449,6 +451,7 @@ export function Layout() {
       <NewTeamDialog />
       <ToastViewport />
       </div>
+      </LocaleProvider>
     </GeneralSettingsProvider>
   );
 }

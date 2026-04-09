@@ -1,0 +1,140 @@
+import type { TranslationKey } from "./en";
+
+export const ko: Record<TranslationKey, string> = {
+  // Sidebar
+  "sidebar.newIssue": "새 이슈",
+  "sidebar.dashboard": "대시보드",
+  "sidebar.inbox": "수신함",
+  "sidebar.work": "업무",
+  "sidebar.issues": "이슈",
+  "sidebar.cycles": "사이클",
+  "sidebar.approvals": "승인",
+  "sidebar.goals": "목표",
+  "sidebar.teams": "팀",
+  "sidebar.rooms": "룸",
+  "sidebar.projects": "프로젝트",
+  "sidebar.workers": "워커",
+  "sidebar.agents": "에이전트",
+  "sidebar.company": "회사",
+  "sidebar.org": "조직도",
+  "sidebar.recruiting": "채용",
+  "sidebar.skills": "스킬",
+  "sidebar.costs": "비용",
+  "sidebar.activity": "활동",
+  "sidebar.settings": "설정",
+
+  // Page titles & descriptions
+  "page.issues.title": "이슈",
+  "page.issues.description": "조직 전체의 작업 항목을 추적하고 관리합니다.",
+  "page.cycles.title": "사이클",
+  "page.cycles.description": "반복 업무 정의를 감사 가능한 실행 이슈로 구체화합니다.",
+  "page.approvals.title": "승인",
+  "page.approvals.description": "에이전트 작업, 채용 제안, 실행 요청을 검토하고 승인합니다.",
+  "page.goals.title": "목표",
+  "page.goals.description": "팀 우선순위와 프로젝트 정렬을 안내하는 전사 목표입니다.",
+  "page.dashboard.title": "대시보드",
+  "page.dashboard.description": "주요 지표와 최근 활동을 한눈에 확인합니다.",
+  "page.orgChart.title": "조직도",
+  "page.orgChart.description": "조직 구조와 보고 체계를 시각화합니다.",
+  "page.agents.title": "에이전트",
+  "page.agents.description": "AI 에이전트를 관리하고 실행 상태를 모니터링합니다.",
+  "page.recruiting.title": "채용",
+  "page.recruiting.description": "채용 파이프라인과 후보자 평가를 관리합니다.",
+  "page.skills.title": "스킬",
+  "page.skills.description": "조직 전체의 스킬 역량을 정의하고 추적합니다.",
+  "page.costs.title": "비용",
+  "page.costs.description": "지출, 예산, 리소스 배분을 추적합니다.",
+  "page.activity.title": "활동",
+  "page.activity.description": "모든 팀의 최근 작업과 이벤트입니다.",
+  "page.inbox.title": "수신함",
+  "page.inbox.description": "확인이 필요한 알림과 메시지입니다.",
+
+  // Actions
+  "action.create": "생성",
+  "action.save": "저장",
+  "action.cancel": "취소",
+  "action.delete": "삭제",
+  "action.edit": "수정",
+  "action.add": "추가",
+  "action.remove": "제거",
+  "action.close": "닫기",
+  "action.confirm": "확인",
+  "action.approve": "승인",
+  "action.reject": "거절",
+  "action.newIssue": "새 이슈",
+  "action.newGoal": "새 목표",
+  "action.createRoutine": "루틴 생성",
+  "action.createRoom": "룸 생성",
+  "action.createTeam": "팀 생성",
+  "action.createProject": "프로젝트 생성",
+
+  // Tabs
+  "tab.pending": "대기 중",
+  "tab.all": "전체",
+  "tab.routines": "루틴",
+  "tab.runs": "최근 실행",
+  "tab.active": "활성",
+  "tab.paused": "일시중지",
+  "tab.error": "오류",
+
+  // Empty states
+  "empty.noIssues": "현재 필터 또는 검색과 일치하는 이슈가 없습니다.",
+  "empty.noGoals": "아직 목표가 없습니다. 팀 정렬을 위해 목표를 생성하세요.",
+  "empty.noPendingApprovals": "대기 중인 승인이 없습니다.",
+  "empty.noApprovals": "아직 승인이 없습니다.",
+  "empty.noRooms": "아직 룸이 없습니다.",
+  "empty.noTeams": "아직 팀이 없습니다.",
+  "empty.noMessages": "아직 메시지가 없습니다.",
+  "empty.selectCompany": "시작하려면 회사를 선택하세요.",
+
+  // Room
+  "room.participants": "참여자",
+  "room.linkedIssues": "연결된 이슈",
+  "room.addAgent": "에이전트 추가",
+  "room.compose": "메시지를 입력하세요\u2026",
+  "room.you": "나",
+
+  // Agent
+  "agent.online": "온라인",
+  "agent.idle": "대기",
+  "agent.live": "실행 중",
+
+  // Settings
+  "settings.general": "일반",
+  "settings.language": "언어",
+  "settings.languageDescription": "인터페이스 표시 언어를 선택합니다.",
+
+  // Project
+  "project.overview": "개요",
+  "project.configuration": "설정",
+  "project.budget": "예산",
+  "project.linkedTeams": "연결된 팀",
+  "project.members": "멤버",
+  "project.milestones": "마일스톤",
+  "project.healthUpdates": "상태 업데이트",
+  "project.addMilestone": "마일스톤 추가...",
+  "project.postHealthUpdate": "최신 상태를 입력하세요.",
+  "project.dangerZone": "위험 구역",
+  "project.linkTeam": "팀 연결",
+  "project.addMember": "멤버 추가",
+
+  // Misc
+  "misc.beta": "베타",
+  "misc.filter": "필터",
+  "misc.search": "검색",
+  "misc.noData": "데이터 없음",
+
+  // Dialogs
+  "dialog.newRoom": "새 룸",
+  "dialog.newTeam": "새 팀",
+  "dialog.newProject": "새 프로젝트",
+  "dialog.newIssue": "새 이슈",
+  "dialog.newSubIssue": "새 하위 이슈",
+
+  // Placeholders
+  "placeholder.roomName": "룸 이름",
+  "placeholder.teamName": "팀 이름",
+  "placeholder.projectName": "프로젝트 이름",
+  "placeholder.issueTitle": "이슈 제목",
+  "placeholder.addDescription": "설명 추가...",
+};
