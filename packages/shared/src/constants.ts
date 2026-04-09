@@ -193,12 +193,28 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system", "iteration_limit", "cost_anomaly"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "iteration_limit", "cost_anomaly", "rate_limited"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const DEFAULT_ITERATION_LIMITS = {
-  perTask: 20,
-  perDay: 100,
+  perTask: 50,
+  perDay: 500,
+} as const;
+
+/**
+ * Subscription-aware rate limits.
+ * Designed for Ollama Cloud (session-based billing, not per-token).
+ * Prevents runaway loops and respects provider session/weekly quotas
+ * without penalizing normal high-volume work.
+ */
+export const SUBSCRIPTION_RATE_LIMITS = {
+  /** Max heartbeat runs per agent per hour. Prevents single-agent runaway loops. */
+  perAgentPerHour: 30,
+  /** Max heartbeat runs across ALL agents per hour. Prevents cluster overload. */
+  allAgentsPerHour: 120,
+  /** Max consecutive runs by the same agent on the same issue without progress.
+   *  "No progress" = no new comments or status changes between runs. */
+  sameTaskNoProgressMax: 5,
 } as const;
 
 export const PROJECT_COLORS = [

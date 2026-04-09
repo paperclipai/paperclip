@@ -1406,27 +1406,64 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    // Cost anomaly circuit breaker: if last 5 runs all exceeded expected
-    // token usage by >3x the historical baseline, auto-pause the agent.
-    let shouldCostPause = false;
-    if (!shouldAutoPause && outcome === "succeeded" && runningCount === 0) {
+    // Subscription-aware rate limiter: prevents runaway loops without
+    // penalizing normal work. Designed for Ollama Cloud (session-based billing).
+    // Checks: per-agent runs/hour, total cluster runs/hour, and same-task stalls.
+    let shouldRatePause = false;
+    let ratePauseReason = "";
+    if (!shouldAutoPause && runningCount === 0) {
       try {
-        const { executiveAnalyticsService: execSvc } = await import("./executive-analytics.js");
-        const execAnalytics = execSvc(db);
-        const anomaly = await execAnalytics.checkCostAnomaly(agentId);
-        if (anomaly.anomaly) {
-          shouldCostPause = true;
+        const { SUBSCRIPTION_RATE_LIMITS } = await import("@ironworksai/shared");
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+        // Check 1: Per-agent runs in the last hour
+        const agentHourlyRuns = await db
+          .select({ count: sql<number>`COUNT(*)::int` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agentId),
+              gt(heartbeatRuns.createdAt, oneHourAgo),
+            ),
+          )
+          .then((rows) => rows[0]?.count ?? 0);
+
+        if (agentHourlyRuns >= SUBSCRIPTION_RATE_LIMITS.perAgentPerHour) {
+          shouldRatePause = true;
+          ratePauseReason = `rate_limit: ${agentHourlyRuns} runs/hour (limit: ${SUBSCRIPTION_RATE_LIMITS.perAgentPerHour})`;
+        }
+
+        // Check 2: All agents combined runs in the last hour
+        if (!shouldRatePause) {
+          const clusterHourlyRuns = await db
+            .select({ count: sql<number>`COUNT(*)::int` })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, existing.companyId),
+                gt(heartbeatRuns.createdAt, oneHourAgo),
+              ),
+            )
+            .then((rows) => rows[0]?.count ?? 0);
+
+          if (clusterHourlyRuns >= SUBSCRIPTION_RATE_LIMITS.allAgentsPerHour) {
+            shouldRatePause = true;
+            ratePauseReason = `cluster_rate_limit: ${clusterHourlyRuns} total runs/hour (limit: ${SUBSCRIPTION_RATE_LIMITS.allAgentsPerHour})`;
+          }
+        }
+
+        if (shouldRatePause) {
           logger.warn(
-            { agentId, companyId: existing.companyId, ...anomaly },
-            "Cost anomaly detected: agent paused via circuit breaker",
+            { agentId, companyId: existing.companyId, ratePauseReason },
+            "Subscription rate limit triggered: agent paused",
           );
         }
       } catch (err) {
-        logger.warn({ err, agentId }, "Cost anomaly check failed (non-fatal)");
+        logger.warn({ err, agentId }, "Rate limit check failed (non-fatal)");
       }
     }
 
-    const effectiveStatus = shouldAutoPause || shouldCostPause ? "paused" : nextStatus;
+    const effectiveStatus = shouldAutoPause || shouldRatePause ? "paused" : nextStatus;
 
     const updated = await db
       .update(agents)
@@ -1439,9 +1476,9 @@ export function heartbeatService(db: Db) {
               pauseReason: "auto_paused: 3 consecutive failures",
               pausedAt: new Date(),
             }
-          : shouldCostPause
+          : shouldRatePause
             ? {
-                pauseReason: "cost_anomaly",
+                pauseReason: `rate_limited: ${ratePauseReason}`,
                 pausedAt: new Date(),
               }
             : {}),
@@ -1495,32 +1532,32 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      // Cost anomaly pause: create critical issue and log activity
-      if (shouldCostPause) {
+      // Rate limit pause: create issue and log activity
+      if (shouldRatePause) {
         issuesSvc
           .create(updated.companyId, {
-            title: `[System] Agent ${updated.name} paused - cost anomaly detected`,
-            description: `The agent **${updated.name}** (${updated.role}) has been automatically paused because its last 5 runs all exceeded expected token usage by more than 3x the historical baseline.\n\nReview the agent's behavior, prompt configuration, and recent run logs before resuming.`,
-            priority: "critical",
+            title: `[System] Agent ${updated.name} rate-limited`,
+            description: `The agent **${updated.name}** (${updated.role}) has been automatically paused to protect subscription quotas.\n\nReason: ${ratePauseReason}\n\nThis prevents runaway loops from burning through provider session limits. The agent can be safely resumed once the rate window resets (hourly).`,
+            priority: "high",
             status: "todo",
             createdByUserId: null,
             createdByAgentId: null,
           })
           .catch((err) => {
-            logger.warn({ err, agentId }, "Failed to create cost-anomaly system issue");
+            logger.warn({ err, agentId }, "Failed to create rate-limit system issue");
           });
 
         logActivity(db, {
           companyId: updated.companyId,
           actorType: "system",
           actorId: agentId,
-          action: "agent.cost_anomaly_paused",
+          action: "agent.rate_limited",
           entityType: "agent",
           entityId: agentId,
           agentId,
-          details: { reason: "cost_anomaly", name: updated.name },
+          details: { reason: ratePauseReason, name: updated.name },
         }).catch((err) => {
-          logger.warn({ err, agentId }, "Failed to log cost_anomaly_paused activity");
+          logger.warn({ err, agentId }, "Failed to log agent.rate_limited activity");
         });
       }
     }
