@@ -14,6 +14,7 @@ import type { Tracer } from "@opentelemetry/api";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import type { TelemetryContext } from "./router.js";
+import { parentCtxFromServerTrace } from "./trace-utils.js";
 import { METRIC_NAMES } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -196,16 +197,8 @@ export async function handleActivityTraces(
     : undefined;
 
   // Fallback: use server-propagated trace context
-  if (!parentCtx && event.traceContext) {
-    const tc = event.traceContext;
-    if (tc.traceId && tc.spanId) {
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: tc.traceId,
-        spanId: tc.spanId,
-        traceFlags: tc.traceFlags ?? 1,
-        isRemote: true,
-      });
-    }
+  if (!parentCtx) {
+    parentCtx = parentCtxFromServerTrace(event);
   }
 
   if (!parentCtx && runId) {

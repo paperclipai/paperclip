@@ -14,6 +14,7 @@ import {
 } from "@opentelemetry/api";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import type { TelemetryContext } from "./router.js";
+import { parentCtxFromServerTrace } from "./trace-utils.js";
 import { mapProvider } from "../provider-map.js";
 import { METRIC_NAMES } from "../constants.js";
 
@@ -120,17 +121,9 @@ export async function handleRunStartedTraces(
   // run span under it for true distributed tracing.
   let parentCtx: ReturnType<typeof context.active> | undefined = undefined;
 
-  if (event.traceContext) {
-    const tc = event.traceContext;
-    if (tc.traceId && tc.spanId) {
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: tc.traceId,
-        spanId: tc.spanId,
-        traceFlags: tc.traceFlags ?? 1,
-        isRemote: true,
-      });
-      spanAttrs["paperclip.trace.server_propagated"] = true;
-    }
+  parentCtx = parentCtxFromServerTrace(event);
+  if (parentCtx) {
+    spanAttrs["paperclip.trace.server_propagated"] = true;
   }
 
   // --- Cross-agent delegation linking ---
@@ -539,16 +532,8 @@ export async function handleCostTraces(
     : undefined;
 
   // Fallback: use server-propagated trace context
-  if (!parentCtx && event.traceContext) {
-    const tc = event.traceContext;
-    if (tc.traceId && tc.spanId) {
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: tc.traceId,
-        spanId: tc.spanId,
-        traceFlags: tc.traceFlags ?? 1,
-        isRemote: true,
-      });
-    }
+  if (!parentCtx) {
+    parentCtx = parentCtxFromServerTrace(event);
   }
 
   // Fallback: restore parent context from plugin state if not in memory
@@ -658,16 +643,8 @@ export async function handleIssueCreatedTraces(
   }
 
   // Fallback: use server-propagated trace context
-  if (!parentCtx && event.traceContext) {
-    const tc = event.traceContext;
-    if (tc.traceId && tc.spanId) {
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: tc.traceId,
-        spanId: tc.spanId,
-        traceFlags: tc.traceFlags ?? 1,
-        isRemote: true,
-      });
-    }
+  if (!parentCtx) {
+    parentCtx = parentCtxFromServerTrace(event);
   }
 
   const spanAttrs: Record<string, string | number | boolean> = {

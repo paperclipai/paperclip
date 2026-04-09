@@ -175,11 +175,3 @@ export function withIssueSpan<T>(
   );
 }
 
-/**
- * Run `fn` within the context of the given span, so child spans and
- * extractTraceContext() see it as the active span.
- */
-export function withSpanContext<T>(span: Span, fn: () => T): T {
-  const ctx = trace.setSpan(context.active(), span);
-  return context.with(ctx, fn);
-}
