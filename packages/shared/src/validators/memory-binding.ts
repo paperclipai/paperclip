@@ -81,7 +81,7 @@ export type MemoryWrite = z.infer<typeof memoryWriteSchema>;
 
 export const memoryQuerySchema = z.object({
   scope: memoryScopeSchema,
-  query: z.string().min(1),
+  query: z.string().min(1).max(10_000),
   topK: z.number().int().positive().max(100).optional(),
   intent: z.enum(["agent_preamble", "answer", "browse"]).optional(),
   metadataFilter: z.record(z.unknown()).optional(),
@@ -91,7 +91,7 @@ export type MemoryQuery = z.infer<typeof memoryQuerySchema>;
 
 export const memoryForgetSchema = z.object({
   scope: memoryScopeSchema,
-  handles: z.array(memoryRecordHandleSchema).min(1),
+  handles: z.array(memoryRecordHandleSchema).min(1).max(100),
 });
 
 export type MemoryForget = z.infer<typeof memoryForgetSchema>;

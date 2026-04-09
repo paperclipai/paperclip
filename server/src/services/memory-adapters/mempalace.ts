@@ -226,23 +226,37 @@ export function createMempalaceMemoryAdapter(
     name: string,
     args_: Record<string, unknown>,
   ): Promise<ToolCallResult> {
-    const tryCall = (c: Client) =>
-      c.callTool({ name, arguments: args_ }, undefined, { timeout: callTimeoutMs });
+    const tryCall = async (c: Client) => {
+      const result = await c.callTool(
+        { name, arguments: args_ },
+        undefined,
+        { timeout: callTimeoutMs },
+      );
+      const typed = result as ToolCallResult;
+      if (typed.isError) {
+        const msg = extractText(typed) || `MCP tool "${name}" returned an error`;
+        throw new Error(msg);
+      }
+      return typed;
+    };
+
+    const isTransportError = (err: unknown): boolean =>
+      err instanceof Error &&
+      (/ECONN|EPIPE|ENETUNREACH|socket hang up/i.test(err.message) ||
+        err.name === "AbortError");
 
     try {
       const c = ensureConnected();
-      const result = await tryCall(c);
-      return result as ToolCallResult;
+      return await tryCall(c);
     } catch (err) {
-      // Attempt a single reconnect on connection-level failures
+      // Only retry on transport-level failures to avoid duplicate writes
+      if (!isTransportError(err)) throw err;
       try {
         await disconnect();
         await connect();
         const c = ensureConnected();
-        const result = await tryCall(c);
-        return result as ToolCallResult;
+        return await tryCall(c);
       } catch {
-        // Reconnect failed — throw the original error
         throw err;
       }
     }
@@ -369,8 +383,9 @@ export function createMempalaceMemoryAdapter(
       for (const r of results.slice(0, topK)) {
         const rWing = (r.wing as string) ?? wing;
         const rRoom = (r.room as string) ?? room;
-        // mempalace search results don't include drawer_id
-        const syntheticId = `${rWing ?? "global"}/${rRoom ?? "default"}/${snippets.length}`;
+        // mempalace search results don't include drawer_id — prefix with
+        // __search__ so forget()/get() can detect and skip these handles
+        const syntheticId = `__search__/${rWing ?? "global"}/${rRoom ?? "default"}/${snippets.length}`;
 
         snippets.push({
           handle: { providerKey: PROVIDER_KEY, providerRecordId: syntheticId },
@@ -409,6 +424,9 @@ export function createMempalaceMemoryAdapter(
     handle: MemoryRecordHandle,
     _scope: MemoryScope,
   ): Promise<MemorySnippet | null> {
+    // Synthetic handles from search results can't be resolved to a specific drawer
+    if (handle.providerRecordId.startsWith("__search__")) return null;
+
     const { drawerId, wing, room } = decodeHandle(handle);
 
     // Use mempalace_search with wing/room filters and drawerId as query
@@ -456,6 +474,8 @@ export function createMempalaceMemoryAdapter(
 
     for (const handle of handles) {
       if (handle.providerKey !== PROVIDER_KEY) continue;
+      // Skip synthetic handles from search results — no real drawer_id to delete
+      if (handle.providerRecordId.startsWith("__search__")) continue;
       const { drawerId } = decodeHandle(handle);
 
       try {

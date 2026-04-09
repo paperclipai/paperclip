@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdir, stat, readFile } from "node:fs/promises";
 import { join, relative, resolve, dirname, extname, basename } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -151,34 +152,29 @@ function serializeItemsYaml(facts: ParaFact[]): string {
 // File-system walking helpers
 // ---------------------------------------------------------------------------
 
-function walkFiles(dir: string, maxDepth = 5): string[] {
+async function walkFiles(dir: string, maxDepth = 5): Promise<string[]> {
   const results: string[] = [];
-  function walk(current: string, depth: number) {
+  async function walk(current: string, depth: number) {
     if (depth > maxDepth) return;
-    let entries: string[];
+    let entries;
     try {
-      entries = readdirSync(current);
+      entries = await readdir(current, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
-      const full = join(current, entry);
-      try {
-        const stat = statSync(full);
-        if (stat.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (stat.isFile()) {
-          const ext = extname(full);
-          if (ext === ".md" || ext === ".yaml" || ext === ".yml" || ext === ".txt") {
-            results.push(full);
-          }
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (entry.isFile()) {
+        const ext = extname(full);
+        if (ext === ".md" || ext === ".yaml" || ext === ".yml" || ext === ".txt") {
+          results.push(full);
         }
-      } catch {
-        // skip inaccessible
       }
     }
   }
-  walk(dir, 0);
+  await walk(dir, 0);
   return results;
 }
 
@@ -401,13 +397,13 @@ export function createParaMemoryAdapter(config: ParaAdapterConfig): MemoryAdapte
       return { snippets: [], usage: [{ provider: PROVIDER_KEY, details: { method: "none" } }] };
     }
 
-    const files = walkFiles(basePath);
+    const files = await walkFiles(basePath);
     const scored: { path: string; text: string; score: number }[] = [];
 
     for (const filePath of files) {
       let content: string;
       try {
-        content = readFileSync(filePath, "utf8");
+        content = await readFile(filePath, "utf8");
       } catch {
         continue;
       }
