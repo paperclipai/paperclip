@@ -87,6 +87,10 @@ export function issueRoutes(
   const feedbackExportService = opts?.feedbackExportService;
 
   async function incrementGateBlockCount(issueId: string) {
+    if (typeof (db as { update?: unknown }).update !== "function") {
+      return;
+    }
+
     try {
       await db.update(issues).set({
         gateBlockCount: sql`${issues.gateBlockCount} + 1`,
@@ -432,12 +436,12 @@ export function issueRoutes(
     comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
     attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
   ): Promise<{ gate: string; reason: string } | null> {
-    if (!req.actor || (req.actor.type !== "agent" && req.actor.type !== "board")) return null;
+    if (!req.actor || req.actor.type !== "agent") return null;
     if (targetStatus !== "in_review") return null;
     if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
-    const actorAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
-    const actorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+    const actorAgentId = req.actor.agentId ?? null;
+    const actorUserId = null;
     const sinceDate = issue.updatedAt;
 
     // Check persisted comments AND the inline PATCH comment (which hasn't been saved yet).
