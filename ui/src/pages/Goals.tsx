@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useT } from "../i18n";
 import { useQuery } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
@@ -15,9 +16,10 @@ export function Goals() {
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useT();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals" }]);
+    setBreadcrumbs([{ label: t("page.goals.title") }]);
   }, [setBreadcrumbs]);
 
   const { data: goals, isLoading, error } = useQuery({
@@ -38,14 +40,14 @@ export function Goals() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Goals</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("page.goals.title")}</h1>
           <p className="text-sm text-muted-foreground">
-            Company-wide objectives that guide team priorities and project alignment.
+            {t("page.goals.description")}
           </p>
         </div>
         <Button onClick={() => openNewGoal()}>
           <Plus className="mr-2 h-4 w-4" />
-          New Goal
+          {t("action.newGoal")}
         </Button>
       </div>
 
@@ -54,8 +56,8 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet. Create one to align your teams."
-          action="Add Goal"
+          message={t("empty.noGoals")}
+          action={t("action.newGoal")}
           onAction={() => openNewGoal()}
         />
       )}

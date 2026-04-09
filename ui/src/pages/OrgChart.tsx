@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useT } from "../i18n";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -134,6 +135,7 @@ const defaultDotColor = "#a3a3a3";
 export function OrgChart() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useT();
   const navigate = useNavigate();
 
   const { data: orgTree, isLoading } = useQuery({
@@ -172,7 +174,7 @@ export function OrgChart() {
   }, [teamMemberships]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("page.orgChart.title") }]);
   }, [setBreadcrumbs]);
 
   // Use Paperclip native reportsTo tree — Atlas (CEO) at root, leaders below, sub-agents under them.

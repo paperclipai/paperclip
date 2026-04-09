@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../i18n";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -18,6 +19,7 @@ type StatusFilter = "pending" | "all";
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useT();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -26,7 +28,7 @@ export function Approvals() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals" }]);
+    setBreadcrumbs([{ label: t("page.approvals.title") }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -86,16 +88,16 @@ export function Approvals() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Approvals</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("page.approvals.title")}</h1>
           <p className="text-sm text-muted-foreground">
-            Review and approve agent actions, hiring proposals, and execution requests.
+            {t("page.approvals.description")}
           </p>
         </div>
       </div>
 
       <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
         <PageTabBar align="start" value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)} items={[
-          { value: "pending", label: <>Pending{pendingCount > 0 && (
+          { value: "pending", label: <>{t("tab.pending")}{pendingCount > 0 && (
             <span className={cn(
               "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
               "bg-yellow-500/20 text-yellow-500"
@@ -103,7 +105,7 @@ export function Approvals() {
               {pendingCount}
             </span>
           )}</> },
-          { value: "all", label: "All" },
+          { value: "all", label: t("tab.all") },
         ]} />
       </Tabs>
 
@@ -114,7 +116,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? t("empty.noPendingApprovals") : t("empty.noApprovals")}
           </p>
         </div>
       )}
