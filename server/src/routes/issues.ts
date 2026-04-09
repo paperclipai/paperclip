@@ -59,6 +59,19 @@ import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const UUID_QUERY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeOptionalUuidQuery(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  // Express parses repeated query params as arrays — treat that (and any
+  // other non-string) as invalid rather than silently dropping the filter.
+  if (typeof value !== "string") return "__invalid__";
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed === "null" || trimmed === "undefined") return "__invalid__";
+  return UUID_QUERY_RE.test(trimmed) ? trimmed : "__invalid__";
+}
+
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -374,10 +387,21 @@ export function issueRoutes(
       return;
     }
 
+    const assigneeAgentId = normalizeOptionalUuidQuery(req.query.assigneeAgentId);
+    if (assigneeAgentId === "__invalid__") {
+      res.status(400).json({ error: "assigneeAgentId must be a valid UUID" });
+      return;
+    }
+    const participantAgentId = normalizeOptionalUuidQuery(req.query.participantAgentId);
+    if (participantAgentId === "__invalid__") {
+      res.status(400).json({ error: "participantAgentId must be a valid UUID" });
+      return;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId: assigneeAgentId ?? undefined,
+      participantAgentId: participantAgentId ?? undefined,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
