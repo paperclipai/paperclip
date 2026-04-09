@@ -80,7 +80,9 @@ RUN usermod -d /paperclip node \
   && ln -sf /app/scripts/gh.sh /usr/bin/gh \
   && mv /usr/local/bin/docker /usr/local/lib/paperclip/docker-real \
   && ln -sf /app/scripts/docker.sh /usr/local/bin/docker \
-  && chmod +x /app/scripts/docker-entrypoint.sh /app/scripts/gh.sh /app/scripts/hermes-bridge.sh /app/scripts/docker.sh \
+  && mv /usr/bin/rg /usr/local/lib/paperclip/rg-real \
+  && ln -sf /app/scripts/rg.sh /usr/bin/rg \
+  && chmod +x /app/scripts/docker-entrypoint.sh /app/scripts/gh.sh /app/scripts/hermes-bridge.sh /app/scripts/docker.sh /app/scripts/rg.sh \
   && chmod +x /app/tools/google-workspace/*.js \
   && chown -R node:node /paperclip /opt/paperclip-opencode
 

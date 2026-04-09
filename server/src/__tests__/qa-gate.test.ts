@@ -22,6 +22,8 @@ const mockWorkProductService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const AGENT_RELIABILITY_PROJECT_ID = "a2bb9b56-e3f1-4ac9-96bc-9ad033ee9365";
+
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
   feedbackService: () => ({}),
@@ -382,7 +384,7 @@ describe("qa gate", () => {
   });
 
   it("delivery gate fires before QA gate (no PR + no QA) → done_requires_pr", async () => {
-    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockIssueService.getById.mockResolvedValue({ ...codeIssue, projectId: AGENT_RELIABILITY_PROJECT_ID });
     mockIssueService.listComments.mockResolvedValue([]);
     // No work products — delivery gate should fire first
     mockWorkProductService.listForIssue.mockResolvedValue([]);

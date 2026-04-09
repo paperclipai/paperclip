@@ -3,8 +3,8 @@
 // Uses GWS_SERVICE_ACCOUNT_JSON + GWS_SUBJECT_EMAIL for auth (DWD)
 // Zero external dependencies — Node.js only
 
-const crypto = require('node:crypto');
-const https = require('node:https');
+import crypto from 'node:crypto';
+import https from 'node:https';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 const SA_JSON = process.env.GWS_SERVICE_ACCOUNT_JSON;

@@ -4,8 +4,8 @@
 // Usage: node gws-token.js [scope1,scope2,...]
 // Outputs just the access token string to stdout.
 
-const crypto = require('node:crypto');
-const https = require('node:https');
+import crypto from 'node:crypto';
+import https from 'node:https';
 
 const saJson = process.env.GWS_SERVICE_ACCOUNT_JSON;
 const subject = process.env.GWS_SUBJECT_EMAIL || '';
