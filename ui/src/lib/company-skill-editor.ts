@@ -5,13 +5,19 @@ export function splitSkillFrontmatter(markdown: string): { frontmatter: string |
   if (!normalized.startsWith("---\n")) {
     return { frontmatter: null, body: normalized };
   }
-  const closing = normalized.indexOf("\n---\n", 4);
+  let closing = normalized.indexOf("\n---\n", 4);
   if (closing < 0) {
-    return { frontmatter: null, body: normalized };
+    // Handle file ending with --- and no trailing newline
+    if (normalized.endsWith("\n---")) {
+      closing = normalized.length - 4;
+    } else {
+      return { frontmatter: null, body: normalized };
+    }
   }
+  const afterClosing = closing + 4 < normalized.length ? normalized.slice(closing + 5).trimStart() : "";
   return {
     frontmatter: normalized.slice(4, closing).trim(),
-    body: normalized.slice(closing + 5).trimStart(),
+    body: afterClosing,
   };
 }
 
