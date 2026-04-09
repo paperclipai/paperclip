@@ -97,3 +97,22 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+const OPENCODE_QUOTA_EXHAUSTED_RE =
+  /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing.*expired|arrearage|insufficient balance|quotaexhausted|throttling\.ratequota|out of funds)/i;
+
+export function detectOpenCodeQuotaExhausted(input: {
+  parsed: ReturnType<typeof parseOpenCodeJsonl> | null;
+  stdout: string;
+  stderr: string;
+}): { exhausted: boolean } {
+  const messages = [input.parsed?.errorMessage ?? "", input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const exhausted = messages.some((line) => OPENCODE_QUOTA_EXHAUSTED_RE.test(line));
+  return { exhausted };
+}
+

@@ -30,6 +30,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
+- fallbackModels (string[], optional): ordered list of fallback model IDs to try when the primary model hits quota/rate limits (e.g. ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
