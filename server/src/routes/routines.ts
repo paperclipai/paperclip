@@ -169,7 +169,7 @@ export function routineRoutes(db: Db) {
       action: "routine.trigger_created",
       entityType: "routine_trigger",
       entityId: created.trigger.id,
-      details: { routineId: routine.id, kind: created.trigger.kind },
+      details: { routineId: routine.id, routineTitle: routine.title, kind: created.trigger.kind },
     });
     res.status(201).json(created);
   });
@@ -200,7 +200,7 @@ export function routineRoutes(db: Db) {
       action: "routine.trigger_updated",
       entityType: "routine_trigger",
       entityId: trigger.id,
-      details: { routineId: routine.id, kind: updated?.kind ?? trigger.kind },
+      details: { routineId: routine.id, routineTitle: routine.title, kind: updated?.kind ?? trigger.kind },
     });
     res.json(updated);
   });
@@ -227,7 +227,7 @@ export function routineRoutes(db: Db) {
       action: "routine.trigger_deleted",
       entityType: "routine_trigger",
       entityId: trigger.id,
-      details: { routineId: routine.id, kind: trigger.kind },
+      details: { routineId: routine.id, routineTitle: routine.title, kind: trigger.kind },
     });
     res.status(204).end();
   });
@@ -260,7 +260,7 @@ export function routineRoutes(db: Db) {
         action: "routine.trigger_secret_rotated",
         entityType: "routine_trigger",
         entityId: trigger.id,
-        details: { routineId: routine.id },
+        details: { routineId: routine.id, routineTitle: routine.title },
       });
       res.json(rotated);
     },
@@ -284,7 +284,7 @@ export function routineRoutes(db: Db) {
       action: "routine.run_triggered",
       entityType: "routine_run",
       entityId: run.id,
-      details: { routineId: routine.id, source: run.source, status: run.status },
+      details: { routineId: routine.id, routineTitle: routine.title, source: run.source, status: run.status },
     });
     res.status(202).json(run);
   });

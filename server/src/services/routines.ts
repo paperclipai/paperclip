@@ -848,6 +848,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           entityId: run.id,
           details: {
             routineId: input.routine.id,
+            routineTitle: input.routine.title,
             triggerId: input.trigger?.id ?? null,
             source: run.source,
             status: run.status,

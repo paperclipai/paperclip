@@ -9,7 +9,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
-import { ActivityRow } from "../components/ActivityRow";
+import { ActivityRow, HIDDEN_ACTIVITY_ACTIONS } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   Select,
@@ -89,13 +89,14 @@ export function Activity() {
     return <PageSkeleton variant="list" />;
   }
 
+  const visible = data?.filter((e) => !HIDDEN_ACTIVITY_ACTIONS.has(e.action));
   const filtered =
-    data && filter !== "all"
-      ? data.filter((e) => e.entityType === filter)
-      : data;
+    visible && filter !== "all"
+      ? visible.filter((e) => e.entityType === filter)
+      : visible;
 
-  const entityTypes = data
-    ? [...new Set(data.map((e) => e.entityType))].sort()
+  const entityTypes = visible
+    ? [...new Set(visible.map((e) => e.entityType))].sort()
     : [];
 
   return (
