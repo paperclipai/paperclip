@@ -59,4 +59,7 @@ export const METRIC_NAMES = {
   // Activity observability metrics
   activityCount: "paperclip.agent.activity.count",
   activityActorCount: "paperclip.agent.activity.actor_count",
+
+  // Comment metrics
+  issueCommentsCreated: "paperclip.issue.comments.created",
 } as const;

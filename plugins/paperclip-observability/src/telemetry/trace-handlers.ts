@@ -562,6 +562,153 @@ export async function handleCostTraces(
 }
 
 // ---------------------------------------------------------------------------
+// issue.created — start issue lifecycle span at creation time
+// ---------------------------------------------------------------------------
+
+export async function handleIssueCreatedTraces(
+  event: PluginEvent,
+  ctx: TelemetryContext,
+): Promise<void> {
+  const p = event.payload as Record<string, unknown>;
+  const issueId = String(p.id ?? "");
+  if (!issueId) return;
+
+  const identifier = String(p.identifier ?? "");
+  const title = String(p.title ?? "");
+  const projectId = String(p.projectId ?? "");
+  const projectName = projectId ? (ctx.projectNameMap.get(projectId) ?? "") : "";
+  const priority = String(p.priority ?? "medium");
+  const assigneeAgentId = String(p.assigneeAgentId ?? "");
+  const assigneeAgentName = String(p.assigneeAgentName ?? "");
+  const createdByAgentId = String(p.createdByAgentId ?? "");
+  const parentId = String(p.parentId ?? "");
+
+  const tracer = assigneeAgentId
+    ? ctx.getTracerForAgent(assigneeAgentId, assigneeAgentName)
+    : ctx.tracer;
+
+  // If this is a subtask, try to link to the parent issue's span for
+  // end-to-end trace continuity from parent → child issue creation.
+  let parentCtx: ReturnType<typeof context.active> | undefined;
+  if (parentId) {
+    const parentSpan = ctx.activeIssueSpans.get(parentId);
+    if (parentSpan) {
+      parentCtx = trace.setSpan(context.active(), parentSpan);
+    } else {
+      // Fallback: restore parent issue span from plugin state
+      const stored = await ctx.state
+        .get({ scopeKind: "issue", scopeId: parentId, stateKey: "execution-span" })
+        .catch(() => null);
+      if (
+        stored &&
+        typeof stored === "object" &&
+        "traceId" in (stored as Record<string, unknown>) &&
+        "spanId" in (stored as Record<string, unknown>)
+      ) {
+        const s = stored as { traceId: string; spanId: string; traceFlags: number };
+        parentCtx = trace.setSpanContext(context.active(), {
+          traceId: s.traceId,
+          spanId: s.spanId,
+          traceFlags: s.traceFlags ?? 1,
+          isRemote: true,
+        });
+      }
+    }
+  }
+
+  // Also check if the creating agent has an active run we can link to
+  if (!parentCtx && createdByAgentId) {
+    const creatorRunId = ctx.agentActiveRunId.get(createdByAgentId);
+    if (creatorRunId) {
+      const creatorSpan = ctx.activeRunSpans.get(creatorRunId);
+      if (creatorSpan) {
+        parentCtx = trace.setSpan(context.active(), creatorSpan);
+      }
+    }
+  }
+
+  const spanAttrs: Record<string, string | number | boolean> = {
+    "paperclip.issue.id": issueId,
+    "paperclip.issue.identifier": identifier,
+    "paperclip.issue.title": title,
+    "paperclip.issue.priority": priority,
+    "paperclip.issue.status": "created",
+    "paperclip.project.id": projectId,
+    "paperclip.project.name": projectName,
+    "paperclip.goal.id": String(p.goalId ?? ""),
+    "paperclip.issue.parent_id": parentId,
+    "paperclip.issue.created_by_agent_id": createdByAgentId,
+    "gen_ai.agent.id": assigneeAgentId,
+    "gen_ai.agent.name": assigneeAgentName,
+  };
+
+  const span = parentCtx
+    ? tracer.startSpan(
+        "paperclip.issue.lifecycle",
+        { kind: SpanKind.INTERNAL, attributes: spanAttrs },
+        parentCtx,
+      )
+    : tracer.startSpan("paperclip.issue.lifecycle", {
+        kind: SpanKind.INTERNAL,
+        attributes: spanAttrs,
+      });
+
+  ctx.activeIssueSpans.set(issueId, span);
+
+  // Persist span context for cross-restart resilience
+  await ctx.state
+    .set(
+      { scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" },
+      {
+        traceId: span.spanContext().traceId,
+        spanId: span.spanContext().spanId,
+        traceFlags: span.spanContext().traceFlags,
+        startTime: Date.now(),
+      },
+    )
+    .catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// issue.comment.created — add span event on issue execution span
+// ---------------------------------------------------------------------------
+
+export async function handleIssueCommentCreatedTraces(
+  event: PluginEvent,
+  ctx: TelemetryContext,
+): Promise<void> {
+  const p = event.payload as Record<string, unknown>;
+  const issueId = String(p.issueId ?? "");
+  if (!issueId) return;
+
+  const commentId = String(p.id ?? p.commentId ?? "");
+  const authorAgentId = String(p.authorAgentId ?? "");
+  const authorAgentName = String(p.authorAgentName ?? "");
+  const authorUserId = String(p.authorUserId ?? "");
+
+  // Find the active issue span to add the comment as a span event
+  let issueSpan = ctx.activeIssueSpans.get(issueId);
+
+  // Fallback: check active run spans for the authoring agent
+  if (!issueSpan && authorAgentId) {
+    const runId = ctx.agentActiveRunId.get(authorAgentId);
+    if (runId) {
+      issueSpan = ctx.activeRunSpans.get(runId);
+    }
+  }
+
+  if (issueSpan) {
+    issueSpan.addEvent("issue.comment.created", {
+      "paperclip.comment.id": commentId,
+      "paperclip.comment.author_agent_id": authorAgentId,
+      "paperclip.comment.author_agent_name": authorAgentName,
+      "paperclip.comment.author_user_id": authorUserId,
+      "paperclip.issue.id": issueId,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // issue.updated — issue lifecycle spans
 // ---------------------------------------------------------------------------
 
@@ -580,6 +727,40 @@ export async function handleIssueUpdatedTraces(
   const tracer = assigneeAgentId
     ? ctx.getTracerForAgent(assigneeAgentId, assigneeAgentName)
     : ctx.tracer;
+
+  // --- Add span events for all status transitions (checkout, release, blocked, etc.) ---
+  if (previousStatus && status !== previousStatus && issueId) {
+    const issueSpan = ctx.activeIssueSpans.get(issueId);
+    if (issueSpan) {
+      issueSpan.addEvent("issue.status_transition", {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.previous_status": previousStatus,
+        "paperclip.issue.status": status,
+        "paperclip.agent.id": assigneeAgentId,
+        "paperclip.agent.name": assigneeAgentName,
+      });
+    }
+  }
+
+  // --- Add span events for assignee changes (delegation moments) ---
+  const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? "");
+  const previousAssigneeAgentName = String(p.previousAssigneeAgentName ?? "");
+  if (
+    assigneeAgentId !== previousAssigneeAgentId &&
+    (assigneeAgentId || previousAssigneeAgentId) &&
+    issueId
+  ) {
+    const issueSpan = ctx.activeIssueSpans.get(issueId);
+    if (issueSpan) {
+      issueSpan.addEvent("issue.assignee_changed", {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.previous_assignee_agent_id": previousAssigneeAgentId,
+        "paperclip.issue.previous_assignee_agent_name": previousAssigneeAgentName,
+        "paperclip.issue.assignee_agent_id": assigneeAgentId,
+        "paperclip.issue.assignee_agent_name": assigneeAgentName,
+      });
+    }
+  }
 
   // Start span when issue transitions to in_progress
   if (status === "in_progress" && previousStatus !== "in_progress" && issueId) {
@@ -632,7 +813,6 @@ export async function handleIssueUpdatedTraces(
   // Detect real-time delegation: assignee changed while a run is still active.
   // Capture the previous agent's active run span as delegation source so Agent B's
   // next run becomes a child of Agent A's run in the trace.
-  const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? "");
   if (
     assigneeAgentId &&
     previousAssigneeAgentId &&

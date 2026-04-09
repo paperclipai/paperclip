@@ -44,6 +44,7 @@ import {
   handleCostMetrics,
   handleIssueCreatedMetrics,
   handleIssueUpdatedMetrics,
+  handleIssueCommentCreatedMetrics,
   handleAgentStatusChangedMetrics,
   handleApprovalCreatedMetrics,
   handleApprovalDecidedMetrics,
@@ -57,7 +58,9 @@ import {
   handleRunFailedTraces,
   handleRunCancelledTraces,
   handleCostTraces,
+  handleIssueCreatedTraces,
   handleIssueUpdatedTraces,
+  handleIssueCommentCreatedTraces,
   handleApprovalCreatedTraces,
   handleApprovalDecidedTraces,
 } from "./telemetry/trace-handlers.js";
@@ -70,6 +73,7 @@ import {
   handleAgentStatusChangedLogs,
   handleIssueCreatedLogs,
   handleIssueUpdatedLogs,
+  handleIssueCommentCreatedLogs,
   handleApprovalCreatedLogs,
   handleApprovalDecidedLogs,
   handleCostEventLogs,
@@ -211,7 +215,13 @@ function createRouter(): EventTelemetryRouter {
 
   // issue.created
   router.register("issue.created", handleIssueCreatedMetrics);
+  router.register("issue.created", handleIssueCreatedTraces);
   router.register("issue.created", handleIssueCreatedLogs);
+
+  // issue.comment.created
+  router.register("issue.comment.created", handleIssueCommentCreatedMetrics);
+  router.register("issue.comment.created", handleIssueCommentCreatedTraces);
+  router.register("issue.comment.created", handleIssueCommentCreatedLogs);
 
   // issue.updated
   router.register("issue.updated", handleIssueUpdatedMetrics);
@@ -330,6 +340,7 @@ const plugin: PaperclipPlugin = definePlugin({
       "agent.run.cancelled",
       "cost_event.created",
       "issue.created",
+      "issue.comment.created",
       "issue.updated",
       "agent.status_changed",
       "approval.created",
