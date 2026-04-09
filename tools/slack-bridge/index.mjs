@@ -20,6 +20,7 @@ const socket = new SocketModeClient({ appToken: SLACK_APP_TOKEN });
 
 // Track: issueId -> { channel, ts, identifier }
 const pendingCheckmarks = new Map();
+const notifiedBlocked = new Set();
 const processed = new Set();
 
 const channelNames = new Map();
@@ -96,7 +97,7 @@ async function pollCompletedIssues() {
         try { await slack.reactions.add({ channel, name: "white_check_mark", timestamp: ts }); } catch {}
         pendingCheckmarks.delete(issue.id);
 
-      } else if (issue.status === "blocked") {
+      } else if (issue.status === "blocked" && !notifiedBlocked.has(issue.id)) {
         console.log(`  blocked ${identifier}`);
         // Add warning emoji
         try { await slack.reactions.add({ channel, name: "warning", timestamp: ts }); } catch {}
@@ -108,12 +109,13 @@ async function pollCompletedIssues() {
             await slack.chat.postMessage({
               channel,
               thread_ts: ts,
-              text: `:warning: *${identifier}* je blokovaný:\n${lastComment.substring(0, 500)}`,
+              text: `:warning: *${identifier}* je blokovaný:\n${lastComment.substring(0, 300)}\n\nhttp://100.81.141.101:3100/KOM/issues/${identifier}`,
             });
           } catch (e) {
             console.error("Failed to reply:", e.message);
           }
         }
+        notifiedBlocked.add(issue.id);
         // Keep tracking - might become done later
       }
     }
