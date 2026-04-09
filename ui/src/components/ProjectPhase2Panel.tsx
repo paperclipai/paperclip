@@ -238,7 +238,7 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
                 <Plus className="h-3 w-3 mr-1.5" /> Add member
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-48 p-1" align="start">
+            <PopoverContent className="w-48 p-1 max-h-72 overflow-y-auto" align="start">
               {linkableAgents.map((a) => (
                 <button key={a.id} className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50 text-left" onClick={() => addMemberMutation.mutate(a.id)}>
                   {a.name}
