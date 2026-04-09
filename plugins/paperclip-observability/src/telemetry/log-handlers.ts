@@ -213,6 +213,25 @@ export async function handleIssueCreatedLogs(
 }
 
 // ---------------------------------------------------------------------------
+// issue.comment.created — info log
+// ---------------------------------------------------------------------------
+
+export async function handleIssueCommentCreatedLogs(
+  event: PluginEvent,
+  ctx: TelemetryContext,
+): Promise<void> {
+  const p = event.payload as Record<string, unknown>;
+
+  emitLog(ctx, "INFO", SeverityNumber.INFO, "Issue comment created", {
+    ...commonAttributes(event),
+    "paperclip.comment.id": String(p.id ?? p.commentId ?? ""),
+    "paperclip.issue.id": String(p.issueId ?? ""),
+    "paperclip.comment.author_agent_id": String(p.authorAgentId ?? ""),
+    "paperclip.comment.author_user_id": String(p.authorUserId ?? ""),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // issue.updated — info log for transitions
 // ---------------------------------------------------------------------------
 

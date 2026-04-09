@@ -207,6 +207,26 @@ export async function handleIssueCreatedMetrics(
 }
 
 // ---------------------------------------------------------------------------
+// issue.comment.created — comment counter
+// ---------------------------------------------------------------------------
+
+export async function handleIssueCommentCreatedMetrics(
+  event: PluginEvent,
+  ctx: TelemetryContext,
+): Promise<void> {
+  const p = event.payload as Record<string, unknown>;
+
+  const commentCounter = ctx.meter.createCounter(
+    METRIC_NAMES.issueCommentsCreated,
+    { description: "Count of issue comments created" },
+  );
+  commentCounter.add(1, {
+    author_agent_id: String(p.authorAgentId ?? ""),
+    author_user_id: String(p.authorUserId ?? ""),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // issue.updated — transition counter + completion counter
 // ---------------------------------------------------------------------------
 
