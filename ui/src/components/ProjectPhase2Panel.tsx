@@ -254,7 +254,7 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
         <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
           Milestones ({milestones.data?.length ?? 0})
         </h3>
-        <div className="rounded-lg bg-card overflow-hidden mb-2">
+        <div className="rounded-lg bg-card overflow-hidden">
           {(milestones.data ?? []).map((m) => (
             <div key={m.id} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors group">
               <Checkbox
@@ -271,13 +271,22 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
               </button>
             </div>
           ))}
+          <form className="flex items-center gap-2 px-3 h-8" onSubmit={(e) => { e.preventDefault(); if (msName.trim()) createMilestoneMutation.mutate(msName.trim()); }}>
+            <Plus className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+            <input
+              data-testid="phase2-milestone-name"
+              value={msName}
+              onChange={(e) => setMsName(e.target.value)}
+              placeholder="Add milestone..."
+              className="flex-1 text-[13px] bg-transparent outline-none placeholder:text-muted-foreground/40"
+            />
+            {msName.trim() && (
+              <Button type="submit" variant="ghost" size="sm" className="h-5 text-xs px-2 text-primary">
+                Add
+              </Button>
+            )}
+          </form>
         </div>
-        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (msName.trim()) createMilestoneMutation.mutate(msName.trim()); }}>
-          <Input data-testid="phase2-milestone-name" value={msName} onChange={(e) => setMsName(e.target.value)} placeholder="Milestone name" className="text-sm h-7 rounded-lg" />
-          <Button type="submit" size="sm" className="h-7" disabled={!msName.trim()}>
-            <Plus className="h-3 w-3 mr-1" /> Add
-          </Button>
-        </form>
       </section>
 
       {/* === Health updates === */}
@@ -285,7 +294,7 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
         <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
           Health Updates ({updates.data?.length ?? 0})
         </h3>
-        <div className="rounded-lg bg-card overflow-hidden mb-2">
+        <div className="rounded-lg bg-card overflow-hidden">
           {(updates.data ?? []).slice(0, 5).map((u) => (
             <div key={u.id} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors">
               <span className="inline-block h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: HEALTH_COLORS[u.health] ?? "#94A3B8" }} />
@@ -293,27 +302,36 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
               <span className="flex-1 truncate text-foreground/80">{u.body}</span>
             </div>
           ))}
-        </div>
-        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (updateBody.trim()) createUpdateMutation.mutate(); }}>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5">
-                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: HEALTH_COLORS[updateHealth] }} />
-                {updateHealth}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {(["on_track", "at_risk", "off_track"] as const).map((h) => (
-                <button key={h} className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50" onClick={() => setUpdateHealth(h)}>
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: HEALTH_COLORS[h] }} />
-                  {h}
+          <form className="flex items-center gap-2 px-3 h-8" onSubmit={(e) => { e.preventDefault(); if (updateBody.trim()) createUpdateMutation.mutate(); }}>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button type="button" className="flex items-center gap-1 shrink-0">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: HEALTH_COLORS[updateHealth] }} />
                 </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-          <Input data-testid="phase2-update-body" value={updateBody} onChange={(e) => setUpdateBody(e.target.value)} placeholder="What's the status?" className="text-sm h-7 flex-1 rounded-lg" />
-          <Button type="submit" size="sm" className="h-7" disabled={!updateBody.trim()}>Post</Button>
-        </form>
+              </PopoverTrigger>
+              <PopoverContent className="w-36 p-1" align="start">
+                {(["on_track", "at_risk", "off_track"] as const).map((h) => (
+                  <button key={h} type="button" className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50" onClick={() => setUpdateHealth(h)}>
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: HEALTH_COLORS[h] }} />
+                    {h}
+                  </button>
+                ))}
+              </PopoverContent>
+            </Popover>
+            <input
+              data-testid="phase2-update-body"
+              value={updateBody}
+              onChange={(e) => setUpdateBody(e.target.value)}
+              placeholder="Post health update..."
+              className="flex-1 text-[13px] bg-transparent outline-none placeholder:text-muted-foreground/40"
+            />
+            {updateBody.trim() && (
+              <Button type="submit" variant="ghost" size="sm" className="h-5 text-xs px-2 text-primary">
+                Post
+              </Button>
+            )}
+          </form>
+        </div>
       </section>
     </div>
   );
