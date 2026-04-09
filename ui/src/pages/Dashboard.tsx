@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { companiesApi } from "../api/companies";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,12 +20,21 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Pause, Play, OctagonAlert } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -32,10 +42,13 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 }
 
 export function Dashboard() {
-  const { selectedCompanyId, companies } = useCompany();
+  const queryClient = useQueryClient();
+  const { selectedCompanyId, companies, selectedCompany } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const [confirmAction, setConfirmAction] = useState<"pause" | "resume" | "hardStop" | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -80,6 +93,64 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const showEmergencyControls =
+    !!selectedCompany && selectedCompany.status !== "archived";
+
+  function invalidateAfterCompanyEmergency(companyId: string) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+  }
+
+  const companyStatusMutation = useMutation({
+    mutationFn: ({ companyId, status }: { companyId: string; status: "active" | "paused" }) =>
+      companiesApi.update(companyId, { status }),
+    onMutate: () => setToggleError(null),
+    onSuccess: (_data, { companyId }) => {
+      setToggleError(null);
+      invalidateAfterCompanyEmergency(companyId);
+      setConfirmAction(null);
+    },
+    onError: (err) => {
+      setToggleError(err instanceof Error ? err.message : "Failed to update company status");
+    },
+  });
+
+  const hardStopMutation = useMutation({
+    onMutate: () => setToggleError(null),
+    mutationFn: async (companyId: string) => {
+      const live = await heartbeatsApi.liveRunsForCompany(companyId);
+      const active = live.filter((r) => r.status === "queued" || r.status === "running");
+      const results = await Promise.allSettled(active.map((r) => heartbeatsApi.cancel(r.id)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      const current =
+        selectedCompany?.id === companyId
+          ? selectedCompany.status
+          : companies.find((c) => c.id === companyId)?.status;
+      if (current !== "paused") {
+        await companiesApi.update(companyId, { status: "paused" });
+      }
+      return { attempted: active.length, failed };
+    },
+    onSuccess: (result, companyId) => {
+      setToggleError(null);
+      invalidateAfterCompanyEmergency(companyId);
+      setConfirmAction(null);
+      if (result.failed > 0) {
+        setToggleError(
+          `Hard stop completed with ${result.failed} run cancel failure(s) out of ${result.attempted} attempted.`,
+        );
+      }
+    },
+    onError: (err) => {
+      setToggleError(err instanceof Error ? err.message : "Hard stop failed");
+    },
+  });
+
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
@@ -91,6 +162,8 @@ export function Dashboard() {
     seenActivityIdsRef.current = new Set();
     hydratedActivityRef.current = false;
     setAnimatedActivityIds(new Set());
+    setToggleError(null);
+    setConfirmAction(null);
   }, [selectedCompanyId]);
 
   useEffect(() => {
@@ -188,6 +261,169 @@ export function Dashboard() {
   return (
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {toggleError && confirmAction === null && (
+        <p className="text-sm text-destructive">{toggleError}</p>
+      )}
+
+      {showEmergencyControls && selectedCompany && (
+        <>
+          {selectedCompany.status === "paused" && (
+            <div className="flex flex-wrap items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/50">
+              <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
+                  System paused for this company
+                </p>
+                <p className="text-xs text-amber-900/80 dark:text-amber-200/80">
+                  New agent work is blocked for this company only (not instance-wide). Active runs can still finish.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0 max-w-xl">
+              <p className="text-xs text-muted-foreground">
+                {selectedCompany.status === "paused"
+                  ? "Resume to allow new heartbeats and automation for this company."
+                  : "Pause blocks new agent work for this company. Hard stop cancels queued or running runs, then pauses (only while the company is active)."}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {selectedCompany.status === "paused" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setToggleError(null);
+                    setConfirmAction("resume");
+                  }}
+                  disabled={companyStatusMutation.isPending}
+                >
+                  <Play className="mr-1.5 h-3.5 w-3.5" />
+                  Resume system
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setToggleError(null);
+                      setConfirmAction("pause");
+                    }}
+                    disabled={companyStatusMutation.isPending || hardStopMutation.isPending}
+                  >
+                    <Pause className="mr-1.5 h-3.5 w-3.5" />
+                    Pause system
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => {
+                      setToggleError(null);
+                      setConfirmAction("hardStop");
+                    }}
+                    disabled={
+                      selectedCompany.status !== "active" ||
+                      companyStatusMutation.isPending ||
+                      hardStopMutation.isPending
+                    }
+                  >
+                    <OctagonAlert className="mr-1.5 h-3.5 w-3.5" />
+                    Hard stop
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <Dialog
+            open={confirmAction !== null}
+            onOpenChange={(open) => {
+              if (!open) {
+                setConfirmAction(null);
+                setToggleError(null);
+              }
+            }}
+          >
+            <DialogContent showCloseButton>
+              <DialogHeader>
+                <DialogTitle>
+                  {confirmAction === "hardStop"
+                    ? "Hard stop this company?"
+                    : confirmAction === "pause"
+                      ? "Pause this company?"
+                      : confirmAction === "resume"
+                        ? "Resume this company?"
+                        : null}
+                </DialogTitle>
+                <DialogDescription>
+                  {confirmAction === "hardStop"
+                    ? "This will cancel all queued and running heartbeat runs for this company, then pause the company so new work cannot start. This applies to this company only, not the whole instance."
+                    : confirmAction === "pause"
+                      ? "New agent work will be blocked for this company only. Active runs can continue to completion."
+                      : confirmAction === "resume"
+                        ? "New heartbeats and automation can start again for this company."
+                        : null}
+                </DialogDescription>
+              </DialogHeader>
+              {toggleError ? (
+                <p className="text-sm text-destructive" role="alert">
+                  {toggleError}
+                </p>
+              ) : null}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setConfirmAction(null);
+                    setToggleError(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant={confirmAction === "pause" || confirmAction === "hardStop" ? "destructive" : "default"}
+                  disabled={
+                    (confirmAction === "hardStop" ? hardStopMutation.isPending : companyStatusMutation.isPending) ||
+                    !confirmAction ||
+                    !selectedCompanyId
+                  }
+                  onClick={() => {
+                    if (!selectedCompanyId || !confirmAction) return;
+                    if (confirmAction === "hardStop") {
+                      hardStopMutation.mutate(selectedCompanyId);
+                      return;
+                    }
+                    companyStatusMutation.mutate({
+                      companyId: selectedCompanyId,
+                      status: confirmAction === "pause" ? "paused" : "active",
+                    });
+                  }}
+                >
+                  {confirmAction === "hardStop"
+                    ? hardStopMutation.isPending
+                      ? "Stopping…"
+                      : "Hard stop"
+                    : companyStatusMutation.isPending
+                      ? "Working…"
+                      : confirmAction === "pause"
+                        ? "Pause"
+                        : confirmAction === "resume"
+                          ? "Resume"
+                          : null}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
 
       {hasNoAgents && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
