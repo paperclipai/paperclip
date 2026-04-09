@@ -43,7 +43,7 @@ export type IssueViewState = {
   assignees: string[];
   labels: string[];
   projects: string[];
-  sortField: "status" | "priority" | "title" | "created" | "updated";
+  sortField: "id" | "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
   viewMode: "list" | "board";
@@ -118,6 +118,15 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   const dir = state.sortDir === "asc" ? 1 : -1;
   sorted.sort((a, b) => {
     switch (state.sortField) {
+      case "id": {
+        const numFromId = (val: string | null | undefined) => {
+          if (!val) return Number.POSITIVE_INFINITY;
+          const idx = val.lastIndexOf("-");
+          const n = Number(idx >= 0 ? val.slice(idx + 1) : val);
+          return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+        };
+        return dir * (numFromId(a.identifier) - numFromId(b.identifier));
+      }
       case "status":
         return dir * (statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status));
       case "priority":
@@ -558,6 +567,7 @@ export function IssuesList({
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
+                    ["id", "ID"],
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["title", "Title"],
