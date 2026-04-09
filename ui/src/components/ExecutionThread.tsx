@@ -175,6 +175,11 @@ function ThreadTimeline({
 
   return (
     <div className="space-y-3">
+      {data.truncated && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Showing first 200 issues — wave is larger and has been truncated.
+        </p>
+      )}
       {/* Summary header */}
       <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
         <span className="font-medium text-foreground">
