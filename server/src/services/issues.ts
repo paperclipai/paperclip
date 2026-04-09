@@ -1573,6 +1573,14 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
+      if (
+        issueData.status === "blocked" &&
+        existing.status !== "blocked" &&
+        (blockedByIssueIds === undefined || blockedByIssueIds.length === 0)
+      ) {
+        throw unprocessable("Issues set to blocked status must have at least one blocker in blockedByIssueIds");
+      }
+
       const normalizedIssueData = { ...issueData };
 
       if (
