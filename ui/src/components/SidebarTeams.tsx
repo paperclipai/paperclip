@@ -173,46 +173,22 @@ function TeamBranch({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group/branch flex items-center pr-0">
-        <NavLink
-          to={`/teams/${team.id}`}
-          end
-          onMouseEnter={() => onHoverPrefetch(team.id)}
-          className={({ isActive }) =>
-            cn(
-              "flex-1 flex items-center gap-2 pr-1 h-8 text-[13px] font-semibold rounded-md transition-colors min-w-0",
-              isActive
-                ? "bg-accent text-foreground"
-                : "text-foreground/90 hover:bg-accent/50 hover:text-foreground",
-            )
-          }
-          style={{ paddingLeft: `${12 + depth * 14}px` }}
-        >
-          <span
-            className="shrink-0 h-3.5 w-3.5 rounded-sm flex items-center justify-center text-[9px] font-bold text-white"
-            style={{ backgroundColor: team.color ?? "#6366f1" }}
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            onMouseEnter={() => onHoverPrefetch(team.id)}
+            className={cn(
+              "flex-1 flex items-center gap-2 px-3 h-8 text-[13px] font-medium rounded-md transition-colors min-w-0 text-left",
+              "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            )}
+            style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
-            {team.identifier.slice(0, 2)}
-          </span>
-          <span className="flex-1 truncate">{team.name}</span>
-          {/* Chevron sits inside the NavLink right next to the name, Linear style.
-              stopPropagation so clicking the chevron toggles without navigating. */}
-          <CollapsibleTrigger asChild>
-            <span
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setOpen(!open);
-              }}
-              className="shrink-0 inline-flex items-center justify-center h-4 w-4 text-muted-foreground/60 hover:text-foreground rounded"
-              aria-label={open ? `Collapse ${team.name}` : `Expand ${team.name}`}
-              role="button"
-            >
-              <ChevronRight
-                className={cn("h-3 w-3 transition-transform", open && "rotate-90")}
-              />
-            </span>
-          </CollapsibleTrigger>
-        </NavLink>
+            <span className="flex-1 truncate">{team.name}</span>
+            <ChevronRight
+              className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform", open && "rotate-90")}
+            />
+          </button>
+        </CollapsibleTrigger>
         <TeamMoreMenu team={team} />
       </div>
       <CollapsibleContent>
