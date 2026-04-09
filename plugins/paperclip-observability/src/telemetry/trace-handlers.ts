@@ -114,12 +114,29 @@ export async function handleRunStartedTraces(
   // Use per-agent tracer so this agent gets its own service.name
   const tracer = ctx.getTracerForAgent(agentId, agentName);
 
+  // --- Server-propagated trace context (highest priority) ---
+  // When the server sends traceContext in the event payload, it means the
+  // server had an active OTel span (e.g. heartbeat dispatch). Parent our
+  // run span under it for true distributed tracing.
+  let parentCtx: ReturnType<typeof context.active> | undefined = undefined;
+
+  if (event.traceContext) {
+    const tc = event.traceContext;
+    if (tc.traceId && tc.spanId) {
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: tc.traceId,
+        spanId: tc.spanId,
+        traceFlags: tc.traceFlags ?? 1,
+        isRemote: true,
+      });
+      spanAttrs["paperclip.trace.server_propagated"] = true;
+    }
+  }
+
   // --- Cross-agent delegation linking ---
   // Check if a prior agent run delegated work to this agent on this issue
   // (or on a parent issue for subtask delegation).
-  let parentCtx: ReturnType<typeof context.active> | undefined = undefined;
-
-  if (resolvedIssueId && agentId) {
+  if (!parentCtx && resolvedIssueId && agentId) {
     parentCtx = await resolveDelegationParent(ctx, resolvedIssueId, agentId);
     if (parentCtx) {
       spanAttrs["paperclip.delegation.linked"] = true;
@@ -521,6 +538,19 @@ export async function handleCostTraces(
     ? trace.setSpan(context.active(), parentSpan)
     : undefined;
 
+  // Fallback: use server-propagated trace context
+  if (!parentCtx && event.traceContext) {
+    const tc = event.traceContext;
+    if (tc.traceId && tc.spanId) {
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: tc.traceId,
+        spanId: tc.spanId,
+        traceFlags: tc.traceFlags ?? 1,
+        isRemote: true,
+      });
+    }
+  }
+
   // Fallback: restore parent context from plugin state if not in memory
   if (!parentCtx && heartbeatRunId) {
     const stored = await ctx.state
@@ -624,6 +654,19 @@ export async function handleIssueCreatedTraces(
       if (creatorSpan) {
         parentCtx = trace.setSpan(context.active(), creatorSpan);
       }
+    }
+  }
+
+  // Fallback: use server-propagated trace context
+  if (!parentCtx && event.traceContext) {
+    const tc = event.traceContext;
+    if (tc.traceId && tc.spanId) {
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: tc.traceId,
+        spanId: tc.spanId,
+        traceFlags: tc.traceFlags ?? 1,
+        isRemote: true,
+      });
     }
   }
 

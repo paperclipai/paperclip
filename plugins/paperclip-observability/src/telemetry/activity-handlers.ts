@@ -161,6 +161,19 @@ export async function handleActivityTraces(
     ? trace.setSpan(context.active(), parentSpan)
     : undefined;
 
+  // Fallback: use server-propagated trace context
+  if (!parentCtx && event.traceContext) {
+    const tc = event.traceContext;
+    if (tc.traceId && tc.spanId) {
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: tc.traceId,
+        spanId: tc.spanId,
+        traceFlags: tc.traceFlags ?? 1,
+        isRemote: true,
+      });
+    }
+  }
+
   if (!parentCtx && runId) {
     const stored = await ctx.state
       .get({ scopeKind: "instance", stateKey: `span:run:${runId}` })

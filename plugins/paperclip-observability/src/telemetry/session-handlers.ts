@@ -77,9 +77,22 @@ export async function handleSessionCreatedTraces(
   // Parent under active run span if available
   const runId = String(p.runId ?? "");
   const parentSpan = runId ? ctx.activeRunSpans.get(runId) : undefined;
-  const parentCtx = parentSpan
+  let parentCtx = parentSpan
     ? trace.setSpan(context.active(), parentSpan)
     : undefined;
+
+  // Fallback: use server-propagated trace context
+  if (!parentCtx && event.traceContext) {
+    const tc = event.traceContext;
+    if (tc.traceId && tc.spanId) {
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: tc.traceId,
+        spanId: tc.spanId,
+        traceFlags: tc.traceFlags ?? 1,
+        isRemote: true,
+      });
+    }
+  }
 
   const span = tracer.startSpan(
     "paperclip.agent.session",
