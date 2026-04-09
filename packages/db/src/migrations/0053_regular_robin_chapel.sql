@@ -1,0 +1,1 @@
+ALTER TABLE "instance_settings" ADD COLUMN "sso" jsonb DEFAULT '{}'::jsonb NOT NULL;

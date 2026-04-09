@@ -72,6 +72,7 @@ vi.mock("../config.js", () => ({
     authBaseUrlMode: "auto",
     authPublicBaseUrl: undefined,
     authDisableSignUp: false,
+    ssoProviders: [],
     databaseMode: "postgres",
     databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
     embeddedPostgresDataDir: "/tmp/paperclip-test-db",
@@ -142,9 +143,22 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getSso: vi.fn(async () => ({ enabled: false, providers: [] })),
+    updateSso: vi.fn(),
+  })),
+}));
+
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: vi.fn(() => ({})),
+  createBetterAuthManager: vi.fn(() => ({
+    handler: vi.fn(),
+    resolveSession: vi.fn(async () => null),
+    resolveSessionFromHeaders: vi.fn(async () => null),
+    rebuild: vi.fn(),
+  })),
   deriveAuthTrustedOrigins: vi.fn(() => []),
   resolveBetterAuthSession: vi.fn(async () => null),
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),

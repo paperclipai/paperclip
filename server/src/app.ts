@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, SsoProviderConfig } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -25,6 +25,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { instanceSettingsService } from "./services/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
@@ -82,8 +83,10 @@ export async function createApp(
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
+    ssoProviders?: SsoProviderConfig[];
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    onSsoSettingsChanged?: (providers: SsoProviderConfig[]) => void;
   },
 ) {
   const app = express();
@@ -132,6 +135,24 @@ export async function createApp(
       },
     });
   });
+  const ssoSettingsSvc = instanceSettingsService(db);
+  app.get("/api/auth/sso-providers", async (_req, res) => {
+    const ssoSettings = await ssoSettingsSvc.getSso();
+    if (!ssoSettings.enabled) {
+      res.json({ providers: [] });
+      return;
+    }
+    const dbHasProviders = ssoSettings.providers.length > 0;
+    const activeProviders = dbHasProviders
+      ? ssoSettings.providers
+      : (opts.ssoProviders ?? []);
+    const providers = activeProviders.map((p) => ({
+      providerId: p.providerId,
+      displayName: p.displayName || p.type.replace(/_/g, " "),
+      type: p.type,
+    }));
+    res.json({ providers });
+  });
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
@@ -166,7 +187,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
-  api.use(instanceSettingsRoutes(db));
+  api.use(instanceSettingsRoutes(db, { onSsoSettingsChanged: opts.onSsoSettingsChanged }));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);

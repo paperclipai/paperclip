@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
+import type { SsoProviderConfig } from "@paperclipai/shared";
+import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema, patchInstanceSsoSettingsSchema } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
@@ -16,7 +17,10 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  opts?: { onSsoSettingsChanged?: (providers: SsoProviderConfig[]) => void },
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
 
@@ -95,6 +99,45 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       res.json(updated.experimental);
+    },
+  );
+
+  router.get("/instance/settings/sso", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    res.json(await svc.getSso());
+  });
+
+  router.patch(
+    "/instance/settings/sso",
+    validate(patchInstanceSsoSettingsSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const updated = await svc.updateSso(req.body);
+
+      const activeProviders = updated.sso.enabled ? updated.sso.providers : [];
+      opts?.onSsoSettingsChanged?.(activeProviders);
+
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.sso_updated",
+            entityType: "instance_settings",
+            entityId: updated.id,
+            details: {
+              sso: { enabled: updated.sso.enabled, providerCount: updated.sso.providers.length },
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json(updated.sso);
     },
   );
 

@@ -52,10 +52,68 @@ export const serverConfigSchema = z.object({
   serveUi: z.boolean().default(true),
 });
 
+export const SSO_PROVIDER_TYPES = [
+  "keycloak",
+  "auth0",
+  "okta",
+  "microsoft_entra_id",
+  "oidc",
+] as const;
+export type SsoProviderType = (typeof SSO_PROVIDER_TYPES)[number];
+
+export const ssoRoleRequirementSchema = z.object({
+  claimPath: z.string().min(1),
+  roles: z.array(z.string().min(1)).min(1),
+});
+
+export const ssoProviderConfigSchema = z.object({
+  providerId: z.string().min(1),
+  type: z.enum(SSO_PROVIDER_TYPES),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  issuer: z.string().url().optional(),
+  discoveryUrl: z.string().url().optional(),
+  tenantId: z.string().optional(),
+  domain: z.string().optional(),
+  displayName: z.string().optional(),
+  scopes: z.array(z.string().min(1)).optional(),
+  requiredRoles: ssoRoleRequirementSchema.optional(),
+}).superRefine((val, ctx) => {
+  if (val.type === "oidc" && !val.discoveryUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "discoveryUrl is required when type is oidc",
+      path: ["discoveryUrl"],
+    });
+  }
+  if ((val.type === "keycloak" || val.type === "okta") && !val.issuer) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `issuer is required when type is ${val.type}`,
+      path: ["issuer"],
+    });
+  }
+  if (val.type === "auth0" && !val.issuer && !val.domain) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "issuer or domain is required when type is auth0",
+      path: ["issuer"],
+    });
+  }
+  if (val.type === "microsoft_entra_id" && !val.tenantId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tenantId is required when type is microsoft_entra_id",
+      path: ["tenantId"],
+    });
+  }
+});
+
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
   disableSignUp: z.boolean().default(false),
+  ssoProviders: z.array(ssoProviderConfigSchema).default([]),
 });
 
 export const storageLocalDiskConfigSchema = z.object({
@@ -179,6 +237,8 @@ export type StorageS3Config = z.infer<typeof storageS3ConfigSchema>;
 export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;
+export type SsoProviderConfig = z.infer<typeof ssoProviderConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+export type SsoRoleRequirement = z.infer<typeof ssoRoleRequirementSchema>;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
+import { ssoProviderConfigSchema } from "../config-schema.js";
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -19,7 +20,15 @@ export const instanceExperimentalSettingsSchema = z.object({
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
 
+export const instanceSsoSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  providers: z.array(ssoProviderConfigSchema).default([]),
+});
+
+export const patchInstanceSsoSettingsSchema = instanceSsoSettingsSchema.partial();
+
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSettingsSchema>;
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
+export type PatchInstanceSsoSettings = z.infer<typeof patchInstanceSsoSettingsSchema>;

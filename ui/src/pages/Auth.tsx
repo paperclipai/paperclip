@@ -1,13 +1,36 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import type { SsoProvider } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
+
+function SsoProviderButton({
+  provider,
+  disabled,
+  onClick,
+}: {
+  provider: SsoProvider;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      disabled={disabled}
+      className="w-full"
+      onClick={onClick}
+    >
+      {provider.displayName}
+    </Button>
+  );
+}
 
 export function AuthPage() {
   const queryClient = useQueryClient();
@@ -26,11 +49,25 @@ export function AuthPage() {
     retry: false,
   });
 
+  const { data: ssoProviders } = useQuery({
+    queryKey: ["auth", "sso-providers"],
+    queryFn: () => authApi.getSsoProviders(),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const hasSsoProviders = ssoProviders && ssoProviders.length > 0;
+
   useEffect(() => {
     if (session) {
       navigate(nextPath, { replace: true });
     }
   }, [session, navigate, nextPath]);
+
+  useEffect(() => {
+    if (hasSsoProviders && mode === "sign_up") {
+      setMode("sign_in");
+    }
+  }, [hasSsoProviders, mode]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -54,6 +91,24 @@ export function AuthPage() {
       setError(err instanceof Error ? err.message : "Authentication failed");
     },
   });
+
+  const [ssoLoading, setSsoLoading] = useState<string | null>(null);
+
+  const handleSsoSignIn = useCallback(
+    async (providerId: string) => {
+      setSsoLoading(providerId);
+      setError(null);
+      try {
+        const callbackURL = `${window.location.origin}/auth?next=${encodeURIComponent(nextPath)}`;
+        const redirectUrl = await authApi.signInSso(providerId, callbackURL);
+        window.location.href = redirectUrl;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "SSO sign-in failed");
+        setSsoLoading(null);
+      }
+    },
+    [nextPath],
+  );
 
   const canSubmit =
     email.trim().length > 0 &&
@@ -87,8 +142,29 @@ export function AuthPage() {
               : "Create an account for this instance. Email confirmation is not required in v1."}
           </p>
 
+          {hasSsoProviders && mode === "sign_in" && (
+            <div className="mt-6 space-y-2">
+              {ssoProviders.map((provider) => (
+                <SsoProviderButton
+                  key={provider.providerId}
+                  provider={provider}
+                  disabled={ssoLoading !== null}
+                  onClick={() => handleSsoSignIn(provider.providerId)}
+                />
+              ))}
+              <div className="relative my-4">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-background px-2 text-muted-foreground">or continue with email</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           <form
-            className="mt-6 space-y-4"
+            className={`${hasSsoProviders && mode === "sign_in" ? "" : "mt-6 "}space-y-4`}
             method="post"
             action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
             onSubmit={(event) => {
@@ -155,19 +231,21 @@ export function AuthPage() {
             </Button>
           </form>
 
-          <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-foreground underline underline-offset-2"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "sign_in" ? "sign_up" : "sign_in");
-              }}
-            >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
-            </button>
-          </div>
+          {!hasSsoProviders && (
+            <div className="mt-5 text-sm text-muted-foreground">
+              {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-2"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "sign_in" ? "sign_up" : "sign_in");
+                }}
+              >
+                {mode === "sign_in" ? "Create one" : "Sign in"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

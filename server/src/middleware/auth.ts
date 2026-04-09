@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -59,10 +59,38 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
                 ),
               ),
           ]);
+
+          let companyIds = memberships.map((row) => row.companyId);
+          if (companyIds.length === 0) {
+            const allCompanies = await db
+              .select({ id: companies.id })
+              .from(companies);
+            for (const company of allCompanies) {
+              try {
+                await db.insert(companyMemberships).values({
+                  companyId: company.id,
+                  principalType: "user",
+                  principalId: userId,
+                  status: "active",
+                  membershipRole: "member",
+                });
+              } catch {
+                // unique constraint -- membership already exists
+              }
+            }
+            if (allCompanies.length > 0) {
+              companyIds = allCompanies.map((c) => c.id);
+              logger.info(
+                { userId, companiesProvisioned: companyIds.length },
+                "Auto-provisioned SSO user into existing companies",
+              );
+            }
+          }
+
           req.actor = {
             type: "board",
             userId,
-            companyIds: memberships.map((row) => row.companyId),
+            companyIds,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",

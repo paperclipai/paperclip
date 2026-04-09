@@ -7,6 +7,9 @@ export {
   patchInstanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  instanceSsoSettingsSchema,
+  patchInstanceSsoSettingsSchema,
+  type PatchInstanceSsoSettings,
 } from "./instance.js";
 
 export {

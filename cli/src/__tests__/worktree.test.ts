@@ -75,6 +75,7 @@ function buildSourceConfig(): PaperclipConfig {
       baseUrlMode: "explicit",
       publicBaseUrl: "http://127.0.0.1:3100",
       disableSignUp: false,
+      ssoProviders: [],
     },
     telemetry: {
       enabled: true,

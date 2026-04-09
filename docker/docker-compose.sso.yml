@@ -1,0 +1,65 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 40s
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./sso/keycloak-realm.json:/opt/keycloak/data/import/paperclip-realm.json:ro
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "3100:3100"
+    extra_hosts:
+      - "localhost:host-gateway"
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "http://localhost:3100"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-paperclip-sso-dev-secret}"
+      BETTER_AUTH_TRUSTED_ORIGINS: "http://localhost:3100"
+    volumes:
+      - paperclip-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  paperclip-data:
