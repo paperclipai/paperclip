@@ -579,12 +579,12 @@ export async function startServer(): Promise<StartedServer> {
       if (result.reconciled > 0) {
         logger.info(
           { reconciled: result.reconciled },
-          "reconciled default COO routines on startup",
+          "reconciled default CEO routines on startup",
         );
       }
     })
     .catch((err) => {
-      logger.error({ err }, "startup reconciliation of default COO routines failed");
+      logger.error({ err }, "startup reconciliation of default CEO routines failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {

@@ -209,7 +209,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 
-  it("repairs default coo routines for board callers", async () => {
+  it("repairs default ceo routines for board callers", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -252,7 +252,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     );
   });
 
-  it("rejects agent callers for the default coo routine repair endpoint", async () => {
+  it("rejects agent callers for the default ceo routine repair endpoint", async () => {
     const app = createApp({
       type: "agent",
       agentId: "agent-1",

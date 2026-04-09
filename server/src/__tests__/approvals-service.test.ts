@@ -66,9 +66,9 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
-      name: "COO",
-      role: "coo",
-      title: "COO",
+      name: "CEO",
+      role: "ceo",
+      title: "CEO",
       status: "idle",
     });
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });

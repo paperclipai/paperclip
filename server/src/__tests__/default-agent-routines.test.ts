@@ -49,7 +49,7 @@ describeEmbeddedPostgres("default agent routines", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(role: string, title = "COO") {
+  async function seedAgent(role: string, title = "CEO") {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -88,8 +88,8 @@ describeEmbeddedPostgres("default agent routines", () => {
     return agent!;
   }
 
-  it("creates an operations review project, routine, and Monday morning UTC trigger for coo agents", async () => {
-    const agent = await seedAgent("coo");
+  it("creates an executive review project, routine, and Monday morning UTC trigger for ceo agents", async () => {
+    const agent = await seedAgent("ceo");
 
     await ensureDefaultRoutinesForAgent(db, {
       agent,
@@ -112,7 +112,7 @@ describeEmbeddedPostgres("default agent routines", () => {
     const projectRows = await db
       .select()
       .from(projects)
-      .where(and(eq(projects.companyId, agent.companyId), eq(projects.name, "Operations")));
+      .where(and(eq(projects.companyId, agent.companyId), eq(projects.name, "Executive Reviews")));
     expect(projectRows).toHaveLength(1);
 
     const routineRows = await db
@@ -120,8 +120,8 @@ describeEmbeddedPostgres("default agent routines", () => {
       .from(routines)
       .where(and(eq(routines.companyId, agent.companyId), eq(routines.assigneeAgentId, agent.id)));
     expect(routineRows).toHaveLength(1);
-    expect(routineRows[0]?.title).toBe("Weekly Operations Review");
-    expect(routineRows[0]?.description).toContain("Run the Monday operations review for the company.");
+    expect(routineRows[0]?.title).toBe("Weekly Company Review");
+    expect(routineRows[0]?.description).toContain("Run the Monday executive company review.");
 
     const triggerRows = await db
       .select()
@@ -137,7 +137,7 @@ describeEmbeddedPostgres("default agent routines", () => {
     });
   });
 
-  it("does nothing for non-coo agents", async () => {
+  it("does nothing for non-ceo agents", async () => {
     const agent = await seedAgent("engineer", "Engineer");
 
     await ensureDefaultRoutinesForAgent(db, {

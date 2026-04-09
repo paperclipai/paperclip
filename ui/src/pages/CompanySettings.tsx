@@ -303,7 +303,7 @@ export function CompanySettings() {
           </Field>
           <Field
             label="Timezone"
-            hint="Used for company-local scheduling, including the default Monday morning COO routine. Limited to UTC and Asia/Kathmandu here for now."
+            hint="Used for company-local scheduling, including the default Monday morning CEO review routine. Limited to UTC and Asia/Kathmandu here for now."
           >
             <Select value={timezone} onValueChange={setTimezone}>
               <SelectTrigger className={SETTINGS_SELECT_TRIGGER_CLASSNAME}>

@@ -503,13 +503,13 @@ describe("agent skill routes", () => {
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();
   });
 
-  it("bootstraps the weekly ops routine for immediate coo hires", async () => {
+  it("bootstraps the weekly company review routine for immediate ceo hires", async () => {
     const res = await request(createApp(createDb(false)))
       .post("/api/companies/company-1/agent-hires")
       .send({
-        name: "COO",
-        title: "COO",
-        role: "coo",
+        name: "CEO",
+        title: "CEO",
+        role: "ceo",
         adapterType: "claude_local",
         adapterConfig: {},
       });
@@ -519,20 +519,20 @@ describe("agent skill routes", () => {
       expect.anything(),
       expect.objectContaining({
         agent: expect.objectContaining({
-          role: "coo",
-          title: "COO",
+          role: "ceo",
+          title: "CEO",
         }),
       }),
     );
   });
 
-  it("waits for board approval before bootstrapping coo routines", async () => {
+  it("waits for board approval before bootstrapping ceo routines", async () => {
     const res = await request(createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
-        name: "COO",
-        title: "COO",
-        role: "coo",
+        name: "CEO",
+        title: "CEO",
+        role: "ceo",
         adapterType: "claude_local",
         adapterConfig: {},
       });

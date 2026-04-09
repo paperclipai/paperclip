@@ -7,12 +7,12 @@ import { goalService } from "./goals.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 
-const OPS_REVIEW_PROJECT_NAME = "Operations";
-const OPS_REVIEW_PROJECT_DESCRIPTION =
-  "Recurring operating cadences and company-wide progress reviews.";
-const OPS_REVIEW_ROUTINE_TITLE = "Weekly Operations Review";
-const OPS_REVIEW_ROUTINE_DESCRIPTION = [
-  "Run the Monday operations review for the company.",
+const EXECUTIVE_REVIEW_PROJECT_NAME = "Executive Reviews";
+const EXECUTIVE_REVIEW_PROJECT_DESCRIPTION =
+  "Recurring executive cadences for company-wide progress reviews and follow-up.";
+const EXECUTIVE_REVIEW_ROUTINE_TITLE = "Weekly Company Review";
+const EXECUTIVE_REVIEW_ROUTINE_DESCRIPTION = [
+  "Run the Monday executive company review.",
   "",
   "Review every active project and capture:",
   "- progress since the previous weekly review",
@@ -20,10 +20,10 @@ const OPS_REVIEW_ROUTINE_DESCRIPTION = [
   "- research work that is active, blocked, or still missing",
   "- stale tasks, blockers, budget pressure, and risks that need escalation",
   "",
-  "Publish the review as a concise markdown report, then complete the execution issue.",
+  "Create or delegate follow-up issues when work needs attention, then complete the execution issue.",
 ].join("\n");
-const OPS_REVIEW_TRIGGER_LABEL = "Monday morning";
-const OPS_REVIEW_CRON_EXPRESSION = "0 9 * * 1";
+const EXECUTIVE_REVIEW_TRIGGER_LABEL = "Monday morning";
+const EXECUTIVE_REVIEW_CRON_EXPRESSION = "0 9 * * 1";
 const DEFAULT_COMPANY_TIMEZONE = "UTC";
 const SYSTEM_ACTIVITY_ACTOR_ID = "default_agent_routines";
 
@@ -46,7 +46,7 @@ type AgentLike = {
 
 function shouldProvisionDefaultRoutine(agent: AgentLike) {
   if (agent.status === "pending_approval" || agent.status === "terminated") return false;
-  return agent.role === "coo";
+  return agent.role === "ceo";
 }
 
 function toRoutineActor(actor: ActivityActor) {
@@ -89,15 +89,15 @@ export async function ensureDefaultRoutinesForAgent(
   const existingProject = await db
     .select()
     .from(projects)
-    .where(and(eq(projects.companyId, agent.companyId), eq(projects.name, OPS_REVIEW_PROJECT_NAME)))
+    .where(and(eq(projects.companyId, agent.companyId), eq(projects.name, EXECUTIVE_REVIEW_PROJECT_NAME)))
     .orderBy(asc(projects.createdAt), asc(projects.id))
     .then((rows) => rows[0] ?? null);
   let projectId = existingProject?.id ?? null;
 
   if (!projectId) {
     const createdProject = await projectsSvc.create(agent.companyId, {
-      name: OPS_REVIEW_PROJECT_NAME,
-      description: OPS_REVIEW_PROJECT_DESCRIPTION,
+      name: EXECUTIVE_REVIEW_PROJECT_NAME,
+      description: EXECUTIVE_REVIEW_PROJECT_DESCRIPTION,
       status: "in_progress",
       leadAgentId: agent.id,
       ...(defaultGoal ? { goalIds: [defaultGoal.id] } : {}),
@@ -124,7 +124,7 @@ export async function ensureDefaultRoutinesForAgent(
       and(
         eq(routines.companyId, agent.companyId),
         eq(routines.assigneeAgentId, agent.id),
-        eq(routines.title, OPS_REVIEW_ROUTINE_TITLE),
+        eq(routines.title, EXECUTIVE_REVIEW_ROUTINE_TITLE),
       ),
     )
     .orderBy(asc(routines.createdAt), asc(routines.id))
@@ -136,8 +136,8 @@ export async function ensureDefaultRoutinesForAgent(
       {
         projectId: projectId!,
         goalId: defaultGoal?.id ?? null,
-        title: OPS_REVIEW_ROUTINE_TITLE,
-        description: OPS_REVIEW_ROUTINE_DESCRIPTION,
+        title: EXECUTIVE_REVIEW_ROUTINE_TITLE,
+        description: EXECUTIVE_REVIEW_ROUTINE_DESCRIPTION,
         assigneeAgentId: agent.id,
         priority: "high",
         status: "active",
@@ -175,9 +175,9 @@ export async function ensureDefaultRoutinesForAgent(
     routine.id,
     {
       kind: "schedule",
-      label: OPS_REVIEW_TRIGGER_LABEL,
+      label: EXECUTIVE_REVIEW_TRIGGER_LABEL,
       enabled: true,
-      cronExpression: OPS_REVIEW_CRON_EXPRESSION,
+      cronExpression: EXECUTIVE_REVIEW_CRON_EXPRESSION,
       timezone: triggerTimezone,
     },
     toRoutineActor(actor),
@@ -242,7 +242,7 @@ export async function reconcileDefaultAgentRoutines(
   let failed = 0;
   const failedAgentIds: string[] = [];
   for (const agent of rows) {
-    if (agent.role !== "coo") continue;
+    if (agent.role !== "ceo") continue;
     const normalizedAgent = {
       id: agent.id,
       companyId: agent.companyId,
