@@ -8,7 +8,7 @@ import {
   useMessage,
 } from "@assistant-ui/react";
 import type { ToolCallMessagePart } from "@assistant-ui/react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
@@ -1717,8 +1717,48 @@ export function IssueChatThread({
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [location.hash, messages]);
 
+  // Auto-scroll to bottom for embedded variant when agent is running
+  const userScrolledUpRef = useRef(false);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // Consider "at bottom" if within 60px of the bottom
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    userScrolledUpRef.current = !atBottom;
+  }, []);
+
+  // Find the scrollable parent once the anchor mounts
+  useEffect(() => {
+    if (variant !== "embedded" || !bottomAnchorRef.current) return;
+    let el: HTMLElement | null = bottomAnchorRef.current.parentElement;
+    while (el) {
+      const style = getComputedStyle(el);
+      if (style.overflowY === "auto" || style.overflowY === "scroll") {
+        const foundEl = el;
+        scrollContainerRef.current = foundEl;
+        foundEl.addEventListener("scroll", handleScroll, { passive: true });
+        return () => {
+          foundEl.removeEventListener("scroll", handleScroll);
+        };
+      }
+      el = el.parentElement;
+    }
+  }, [variant, handleScroll]);
+
+  useEffect(() => {
+    if (variant !== "embedded") return;
+    if (userScrolledUpRef.current) return;
+    // Don't override an intentional hash-based scroll on first render
+    const hash = location.hash;
+    if (!hasScrolledRef.current && (hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
+    bottomAnchorRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+  }, [variant, messages, location.hash]);
+
   function handleJumpToLatest() {
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    userScrolledUpRef.current = false;
+    bottomAnchorRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }
 
   const chatCtx = useMemo<IssueChatMessageContext>(
