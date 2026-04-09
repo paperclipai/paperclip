@@ -1,4 +1,4 @@
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent, ExecutionThreadResponse } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface RunForIssue {
@@ -35,4 +35,5 @@ export const activityApi = {
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),
+  executionThread: (issueId: string) => api.get<ExecutionThreadResponse>(`/issues/${issueId}/execution-thread`),
 };

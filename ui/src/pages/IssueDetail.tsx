@@ -65,6 +65,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
+import { ExecutionThread } from "../components/ExecutionThread";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
@@ -97,6 +98,7 @@ import {
   Paperclip,
   Plus,
   Repeat,
+  Route,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
@@ -876,12 +878,19 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState("chat");
+  const [detailTab, setDetailTab] = useState(() => {
+    const params = new URLSearchParams(location.search);
+    const tab = params.get("tab");
+    return tab === "thread" ? "thread" : "chat";
+  });
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
     action: "approve" | "reject";
   } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [secondaryOpen, setSecondaryOpen] = useState({
+    approvals: false,
+  });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -2612,6 +2621,12 @@ export function IssueDetail() {
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          {(childIssues.length > 0 || issue.parentId) && (
+            <TabsTrigger value="thread" className="gap-1.5">
+              <Route className="h-3.5 w-3.5" />
+              Thread
+            </TabsTrigger>
+          )}
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               {item.label}
@@ -2671,6 +2686,15 @@ export function IssueDetail() {
             />
           ) : null}
         </TabsContent>
+
+        {(childIssues.length > 0 || issue.parentId) && (
+          <TabsContent value="thread">
+            <ExecutionThread
+              issueId={issue.id}
+              agentMap={agentMap}
+            />
+          </TabsContent>
+        )}
 
         {activePluginTab && (
           <TabsContent value={activePluginTab.value}>
