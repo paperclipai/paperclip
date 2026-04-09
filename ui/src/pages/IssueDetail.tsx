@@ -389,10 +389,10 @@ export function IssueDetail() {
     return (linkedRuns ?? []).filter((r) => !liveIds.has(r.runId));
   }, [linkedRuns, liveRuns, activeRun]);
 
-  const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+  const { data: childIssues } = useQuery({
+    queryKey: queryKeys.issues.children(selectedCompanyId!, issue?.id ?? ""),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { parentId: issue?.id ?? "" }),
+    enabled: !!selectedCompanyId && !!issue?.id,
   });
 
   const { data: agents } = useQuery({
@@ -478,12 +478,10 @@ export function IssueDetail() {
     return options;
   }, [agents, orderedProjects]);
 
-  const childIssues = useMemo(() => {
-    if (!allIssues || !issue) return [];
-    return allIssues
-      .filter((i) => i.parentId === issue.id)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [allIssues, issue]);
+  const sortedChildIssues = useMemo(() => {
+    if (!childIssues) return [];
+    return [...childIssues].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [childIssues]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -519,8 +517,12 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
 
+  // Stabilize polling-derived values so commentsWithRunMeta doesn't recompute every 3s
+  const runningRunId = runningIssueRun?.id ?? null;
+  const runningRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
-    const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+    const activeRunStartedAt = runningRunStartedAt;
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
     const agentIdByRunId = new Map<string, string>();
     for (const run of linkedRuns ?? []) {
@@ -541,24 +543,23 @@ export function IssueDetail() {
     }
     return threadComments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
-      const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
-      if (
-        isQueuedIssueComment({
-          comment: nextComment,
-          activeRunStartedAt,
-          runId: meta?.runId ?? nextComment.runId ?? null,
-          interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
-        })
-      ) {
+      const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : comment;
+      const shouldQueue = isQueuedIssueComment({
+        comment: nextComment,
+        activeRunStartedAt,
+        runId: meta?.runId ?? nextComment.runId ?? null,
+        interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
+      });
+      if (shouldQueue) {
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId: runningRunId ?? nextComment.queueTargetRunId ?? null,
         };
       }
       return nextComment;
     });
-  }, [activity, threadComments, linkedRuns, runningIssueRun]);
+  }, [activity, threadComments, linkedRuns, runningRunId, runningRunStartedAt]);
 
   const queuedComments = useMemo(
     () => commentsWithRunMeta.filter((comment) => comment.queueState === "queued"),
@@ -1566,11 +1567,11 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="subissues">
-          {childIssues.length === 0 ? (
+          {sortedChildIssues.length === 0 ? (
             <p className="text-xs text-muted-foreground">No sub-issues.</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
+              {sortedChildIssues.map((child) => (
                 <Link
                   key={child.id}
                   to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}

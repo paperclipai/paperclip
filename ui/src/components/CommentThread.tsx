@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -221,7 +221,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
   );
 }
 
-function CommentCard({
+const CommentCard = memo(function CommentCard({
   comment,
   agentMap,
   companyId,
@@ -242,6 +242,7 @@ function CommentCard({
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
   onVote?: (
+    commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
@@ -336,7 +337,7 @@ function CommentCard({
           disabled={voting}
           sharingPreference={feedbackDataSharingPreference}
           termsUrl={feedbackTermsUrl}
-          onVote={onVote}
+          onVote={(vote, options) => onVote(comment.id, vote, options)}
           rightSlot={comment.runId && !isPending ? (
             comment.runAgentId ? (
               <Link
@@ -371,7 +372,7 @@ function CommentCard({
       ) : null}
     </div>
   );
-}
+});
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
@@ -535,7 +536,7 @@ const TimelineList = memo(function TimelineList({
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={feedbackTermsUrl}
-            onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
+            onVote={onVote}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
           />
@@ -728,19 +729,22 @@ export function CommentThread({
     }
   }
 
-  async function handleFeedbackVote(
-    commentId: string,
-    vote: FeedbackVoteValue,
-    options?: { allowSharing?: boolean; reason?: string },
-  ) {
-    if (!onVote) return;
-    setVotingTargetId(commentId);
-    try {
-      await onVote(commentId, vote, options);
-    } finally {
-      setVotingTargetId(null);
-    }
-  }
+  const handleFeedbackVote = useCallback(
+    async (
+      commentId: string,
+      vote: FeedbackVoteValue,
+      options?: { allowSharing?: boolean; reason?: string },
+    ) => {
+      if (!onVote) return;
+      setVotingTargetId(commentId);
+      try {
+        await onVote(commentId, vote, options);
+      } finally {
+        setVotingTargetId(null);
+      }
+    },
+    [onVote],
+  );
 
   const canSubmit = !submitting && !!body.trim();
 

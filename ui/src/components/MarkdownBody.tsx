@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
+import { isValidElement, memo, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -91,52 +91,55 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
   const { theme } = useTheme();
-  const components: Components = {
-    pre: ({ node: _node, children: preChildren, ...preProps }) => {
-      const mermaidSource = extractMermaidSource(preChildren);
-      if (mermaidSource) {
-        return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
-      }
-      return <pre {...preProps}>{preChildren}</pre>;
-    },
-    a: ({ href, children: linkChildren }) => {
-      const parsed = href ? parseMentionChipHref(href) : null;
-      if (parsed) {
-        const targetHref = parsed.kind === "project"
-          ? `/projects/${parsed.projectId}`
-          : parsed.kind === "skill"
-            ? `/skills/${parsed.skillId}`
-            : `/agents/${parsed.agentId}`;
+  const components: Components = useMemo(() => {
+    const result: Components = {
+      pre: ({ node: _node, children: preChildren, ...preProps }) => {
+        const mermaidSource = extractMermaidSource(preChildren);
+        if (mermaidSource) {
+          return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
+        }
+        return <pre {...preProps}>{preChildren}</pre>;
+      },
+      a: ({ href, children: linkChildren }) => {
+        const parsed = href ? parseMentionChipHref(href) : null;
+        if (parsed) {
+          const targetHref = parsed.kind === "project"
+            ? `/projects/${parsed.projectId}`
+            : parsed.kind === "skill"
+              ? `/skills/${parsed.skillId}`
+              : `/agents/${parsed.agentId}`;
+          return (
+            <a
+              href={targetHref}
+              className={cn(
+                "paperclip-mention-chip",
+                `paperclip-mention-chip--${parsed.kind}`,
+                parsed.kind === "project" && "paperclip-project-mention-chip",
+              )}
+              data-mention-kind={parsed.kind}
+              style={mentionChipInlineStyle(parsed)}
+            >
+              {linkChildren}
+            </a>
+          );
+        }
         return (
-          <a
-            href={targetHref}
-            className={cn(
-              "paperclip-mention-chip",
-              `paperclip-mention-chip--${parsed.kind}`,
-              parsed.kind === "project" && "paperclip-project-mention-chip",
-            )}
-            data-mention-kind={parsed.kind}
-            style={mentionChipInlineStyle(parsed)}
-          >
+          <a href={href} rel="noreferrer">
             {linkChildren}
           </a>
         );
-      }
-      return (
-        <a href={href} rel="noreferrer">
-          {linkChildren}
-        </a>
-      );
-    },
-  };
-  if (resolveImageSrc) {
-    components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = src ? resolveImageSrc(src) : null;
-      return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
+      },
     };
-  }
+    if (resolveImageSrc) {
+      result.img = ({ node: _node, src, alt, ...imgProps }) => {
+        const resolved = src ? resolveImageSrc(src) : null;
+        return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
+      };
+    }
+    return result;
+  }, [theme, resolveImageSrc]);
 
   return (
     <div
@@ -151,4 +154,4 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
       </Markdown>
     </div>
   );
-}
+});
