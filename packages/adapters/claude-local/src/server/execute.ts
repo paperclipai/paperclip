@@ -62,6 +62,44 @@ async function buildSkillsDir(config: Record<string, unknown>): Promise<string> 
   return tmp;
 }
 
+function shouldDisableClaudeAutoMemory(desiredSkillNames: Iterable<string>): boolean {
+  for (const skillName of desiredSkillNames) {
+    const normalized = skillName.trim().toLowerCase();
+    if (!normalized) continue;
+    if (normalized === "para-memory-files" || normalized.endsWith("/para-memory-files")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function ensureClaudeAutoMemoryDisabled(baseDir: string): Promise<void> {
+  const claudeDir = path.join(baseDir, ".claude");
+  const settingsPath = path.join(claudeDir, "settings.json");
+  await fs.mkdir(claudeDir, { recursive: true });
+
+  let current: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(settingsPath, "utf8");
+    const parsed = parseJson(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      current = parsed;
+    }
+  } catch {
+    // Missing or unreadable settings files should not block the run; we rewrite below.
+  }
+
+  if (current.autoMemoryEnabled === false) {
+    return;
+  }
+
+  await fs.writeFile(
+    settingsPath,
+    `${JSON.stringify({ ...current, autoMemoryEnabled: false }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -362,6 +400,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
+  const availableSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkillNames = resolveClaudeDesiredSkillNames(config, availableSkillEntries);
+
+  if (shouldDisableClaudeAutoMemory(desiredSkillNames)) {
+    const claudeConfigRoots = new Set<string>([path.resolve(cwd)]);
+    const agentHomeDir = typeof env.AGENT_HOME === "string" && env.AGENT_HOME.trim().length > 0
+      ? path.resolve(env.AGENT_HOME)
+      : null;
+    if (agentHomeDir) claudeConfigRoots.add(agentHomeDir);
+
+    for (const rootDir of claudeConfigRoots) {
+      await ensureClaudeAutoMemoryDisabled(rootDir);
+    }
+  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
