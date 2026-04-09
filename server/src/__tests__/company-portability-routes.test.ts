@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companyRoutes } from "../routes/companies.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -39,21 +41,17 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    budgetService: () => mockBudgetService,
-    companyPortabilityService: () => mockCompanyPortabilityService,
-    companyService: () => mockCompanyService,
-    feedbackService: () => mockFeedbackService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  budgetService: () => mockBudgetService,
+  companyPortabilityService: () => mockCompanyPortabilityService,
+  companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
+  logActivity: mockLogActivity,
+}));
 
 async function createApp(actor: Record<string, unknown>) {
-  const { companyRoutes } = await import("../routes/companies.js");
-  const { errorHandler } = await import("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -67,8 +65,6 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("company portability routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    registerServiceMocks();
     vi.resetAllMocks();
   });
 
