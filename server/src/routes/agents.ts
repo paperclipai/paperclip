@@ -491,6 +491,8 @@ export function agentRoutes(db: Db) {
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
     if (adapterType === "claude_local" || adapterType === "opencode_local") {
+      // Both claude_local and opencode_local default to skipping permissions because
+      // Paperclip runs agents in headless mode where interactive prompts cannot be answered.
       if (typeof next.dangerouslySkipPermissions !== "boolean") {
         next.dangerouslySkipPermissions = DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS;
       }

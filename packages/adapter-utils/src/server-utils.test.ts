@@ -19,6 +19,12 @@ describe("asBoolean", () => {
     expect(asBoolean("false", true)).toBe(false);
   });
 
+  it("coerces case-insensitive string booleans", () => {
+    expect(asBoolean("True", false)).toBe(true);
+    expect(asBoolean("FALSE", true)).toBe(false);
+    expect(asBoolean("TRUE", false)).toBe(true);
+  });
+
   it("returns fallback for undefined", () => {
     expect(asBoolean(undefined, true)).toBe(true);
     expect(asBoolean(undefined, false)).toBe(false);

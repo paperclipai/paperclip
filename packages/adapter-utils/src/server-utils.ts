@@ -138,8 +138,11 @@ export function asNumber(value: unknown, fallback: number): number {
 
 export function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
-  if (value === "true") return true;
-  if (value === "false") return false;
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower === "true") return true;
+    if (lower === "false") return false;
+  }
   return fallback;
 }
 
