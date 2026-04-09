@@ -131,6 +131,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const STALE_ACTIVE_EXECUTION_LOCK_MS = 5 * 60 * 1000;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -909,6 +910,29 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function canAdoptExecutionLockForCheckout(input: {
+    executionRunId: string;
+    actorAgentId: string;
+  }) {
+    const run = await db
+      .select({
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.executionRunId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!run) return true;
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    if (run.agentId !== input.actorAgentId) return false;
+    if (run.status !== "queued" && run.status !== "running") return false;
+
+    const updatedAtMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+    return Date.now() - updatedAtMs >= STALE_ACTIVE_EXECUTION_LOCK_MS;
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -1622,6 +1646,15 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
       }
+      const terminalStatuses = new Set(["done", "cancelled"]);
+      const transitionedIntoOrOutOfTerminal =
+        issueData.status !== undefined &&
+        (terminalStatuses.has(issueData.status) || terminalStatuses.has(existing.status));
+      if (transitionedIntoOrOutOfTerminal) {
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
+      }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
@@ -1818,6 +1851,53 @@ export function issueService(db: Db) {
         }
       }
 
+      if (
+        current.executionRunId &&
+        current.checkoutRunId == null &&
+        expectedStatuses.includes(current.status) &&
+        (current.assigneeAgentId == null || current.assigneeAgentId === agentId)
+      ) {
+        const canBypassFreshExecutionLock =
+          checkoutRunId == null &&
+          current.status !== "in_progress";
+        const canAdopt = canBypassFreshExecutionLock
+          ? true
+          : await canAdoptExecutionLockForCheckout({
+            executionRunId: current.executionRunId,
+            actorAgentId: agentId,
+          });
+        if (canAdopt) {
+          const now = new Date();
+          const adopted = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              executionLockedAt: checkoutRunId ? now : null,
+              status: "in_progress",
+              startedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+                isNull(issues.checkoutRunId),
+                eq(issues.executionRunId, current.executionRunId),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (adopted) {
+            const [enriched] = await withIssueLabels(db, [adopted]);
+            return enriched;
+          }
+        }
+      }
+
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&
@@ -1925,6 +2005,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))

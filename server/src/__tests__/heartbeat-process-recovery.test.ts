@@ -9,6 +9,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       child.kill("SIGKILL");
     }
     childProcesses.clear();
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -252,7 +254,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("records infrastructure diagnostics in process_lost lifecycle events", async () => {
+    const startedAt = new Date("2026-03-18T23:58:00.000Z");
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      runErrorCode: "process_detached",
+      runError: "Lost in-memory process handle, but child pid 999999999 is still alive",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        processStartedAt: startedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reapOrphanedRuns();
+
+    const lifecycleEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const processLostEvent = lifecycleEvents.find((event) => event.level === "error" && event.message?.includes("Process lost"));
+    expect(processLostEvent).toBeTruthy();
+    const payload = (processLostEvent?.payload ?? {}) as Record<string, unknown>;
+    expect(payload.classification).toBe("execution_infrastructure_failure");
+    expect(payload.reason).toBe("runner_process_handle_lost");
+    expect(payload.detachedPreviously).toBe(true);
+    expect(payload.previousRunErrorCode).toBe("process_detached");
+    expect(typeof payload.processAgeMs).toBe("number");
+    expect(Number(payload.processAgeMs)).toBeGreaterThan(0);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

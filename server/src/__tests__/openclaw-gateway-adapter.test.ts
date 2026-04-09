@@ -569,6 +569,67 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("returns wait error when gateway reports failed run", async () => {
+    const gateway = await createMockGatewayServer({
+      waitPayload: {
+        runId: "run-123",
+        status: "error",
+        error: "remote runner failed",
+        startedAt: 1,
+        endedAt: 2,
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.timedOut).toBe(false);
+      expect(result.errorCode).toBe("openclaw_gateway_wait_error");
+      expect(result.errorMessage).toContain("remote runner failed");
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("returns wait timeout when gateway reports timeout", async () => {
+    const gateway = await createMockGatewayServer({
+      waitPayload: {
+        runId: "run-123",
+        status: "timeout",
+        startedAt: 1,
+        endedAt: 2,
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("openclaw_gateway_wait_timeout");
+      expect(result.errorMessage).toContain("timed out");
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("auto-approves pairing once and retries the run", async () => {
     const gateway = await createMockGatewayServerWithPairing();
     const logs: string[] = [];

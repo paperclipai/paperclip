@@ -27,6 +27,14 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import {
+  execute as copilotExecute,
+  listCursorSkills as listCopilotSkills,
+  syncCursorSkills as syncCopilotSkills,
+  testEnvironment as copilotTestEnvironment,
+  sessionCodec as copilotSessionCodec,
+} from "@paperclipai/adapter-copilot-local/server";
+import { agentConfigurationDoc as copilotAgentConfigurationDoc, models as copilotModels } from "@paperclipai/adapter-copilot-local";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -56,6 +64,7 @@ import {
 } from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listCursorModels as listCopilotModels } from "./cursor-models.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -126,6 +135,19 @@ const cursorLocalAdapter: ServerAdapterModule = {
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
+};
+
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotExecute,
+  testEnvironment: copilotTestEnvironment,
+  listSkills: listCopilotSkills,
+  syncSkills: syncCopilotSkills,
+  sessionCodec: copilotSessionCodec,
+  sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
+  models: copilotModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: copilotAgentConfigurationDoc,
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -209,6 +231,7 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
+    copilotLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,

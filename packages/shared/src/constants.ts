@@ -30,6 +30,7 @@ export const AGENT_ADAPTER_TYPES = [
   "opencode_local",
   "pi_local",
   "cursor",
+  "copilot_local",
   "openclaw_gateway",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});

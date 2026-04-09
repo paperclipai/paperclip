@@ -89,6 +89,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Cursor agent",
     icon: MousePointer2,
   },
+  copilot_local: {
+    label: "GitHub Copilot CLI",
+    description: "Local GitHub Copilot agent",
+    icon: Terminal,
+  },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
     description: "Invoke OpenClaw via gateway protocol",

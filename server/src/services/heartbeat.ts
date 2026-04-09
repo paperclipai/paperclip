@@ -86,6 +86,61 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+export function buildBlockedCommentForFailedRun(run: typeof heartbeatRuns.$inferSelect): string {
+  const statusText = run.status === "timed_out" ? "타임아웃" : "실패";
+  const details: string[] = [];
+  if (run.errorCode) details.push(`- 오류 코드: \`${run.errorCode}\``);
+  if (run.error) details.push(`- 오류 메시지: ${run.error}`);
+  details.push(`- 실행 ID: \`${run.id}\``);
+
+  return [
+    "## 실행 실패로 인한 자동 차단",
+    `현재 실행이 ${statusText}되어 이슈를 \`blocked\`로 전환했습니다.`,
+    "",
+    ...details,
+    "",
+    "원인 확인 후 언블락/재시도 기준을 코멘트로 남겨주세요.",
+  ].join("\n");
+}
+
+async function markIssueBlockedForFailedRun(input: {
+  db: Db;
+  issuesSvc: ReturnType<typeof issueService>;
+  issueId: string | null;
+  agentId: string;
+  run: typeof heartbeatRuns.$inferSelect;
+}) {
+  if (!input.issueId) return;
+
+  const existingIssue = await input.db
+    .select({
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") {
+    return;
+  }
+
+  if (existingIssue.status !== "blocked") {
+    await input.issuesSvc.update(input.issueId, {
+      status: "blocked",
+      actorAgentId: input.agentId,
+    });
+  }
+
+  await input.issuesSvc.addComment(
+    input.issueId,
+    buildBlockedCommentForFailedRun(input.run),
+    {
+      agentId: input.agentId,
+      runId: input.run.id,
+    },
+  );
+}
+
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
@@ -2115,6 +2170,11 @@ export function heartbeatService(db: Db) {
       }
 
       const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const processAgeMs =
+        run.processStartedAt instanceof Date
+          ? Math.max(0, now.getTime() - run.processStartedAt.getTime())
+          : null;
+      const detachedPreviously = run.errorCode === DETACHED_PROCESS_ERROR_CODE;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
@@ -2138,7 +2198,26 @@ export function heartbeatService(db: Db) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
       } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        const issueId = readNonEmptyString(parseObject(finalizedRun.contextSnapshot).issueId);
+        if (issueId) {
+          try {
+            await markIssueBlockedForFailedRun({
+              db,
+              issuesSvc,
+              issueId,
+              agentId: run.agentId,
+              run: finalizedRun,
+            });
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, issueId },
+              "failed to block issue after run failure",
+            );
+          }
+        }
+        await releaseIssueExecutionAndPromote(finalizedRun, {
+          promoteDeferredIssueWakeups: false,
+        });
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -2149,7 +2228,13 @@ export function heartbeatService(db: Db) {
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
           : baseMessage,
         payload: {
+          classification: "execution_infrastructure_failure",
+          reason: "runner_process_handle_lost",
           ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...(processAgeMs != null ? { processAgeMs } : {}),
+          ...(run.processStartedAt ? { processStartedAt: run.processStartedAt.toISOString() } : {}),
+          detachedPreviously,
+          previousRunErrorCode: run.errorCode ?? null,
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -3160,7 +3245,23 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
+        try {
+          await markIssueBlockedForFailedRun({
+            db,
+            issuesSvc,
+            issueId,
+            agentId: agent.id,
+            run: failedRun,
+          });
+        } catch (markErr) {
+          logger.warn(
+            { err: markErr, runId: run.id, issueId },
+            "failed to block issue after adapter exception",
+          );
+        }
+        await releaseIssueExecutionAndPromote(failedRun, {
+          promoteDeferredIssueWakeups: false,
+        });
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
@@ -3211,7 +3312,16 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+            await markIssueBlockedForFailedRun({
+              db,
+              issuesSvc,
+              issueId: readNonEmptyString(parseObject(failedRun.contextSnapshot).issueId),
+              agentId: run.agentId,
+              run: failedRun,
+            }).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(failedRun, {
+              promoteDeferredIssueWakeups: false,
+            }).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
@@ -3223,7 +3333,11 @@ export function heartbeatService(db: Db) {
         }
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options?: { promoteDeferredIssueWakeups?: boolean },
+  ) {
+    const shouldPromoteDeferredIssueWakeups = options?.promoteDeferredIssueWakeups ?? true;
     const promotedRun = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
@@ -3249,6 +3363,10 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (!shouldPromoteDeferredIssueWakeups) {
+        return null;
+      }
 
       while (true) {
         const deferred = await tx
