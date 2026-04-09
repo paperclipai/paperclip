@@ -121,10 +121,14 @@ Add to the delegation routing rules in `server/src/onboarding-assets/ceo/AGENTS.
 - **Operational reviews, status tracking, progress monitoring** -> Ops Manager
 ```
 
+## Loader Registration
+
+The onboarding asset loader (`server/src/services/default-agent-instructions.ts`) must be updated to recognize the `ops` role. Without this, agents created with `role: "ops"` would receive the generic default bundle instead of the ops-specific files. This is a 2-line change: add `ops` to the file map and the role resolver.
+
 ## What This Does NOT Include
 
 - No schema changes or new DB tables
-- No new API routes or service modifications
+- No new API routes
 - No UI changes
 - No goal progress metrics (goals remain status-only)
 - No automated task creation or assignment by the Ops Manager
