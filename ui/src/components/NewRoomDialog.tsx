@@ -4,6 +4,7 @@ import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { roomsApi } from "../api/rooms";
+import { useT } from "../i18n";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
 
 export function NewRoomDialog() {
+  const { t } = useT();
   const { newRoomOpen, closeNewRoom } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -76,7 +78,7 @@ export function NewRoomDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New room</span>
+            <span>{t("dialog.newRoom")}</span>
           </div>
           <Button
             variant="ghost"
@@ -92,7 +94,7 @@ export function NewRoomDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Room name"
+            placeholder={t("placeholder.roomName")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -103,7 +105,7 @@ export function NewRoomDialog() {
         <div className="px-4 pb-4">
           <textarea
             className="w-full text-sm bg-transparent outline-none placeholder:text-muted-foreground/50 resize-none min-h-[80px]"
-            placeholder="Add description..."
+            placeholder={t("placeholder.addDescription")}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -121,7 +123,7 @@ export function NewRoomDialog() {
             disabled={!name.trim() || createRoom.isPending}
             onClick={handleSubmit}
           >
-            {createRoom.isPending ? "Creating…" : "Create room"}
+            {createRoom.isPending ? "Creating…" : t("action.createRoom")}
           </Button>
         </div>
       </DialogContent>

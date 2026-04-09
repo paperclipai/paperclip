@@ -4,6 +4,7 @@ import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi } from "../api/teams";
+import { useT } from "../i18n";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 
 export function NewTeamDialog() {
+  const { t } = useT();
   const { newTeamOpen, closeNewTeam } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -78,7 +80,7 @@ export function NewTeamDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New team</span>
+            <span>{t("dialog.newTeam")}</span>
           </div>
           <Button
             variant="ghost"
@@ -94,7 +96,7 @@ export function NewTeamDialog() {
         <div className="px-4 pt-4 pb-2">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Team name"
+            placeholder={t("placeholder.teamName")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -122,7 +124,7 @@ export function NewTeamDialog() {
         <div className="px-4 pb-4">
           <textarea
             className="w-full text-sm bg-transparent outline-none placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-            placeholder="Add description..."
+            placeholder={t("placeholder.addDescription")}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -140,7 +142,7 @@ export function NewTeamDialog() {
             disabled={!name.trim() || !identifier.trim() || createTeam.isPending}
             onClick={handleSubmit}
           >
-            {createTeam.isPending ? "Creating…" : "Create team"}
+            {createTeam.isPending ? "Creating…" : t("action.createTeam")}
           </Button>
         </div>
       </DialogContent>
