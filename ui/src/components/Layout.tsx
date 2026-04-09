@@ -31,7 +31,7 @@ import { Button } from "@/components/ui/button";
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const { openNewIssue, openOnboarding, newIssueOpen, newProjectOpen, newGoalOpen, newAgentOpen, onboardingOpen } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
     companies,
@@ -176,6 +176,15 @@ export function Layout() {
       document.removeEventListener("touchend", onTouchEnd);
     };
   }, [isMobile, sidebarOpen, setSidebarOpen]);
+
+  // Close mobile sidebar when any dialog opens to prevent z-index conflicts
+  useEffect(() => {
+    if (!isMobile) return;
+    const anyDialogOpen = newIssueOpen || newProjectOpen || newGoalOpen || newAgentOpen || onboardingOpen;
+    if (anyDialogOpen && sidebarOpen) {
+      setSidebarOpen(false);
+    }
+  }, [isMobile, newIssueOpen, newProjectOpen, newGoalOpen, newAgentOpen, onboardingOpen, sidebarOpen, setSidebarOpen]);
 
   const updateMobileNavVisibility = useCallback((currentTop: number) => {
     const delta = currentTop - lastMainScrollTop.current;

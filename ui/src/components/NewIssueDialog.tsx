@@ -595,9 +595,9 @@ export function NewIssueDialog() {
         showCloseButton={false}
         aria-describedby={undefined}
         className={cn(
-          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
+          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-3rem)] md:max-h-[calc(100dvh-2rem)]",
           expanded
-            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
+            ? "sm:max-w-2xl h-[calc(100dvh-3rem)] md:h-[calc(100dvh-2rem)]"
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
