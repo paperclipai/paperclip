@@ -2,15 +2,20 @@ export const type = "devin_local";
 export const label = "Devin (local)";
 
 export const models: { id: string; label: string }[] = [
-  { id: "claude-opus-4.6", label: "Claude Opus 4.6 (opus) — default, most capable" },
+  { id: "claude-opus-4.6", label: "Claude Opus 4.6 — default, most capable" },
   { id: "claude-opus-4.5", label: "Claude Opus 4.5" },
-  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 (sonnet) — fast & capable" },
+  { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 — fast & capable" },
+  { id: "claude-sonnet-4.5-thinking", label: "Claude Sonnet 4.5 Thinking" },
   { id: "claude-sonnet-4", label: "Claude Sonnet 4" },
-  { id: "swe-1.5", label: "SWE 1.5 (swe) — fastest, up to 950 tok/s" },
-  { id: "swe-1.5-free", label: "SWE 1.5 Free" },
-  { id: "codex-5.3", label: "Codex 5.3 (codex) — OpenAI, optimised for code" },
-  { id: "gemini-3-pro", label: "Gemini 3 Pro (gemini) — Google pro-tier" },
-  { id: "gemini-3-flash", label: "Gemini 3 Flash — Google fast" },
+  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5 — fastest Claude" },
+  { id: "swe-1.6", label: "SWE 1.6 — fastest" },
+  { id: "swe-1.5", label: "SWE 1.5" },
+  { id: "swe-1.5-fast", label: "SWE 1.5 Fast" },
+  { id: "gpt-5.4", label: "GPT 5.4" },
+  { id: "gpt-5.4-mini", label: "GPT 5.4 Mini" },
+  { id: "gpt-5.3-codex", label: "GPT 5.3 Codex — OpenAI, optimised for code" },
+  { id: "gpt-5.2", label: "GPT 5.2" },
 ];
 
 export const agentConfigurationDoc = `# devin_local agent configuration
@@ -33,13 +38,18 @@ Core fields:
 - model (string, optional): Devin model id. Available models:
   claude-opus-4.6 (alias: opus) — default, most capable
   claude-opus-4.5
+  claude-sonnet-4.6
   claude-sonnet-4.5 (alias: sonnet)
+  claude-sonnet-4.5-thinking
   claude-sonnet-4
-  swe-1.5 (alias: swe) — fastest
-  swe-1.5-free
-  codex-5.3 (alias: codex) — OpenAI, optimised for code
-  gemini-3-pro (alias: gemini)
-  gemini-3-flash
+  claude-haiku-4.5
+  swe-1.6 — fastest
+  swe-1.5 (alias: swe)
+  swe-1.5-fast
+  gpt-5.4
+  gpt-5.4-mini
+  gpt-5.3-codex (alias: codex) — OpenAI, optimised for code
+  gpt-5.2
 - permissionMode (string, optional): permission mode passed via --permission-mode (auto|dangerous, default dangerous)
 - command (string, optional): defaults to "devin"
 - extraArgs (string[], optional): additional CLI args
