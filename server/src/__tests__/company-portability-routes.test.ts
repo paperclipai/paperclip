@@ -39,15 +39,17 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    budgetService: () => mockBudgetService,
+    companyPortabilityService: () => mockCompanyPortabilityService,
+    companyService: () => mockCompanyService,
+    feedbackService: () => mockFeedbackService,
+    logActivity: mockLogActivity,
+  }));
+}
 
 async function createApp(actor: Record<string, unknown>) {
   const { companyRoutes } = await import("../routes/companies.js");
@@ -66,12 +68,8 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    mockAgentService.getById.mockReset();
-    mockCompanyPortabilityService.exportBundle.mockReset();
-    mockCompanyPortabilityService.previewExport.mockReset();
-    mockCompanyPortabilityService.previewImport.mockReset();
-    mockCompanyPortabilityService.importBundle.mockReset();
-    mockLogActivity.mockReset();
+    registerServiceMocks();
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agents from CEO-safe export preview routes", async () => {

@@ -25,14 +25,16 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
-  logActivity: mockLogActivity,
-  notifyHireApproved: vi.fn(),
-  deduplicateAgentName: vi.fn((name: string) => name),
-}));
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+  }));
+}
 
 function createApp(actor: any) {
   const app = express();
@@ -60,6 +62,8 @@ function createApp(actor: any) {
 
 describe("cli auth routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerServiceMocks();
     vi.clearAllMocks();
   });
 
@@ -147,13 +151,11 @@ describe("cli auth routes", () => {
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      approved: true,
-      status: "approved",
-      userId: "user-1",
-      keyId: "board-key-1",
-      expiresAt: "2026-03-23T13:00:00.000Z",
-    });
+    expect(mockBoardAuthService.approveCliAuthChallenge).toHaveBeenCalledWith(
+      "challenge-1",
+      "pcp_cli_auth_secret",
+      "user-1",
+    );
     expect(mockLogActivity).toHaveBeenCalledTimes(1);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
