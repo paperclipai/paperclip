@@ -341,7 +341,7 @@ function OrgTreeNode({
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
 
   return (
-    <div style={{ paddingLeft: depth * 12 }}>
+    <div style={{ paddingLeft: depth * 8 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
