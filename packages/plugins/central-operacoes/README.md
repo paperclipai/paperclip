@@ -11,6 +11,10 @@ Hoje ele entrega:
 - hero e visão geral limpos, sem metadados internos expostos ao operador
 - submenu `AGhouse` dentro da Central na sidebar para abrir direto a vista espacial
 - aba `AGhouse` redesenhada com HUD compacto, mapa dominante e avatares mais fortes
+- visão geral reorganizada em guias funcionais com tabelas de runtime, cobertura, automação e sinais
+- botão flutuante de `Atalhos Operacionais` substituindo o bloco antigo de ações rápidas
+- aba `Fluxo Operacional` reestruturada em trilhas claras de fila, execução e memória operacional
+- aba `Workbench Avançado` reagrupada em coordenação, automação, workspace e saída consolidada
 - widget de dashboard e superfícies na barra lateral
 - visões operacionais de projeto e issue
 - superfícies de captura de comentários

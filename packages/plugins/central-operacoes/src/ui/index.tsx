@@ -307,21 +307,6 @@ const codeStyle: CSSProperties = {
   lineHeight: 1.45,
 };
 
-const widgetGridStyle: CSSProperties = {
-  display: "grid",
-  gap: "12px",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-};
-
-const widgetStyle: CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: "14px",
-  padding: "14px",
-  display: "grid",
-  gap: "8px",
-  background: "color-mix(in srgb, var(--card, transparent) 72%, transparent)",
-};
-
 const pageShellStyle: CSSProperties = {
   display: "grid",
   gap: "18px",
@@ -367,6 +352,12 @@ const groupedGridStyle: CSSProperties = {
   gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
 };
 
+const operationsSubtabGridStyle: CSSProperties = {
+  display: "grid",
+  gap: "10px",
+  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+};
+
 const actionClusterStyle: CSSProperties = {
   ...subtleCardStyle,
   display: "grid",
@@ -382,6 +373,27 @@ const spotlightCardStyle: CSSProperties = {
   alignContent: "start",
   background:
     "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 6%, transparent), color-mix(in srgb, var(--card, transparent) 78%, transparent))",
+};
+
+const operationsTableShellStyle: CSSProperties = {
+  ...subtleCardStyle,
+  padding: 0,
+  overflow: "hidden",
+  background: "color-mix(in srgb, var(--card, transparent) 82%, transparent)",
+};
+
+const operationsTableStyle: CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: "12px",
+  fontVariantNumeric: "tabular-nums",
+};
+
+const operationsFloatingDockStyle: CSSProperties = {
+  position: "sticky",
+  bottom: "18px",
+  justifySelf: "flex-end",
+  zIndex: 30,
 };
 
 const mutedTextStyle: CSSProperties = {
@@ -547,6 +559,26 @@ function tabButtonStyle(active: boolean): CSSProperties {
   };
 }
 
+function operationsSubtabButtonStyle(active: boolean): CSSProperties {
+  return {
+    ...subtleCardStyle,
+    display: "grid",
+    gap: "10px",
+    minHeight: "108px",
+    alignContent: "start",
+    textAlign: "left",
+    cursor: "pointer",
+    touchAction: "manipulation",
+    borderColor: active
+      ? "color-mix(in srgb, var(--foreground) 44%, var(--border))"
+      : "color-mix(in srgb, var(--border) 80%, transparent)",
+    background: active
+      ? "linear-gradient(180deg, color-mix(in srgb, var(--foreground) 8%, transparent), color-mix(in srgb, var(--card, transparent) 82%, transparent))"
+      : "color-mix(in srgb, var(--card, transparent) 78%, transparent)",
+    transition: "background 160ms ease, border-color 160ms ease, transform 160ms ease",
+  };
+}
+
 const TOKEN_LABELS: Record<string, string> = {
   active: "ativo",
   agent: "agente",
@@ -644,6 +676,29 @@ function getObjectNumber(value: unknown, key: string): number | null {
   if (!value || typeof value !== "object") return null;
   const next = (value as Record<string, unknown>)[key];
   return typeof next === "number" && Number.isFinite(next) ? next : null;
+}
+
+function truncateText(value: string, maxLength = 84): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return "Sem registro";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function formatSurfaceState(enabled: boolean, activeLabel = "Ativa", inactiveLabel = "Oculta"): string {
+  return enabled ? activeLabel : inactiveLabel;
 }
 
 function JsonBlock({ value }: { value: unknown }) {
@@ -810,24 +865,6 @@ function Pill({ label }: { label: string }) {
   );
 }
 
-function MiniWidget({
-  title,
-  eyebrow,
-  children,
-}: {
-  title: string;
-  eyebrow?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section style={widgetStyle}>
-      {eyebrow ? <div style={{ fontSize: "11px", opacity: 0.65, textTransform: "uppercase", letterSpacing: "0.06em" }}>{eyebrow}</div> : null}
-      <strong>{title}</strong>
-      <div style={layoutStack}>{children}</div>
-    </section>
-  );
-}
-
 function MiniList({
   items,
   render,
@@ -888,6 +925,188 @@ function HeroMetric({
       </div>
       <div style={{ fontSize: "24px", fontWeight: 700, lineHeight: 1 }}>{value}</div>
       <div style={mutedTextStyle}>{detail}</div>
+    </div>
+  );
+}
+
+type OperationsPanelTab = {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  summary?: ReactNode;
+  badge?: ReactNode;
+  content: ReactNode;
+};
+
+type OperationsDataTableRow = {
+  label: ReactNode;
+  value: ReactNode;
+  detail?: ReactNode;
+};
+
+function OperationsPanelTabs({
+  idPrefix,
+  ariaLabel,
+  tabs,
+  activeTab,
+  onChange,
+}: {
+  idPrefix: string;
+  ariaLabel: string;
+  tabs: OperationsPanelTab[];
+  activeTab: string;
+  onChange: (id: string) => void;
+}) {
+  const activeConfig = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
+
+  return (
+    <div style={{ display: "grid", gap: "14px" }}>
+      <div role="tablist" aria-label={ariaLabel} style={operationsSubtabGridStyle}>
+        {tabs.map((tab) => {
+          const active = tab.id === activeConfig.id;
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              id={`${idPrefix}-tab-${tab.id}`}
+              aria-selected={active}
+              aria-controls={`${idPrefix}-panel-${tab.id}`}
+              style={operationsSubtabButtonStyle(active)}
+              onClick={() => onChange(tab.id)}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+                <span
+                  style={{
+                    width: "34px",
+                    height: "34px",
+                    borderRadius: "12px",
+                    display: "grid",
+                    placeItems: "center",
+                    background: active
+                      ? "color-mix(in srgb, var(--foreground) 16%, transparent)"
+                      : "color-mix(in srgb, var(--foreground) 8%, transparent)",
+                    color: "inherit",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon size={16} aria-hidden="true" />
+                </span>
+                {tab.badge ? (typeof tab.badge === "string" ? <Pill label={tab.badge} /> : tab.badge) : null}
+              </div>
+              <div style={{ display: "grid", gap: "4px", minWidth: 0 }}>
+                <strong style={{ fontSize: "13px", lineHeight: 1.2 }}>{tab.label}</strong>
+                {tab.summary ? <span style={mutedTextStyle}>{tab.summary}</span> : null}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        role="tabpanel"
+        id={`${idPrefix}-panel-${activeConfig.id}`}
+        aria-labelledby={`${idPrefix}-tab-${activeConfig.id}`}
+        style={{ display: "grid", gap: "14px" }}
+      >
+        {activeConfig.content}
+      </div>
+    </div>
+  );
+}
+
+function OperationsDataTable({
+  rows,
+  empty = "Sem dados operacionais disponíveis.",
+  columnLabels = ["Funcionalidade", "Estado", "Leitura"],
+}: {
+  rows: OperationsDataTableRow[];
+  empty?: string;
+  columnLabels?: [string, string, string];
+}) {
+  return (
+    <div style={operationsTableShellStyle}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={operationsTableStyle}>
+          <thead>
+            <tr>
+              {columnLabels.map((label) => (
+                <th
+                  key={label}
+                  scope="col"
+                  style={{
+                    padding: "12px 14px",
+                    textAlign: "left",
+                    fontSize: "11px",
+                    fontWeight: 700,
+                    color: "var(--muted-foreground)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    background: "color-mix(in srgb, var(--foreground) 4%, transparent)",
+                    borderBottom: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={3}
+                  style={{
+                    padding: "18px 14px",
+                    color: "var(--muted-foreground)",
+                    borderTop: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                  }}
+                >
+                  {empty}
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={index}>
+                  <th
+                    scope="row"
+                    style={{
+                      padding: "14px",
+                      textAlign: "left",
+                      fontWeight: 600,
+                      borderTop: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                      verticalAlign: "top",
+                    }}
+                  >
+                    {row.label}
+                  </th>
+                  <td
+                    style={{
+                      padding: "14px",
+                      borderTop: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                      verticalAlign: "top",
+                    }}
+                  >
+                    {row.value}
+                  </td>
+                  <td
+                    style={{
+                      padding: "14px",
+                      borderTop: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                      color: "var(--muted-foreground)",
+                      verticalAlign: "top",
+                    }}
+                  >
+                    {row.detail ?? "—"}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1088,265 +1307,6 @@ function CompactSurfaceSummary({ label, entityType }: { label: string; entityTyp
         Registrar métrica
       </ActionButton>
       {entityQuery.data ? <JsonBlock value={entityQuery.data} /> : null}
-    </div>
-  );
-}
-
-function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context"] }) {
-  const overview = usePluginOverview(context.companyId);
-  const toast = usePluginToast();
-  const emitDemoEvent = usePluginAction("emit-demo-event");
-  const startProgressStream = usePluginAction("start-progress-stream");
-  const writeMetric = usePluginAction("write-metric");
-  const progressStream = usePluginStream<{ step?: number; message?: string }>(
-    STREAM_CHANNELS.progress,
-    { companyId: context.companyId ?? undefined },
-  );
-  const [quickActionStatus, setQuickActionStatus] = useState<{
-    title: string;
-    body: string;
-    tone: "info" | "success" | "warn" | "error";
-  } | null>(null);
-
-  useEffect(() => {
-    const latest = progressStream.events.at(-1);
-    if (!latest) return;
-    setQuickActionStatus({
-      title: "Atualização do stream de progresso",
-      body: latest.message ?? `Passo ${latest.step ?? "?"}`,
-      tone: "info",
-    });
-  }, [progressStream.events]);
-
-  return (
-    <div style={widgetGridStyle}>
-      <MiniWidget title="Resumo do Runtime" eyebrow="Visão Geral">
-        <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-          <div>Empresas: {overview.data?.counts.companies ?? 0}</div>
-          <div>Projetos: {overview.data?.counts.projects ?? 0}</div>
-          <div>Issues: {overview.data?.counts.issues ?? 0}</div>
-          <div>Agentes: {overview.data?.counts.agents ?? 0}</div>
-          <div>Último job: {overview.data?.lastJob ? "registrado" : "sem histórico"}</div>
-        </div>
-      </MiniWidget>
-
-      <MiniWidget title="Atalhos Operacionais" eyebrow="Ações">
-        <div style={rowStyle}>
-          <ActionButton
-            type="button"
-            icon={Target}
-            tone="success"
-            onClick={() =>
-              toast({
-                title: "Pulso operacional registrado",
-                body: "Feedback imediato para confirmar ações concluídas na Central.",
-                tone: "success",
-              })}
-          >
-            Confirmar ação
-          </ActionButton>
-          <ActionButton
-            type="button"
-            icon={ShieldAlert}
-            tone="warn"
-            onClick={() =>
-              toast({
-                title: "Alerta operacional",
-                body: "Use este padrão para sinalizar risco, dependência ou bloqueio.",
-                tone: "warn",
-              })}
-          >
-            Sinalizar alerta
-          </ActionButton>
-          <ActionButton
-            type="button"
-            icon={Compass}
-            tone="info"
-            onClick={() =>
-              toast({
-                title: "Abrir dashboard",
-                body: "A Central pode devolver o operador para outra superfície nativa do host.",
-                tone: "info",
-                action: {
-                  label: "Abrir",
-                  href: hostPath(context.companyPrefix, "/dashboard"),
-                },
-              })}
-          >
-            Abrir com CTA
-          </ActionButton>
-        </div>
-        <div style={rowStyle}>
-          <ActionButton
-            type="button"
-            icon={Sparkles}
-            onClick={() => {
-              if (!context.companyId) return;
-              void emitDemoEvent({ companyId: context.companyId, message: "Disparado pela página da Central de Operações" })
-                .then((next) => {
-                  overview.refresh();
-                  const message = getObjectString(next, "message") ?? "Evento operacional emitido";
-                  setQuickActionStatus({
-                    title: "Evento emitido",
-                    body: message,
-                    tone: "success",
-                  });
-                  toast({
-                    title: "Evento emitido",
-                    body: message,
-                    tone: "success",
-                  });
-                })
-                .catch((error) => {
-                  const message = getErrorMessage(error);
-                  setQuickActionStatus({
-                    title: "Falha ao emitir evento",
-                    body: message,
-                    tone: "error",
-                  });
-                  toast({
-                    title: "Falha ao emitir evento",
-                    body: message,
-                    tone: "error",
-                  });
-                });
-            }}
-          >
-            Emitir evento
-          </ActionButton>
-          <ActionButton
-            type="button"
-            icon={RadioTower}
-            onClick={() => {
-              if (!context.companyId) return;
-              void startProgressStream({ companyId: context.companyId, steps: 4 })
-                .then(() => {
-                  setQuickActionStatus({
-                    title: "Stream iniciado",
-                    body: "Acompanhe abaixo as atualizações em tempo real.",
-                    tone: "info",
-                  });
-                  toast({
-                    title: "Stream de progresso iniciado",
-                    body: "As atualizações aparecerão no painel de ações rápidas.",
-                    tone: "info",
-                  });
-                })
-                .catch((error) => {
-                  const message = getErrorMessage(error);
-                  setQuickActionStatus({
-                    title: "Falha ao iniciar stream",
-                    body: message,
-                    tone: "error",
-                  });
-                  toast({
-                    title: "Falha no stream de progresso",
-                    body: message,
-                    tone: "error",
-                  });
-                });
-            }}
-          >
-            Iniciar stream
-          </ActionButton>
-          <ActionButton
-            type="button"
-            icon={Gauge}
-            onClick={() => {
-              if (!context.companyId) return;
-              void writeMetric({ companyId: context.companyId, name: "page_quick_action", value: 1 })
-                .then((next) => {
-                  overview.refresh();
-                  const value = getObjectNumber(next, "value") ?? 1;
-                  const body = `Registrou ops.page_quick_action = ${value}`;
-                  setQuickActionStatus({
-                    title: "Métrica registrada",
-                    body,
-                    tone: "success",
-                  });
-                  toast({
-                    title: "Métrica registrada",
-                    body,
-                    tone: "success",
-                  });
-                })
-                .catch((error) => {
-                  const message = getErrorMessage(error);
-                  setQuickActionStatus({
-                    title: "Falha ao registrar métrica",
-                    body: message,
-                    tone: "error",
-                  });
-                  toast({
-                    title: "Falha ao registrar métrica",
-                    body: message,
-                    tone: "error",
-                  });
-                });
-            }}
-          >
-            Registrar métrica
-          </ActionButton>
-        </div>
-        <div style={{ display: "grid", gap: "6px" }}>
-          <div style={mutedTextStyle}>
-            Eventos recentes de progresso: {progressStream.events.length}
-          </div>
-          {quickActionStatus ? (
-            <div
-              style={{
-                ...subtleCardStyle,
-                borderColor:
-                  quickActionStatus.tone === "error"
-                    ? "color-mix(in srgb, #dc2626 45%, var(--border))"
-                    : quickActionStatus.tone === "warn"
-                      ? "color-mix(in srgb, #d97706 45%, var(--border))"
-                      : quickActionStatus.tone === "success"
-                        ? "color-mix(in srgb, #16a34a 45%, var(--border))"
-                        : "color-mix(in srgb, #2563eb 45%, var(--border))",
-              }}
-            >
-              <div style={{ fontSize: "12px", fontWeight: 600 }}>{quickActionStatus.title}</div>
-              <div style={mutedTextStyle}>{quickActionStatus.body}</div>
-            </div>
-          ) : null}
-          {progressStream.events.length > 0 ? (
-            <JsonBlock value={progressStream.events.slice(-3)} />
-          ) : null}
-        </div>
-      </MiniWidget>
-
-      <MiniWidget title="Acesso e Cobertura" eyebrow="Superfícies">
-        <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-          <div>Rota da empresa: {pluginPagePath(context.companyPrefix)}</div>
-          <div>Launchers ativos: {overview.data?.runtimeLaunchers.length ?? 0}</div>
-          <div>Slots com foco em projeto, issue e comentário</div>
-          <div>Navegação lateral, widget, tabs e ações contextuais</div>
-        </div>
-      </MiniWidget>
-
-      <MiniWidget title="Automação e Intake" eyebrow="Runtime">
-        <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-          <div>Jobs: {overview.data?.manifest.jobs.length ?? 0}</div>
-          <div>Webhooks: {overview.data?.manifest.webhooks.length ?? 0}</div>
-          <div>Ferramentas: {overview.data?.manifest.tools.length ?? 0}</div>
-          <div>Registros recentes: {overview.data?.recentRecords.length ?? 0}</div>
-        </div>
-      </MiniWidget>
-
-      <MiniWidget title="Estado Recente" eyebrow="Diagnósticos">
-        <div style={mutedTextStyle}>
-          Este bloco acompanha os últimos sinais úteis do runtime operacional.
-        </div>
-        <JsonBlock
-          value={{
-            lastJob: overview.data?.lastJob ?? null,
-            lastWebhook: overview.data?.lastWebhook ?? null,
-            lastProcessResult: overview.data?.lastProcessResult ?? null,
-          }}
-        />
-      </MiniWidget>
-
     </div>
   );
 }
@@ -1670,38 +1630,6 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
   );
 }
 
-function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] }) {
-  const overview = usePluginOverview(context.companyId);
-
-  return (
-    <Section
-      title="Pulso do turno"
-      eyebrow="Visão geral"
-      collapsible
-      description="Leitura rápida da operação antes de abrir a fila ou entrar no workbench."
-    >
-      <div style={groupedGridStyle}>
-        <div style={spotlightCardStyle}>
-          <div style={{ fontSize: "13px", lineHeight: 1.6 }}>
-            A Central concentra fila, execução e sinais em um único ponto de controle para o turno.
-          </div>
-          <div style={rowStyle}>
-            <Pill label={`${overview.data?.counts.issues ?? 0} issues`} />
-            <Pill label={`${overview.data?.counts.agents ?? 0} agentes`} />
-            <Pill label={`${overview.data?.recentRecords.length ?? 0} sinais`} />
-          </div>
-        </div>
-
-        <div style={actionClusterStyle}>
-          <StatusLine label="Fila" value={`${overview.data?.counts.issues ?? 0} abertas para coordenação`} />
-          <StatusLine label="Agentes" value={`${overview.data?.counts.agents ?? 0} prontos para acionar`} />
-          <StatusLine label="Runtime" value={`${overview.data?.recentRecords.length ?? 0} sinais recentes`} />
-        </div>
-      </div>
-    </Section>
-  );
-}
-
 function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context"] }) {
   const toast = usePluginToast();
   const stateKey = "contador_operacional";
@@ -1918,13 +1846,56 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
 }
 
 function KitchenSinkEmbeddedApp({ context }: { context: PluginPageProps["context"] }) {
+  const overview = usePluginOverview(context.companyId);
+  const [activeLane, setActiveLane] = useState("queue");
+
+  const tabs: OperationsPanelTab[] = [
+    {
+      id: "queue",
+      label: "Fila",
+      icon: Target,
+      badge: `${overview.data?.counts.issues ?? 0} abertas`,
+      summary: "Entrada, ajuste de status e follow-up da fila operacional.",
+      content: <KitchenSinkIssueCrudDemo context={context} />,
+    },
+    {
+      id: "execution",
+      label: "Execução",
+      icon: Activity,
+      badge: "tempo real",
+      summary: "Heartbeats, execuções vivas e sinais que indicam intervenção.",
+      content: <KitchenSinkHostIntegrationDemo context={context} />,
+    },
+    {
+      id: "memory",
+      label: "Memória Operacional",
+      icon: FilePenLine,
+      badge: "estado",
+      summary: "Checkpoint persistente para cursores, confirmações e lotes operacionais.",
+      content: <KitchenSinkStorageDemo context={context} />,
+    },
+  ];
+
   return (
     <div style={pageShellStyle}>
-      <div style={groupedGridStyle}>
-        <KitchenSinkStorageDemo context={context} />
-        <KitchenSinkIssueCrudDemo context={context} />
+      <div style={spotlightCardStyle}>
+        <div style={{ fontSize: "11px", opacity: 0.68, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Fluxo operacional
+        </div>
+        <strong style={{ fontSize: "18px", lineHeight: 1.2 }}>
+          Entre pela fila, valide a execução e só então volte para a memória operacional.
+        </strong>
+        <div style={mutedTextStyle}>
+          A navegação agora segue a ordem natural do turno, em vez de espalhar intake, runtime e estado no mesmo plano visual.
+        </div>
       </div>
-      <KitchenSinkHostIntegrationDemo context={context} />
+      <OperationsPanelTabs
+        idPrefix="operations-flow"
+        ariaLabel="Guia interna do fluxo operacional"
+        tabs={tabs}
+        activeTab={activeLane}
+        onChange={setActiveLane}
+      />
     </div>
   );
 }
@@ -1964,6 +1935,7 @@ function OperationsWorkbench({ context }: { context: PluginPageProps["context"] 
   const [jobOutput, setJobOutput] = useState<unknown>(null);
   const [webhookOutput, setWebhookOutput] = useState<unknown>(null);
   const [result, setResult] = useState<unknown>(null);
+  const [activeBenchPanel, setActiveBenchPanel] = useState("coordination");
 
   const createIssue = usePluginAction("create-issue");
   const advanceIssueStatus = usePluginAction("advance-issue-status");
@@ -2080,315 +2052,388 @@ function OperationsWorkbench({ context }: { context: PluginPageProps["context"] 
     }
   }
 
-  return (
-    <div style={{ display: "grid", gap: "14px" }}>
-      <Section
-        title="Coordenação Operacional"
-        eyebrow="Workbench"
-        collapsible
-        description="Agrupe criação de follow-ups, avanço de status e ativação de metas sem trocar de superfície."
-        action={companyId ? <Pill label={`${(issues.data ?? []).length} issues`} /> : undefined}
-      >
-        <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId) return;
-              void createIssue({ companyId, projectId: selectedProjectId || undefined, title: issueTitle })
-                .then((next) => {
-                  setResult(next);
-                  return refreshAll();
-                })
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Criar follow-up</strong>
-            <input style={inputStyle} value={issueTitle} onChange={(event) => setIssueTitle(event.target.value)} />
-            <ActionButton type="submit" variant="primary" icon={Plus} disabled={!companyId}>Criar issue</ActionButton>
-          </form>
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId || !selectedIssueId) return;
-              void advanceIssueStatus({ companyId, issueId: selectedIssueId, status: "in_review" })
-                .then((next) => {
-                  setResult(next);
-                  return refreshAll();
-                })
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Avançar issue</strong>
-            <select style={inputStyle} value={selectedIssueId} onChange={(event) => setSelectedIssueId(event.target.value)}>
-              {(issues.data ?? []).map((issue) => (
-                <option key={issue.id} value={issue.id}>{issue.title}</option>
-              ))}
-            </select>
-            <ActionButton type="submit" icon={Workflow} disabled={!companyId || !selectedIssueId}>Mover para em revisão</ActionButton>
-          </form>
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId) return;
-              void createGoal({ companyId, title: goalTitle })
-                .then((next) => {
-                  setResult(next);
-                  return refreshAll();
-                })
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Criar marco</strong>
-            <input style={inputStyle} value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} />
-            <ActionButton type="submit" variant="primary" icon={Target} disabled={!companyId}>Criar meta</ActionButton>
-          </form>
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId || !selectedGoalId) return;
-              void advanceGoalStatus({ companyId, goalId: selectedGoalId, status: "active" })
-                .then((next) => {
-                  setResult(next);
-                  return refreshAll();
-                })
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Ativar meta</strong>
-            <select style={inputStyle} value={selectedGoalId} onChange={(event) => setSelectedGoalId(event.target.value)}>
-              {(goals.data ?? []).map((goal) => (
-                <option key={goal.id} value={goal.id}>{goal.title}</option>
-              ))}
-            </select>
-            <ActionButton type="submit" icon={Play} disabled={!companyId || !selectedGoalId}>Mover para ativa</ActionButton>
-          </form>
-        </div>
-      </Section>
-
-      <Section
-        title="Agentes, Ferramentas e Automação"
-        eyebrow="Workbench"
-        collapsible
-        defaultOpen={false}
-        description="Coordene agentes, dispare automações controladas e use ferramentas operacionais no mesmo grupo de execução."
-        action={companyId ? <Pill label={`${(agents.data ?? []).length} agentes`} /> : undefined}
-      >
-        <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId || !selectedAgentId) return;
-              void invokeAgent({ companyId, agentId: selectedAgentId, prompt: "Resuma o estado operacional atual." })
-                .then((next) => setResult(next))
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Coordenação de agentes</strong>
-            <select style={inputStyle} value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
-              {(agents.data ?? []).map((agent) => (
-                <option key={agent.id} value={agent.id}>{agent.name}</option>
-              ))}
-            </select>
-            <div style={rowStyle}>
-              <ActionButton type="submit" variant="primary" icon={Bot} disabled={!companyId || !selectedAgentId}>Invocar</ActionButton>
-              <ActionButton
-                type="button"
-                icon={Pause}
-                onClick={() => {
-                  if (!companyId || !selectedAgentId) return;
-                  void pauseAgent({ companyId, agentId: selectedAgentId })
-                    .then((next) => {
-                      setResult(next);
-                      agents.refresh();
-                    })
-                    .catch((error) => setResult({ error: getErrorMessage(error) }));
-                }}
-              >
-                Pausar
-              </ActionButton>
-              <ActionButton
-                type="button"
-                icon={Play}
-                onClick={() => {
-                  if (!companyId || !selectedAgentId) return;
-                  void resumeAgent({ companyId, agentId: selectedAgentId })
-                    .then((next) => {
-                      setResult(next);
-                      agents.refresh();
-                    })
-                    .catch((error) => setResult({ error: getErrorMessage(error) }));
-                }}
-              >
-                Retomar
-              </ActionButton>
-            </div>
-            <ActionButton
-              type="button"
-              icon={MessageSquareText}
-              onClick={() => {
+  const workbenchTabs: OperationsPanelTab[] = [
+    {
+      id: "coordination",
+      label: "Coordenação",
+      icon: LayoutDashboard,
+      badge: `${issues.data?.length ?? 0} itens`,
+      summary: "Ações de follow-up, mudança de status, marcos e controle direto de agentes.",
+      content: (
+        <Section
+          title="Coordenação Operacional"
+          eyebrow="Workbench"
+          description="Concentre follow-ups, metas e decisões sobre agentes em um único bloco de controle fino."
+          action={companyId ? <Pill label={`${(agents.data ?? []).length} agentes`} /> : undefined}
+        >
+          <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId) return;
+                void createIssue({ companyId, projectId: selectedProjectId || undefined, title: issueTitle })
+                  .then((next) => {
+                    setResult(next);
+                    return refreshAll();
+                  })
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Criar follow-up</strong>
+              <input style={inputStyle} value={issueTitle} onChange={(event) => setIssueTitle(event.target.value)} />
+              <ActionButton type="submit" variant="primary" icon={Plus} disabled={!companyId}>Criar issue</ActionButton>
+            </form>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId || !selectedIssueId) return;
+                void advanceIssueStatus({ companyId, issueId: selectedIssueId, status: "in_review" })
+                  .then((next) => {
+                    setResult(next);
+                    return refreshAll();
+                  })
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Avançar issue</strong>
+              <select style={inputStyle} value={selectedIssueId} onChange={(event) => setSelectedIssueId(event.target.value)}>
+                {(issues.data ?? []).map((issue) => (
+                  <option key={issue.id} value={issue.id}>{issue.title}</option>
+                ))}
+              </select>
+              <ActionButton type="submit" icon={Workflow} disabled={!companyId || !selectedIssueId}>Mover para em revisão</ActionButton>
+            </form>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId) return;
+                void createGoal({ companyId, title: goalTitle })
+                  .then((next) => {
+                    setResult(next);
+                    return refreshAll();
+                  })
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Criar marco</strong>
+              <input style={inputStyle} value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} />
+              <ActionButton type="submit" variant="primary" icon={Target} disabled={!companyId}>Criar meta</ActionButton>
+            </form>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId || !selectedGoalId) return;
+                void advanceGoalStatus({ companyId, goalId: selectedGoalId, status: "active" })
+                  .then((next) => {
+                    setResult(next);
+                    return refreshAll();
+                  })
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Ativar meta</strong>
+              <select style={inputStyle} value={selectedGoalId} onChange={(event) => setSelectedGoalId(event.target.value)}>
+                {(goals.data ?? []).map((goal) => (
+                  <option key={goal.id} value={goal.id}>{goal.title}</option>
+                ))}
+              </select>
+              <ActionButton type="submit" icon={Play} disabled={!companyId || !selectedGoalId}>Mover para ativa</ActionButton>
+            </form>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
                 if (!companyId || !selectedAgentId) return;
-                void askAgent({ companyId, agentId: selectedAgentId, prompt: "Dê um resumo operacional curto." })
+                void invokeAgent({ companyId, agentId: selectedAgentId, prompt: "Resuma o estado operacional atual." })
                   .then((next) => setResult(next))
                   .catch((error) => setResult({ error: getErrorMessage(error) }));
               }}
             >
-              Abrir stream de chat
-            </ActionButton>
-            <JsonBlock value={agentStream.events.slice(-8)} />
-          </form>
-
-          <div style={actionClusterStyle}>
-            <strong>Automação</strong>
-            <div style={rowStyle}>
-              <ActionButton type="button" icon={RadioTower} onClick={() => void fetchJobsAndTrigger()}>
-                Disparar heartbeat
-              </ActionButton>
-              <ActionButton type="button" icon={Webhook} onClick={() => void sendWebhook()}>
-                Enviar webhook
-              </ActionButton>
-              <ActionButton
-                type="button"
-                icon={Activity}
-                onClick={() => {
-                  if (!companyId) return;
-                  void startProgressStream({ companyId, steps: 4 })
-                    .then((next) => setResult(next))
-                    .catch((error) => setResult({ error: getErrorMessage(error) }));
-                }}
-              >
-                Stream de progresso
-              </ActionButton>
-            </div>
-            <JsonBlock value={jobOutput ?? overview.data?.lastJob ?? { note: "Sem job executado ainda." }} />
-            <JsonBlock value={webhookOutput ?? overview.data?.lastWebhookIssue ?? overview.data?.lastWebhook ?? { note: "Sem webhook recebido ainda." }} />
-            <JsonBlock value={progressStream.events.slice(-6)} />
+              <strong>Coordenação de agentes</strong>
+              <select style={inputStyle} value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
+                {(agents.data ?? []).map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
+              <div style={rowStyle}>
+                <ActionButton type="submit" variant="primary" icon={Bot} disabled={!companyId || !selectedAgentId}>Invocar</ActionButton>
+                <ActionButton
+                  type="button"
+                  icon={Pause}
+                  onClick={() => {
+                    if (!companyId || !selectedAgentId) return;
+                    void pauseAgent({ companyId, agentId: selectedAgentId })
+                      .then((next) => {
+                        setResult(next);
+                        agents.refresh();
+                      })
+                      .catch((error) => setResult({ error: getErrorMessage(error) }));
+                  }}
+                >
+                  Pausar
+                </ActionButton>
+                <ActionButton
+                  type="button"
+                  icon={Play}
+                  onClick={() => {
+                    if (!companyId || !selectedAgentId) return;
+                    void resumeAgent({ companyId, agentId: selectedAgentId })
+                      .then((next) => {
+                        setResult(next);
+                        agents.refresh();
+                      })
+                      .catch((error) => setResult({ error: getErrorMessage(error) }));
+                  }}
+                >
+                  Retomar
+                </ActionButton>
+              </div>
+            </form>
           </div>
-
-          <div style={actionClusterStyle}>
-            <strong>Ferramentas operacionais</strong>
-            <input style={inputStyle} value={toolMessage} onChange={(event) => setToolMessage(event.target.value)} />
-            <div style={rowStyle}>
-              <ActionButton type="button" icon={TerminalSquare} onClick={() => void executeTool(TOOL_NAMES.echo)}>Eco de nota</ActionButton>
-              <ActionButton type="button" icon={Building2} onClick={() => void executeTool(TOOL_NAMES.companySummary)}>Resumo da empresa</ActionButton>
-              <ActionButton type="button" icon={Plus} onClick={() => void executeTool(TOOL_NAMES.createIssue)}>Criar issue</ActionButton>
-            </div>
-            <JsonBlock value={toolOutput ?? { note: "Nenhuma ferramenta executada ainda." }} />
-          </div>
-        </div>
-      </Section>
-
-      <Section
-        title="Workspace e Diagnósticos"
-        eyebrow="Workbench"
-        collapsible
-        defaultOpen={false}
-        description="Selecione workspaces, grave notas de apoio e rode diagnósticos controlados apenas quando houver necessidade explícita."
-        action={companyId ? <Pill label={`${(workspaceQuery.data ?? []).length} workspaces`} /> : undefined}
-      >
-        <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
-          <div style={actionClusterStyle}>
-            <strong>Selecionar projeto e workspace</strong>
-            <select style={inputStyle} value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
-              <option value="">Selecione um projeto</option>
-              {(projects.data ?? []).map((project) => (
-                <option key={project.id} value={project.id}>{project.name}</option>
-              ))}
-            </select>
-            <select style={inputStyle} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
-              <option value="">Selecione um workspace</option>
-              {(workspaceQuery.data ?? []).map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-              ))}
-            </select>
-            <JsonBlock value={workspaceQuery.data ?? []} />
-          </div>
-
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId || !selectedProjectId) return;
-              void writeWorkspaceScratch({
-                companyId,
-                projectId: selectedProjectId,
-                workspaceId: workspaceId || undefined,
-                relativePath: workspacePath,
-                content: workspaceContent,
-              })
-                .then((next) => setResult(next))
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
+        </Section>
+      ),
+    },
+    {
+      id: "automation",
+      label: "Automação",
+      icon: RadioTower,
+      badge: `${overview.data?.manifest.tools.length ?? 0} dispatchers`,
+      summary: "Jobs, webhook de intake, ferramentas e streams agrupados como rotinas de execução.",
+      content: (
+        <div style={pageShellStyle}>
+          <Section
+            title="Automações e Intake"
+            eyebrow="Workbench"
+            description="Ações de runtime que mudam o estado da operação sem sair da superfície avançada."
           >
-            <strong>Notas operacionais</strong>
-            <input style={inputStyle} value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} />
-            <textarea style={{ ...inputStyle, minHeight: "88px" }} value={workspaceContent} onChange={(event) => setWorkspaceContent(event.target.value)} />
-            <div style={rowStyle}>
-              <ActionButton type="submit" icon={FilePenLine} disabled={!companyId || !selectedProjectId}>Gravar arquivo</ActionButton>
-              <ActionButton
-                type="button"
-                icon={FileSearch}
-                onClick={() => {
-                  if (!companyId || !selectedProjectId) return;
-                  void readWorkspaceFile({
-                    companyId,
-                    projectId: selectedProjectId,
-                    workspaceId: workspaceId || undefined,
-                    relativePath: workspacePath,
-                  })
-                    .then((next) => setResult(next))
-                    .catch((error) => setResult({ error: getErrorMessage(error) }));
-                }}
-              >
-                Ler arquivo
-              </ActionButton>
+            <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+              <div style={actionClusterStyle}>
+                <strong>Heartbeat</strong>
+                <ActionButton type="button" icon={RadioTower} onClick={() => void fetchJobsAndTrigger()}>
+                  Disparar heartbeat
+                </ActionButton>
+                <JsonBlock value={jobOutput ?? overview.data?.lastJob ?? { note: "Ainda não há saída de job." }} />
+              </div>
+              <div style={actionClusterStyle}>
+                <strong>Webhook de intake</strong>
+                <ActionButton type="button" icon={Webhook} onClick={() => void sendWebhook()}>
+                  Enviar webhook de incidente
+                </ActionButton>
+                <JsonBlock value={webhookOutput ?? overview.data?.lastWebhookIssue ?? overview.data?.lastWebhook ?? { note: "Nenhum webhook recebido ainda." }} />
+              </div>
+              <div style={actionClusterStyle}>
+                <strong>Despachante de ferramentas</strong>
+                <input style={inputStyle} value={toolMessage} onChange={(event) => setToolMessage(event.target.value)} />
+                <div style={rowStyle}>
+                  <ActionButton type="button" icon={TerminalSquare} onClick={() => void executeTool(TOOL_NAMES.echo)}>Eco</ActionButton>
+                  <ActionButton type="button" icon={Building2} onClick={() => void executeTool(TOOL_NAMES.companySummary)}>Resumo</ActionButton>
+                  <ActionButton type="button" icon={Plus} onClick={() => void executeTool(TOOL_NAMES.createIssue)}>Criar issue</ActionButton>
+                </div>
+                <JsonBlock value={toolOutput ?? { note: "Ainda não há saída de ferramenta." }} />
+              </div>
             </div>
-          </form>
+          </Section>
 
-          <form
-            style={actionClusterStyle}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!companyId || !selectedProjectId) return;
-              void runProcess({
-                companyId,
-                projectId: selectedProjectId,
-                workspaceId: workspaceId || undefined,
-                commandKey,
-              })
-                .then((next) => {
-                  setResult(next);
-                  overview.refresh();
+          <Section
+            title="Streams de acompanhamento"
+            eyebrow="Saída viva"
+            collapsible
+            defaultOpen={false}
+            description="Monitore o que está acontecendo enquanto as rotinas automáticas executam."
+          >
+            <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+              <div style={actionClusterStyle}>
+                <strong>Progresso</strong>
+                <ActionButton
+                  type="button"
+                  icon={Activity}
+                  onClick={() => {
+                    if (!companyId) return;
+                    void startProgressStream({ companyId, steps: 4 })
+                      .then((next) => setResult(next))
+                      .catch((error) => setResult({ error: getErrorMessage(error) }));
+                  }}
+                >
+                  Iniciar stream
+                </ActionButton>
+                <JsonBlock value={progressStream.events.slice(-6)} />
+              </div>
+              <div style={actionClusterStyle}>
+                <strong>Chat do agente</strong>
+                <ActionButton
+                  type="button"
+                  icon={MessageSquareText}
+                  onClick={() => {
+                    if (!companyId || !selectedAgentId) return;
+                    void askAgent({ companyId, agentId: selectedAgentId, prompt: "Dê um resumo operacional curto." })
+                      .then((next) => setResult(next))
+                      .catch((error) => setResult({ error: getErrorMessage(error) }));
+                  }}
+                >
+                  Abrir stream de chat
+                </ActionButton>
+                <JsonBlock value={agentStream.events.slice(-8)} />
+              </div>
+            </div>
+          </Section>
+        </div>
+      ),
+    },
+    {
+      id: "workspace",
+      label: "Workspace",
+      icon: FileSearch,
+      badge: `${workspaceQuery.data?.length ?? 0} workspaces`,
+      summary: "Leitura e escrita de notas operacionais, seleção de workspace e diagnósticos controlados.",
+      content: (
+        <Section
+          title="Workspace e Diagnósticos"
+          eyebrow="Workbench"
+          description="Abra o workspace certo, escreva notas de apoio e execute diagnósticos locais só quando houver necessidade explícita."
+        >
+          <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+            <div style={actionClusterStyle}>
+              <strong>Selecionar projeto e workspace</strong>
+              <select style={inputStyle} value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
+                <option value="">Selecione um projeto</option>
+                {(projects.data ?? []).map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+              <select style={inputStyle} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
+                <option value="">Selecione um workspace</option>
+                {(workspaceQuery.data ?? []).map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+                ))}
+              </select>
+              <JsonBlock value={workspaceQuery.data ?? []} />
+            </div>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId || !selectedProjectId) return;
+                void writeWorkspaceScratch({
+                  companyId,
+                  projectId: selectedProjectId,
+                  workspaceId: workspaceId || undefined,
+                  relativePath: workspacePath,
+                  content: workspaceContent,
                 })
-                .catch((error) => setResult({ error: getErrorMessage(error) }));
-            }}
-          >
-            <strong>Diagnósticos controlados</strong>
-            <select style={inputStyle} value={commandKey} onChange={(event) => setCommandKey(event.target.value)}>
-              {SAFE_COMMANDS.map((command) => (
-                <option key={command.key} value={command.key}>{command.label}</option>
-              ))}
-            </select>
-            <ActionButton type="submit" icon={TerminalSquare} disabled={!companyId || !selectedProjectId}>Executar comando</ActionButton>
-            <JsonBlock value={overview.data?.lastProcessResult ?? { note: "Nenhum diagnóstico executado ainda." }} />
-          </form>
-        </div>
-      </Section>
+                  .then((next) => setResult(next))
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Notas operacionais</strong>
+              <input style={inputStyle} value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} />
+              <textarea style={{ ...inputStyle, minHeight: "88px" }} value={workspaceContent} onChange={(event) => setWorkspaceContent(event.target.value)} />
+              <div style={rowStyle}>
+                <ActionButton type="submit" icon={FilePenLine} disabled={!companyId || !selectedProjectId}>Gravar arquivo</ActionButton>
+                <ActionButton
+                  type="button"
+                  icon={FileSearch}
+                  onClick={() => {
+                    if (!companyId || !selectedProjectId) return;
+                    void readWorkspaceFile({
+                      companyId,
+                      projectId: selectedProjectId,
+                      workspaceId: workspaceId || undefined,
+                      relativePath: workspacePath,
+                    })
+                      .then((next) => setResult(next))
+                      .catch((error) => setResult({ error: getErrorMessage(error) }));
+                  }}
+                >
+                  Ler arquivo
+                </ActionButton>
+              </div>
+            </form>
+            <form
+              style={actionClusterStyle}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!companyId || !selectedProjectId) return;
+                void runProcess({
+                  companyId,
+                  projectId: selectedProjectId,
+                  workspaceId: workspaceId || undefined,
+                  commandKey,
+                })
+                  .then((next) => {
+                    setResult(next);
+                    overview.refresh();
+                  })
+                  .catch((error) => setResult({ error: getErrorMessage(error) }));
+              }}
+            >
+              <strong>Diagnósticos controlados</strong>
+              <select style={inputStyle} value={commandKey} onChange={(event) => setCommandKey(event.target.value)}>
+                {SAFE_COMMANDS.map((command) => (
+                  <option key={command.key} value={command.key}>{command.label}</option>
+                ))}
+              </select>
+              <ActionButton type="submit" icon={TerminalSquare} disabled={!companyId || !selectedProjectId}>Executar comando</ActionButton>
+              <JsonBlock value={overview.data?.lastProcessResult ?? { note: "Nenhum diagnóstico executado ainda." }} />
+            </form>
+          </div>
+        </Section>
+      ),
+    },
+    {
+      id: "output",
+      label: "Saída",
+      icon: MonitorCog,
+      badge: result ? "atualizada" : "aguardando",
+      summary: "Consolidação das últimas respostas do runtime para inspeção e conferência imediata.",
+      content: (
+        <Section
+          title="Saída Consolidada"
+          eyebrow="Workbench"
+          description="Última resposta útil do runtime, com streams adjacentes para depuração rápida."
+        >
+          <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "minmax(0, 1.4fr) repeat(2, minmax(220px, 1fr))" }}>
+            <div style={actionClusterStyle}>
+              <strong>Resultado operacional</strong>
+              <JsonBlock value={result ?? { note: "Execute uma ação para ver o resultado aqui." }} />
+            </div>
+            <div style={actionClusterStyle}>
+              <strong>Stream de progresso</strong>
+              <JsonBlock value={progressStream.events.slice(-6)} />
+            </div>
+            <div style={actionClusterStyle}>
+              <strong>Eventos do agente</strong>
+              <JsonBlock value={agentStream.events.slice(-6)} />
+            </div>
+          </div>
+        </Section>
+      ),
+    },
+  ];
 
-      <Section
-        title="Resultado Operacional"
-        eyebrow="Workbench"
-        collapsible
-        defaultOpen={false}
-        description="Saída consolidada das ações mais recentes para depuração rápida e conferência imediata."
-        action={<Pill label={result ? "atualizado" : "aguardando"} />}
-      >
-        <JsonBlock value={result ?? { note: "Execute uma ação para ver o resultado aqui." }} />
-      </Section>
+  return (
+    <div style={pageShellStyle}>
+      <div style={spotlightCardStyle}>
+        <div style={{ fontSize: "11px", opacity: 0.68, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Workbench avançado
+        </div>
+        <strong style={{ fontSize: "18px", lineHeight: 1.2 }}>
+          Abra só a zona de controle fino necessária para o momento da operação.
+        </strong>
+        <div style={mutedTextStyle}>
+          Coordenação, automação, workspace e saída agora vivem em trilhas próprias para reduzir ruído enquanto você opera.
+        </div>
+      </div>
+      <OperationsPanelTabs
+        idPrefix="operations-workbench"
+        ariaLabel="Guia interna do workbench avançado"
+        tabs={workbenchTabs}
+        activeTab={activeBenchPanel}
+        onChange={setActiveBenchPanel}
+      />
     </div>
   );
 }
@@ -3187,6 +3232,377 @@ function OperationsHero({ context }: { context: PluginPageProps["context"] }) {
   );
 }
 
+function OperationsFloatingActionDock({ context }: { context: PluginPageProps["context"] }) {
+  const overview = usePluginOverview(context.companyId);
+  const toast = usePluginToast();
+  const emitDemoEvent = usePluginAction("emit-demo-event");
+  const startProgressStream = usePluginAction("start-progress-stream");
+  const writeMetric = usePluginAction("write-metric");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
+
+  const actions = [
+    {
+      id: "event",
+      icon: Sparkles,
+      label: "Emitir Evento",
+      detail: "Registra um sinal rápido no runtime da Central.",
+      onClick: async () => {
+        if (!context.companyId) return;
+        try {
+          const next = await emitDemoEvent({
+            companyId: context.companyId,
+            message: "Evento manual disparado a partir da visão geral.",
+          });
+          overview.refresh();
+          toast({
+            title: "Evento emitido",
+            body: getObjectString(next, "message") ?? "Sinal operacional registrado com sucesso.",
+            tone: "success",
+          });
+        } catch (error) {
+          toast({
+            title: "Falha ao emitir evento",
+            body: getErrorMessage(error),
+            tone: "error",
+          });
+        }
+      },
+    },
+    {
+      id: "stream",
+      icon: RadioTower,
+      label: "Abrir Stream",
+      detail: "Inicia um stream curto de progresso para acompanhar a fila.",
+      onClick: async () => {
+        if (!context.companyId) return;
+        try {
+          await startProgressStream({ companyId: context.companyId, steps: 4 });
+          toast({
+            title: "Stream iniciado",
+            body: "As próximas atualizações vão aparecer nos sinais do runtime.",
+            tone: "info",
+          });
+        } catch (error) {
+          toast({
+            title: "Falha ao iniciar stream",
+            body: getErrorMessage(error),
+            tone: "error",
+          });
+        }
+      },
+    },
+    {
+      id: "metric",
+      icon: Gauge,
+      label: "Registrar Métrica",
+      detail: "Grava um pulso simples de uso para a superfície atual.",
+      onClick: async () => {
+        if (!context.companyId) return;
+        try {
+          const next = await writeMetric({ companyId: context.companyId, name: "overview_quick_action", value: 1 });
+          overview.refresh();
+          toast({
+            title: "Métrica registrada",
+            body: `overview_quick_action = ${getObjectNumber(next, "value") ?? 1}`,
+            tone: "success",
+          });
+        } catch (error) {
+          toast({
+            title: "Falha ao registrar métrica",
+            body: getErrorMessage(error),
+            tone: "error",
+          });
+        }
+      },
+    },
+    {
+      id: "dashboard",
+      icon: Compass,
+      label: "Abrir Dashboard",
+      detail: "Volta para a visão macro do host mantendo o mesmo escopo.",
+      onClick: async () => {
+        if (typeof window !== "undefined") {
+          window.location.assign(hostPath(context.companyPrefix, "/dashboard"));
+        }
+      },
+    },
+  ];
+
+  return (
+    <div style={operationsFloatingDockStyle}>
+      <div style={{ position: "relative", display: "grid", justifyItems: "end", gap: "10px" }}>
+        {open ? (
+          <div
+            style={{
+              ...subtleCardStyle,
+              position: "absolute",
+              right: 0,
+              bottom: "calc(100% + 12px)",
+              width: "290px",
+              display: "grid",
+              gap: "8px",
+              background: "rgba(255, 255, 255, 0.92)",
+              backdropFilter: "blur(14px)",
+              boxShadow: "0 18px 34px rgba(15, 23, 42, 0.16)",
+            }}
+          >
+            {actions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <button
+                  key={action.id}
+                  type="button"
+                  style={{
+                    ...subtleCardStyle,
+                    display: "grid",
+                    gap: "6px",
+                    textAlign: "left",
+                    cursor: "pointer",
+                    background: "color-mix(in srgb, var(--card, transparent) 86%, transparent)",
+                    touchAction: "manipulation",
+                  }}
+                  onClick={() => {
+                    setOpen(false);
+                    void action.onClick();
+                  }}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: 700 }}>
+                    <Icon size={14} aria-hidden="true" />
+                    <span>{action.label}</span>
+                  </span>
+                  <span style={mutedTextStyle}>{action.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          aria-label="Abrir atalhos operacionais"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          style={{
+            ...buttonStyle,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "10px",
+            padding: "10px 14px",
+            borderRadius: "999px",
+            background: "rgba(15, 23, 42, 0.92)",
+            borderColor: "rgba(15, 23, 42, 0.92)",
+            color: "#f8fafc",
+            boxShadow: "0 18px 34px rgba(15, 23, 42, 0.2)",
+            touchAction: "manipulation",
+          }}
+        >
+          <Sparkles size={16} aria-hidden="true" />
+          <span>Atalhos Operacionais</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OperationsOverviewDeck({ context }: { context: PluginPageProps["context"] }) {
+  const overview = usePluginOverview(context.companyId);
+  const config = usePluginConfigData();
+  const [activePanel, setActivePanel] = useState("runtime");
+
+  const surfaceRows: OperationsDataTableRow[] = [
+    {
+      label: "Página principal",
+      value: <a href={pluginPagePath(context.companyPrefix)}>Abrir rota da Central</a>,
+      detail: "Entrada da empresa para coordenação e leitura operacional.",
+    },
+    {
+      label: "Sidebar",
+      value: formatSurfaceState(config.data?.showSidebarEntry !== false),
+      detail: "Mantém a Central e o submenu AGhouse visíveis no menu principal.",
+    },
+    {
+      label: "Painel lateral",
+      value: formatSurfaceState(config.data?.showSidebarPanel !== false),
+      detail: "Expõe um resumo auxiliar para leitura rápida fora da página completa.",
+    },
+    {
+      label: "Projeto",
+      value: formatSurfaceState(config.data?.showProjectSidebarItem !== false),
+      detail: "Atalho contextual para projetos quando o operador entra pelo escopo certo.",
+    },
+    {
+      label: "Comentários",
+      value: config.data?.showCommentAnnotation !== false || config.data?.showCommentContextMenuItem !== false ? "Ativos" : "Ocultos",
+      detail: "Anotações e ações contextuais preservam a operação próxima da issue.",
+    },
+  ];
+
+  const automationRows: OperationsDataTableRow[] = [
+    {
+      label: "Jobs",
+      value: `${overview.data?.manifest.jobs.length ?? 0} disponíveis`,
+      detail: (overview.data?.manifest.jobs ?? []).map((job) => job.displayName).join(" • ") || "Nenhum job exposto pelo manifesto.",
+    },
+    {
+      label: "Webhooks",
+      value: `${overview.data?.manifest.webhooks.length ?? 0} endpoints`,
+      detail: (overview.data?.manifest.webhooks ?? []).map((webhook) => webhook.displayName).join(" • ") || "Sem intake externo configurado.",
+    },
+    {
+      label: "Ferramentas",
+      value: `${overview.data?.manifest.tools.length ?? 0} dispatchers`,
+      detail: (overview.data?.manifest.tools ?? []).map((tool) => tool.displayName).join(" • ") || "Sem ferramentas expostas no runtime.",
+    },
+    {
+      label: "Streams",
+      value: `${Object.keys(overview.data?.streamChannels ?? {}).length} canais`,
+      detail: Object.values(overview.data?.streamChannels ?? {}).join(" • ") || "Sem canais de stream declarados.",
+    },
+  ];
+
+  const signalRows: OperationsDataTableRow[] = (overview.data?.recentRecords ?? []).slice(0, 6).map((record) => ({
+    label: formatToken(record.source),
+    value: truncateText(record.message, 72),
+    detail: `${formatToken(record.level)} • ${formatTimestamp(record.createdAt)}`,
+  }));
+
+  const tabs: OperationsPanelTab[] = [
+    {
+      id: "runtime",
+      label: "Resumo do Runtime",
+      icon: Activity,
+      badge: `${overview.data?.runtimeLaunchers.length ?? 0} launchers`,
+      summary: "Saúde geral do runtime, capacidade exposta e últimos sinais realmente úteis.",
+      content: (
+        <div style={groupedGridStyle}>
+          <OperationsDataTable
+            rows={[
+              {
+                label: "Launchers ativos",
+                value: `${overview.data?.runtimeLaunchers.length ?? 0}`,
+                detail: "Entradas visíveis hoje para dashboard, sidebar, tabs e ações contextuais.",
+              },
+              {
+                label: "Canais de stream",
+                value: `${Object.keys(overview.data?.streamChannels ?? {}).length}`,
+                detail: Object.values(overview.data?.streamChannels ?? {}).join(" • ") || "Sem canais declarados.",
+              },
+              {
+                label: "Comandos seguros",
+                value: `${overview.data?.safeCommands.length ?? 0}`,
+                detail: overview.data?.safeCommands[0]?.label ?? "Nenhum comando controlado disponível.",
+              },
+              {
+                label: "Capacidades",
+                value: `${overview.data?.capabilities.length ?? 0}`,
+                detail: (overview.data?.capabilities ?? []).join(" • ") || "Sem capacidades expostas.",
+              },
+            ]}
+          />
+          <div style={spotlightCardStyle}>
+            <div style={{ fontSize: "11px", opacity: 0.68, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Leitura de saúde
+            </div>
+            <strong style={{ fontSize: "18px", lineHeight: 1.2 }}>Runtime sob controle operacional</strong>
+            <StatusLine label="Último job" value={overview.data?.lastJob ? "registrado" : "sem histórico"} />
+            <StatusLine label="Último webhook" value={overview.data?.lastWebhook ? "registrado" : "sem intake recente"} />
+            <StatusLine label="Diagnóstico" value={overview.data?.lastProcessResult ? "disponível" : "não executado"} />
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "surfaces",
+      label: "Acesso e Cobertura",
+      icon: PanelsTopLeft,
+      badge: "5 superfícies",
+      summary: "Mostra o que está ativo para navegação, contexto lateral e integração com projeto ou comentário.",
+      content: (
+        <div style={groupedGridStyle}>
+          <OperationsDataTable rows={surfaceRows} />
+          <div style={actionClusterStyle}>
+            <strong>Rotas e presença</strong>
+            <StatusLine label="Página da Central" value={pluginPagePath(context.companyPrefix)} />
+            <StatusLine label="Submenu espacial" value="AGhouse ligado à sidebar principal" />
+            <StatusLine
+              label="Projeto / comentário"
+              value={
+                context.entityType || context.entityId
+                  ? "há um contexto ativo no host"
+                  : "nenhuma superfície contextual aberta agora"
+              }
+            />
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "automation",
+      label: "Automação e Intake",
+      icon: Workflow,
+      badge: `${overview.data?.manifest.tools.length ?? 0} ferramentas`,
+      summary: "Organiza os pontos de entrada externos e os dispatchers internos em uma leitura única.",
+      content: (
+        <div style={groupedGridStyle}>
+          <OperationsDataTable rows={automationRows} />
+          <div style={actionClusterStyle}>
+            <strong>Próximos encaixes</strong>
+            <StatusLine label="Heartbeat" value="Job pronto para disparo manual no workbench" />
+            <StatusLine label="Webhook" value="Intake preparado para follow-ups externos" />
+            <StatusLine label="Ferramentas" value="Despacho operacional disponível para agentes e board" />
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "signals",
+      label: "Estado Recente",
+      icon: RadioTower,
+      badge: `${overview.data?.recentRecords.length ?? 0} sinais`,
+      summary: "Só os sinais recentes que ajudam a decidir se é hora de agir, investigar ou seguir em frente.",
+      content: (
+        <div style={groupedGridStyle}>
+          <OperationsDataTable
+            rows={signalRows}
+            empty="Nenhum sinal recente registrado para o runtime desta empresa."
+            columnLabels={["Origem", "Mensagem", "Leitura"]}
+          />
+          <div style={spotlightCardStyle}>
+            <div style={{ fontSize: "11px", opacity: 0.68, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Últimos registros
+            </div>
+            <StatusLine label="Job" value={overview.data?.lastJob ? "há histórico recente" : "sem histórico"} />
+            <StatusLine label="Webhook" value={overview.data?.lastWebhookIssue ? "gerou follow-up" : overview.data?.lastWebhook ? "recebido" : "sem registro"} />
+            <StatusLine label="Processo" value={overview.data?.lastProcessResult ? "resultado disponível" : "nenhum diagnóstico rodado"} />
+          </div>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <div style={{ display: "grid", gap: "18px" }}>
+      <OperationsPanelTabs
+        idPrefix="operations-overview"
+        ariaLabel="Navegação interna da visão geral"
+        tabs={tabs}
+        activeTab={activePanel}
+        onChange={setActivePanel}
+      />
+      <OperationsFloatingActionDock context={context} />
+    </div>
+  );
+}
+
 function GatherDeskCluster({
   top,
   left,
@@ -3737,14 +4153,12 @@ export function KitchenSinkPage({ context }: PluginPageProps) {
       label: "Visão Geral",
       content: (
         <div style={pageShellStyle}>
-          <KitchenSinkTopRow context={context} />
           <Section
-            title="Radar do Runtime"
-            eyebrow="Sinais rápidos"
-            collapsible
-            description="Indicadores curtos para confirmar saúde do runtime, ações rápidas e cobertura das superfícies operacionais."
+            title="Console Operacional"
+            eyebrow="Visão geral"
+            description="Organize a leitura do runtime por área funcional e aja só quando a operação realmente pedir."
           >
-            <KitchenSinkPageWidgets context={context} />
+            <OperationsOverviewDeck context={context} />
           </Section>
           {context.entityId || context.entityType ? (
             <Section
