@@ -177,7 +177,7 @@ function TeamBranch({
           <button
             type="button"
             onMouseEnter={() => onHoverPrefetch(team.id)}
-            className="flex-1 flex items-center gap-2.5 px-3 h-8 text-[13px] font-medium text-left text-foreground/80 hover:text-foreground transition-colors"
+            className="flex-1 flex items-center gap-1 px-3 h-8 text-[13px] font-medium text-left text-foreground/80 hover:text-foreground transition-colors"
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
             <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
