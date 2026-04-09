@@ -33,13 +33,57 @@ export async function handleRunStartedTraces(
   const agentName = String(p.agentName ?? "");
 
   // Resolve business context from agentIssueMap (primary) or issueContextMap (fallback)
-  const agentIssue = ctx.agentIssueMap.get(agentId);
-  const resolvedIssueId = issueId || agentIssue?.issueId || "";
-  const issueCtx = resolvedIssueId ? ctx.issueContextMap.get(resolvedIssueId) : undefined;
-  const issueIdentifier = agentIssue?.issueIdentifier || issueCtx?.identifier || "";
-  const issueTitle = issueCtx?.title || "";
-  const projectId = agentIssue?.projectId || issueCtx?.projectId || "";
-  const projectName = projectId ? (ctx.projectNameMap.get(projectId) ?? "") : "";
+  let agentIssue = ctx.agentIssueMap.get(agentId);
+  let resolvedIssueId = issueId || agentIssue?.issueId || "";
+  let issueCtx = resolvedIssueId ? ctx.issueContextMap.get(resolvedIssueId) : undefined;
+  let issueIdentifier = agentIssue?.issueIdentifier || issueCtx?.identifier || "";
+  let issueTitle = issueCtx?.title || "";
+  let projectId = agentIssue?.projectId || issueCtx?.projectId || "";
+  let projectName = projectId ? (ctx.projectNameMap.get(projectId) ?? "") : "";
+
+  // Fallback: when agentIssueMap is empty (issue was already in_progress before
+  // this run started), query the agent's assigned issue to populate context.
+  // The agent.run.started event may not include companyId, so look it up first.
+  if (!agentIssue) {
+    try {
+      let companyId = event.companyId || "";
+      if (!companyId) {
+        const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+        if (companies.length > 0) companyId = companies[0].id;
+      }
+      if (companyId) {
+        const issues = await ctx.issues.list({
+          companyId,
+          assigneeAgentId: agentId,
+          status: "in_progress",
+          limit: 1,
+          offset: 0,
+        });
+        if (issues.length > 0) {
+          const assigned = issues[0];
+          agentIssue = {
+            issueId: assigned.id,
+            issueIdentifier: assigned.identifier || "",
+            projectId: assigned.projectId || "",
+          };
+          ctx.agentIssueMap.set(agentId, agentIssue);
+          if (!resolvedIssueId) resolvedIssueId = assigned.id;
+          issueCtx = ctx.issueContextMap.get(resolvedIssueId);
+          if (!issueIdentifier) issueIdentifier = assigned.identifier || "";
+          if (!issueTitle) issueTitle = assigned.title || "";
+          if (!projectId) projectId = assigned.projectId || "";
+          if (!projectName && projectId) projectName = ctx.projectNameMap.get(projectId) || "";
+        }
+      }
+    } catch {
+      // Best-effort: continue without issue context
+    }
+  }
+
+  // Track agent → runId mapping for delegation detection
+  if (agentId && runId) {
+    ctx.agentActiveRunId.set(agentId, runId);
+  }
 
   const spanAttrs: Record<string, string | number | boolean> = {
     "paperclip.agent.id": agentId,
@@ -61,29 +105,60 @@ export async function handleRunStartedTraces(
   // Use per-agent tracer so this agent gets its own service.name
   const tracer = ctx.getTracerForAgent(agentId, agentName);
 
-  // Try to parent under the issue execution span for cross-agent context
-  let parentCtx = resolvedIssueId
-    ? resolveParentContext(ctx, resolvedIssueId)
-    : undefined;
+  // --- Cross-agent delegation linking ---
+  // Check if a prior agent run delegated work to this agent on this issue
+  // (or on a parent issue for subtask delegation).
+  let parentCtx: ReturnType<typeof context.active> | undefined = undefined;
 
-  // Fallback: restore from plugin state if not in memory
+  if (resolvedIssueId && agentId) {
+    parentCtx = await resolveDelegationParent(ctx, resolvedIssueId, agentId);
+    if (parentCtx) {
+      spanAttrs["paperclip.delegation.linked"] = true;
+    }
+  }
+
+  // Fall back to issue execution span for same-trace context
   if (!parentCtx && resolvedIssueId) {
-    const stored = await ctx.state
-      .get({ scopeKind: "issue", scopeId: resolvedIssueId, stateKey: "execution-span" })
-      .catch(() => null);
-    if (
-      stored &&
-      typeof stored === "object" &&
-      "traceId" in (stored as Record<string, unknown>) &&
-      "spanId" in (stored as Record<string, unknown>)
-    ) {
-      const s = stored as { traceId: string; spanId: string; traceFlags: number };
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: s.traceId,
-        spanId: s.spanId,
-        traceFlags: s.traceFlags ?? 1,
-        isRemote: true,
+    parentCtx = resolveParentContext(ctx, resolvedIssueId);
+
+    // Fallback: restore from plugin state
+    if (!parentCtx) {
+      const stored = await ctx.state
+        .get({ scopeKind: "issue", scopeId: resolvedIssueId, stateKey: "execution-span" })
+        .catch(() => null);
+      if (
+        stored &&
+        typeof stored === "object" &&
+        "traceId" in (stored as Record<string, unknown>) &&
+        "spanId" in (stored as Record<string, unknown>)
+      ) {
+        const s = stored as { traceId: string; spanId: string; traceFlags: number };
+        parentCtx = trace.setSpanContext(context.active(), {
+          traceId: s.traceId,
+          spanId: s.spanId,
+          traceFlags: s.traceFlags ?? 1,
+          isRemote: true,
+        });
+      }
+    }
+
+    // Last resort: create the issue span now if it was never created
+    // (e.g. issue was already in_progress before this plugin instance started)
+    if (!parentCtx && issueIdentifier) {
+      const issueSpan = tracer.startSpan("paperclip.issue.execution", {
+        kind: SpanKind.INTERNAL,
+        attributes: {
+          "paperclip.issue.id": resolvedIssueId,
+          "paperclip.issue.identifier": issueIdentifier,
+          "paperclip.issue.title": issueTitle,
+          "paperclip.project.id": projectId,
+          "paperclip.project.name": projectName,
+          "gen_ai.agent.id": agentId,
+          "gen_ai.agent.name": agentName,
+        },
       });
+      ctx.activeIssueSpans.set(resolvedIssueId, issueSpan);
+      parentCtx = trace.setSpan(context.active(), issueSpan);
     }
   }
 
@@ -132,6 +207,128 @@ function resolveParentContext(
 }
 
 // ---------------------------------------------------------------------------
+// Cross-agent delegation — helpers
+// ---------------------------------------------------------------------------
+
+interface DelegationSource {
+  traceId: string;
+  spanId: string;
+  traceFlags: number;
+  agentId: string;
+  runId: string;
+}
+
+/**
+ * Check for a delegation context from a prior agent's run on this issue
+ * (or a parent issue for subtask delegation).
+ *
+ * Returns a parent OTel context if delegation is detected, undefined otherwise.
+ */
+async function resolveDelegationParent(
+  ctx: TelemetryContext,
+  issueId: string,
+  currentAgentId: string,
+): Promise<ReturnType<typeof context.active> | undefined> {
+  // 1. Check same-issue delegation: another agent completed a run on this issue
+  const result = await checkDelegationSource(ctx, issueId, currentAgentId);
+  if (result) return result;
+
+  // 2. Check parent-issue delegation (subtask case): this issue's parent had
+  //    a run by a different agent that created/assigned this subtask
+  const issueCtx = ctx.issueContextMap.get(issueId);
+  if (issueCtx?.parentId) {
+    const parentResult = await checkDelegationSource(ctx, issueCtx.parentId, currentAgentId);
+    if (parentResult) return parentResult;
+  }
+
+  return undefined;
+}
+
+/**
+ * Look up a delegation source for a specific issue and verify it was from
+ * a different agent. Returns parent context if found, undefined otherwise.
+ */
+async function checkDelegationSource(
+  ctx: TelemetryContext,
+  issueId: string,
+  currentAgentId: string,
+): Promise<ReturnType<typeof context.active> | undefined> {
+  const stored = await ctx.state
+    .get({ scopeKind: "issue", scopeId: issueId, stateKey: "delegation-source" })
+    .catch(() => null);
+
+  if (
+    stored &&
+    typeof stored === "object" &&
+    "traceId" in (stored as Record<string, unknown>) &&
+    "agentId" in (stored as Record<string, unknown>)
+  ) {
+    const s = stored as DelegationSource;
+    // Only link if the delegation came from a *different* agent
+    if (s.agentId && s.agentId !== currentAgentId && s.traceId && s.spanId) {
+      return trace.setSpanContext(context.active(), {
+        traceId: s.traceId,
+        spanId: s.spanId,
+        traceFlags: s.traceFlags ?? 1,
+        isRemote: true,
+      });
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Store the completed run's span context as a delegation source so that
+ * the next agent run on this issue becomes a child span.
+ */
+/**
+ * Clean up the agent → run mapping when a run ends.
+ */
+function cleanupAgentRunMapping(
+  ctx: TelemetryContext,
+  agentId: string,
+  runId: string,
+): void {
+  if (!agentId) return;
+  const mapped = ctx.agentActiveRunId.get(agentId);
+  if (mapped === runId) {
+    ctx.agentActiveRunId.delete(agentId);
+  }
+}
+
+/**
+ * Store the completed run's span context as a delegation source so that
+ * the next agent run on this issue becomes a child span.
+ */
+async function storeDelegationSource(
+  ctx: TelemetryContext,
+  issueId: string,
+  agentId: string,
+  runId: string,
+  spanTraceId: string,
+  spanSpanId: string,
+  spanTraceFlags: number,
+): Promise<void> {
+  if (!issueId || !agentId) return;
+
+  const source: DelegationSource = {
+    traceId: spanTraceId,
+    spanId: spanSpanId,
+    traceFlags: spanTraceFlags,
+    agentId,
+    runId,
+  };
+
+  await ctx.state
+    .set(
+      { scopeKind: "issue", scopeId: issueId, stateKey: "delegation-source" },
+      source,
+    )
+    .catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // agent.run.finished — end root run span with OK
 // ---------------------------------------------------------------------------
 
@@ -143,6 +340,9 @@ export async function handleRunFinishedTraces(
   const runId = String(p.runId ?? "");
   if (!runId) return;
 
+  const agentId = String(p.agentId ?? "");
+  const issueId = String(p.issueId ?? "");
+
   const span = ctx.activeRunSpans.get(runId);
   if (span) {
     if (p.exitCode != null) {
@@ -151,17 +351,20 @@ export async function handleRunFinishedTraces(
     if (p.durationMs != null) {
       span.setAttribute("paperclip.run.duration_ms", Number(p.durationMs));
     }
-    if (p.issueId) {
-      span.setAttribute("paperclip.issue.id", String(p.issueId));
+    if (issueId) {
+      span.setAttribute("paperclip.issue.id", issueId);
     }
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
     ctx.activeRunSpans.delete(runId);
+
+    // Store delegation source for cross-agent trace linking
+    const sc = span.spanContext();
+    await storeDelegationSource(ctx, issueId, agentId, runId, sc.traceId, sc.spanId, sc.traceFlags);
   }
 
-  await ctx.state
-    .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-    .catch(() => {});
+  // Clean up agent → run mapping
+  cleanupAgentRunMapping(ctx, agentId, runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +378,9 @@ export async function handleRunFailedTraces(
   const p = event.payload as Record<string, unknown>;
   const runId = String(p.runId ?? "");
   if (!runId) return;
+
+  const agentId = String(p.agentId ?? "");
+  const issueId = String(p.issueId ?? "");
 
   const span = ctx.activeRunSpans.get(runId);
   if (span) {
@@ -193,11 +399,14 @@ export async function handleRunFailedTraces(
     span.recordException(new Error(errorMsg));
     span.end();
     ctx.activeRunSpans.delete(runId);
+
+    // Store delegation source for cross-agent trace linking
+    const sc = span.spanContext();
+    await storeDelegationSource(ctx, issueId, agentId, runId, sc.traceId, sc.spanId, sc.traceFlags);
   }
 
-  await ctx.state
-    .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-    .catch(() => {});
+  // Clean up agent → run mapping
+  cleanupAgentRunMapping(ctx, agentId, runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,17 +421,23 @@ export async function handleRunCancelledTraces(
   const runId = String(p.runId ?? "");
   if (!runId) return;
 
+  const agentId = String(p.agentId ?? "");
+  const issueId = String(p.issueId ?? "");
+
   const span = ctx.activeRunSpans.get(runId);
   if (span) {
     span.setStatus({ code: SpanStatusCode.OK, message: "cancelled" });
     span.setAttribute("paperclip.run.cancelled", true);
     span.end();
     ctx.activeRunSpans.delete(runId);
+
+    // Store delegation source for cross-agent trace linking
+    const sc = span.spanContext();
+    await storeDelegationSource(ctx, issueId, agentId, runId, sc.traceId, sc.spanId, sc.traceFlags);
   }
 
-  await ctx.state
-    .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-    .catch(() => {});
+  // Clean up agent → run mapping
+  cleanupAgentRunMapping(ctx, agentId, runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +607,29 @@ export async function handleIssueUpdatedTraces(
         },
       )
       .catch(() => {});
+  }
+
+  // Detect real-time delegation: assignee changed while a run is still active.
+  // Capture the previous agent's active run span as delegation source so Agent B's
+  // next run becomes a child of Agent A's run in the trace.
+  const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? "");
+  if (
+    assigneeAgentId &&
+    previousAssigneeAgentId &&
+    assigneeAgentId !== previousAssigneeAgentId &&
+    issueId
+  ) {
+    const prevRunId = ctx.agentActiveRunId.get(previousAssigneeAgentId);
+    if (prevRunId) {
+      const prevSpan = ctx.activeRunSpans.get(prevRunId);
+      if (prevSpan) {
+        const sc = prevSpan.spanContext();
+        await storeDelegationSource(
+          ctx, issueId, previousAssigneeAgentId, prevRunId,
+          sc.traceId, sc.spanId, sc.traceFlags,
+        );
+      }
+    }
   }
 
   // Clean up agentIssueMap when issue leaves in_progress
