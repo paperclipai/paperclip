@@ -15,6 +15,39 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-paperclip}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-paperclip}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-paperclip} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/${FILE_STORE_BUCKET:-paperclip} &&
+      echo 'Bucket ${FILE_STORE_BUCKET:-paperclip} created successfully'
+      "
+
   server:
     build:
       context: ..
@@ -29,12 +62,24 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # MinIO / S3-compatible file store
+      AWS_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "${MINIO_ROOT_USER:-paperclip}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      FILE_STORE_BUCKET: "${FILE_STORE_BUCKET:-paperclip}"
+      FILE_STORE_PREFIX: "${FILE_STORE_PREFIX:-file-store}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:
   paperclip-data:
+  minio-data:
