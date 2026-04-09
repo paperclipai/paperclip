@@ -8,7 +8,10 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
-import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import {
+  privateHostnameGuard,
+  resolveUiAllowedHosts,
+} from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -99,7 +102,8 @@ export async function createApp(
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
-  const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
+  const uiAllowedHosts = resolveUiAllowedHosts({
+    privateHostnameGateEnabled,
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
   });
@@ -282,7 +286,7 @@ export async function createApp(
           port: hmrPort,
           clientPort: hmrPort,
         },
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+        allowedHosts: uiAllowedHosts,
       },
     });
 

@@ -28,6 +28,22 @@ function normalizeAllowedHostnames(values: string[]): string[] {
   return Array.from(unique);
 }
 
+export function resolveUiAllowedHosts(opts: {
+  privateHostnameGateEnabled: boolean;
+  allowedHostnames: string[];
+  bindHost: string;
+}): string[] | undefined {
+  const configuredAllow = normalizeAllowedHostnames(opts.allowedHostnames);
+  if (!opts.privateHostnameGateEnabled && configuredAllow.length === 0) {
+    return undefined;
+  }
+
+  return Array.from(resolvePrivateHostnameAllowSet({
+    allowedHostnames: configuredAllow,
+    bindHost: opts.bindHost,
+  }));
+}
+
 export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[]; bindHost: string }): Set<string> {
   const configuredAllow = normalizeAllowedHostnames(opts.allowedHostnames);
   const bindHost = opts.bindHost.trim().toLowerCase();
