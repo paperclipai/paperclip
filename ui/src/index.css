@@ -53,11 +53,11 @@
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --secondary: oklch(0.98 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
+  --muted: oklch(0.98 0 0);
   --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
+  --accent: oklch(0.98 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.577 0.245 27.325);
@@ -73,7 +73,7 @@
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.98 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
@@ -175,10 +175,10 @@
   height: 4px;
 }
 *::-webkit-scrollbar-track {
-  background: oklch(0.97 0 0);
+  background: oklch(0.98 0 0);
 }
 *::-webkit-scrollbar-thumb {
-  background: oklch(0.87 0 0);
+  background: oklch(0.92 0 0);
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
@@ -189,7 +189,7 @@
   background: oklch(0.15 0 0);
 }
 .dark *::-webkit-scrollbar-thumb {
-  background: oklch(0.25 0 0);
+  background: oklch(0.22 0 0);
   border-radius: 9999px;
 }
 .dark *::-webkit-scrollbar-thumb:hover {
@@ -210,10 +210,10 @@
 }
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
-  background: oklch(0.97 0 0) !important;
+  background: oklch(0.98 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.87 0 0) !important;
+  background: oklch(0.92 0 0) !important;
   border-radius: 9999px !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
@@ -224,7 +224,7 @@
   background: oklch(0.15 0 0) !important;
 }
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.25 0 0) !important;
+  background: oklch(0.22 0 0) !important;
   border-radius: 9999px !important;
 }
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
