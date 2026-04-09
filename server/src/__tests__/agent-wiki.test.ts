@@ -10,7 +10,6 @@ import {
   readPage,
   writePage,
   deletePage,
-  parseWikiUpdates,
 } from "../services/agent-wiki.js";
 
 import { vi } from "vitest";
@@ -117,57 +116,14 @@ describe("applyWikiUpdates", () => {
 });
 
 describe("path traversal prevention", () => {
-  it("rejects paths with ..", () => {
-    expect(() =>
-      parseWikiUpdates({ wikiUpdates: [{ action: "upsert", path: "../../../etc/passwd", content: "bad" }] }),
-    ).not.toThrow();
-    const result = parseWikiUpdates({ wikiUpdates: [{ action: "upsert", path: "../../../etc/passwd", content: "bad" }] });
-    expect(result).toHaveLength(0);
+  it("rejects paths with .. via writePage", async () => {
+    await ensureWikiDir("agent-traversal");
+    await expect(writePage("agent-traversal", "../../../etc/passwd", "bad")).rejects.toThrow();
   });
 
-  it("rejects non-md paths", () => {
-    const result = parseWikiUpdates({ wikiUpdates: [{ action: "upsert", path: "evil.sh", content: "bad" }] });
-    expect(result).toHaveLength(0);
-  });
-
-  it("rejects paths with special characters", () => {
-    const result = parseWikiUpdates({ wikiUpdates: [{ action: "upsert", path: "topics/../../etc.md", content: "bad" }] });
-    expect(result).toHaveLength(0);
-  });
-});
-
-describe("parseWikiUpdates", () => {
-  it("extracts valid updates", () => {
-    const result = parseWikiUpdates({
-      wikiUpdates: [
-        { action: "upsert", path: "learnings.md", content: "new content" },
-        { action: "delete", path: "topics/old.md" },
-      ],
-    });
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({ action: "upsert", path: "learnings.md", content: "new content" });
-    expect(result[1]).toEqual({ action: "delete", path: "topics/old.md" });
-  });
-
-  it("returns empty array for missing resultJson", () => {
-    expect(parseWikiUpdates(null)).toEqual([]);
-    expect(parseWikiUpdates(undefined)).toEqual([]);
-    expect(parseWikiUpdates({})).toEqual([]);
-  });
-
-  it("skips invalid entries", () => {
-    const result = parseWikiUpdates({
-      wikiUpdates: [
-        { action: "upsert", path: "valid.md", content: "ok" },
-        { action: "upsert", path: "no-content.md" },           // missing content
-        { action: "bad", path: "learnings.md", content: "x" },  // bad action
-        { action: "upsert", path: "not-md-file", content: "x" }, // no .md extension
-        null,
-        42,
-      ],
-    });
-    expect(result).toHaveLength(1);
-    expect(result[0]!.path).toBe("valid.md");
+  it("rejects non-md paths via writePage", async () => {
+    await ensureWikiDir("agent-traversal");
+    await expect(writePage("agent-traversal", "evil.sh", "bad")).rejects.toThrow();
   });
 });
 
@@ -196,38 +152,19 @@ describe("listPages", () => {
 describe("post-run wiki modification flow", () => {
   const AGENT = "agent-postrun";
 
-  it("agent resultJson wikiUpdates are parsed, applied, and visible in next run", async () => {
+  it("wiki updates via writePage are visible in next run", async () => {
     // ── Run 1: first run, wiki is empty seed ──
     const bundle1 = await getWikiForRun(AGENT, "payment-service");
     expect(bundle1.learningsPage).toBe("# Learnings\n");
     expect(bundle1.projectPage).toBeNull();
 
-    // Simulate adapter returning resultJson with wikiUpdates
-    const resultJson = {
-      summary: "Fixed payment timeout bug",
-      wikiUpdates: [
-        {
-          action: "upsert",
-          path: "learnings.md",
-          content: "# Learnings\n\n- Always set HTTP timeout to 30s for payment gateway calls\n- Retry with exponential backoff on 503\n",
-        },
-        {
-          action: "upsert",
-          path: "projects/payment-service.md",
-          content: "# Payment Service\n\n## Architecture\n- Uses Stripe API v2023-10\n- Gateway timeout: 30s\n\n## Known Issues\n- Occasional 503 from Stripe during peak hours\n",
-        },
-        {
-          action: "upsert",
-          path: "topics/stripe-integration.md",
-          content: "# Stripe Integration\n\n## API Version\nv2023-10\n\n## Error Handling\n- 503: retry with backoff\n- 429: respect Retry-After header\n",
-        },
-      ],
-    };
-
-    // System parses and applies (this is what heartbeat.ts does post-run)
-    const updates = parseWikiUpdates(resultJson);
-    expect(updates).toHaveLength(3);
-    await applyWikiUpdates(AGENT, updates);
+    // Simulate wiki synthesis writing pages via MCP tools (writePage)
+    await writePage(AGENT, "learnings.md",
+      "# Learnings\n\n- Always set HTTP timeout to 30s for payment gateway calls\n- Retry with exponential backoff on 503\n");
+    await writePage(AGENT, "projects/payment-service.md",
+      "# Payment Service\n\n## Architecture\n- Uses Stripe API v2023-10\n- Gateway timeout: 30s\n\n## Known Issues\n- Occasional 503 from Stripe during peak hours\n");
+    await writePage(AGENT, "topics/stripe-integration.md",
+      "# Stripe Integration\n\n## API Version\nv2023-10\n\n## Error Handling\n- 503: retry with backoff\n- 429: respect Retry-After header\n");
 
     // ── Run 2: next run should see all updated wiki content ──
     const bundle2 = await getWikiForRun(AGENT, "payment-service");
@@ -250,43 +187,19 @@ describe("post-run wiki modification flow", () => {
   });
 
   it("agent accumulates knowledge across multiple runs", async () => {
-    // ── Run 1: agent learns about deployment ──
+    // ── Run 1: agent learns about deployment (via writePage, simulating MCP tool) ──
     await getWikiForRun(AGENT, null);
-    const run1Updates = parseWikiUpdates({
-      wikiUpdates: [
-        {
-          action: "upsert",
-          path: "learnings.md",
-          content: "# Learnings\n\n- Deploy via `make deploy-prod`\n",
-        },
-        {
-          action: "upsert",
-          path: "topics/deployment.md",
-          content: "# Deployment\n\n## Production\n- Run `make deploy-prod`\n- Requires VPN access\n",
-        },
-      ],
-    });
-    await applyWikiUpdates(AGENT, run1Updates);
+    await writePage(AGENT, "learnings.md", "# Learnings\n\n- Deploy via `make deploy-prod`\n");
+    await writePage(AGENT, "topics/deployment.md", "# Deployment\n\n## Production\n- Run `make deploy-prod`\n- Requires VPN access\n");
 
     // ── Run 2: agent learns more, updates learnings and adds new topic ──
     const bundle2 = await getWikiForRun(AGENT, null);
     expect(bundle2.learningsPage).toContain("make deploy-prod");
 
-    const run2Updates = parseWikiUpdates({
-      wikiUpdates: [
-        {
-          action: "upsert",
-          path: "learnings.md",
-          content: "# Learnings\n\n- Deploy via `make deploy-prod`\n- DB migrations must run before deploy\n- Always check Grafana after deploy\n",
-        },
-        {
-          action: "upsert",
-          path: "topics/monitoring.md",
-          content: "# Monitoring\n\n## Grafana\n- Dashboard: grafana.internal/d/api-latency\n- Check p99 after every deploy\n",
-        },
-      ],
-    });
-    await applyWikiUpdates(AGENT, run2Updates);
+    await writePage(AGENT, "learnings.md",
+      "# Learnings\n\n- Deploy via `make deploy-prod`\n- DB migrations must run before deploy\n- Always check Grafana after deploy\n");
+    await writePage(AGENT, "topics/monitoring.md",
+      "# Monitoring\n\n## Grafana\n- Dashboard: grafana.internal/d/api-latency\n- Check p99 after every deploy\n");
 
     // ── Run 3: verify accumulated knowledge ──
     const bundle3 = await getWikiForRun(AGENT, null);
@@ -308,24 +221,16 @@ describe("post-run wiki modification flow", () => {
   it("agent can delete outdated wiki pages post-run", async () => {
     await getWikiForRun(AGENT, null);
 
-    // Run 1: create two topic pages
-    await applyWikiUpdates(AGENT, parseWikiUpdates({
-      wikiUpdates: [
-        { action: "upsert", path: "topics/old-api.md", content: "# Old API\nDeprecated v1 API notes" },
-        { action: "upsert", path: "topics/new-api.md", content: "# New API\nv2 API notes" },
-      ],
-    }));
+    // Run 1: create two topic pages via writePage
+    await writePage(AGENT, "topics/old-api.md", "# Old API\nDeprecated v1 API notes");
+    await writePage(AGENT, "topics/new-api.md", "# New API\nv2 API notes");
 
     expect(await readPage(AGENT, "topics/old-api.md")).toContain("Deprecated v1");
     expect(await readPage(AGENT, "topics/new-api.md")).toContain("v2 API");
 
     // Run 2: agent decides to clean up old page and update the other
-    await applyWikiUpdates(AGENT, parseWikiUpdates({
-      wikiUpdates: [
-        { action: "delete", path: "topics/old-api.md" },
-        { action: "upsert", path: "topics/new-api.md", content: "# New API\nv2 API notes\n\n## Migration\n- All v1 endpoints removed\n" },
-      ],
-    }));
+    await deletePage(AGENT, "topics/old-api.md");
+    await writePage(AGENT, "topics/new-api.md", "# New API\nv2 API notes\n\n## Migration\n- All v1 endpoints removed\n");
 
     // Old page gone
     expect(await readPage(AGENT, "topics/old-api.md")).toBeNull();
@@ -345,16 +250,9 @@ describe("post-run wiki modification flow", () => {
     expect(bundle1.projectSlug).toBe("auth-service");
     expect(bundle1.projectPage).toBeNull();
 
-    // Agent creates the project page
-    await applyWikiUpdates(AGENT, parseWikiUpdates({
-      wikiUpdates: [
-        {
-          action: "upsert",
-          path: "projects/auth-service.md",
-          content: "# Auth Service\n\n## Stack\n- JWT tokens with RS256\n- Redis session store\n",
-        },
-      ],
-    }));
+    // Agent creates the project page via writePage
+    await writePage(AGENT, "projects/auth-service.md",
+      "# Auth Service\n\n## Stack\n- JWT tokens with RS256\n- Redis session store\n");
 
     // Run 2: same project — now sees the page
     const bundle2 = await getWikiForRun(AGENT, "auth-service");
@@ -370,14 +268,8 @@ describe("post-run wiki modification flow", () => {
     expect(bundle3.indexPage).toContain("projects/auth-service.md");
   });
 
-  it("handles empty wikiUpdates gracefully (no changes after run)", async () => {
+  it("handles no wiki changes gracefully", async () => {
     await ensureWikiDir(AGENT);
-
-    // resultJson without wikiUpdates
-    expect(parseWikiUpdates({ summary: "did stuff" })).toEqual([]);
-
-    // resultJson with empty array
-    expect(parseWikiUpdates({ wikiUpdates: [] })).toEqual([]);
 
     // apply empty — should not throw
     await applyWikiUpdates(AGENT, []);
@@ -387,40 +279,14 @@ describe("post-run wiki modification flow", () => {
     expect(bundle.learningsPage).toContain("# Learnings");
   });
 
-  it("mixed valid and invalid wikiUpdates: only valid ones applied", async () => {
-    await ensureWikiDir(AGENT);
-
-    const resultJson = {
-      wikiUpdates: [
-        { action: "upsert", path: "topics/good.md", content: "# Good Topic" },
-        { action: "upsert", path: "../../../etc/shadow", content: "bad" },    // path traversal
-        { action: "upsert", path: "topics/also-good.md", content: "# Also Good" },
-        { action: "upsert", path: "topics/no-content.md" },                    // missing content
-        { action: "upsert", path: "script.sh", content: "#!/bin/bash" },       // non-.md
-      ],
-    };
-
-    const updates = parseWikiUpdates(resultJson);
-    expect(updates).toHaveLength(2); // only the two valid .md upserts
-
-    await applyWikiUpdates(AGENT, updates);
-
-    expect(await readPage(AGENT, "topics/good.md")).toBe("# Good Topic");
-    expect(await readPage(AGENT, "topics/also-good.md")).toBe("# Also Good");
-  });
-
   it("index is correctly rebuilt with grouped sections after agent updates", async () => {
     await ensureWikiDir(AGENT);
 
-    await applyWikiUpdates(AGENT, parseWikiUpdates({
-      wikiUpdates: [
-        { action: "upsert", path: "learnings.md", content: "# Key Learnings\nImportant stuff" },
-        { action: "upsert", path: "projects/alpha.md", content: "# Alpha Project" },
-        { action: "upsert", path: "projects/beta.md", content: "# Beta Project" },
-        { action: "upsert", path: "topics/testing.md", content: "# Testing Strategy" },
-        { action: "upsert", path: "topics/ci-cd.md", content: "# CI/CD Pipeline" },
-      ],
-    }));
+    await writePage(AGENT, "learnings.md", "# Key Learnings\nImportant stuff");
+    await writePage(AGENT, "projects/alpha.md", "# Alpha Project");
+    await writePage(AGENT, "projects/beta.md", "# Beta Project");
+    await writePage(AGENT, "topics/testing.md", "# Testing Strategy");
+    await writePage(AGENT, "topics/ci-cd.md", "# CI/CD Pipeline");
 
     const bundle = await getWikiForRun(AGENT, "alpha");
     const index = bundle.indexPage;

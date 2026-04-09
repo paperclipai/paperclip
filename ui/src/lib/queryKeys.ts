@@ -27,6 +27,10 @@ export const queryKeys = {
       ["agents", companyId, "adapter-models", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+    wikiPages: (companyId: string, agentId: string) =>
+      ["agents", "wiki", companyId, agentId] as const,
+    wikiPage: (companyId: string, agentId: string, pagePath: string) =>
+      ["agents", "wiki", companyId, agentId, pagePath] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,

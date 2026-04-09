@@ -217,35 +217,3 @@ export async function deletePage(
   }
 }
 
-export function parseWikiUpdates(
-  resultJson: Record<string, unknown> | null | undefined,
-): WikiUpdate[] {
-  if (!resultJson) return [];
-  const raw = resultJson.wikiUpdates;
-  if (!Array.isArray(raw)) return [];
-
-  const updates: WikiUpdate[] = [];
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const { action, path: wikiPath, content } = entry as Record<string, unknown>;
-    if (action !== "upsert" && action !== "delete") continue;
-    if (typeof wikiPath !== "string" || !wikiPath.endsWith(".md")) continue;
-    if (wikiPath.includes("..")) continue;
-
-    try {
-      validateWikiPath(wikiPath);
-    } catch {
-      continue;
-    }
-
-    if (action === "upsert" && typeof content !== "string") continue;
-
-    updates.push({
-      action,
-      path: wikiPath,
-      ...(action === "upsert" ? { content: content as string } : {}),
-    });
-  }
-
-  return updates;
-}

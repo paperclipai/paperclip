@@ -107,5 +107,36 @@ export function agentWikiRoutes(db: Db) {
     res.json({ path: wikiPath, content });
   });
 
+  router.put("/agents/me/wiki/{*wikiPath}", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    const wikiPath = extractWikiPath(req.params, "wikiPath");
+    if (!wikiPath) { res.status(400).json({ error: "path required" }); return; }
+    const { content } = req.body;
+    if (typeof content !== "string") {
+      res.status(400).json({ error: "content is required" });
+      return;
+    }
+    await agentWikiSvc.writePage(req.actor.agentId, wikiPath, content);
+    res.json({ ok: true });
+  });
+
+  router.delete("/agents/me/wiki/{*wikiPath}", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    const wikiPath = extractWikiPath(req.params, "wikiPath");
+    if (!wikiPath) { res.status(400).json({ error: "path required" }); return; }
+    const deleted = await agentWikiSvc.deletePage(req.actor.agentId, wikiPath);
+    if (!deleted) {
+      res.status(404).json({ error: "Wiki page not found" });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
   return router;
 }

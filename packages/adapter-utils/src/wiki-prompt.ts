@@ -32,24 +32,12 @@ export function formatWikiForPrompt(bundle: WikiContextBundle): string {
     );
   }
 
-  sections.push(`### Updating Your Wiki
-When you learn something durable during this task, include "wikiUpdates" in your result:
-\`\`\`json
-[
-  { "action": "upsert", "path": "learnings.md", "content": "full updated markdown" },
-  { "action": "upsert", "path": "projects/example-project.md", "content": "..." },
-  { "action": "upsert", "path": "topics/new-topic.md", "content": "..." },
-  { "action": "delete", "path": "topics/outdated.md" }
-]
-\`\`\`
-
-Guidelines:
-- Update learnings.md with cross-cutting patterns and conventions
-- Update the project file with project-specific knowledge
-- Create topic files for deep-dives worth preserving
-- Keep pages focused and factual — this wiki persists across all your future tasks
+  sections.push(`### Wiki Tools
 - To read other wiki pages not shown above, use the paperclipWikiReadPage tool
-- To see all available pages, use the paperclipWikiListPages tool`);
+- To see all available pages, use the paperclipWikiListPages tool
+- To update wiki pages, use the paperclipWikiWritePage tool
+- To remove outdated pages, use the paperclipWikiDeletePage tool
+- Your wiki is also automatically updated after each run`);
 
   return sections.join("\n\n");
 }

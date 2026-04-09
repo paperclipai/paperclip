@@ -425,6 +425,25 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async ({ path }) => client.requestJson("GET", `/agents/me/wiki/${encodeURIComponent(path)}`),
     ),
     makeTool(
+      "paperclipWikiWritePage",
+      "Write or update a page in your personal wiki. Creates parent directories automatically. Use for persisting durable knowledge.",
+      z.object({
+        path: z.string().min(1).describe("Relative path, e.g. 'learnings.md' or 'projects/my-project.md'"),
+        content: z.string().min(1).describe("Full markdown content for the page"),
+      }),
+      async ({ path, content }) =>
+        client.requestJson("PUT", `/agents/me/wiki/${encodeURIComponent(path)}`, { body: { content } }),
+    ),
+    makeTool(
+      "paperclipWikiDeletePage",
+      "Delete a page from your personal wiki.",
+      z.object({
+        path: z.string().min(1).describe("Relative path of the page to delete"),
+      }),
+      async ({ path }) =>
+        client.requestJson("DELETE", `/agents/me/wiki/${encodeURIComponent(path)}`),
+    ),
+    makeTool(
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,

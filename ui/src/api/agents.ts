@@ -197,7 +197,20 @@ export const agentsApi = {
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  wikiPages: (companyId: string, agentId: string) =>
+    api.get<WikiPageInfo[]>(`/companies/${companyId}/agents/${agentId}/wiki`),
+  wikiReadPage: (companyId: string, agentId: string, pagePath: string) =>
+    api.get<{ path: string; content: string }>(
+      `/companies/${companyId}/agents/${agentId}/wiki/${encodeURIComponent(pagePath)}`,
+    ),
 };
+
+export interface WikiPageInfo {
+  path: string;
+  title: string;
+  sizeBytes: number;
+  updatedAt: string;
+}
 
 export interface AvailableSkill {
   name: string;

@@ -81,11 +81,6 @@ export interface AdapterExecutionResult {
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
-  wikiUpdates?: Array<{
-    action: "upsert" | "delete";
-    path: string;
-    content?: string;
-  }>;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
