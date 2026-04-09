@@ -5,6 +5,8 @@ import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface Props {
   projectId: string;
@@ -177,148 +179,102 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
     id ? (allAgents.data ?? []).find((a) => a.id === id)?.name ?? id.slice(0, 8) : "—";
 
   return (
-    <div data-testid="phase2-panel" className="mt-8 space-y-8 border-t border-border pt-6">
-      <h2 className="text-lg font-bold uppercase tracking-wide text-muted-foreground">
-        Phase 2: Teams • Members • Milestones • Health
-      </h2>
-
+    <div data-testid="phase2-panel" className="mt-8 space-y-6">
       {/* === Teams === */}
       <section data-testid="phase2-teams">
-        <h3 className="text-sm font-bold mb-2">Linked Teams ({teams.data?.length ?? 0})</h3>
-        <div className="flex flex-wrap gap-2 mb-3">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+          Linked Teams ({teams.data?.length ?? 0})
+        </h3>
+        <div className="rounded-lg bg-card overflow-hidden mb-2">
           {(teams.data ?? []).map((link) => (
-            <Badge
-              key={link.teamId}
-              variant="outline"
-              className="flex items-center gap-2"
-              style={{ borderColor: link.team.color ?? undefined }}
-            >
-              <span
-                className="inline-block h-3 w-3 rounded-sm"
-                style={{ backgroundColor: link.team.color ?? "#94A3B8" }}
-              />
-              {link.team.identifier} {link.team.name}
-              <button
-                onClick={() => removeTeamMutation.mutate(link.teamId)}
-                className="hover:text-destructive"
-                aria-label={`unlink team ${link.team.identifier}`}
-              >
+            <div key={link.teamId} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors group">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm shrink-0" style={{ backgroundColor: link.team.color ?? "#94A3B8" }} />
+              <span className="flex-1 truncate text-foreground/80">{link.team.identifier} {link.team.name}</span>
+              <button onClick={() => removeTeamMutation.mutate(link.teamId)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" aria-label={`unlink team ${link.team.identifier}`}>
                 <Trash2 className="h-3 w-3" />
               </button>
-            </Badge>
+            </div>
           ))}
         </div>
-        <select
-          data-testid="phase2-team-select"
-          className="text-sm border border-border rounded px-2 py-1 bg-background"
-          onChange={(e) => {
-            if (e.target.value) {
-              addTeamMutation.mutate(e.target.value);
-              e.target.value = "";
-            }
-          }}
-          defaultValue=""
-        >
-          <option value="">+ Link team…</option>
-          {linkableTeams.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.identifier} — {t.name}
-            </option>
-          ))}
-        </select>
+        {linkableTeams.length > 0 && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-xs text-muted-foreground h-7">
+                <Plus className="h-3 w-3 mr-1.5" /> Link team
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              {linkableTeams.map((t) => (
+                <button key={t.id} className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50 text-left" onClick={() => addTeamMutation.mutate(t.id)}>
+                  <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: t.color ?? "#94A3B8" }} />
+                  {t.identifier} — {t.name}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        )}
       </section>
 
       {/* === Members === */}
       <section data-testid="phase2-members">
-        <h3 className="text-sm font-bold mb-2">Project Members ({members.data?.length ?? 0})</h3>
-        <ul className="space-y-1 mb-3">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+          Members ({members.data?.length ?? 0})
+        </h3>
+        <div className="rounded-lg bg-card overflow-hidden mb-2">
           {(members.data ?? []).map((m) => (
-            <li
-              key={m.id}
-              className="flex items-center gap-2 text-sm border border-border rounded px-2 py-1"
-            >
-              <Badge variant="outline">{m.role}</Badge>
-              <span>{agentName(m.agentId)}</span>
-              <button
-                onClick={() => removeMemberMutation.mutate(m.id)}
-                className="ml-auto hover:text-destructive"
-                aria-label={`remove member ${m.id}`}
-              >
+            <div key={m.id} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors group">
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 rounded-full">{m.role}</Badge>
+              <span className="flex-1 truncate text-foreground/80">{agentName(m.agentId)}</span>
+              <button onClick={() => removeMemberMutation.mutate(m.id)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" aria-label={`remove member ${m.id}`}>
                 <Trash2 className="h-3 w-3" />
               </button>
-            </li>
+            </div>
           ))}
-        </ul>
-        <select
-          data-testid="phase2-member-select"
-          className="text-sm border border-border rounded px-2 py-1 bg-background"
-          onChange={(e) => {
-            if (e.target.value) {
-              addMemberMutation.mutate(e.target.value);
-              e.target.value = "";
-            }
-          }}
-          defaultValue=""
-        >
-          <option value="">+ Add agent as member…</option>
-          {linkableAgents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
+        </div>
+        {linkableAgents.length > 0 && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-xs text-muted-foreground h-7">
+                <Plus className="h-3 w-3 mr-1.5" /> Add member
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              {linkableAgents.map((a) => (
+                <button key={a.id} className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50 text-left" onClick={() => addMemberMutation.mutate(a.id)}>
+                  {a.name}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        )}
       </section>
 
       {/* === Milestones === */}
       <section data-testid="phase2-milestones">
-        <h3 className="text-sm font-bold mb-2">Milestones ({milestones.data?.length ?? 0})</h3>
-        <ul className="space-y-1 mb-3">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+          Milestones ({milestones.data?.length ?? 0})
+        </h3>
+        <div className="rounded-lg bg-card overflow-hidden mb-2">
           {(milestones.data ?? []).map((m) => (
-            <li
-              key={m.id}
-              className="flex items-center gap-2 text-sm border border-border rounded px-2 py-1"
-            >
-              <input
-                type="checkbox"
+            <div key={m.id} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors group">
+              <Checkbox
                 checked={m.status === "completed"}
-                onChange={() =>
-                  toggleMilestoneMutation.mutate({
-                    id: m.id,
-                    status: m.status === "completed" ? "planned" : "completed",
-                  })
-                }
+                onCheckedChange={() => toggleMilestoneMutation.mutate({ id: m.id, status: m.status === "completed" ? "planned" : "completed" })}
+                className="h-3.5 w-3.5"
               />
-              <span className={m.status === "completed" ? "line-through text-muted-foreground" : ""}>
+              <span className={`flex-1 truncate ${m.status === "completed" ? "line-through text-muted-foreground" : "text-foreground/80"}`}>
                 {m.name}
               </span>
-              {m.targetDate && (
-                <span className="text-xs text-muted-foreground">{m.targetDate}</span>
-              )}
-              <button
-                onClick={() => removeMilestoneMutation.mutate(m.id)}
-                className="ml-auto hover:text-destructive"
-                aria-label={`delete milestone ${m.name}`}
-              >
+              {m.targetDate && <span className="text-[11px] text-muted-foreground">{m.targetDate}</span>}
+              <button onClick={() => removeMilestoneMutation.mutate(m.id)} className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" aria-label={`delete milestone ${m.name}`}>
                 <Trash2 className="h-3 w-3" />
               </button>
-            </li>
+            </div>
           ))}
-        </ul>
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (msName.trim()) createMilestoneMutation.mutate(msName.trim());
-          }}
-        >
-          <Input
-            data-testid="phase2-milestone-name"
-            value={msName}
-            onChange={(e) => setMsName(e.target.value)}
-            placeholder="Milestone name"
-            className="text-sm h-8"
-          />
-          <Button type="submit" size="sm" disabled={!msName.trim()}>
+        </div>
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (msName.trim()) createMilestoneMutation.mutate(msName.trim()); }}>
+          <Input data-testid="phase2-milestone-name" value={msName} onChange={(e) => setMsName(e.target.value)} placeholder="Milestone name" className="text-sm h-7 rounded-lg" />
+          <Button type="submit" size="sm" className="h-7" disabled={!msName.trim()}>
             <Plus className="h-3 w-3 mr-1" /> Add
           </Button>
         </form>
@@ -326,51 +282,37 @@ export function ProjectPhase2Panel({ projectId, companyId }: Props) {
 
       {/* === Health updates === */}
       <section data-testid="phase2-health">
-        <h3 className="text-sm font-bold mb-2">Health Updates ({updates.data?.length ?? 0})</h3>
-        <ul className="space-y-1 mb-3">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+          Health Updates ({updates.data?.length ?? 0})
+        </h3>
+        <div className="rounded-lg bg-card overflow-hidden mb-2">
           {(updates.data ?? []).slice(0, 5).map((u) => (
-            <li
-              key={u.id}
-              className="flex items-center gap-2 text-sm border border-border rounded px-2 py-1"
-            >
-              <span
-                className="inline-block h-3 w-3 rounded-full shrink-0"
-                style={{ backgroundColor: HEALTH_COLORS[u.health] ?? "#94A3B8" }}
-              />
-              <Badge variant="outline" className="text-xs">
-                {u.health}
-              </Badge>
-              <span className="truncate">{u.body}</span>
-            </li>
+            <div key={u.id} className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors">
+              <span className="inline-block h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: HEALTH_COLORS[u.health] ?? "#94A3B8" }} />
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 rounded-full">{u.health}</Badge>
+              <span className="flex-1 truncate text-foreground/80">{u.body}</span>
+            </div>
           ))}
-        </ul>
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (updateBody.trim()) createUpdateMutation.mutate();
-          }}
-        >
-          <select
-            data-testid="phase2-health-select"
-            className="text-sm border border-border rounded px-2 py-1 bg-background"
-            value={updateHealth}
-            onChange={(e) => setUpdateHealth(e.target.value as any)}
-          >
-            <option value="on_track">on_track</option>
-            <option value="at_risk">at_risk</option>
-            <option value="off_track">off_track</option>
-          </select>
-          <Input
-            data-testid="phase2-update-body"
-            value={updateBody}
-            onChange={(e) => setUpdateBody(e.target.value)}
-            placeholder="What's the status?"
-            className="text-sm h-8 flex-1"
-          />
-          <Button type="submit" size="sm" disabled={!updateBody.trim()}>
-            Post
-          </Button>
+        </div>
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (updateBody.trim()) createUpdateMutation.mutate(); }}>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: HEALTH_COLORS[updateHealth] }} />
+                {updateHealth}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-36 p-1" align="start">
+              {(["on_track", "at_risk", "off_track"] as const).map((h) => (
+                <button key={h} className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50" onClick={() => setUpdateHealth(h)}>
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: HEALTH_COLORS[h] }} />
+                  {h}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+          <Input data-testid="phase2-update-body" value={updateBody} onChange={(e) => setUpdateBody(e.target.value)} placeholder="What's the status?" className="text-sm h-7 flex-1 rounded-lg" />
+          <Button type="submit" size="sm" className="h-7" disabled={!updateBody.trim()}>Post</Button>
         </form>
       </section>
     </div>
