@@ -477,6 +477,13 @@
       "when": 1775809400000,
       "tag": "0067_cos_room_action_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1775809500000,
+      "tag": "0068_cos_room_approval_restrict",
+      "breakpoints": true
     }
   ]
 }

@@ -29,6 +29,14 @@ import { recruitingApi } from "../api/recruiting";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
@@ -90,6 +98,10 @@ export function Recruiting() {
   const [adapterType, setAdapterType] = useState<"claude_local" | "process" | "none">("process");
   const [budget, setBudget] = useState("0");
   const [reason, setReason] = useState("");
+  // Reviewer P1 finding (feature-dev #3): track which approval is in
+  // flight so the pending state only disables THAT card, not every
+  // card in the list.
+  const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
 
   const resetForm = () => {
     setName("");
@@ -103,16 +115,22 @@ export function Recruiting() {
   };
 
   const proposeMutation = useMutation({
-    mutationFn: () =>
-      recruitingApi.propose(selectedCompanyId!, {
+    mutationFn: () => {
+      // Finite-number guard so `Number("1e999")` → Infinity doesn't
+      // propagate to the server (which would reject with 400 anyway,
+      // but fail fast locally).
+      const n = Number(budget);
+      const cents = Number.isFinite(n) ? Math.max(0, Math.floor(n * 100)) : 0;
+      return recruitingApi.propose(selectedCompanyId!, {
         name: name.trim(),
         role: role.trim(),
         title: title.trim() || null,
         capabilities: capabilities.trim() || null,
         adapterType,
-        budgetMonthlyCents: Math.max(0, Number(budget) * 100) || 0,
+        budgetMonthlyCents: cents,
         reason: reason.trim() || null,
-      }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       qc.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
@@ -125,14 +143,22 @@ export function Recruiting() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.approve(id),
+    mutationFn: (id: string) => {
+      setPendingApprovalId(id);
+      return approvalsApi.approve(id);
+    },
+    onSettled: () => setPendingApprovalId(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       qc.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
     },
   });
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.reject(id),
+    mutationFn: (id: string) => {
+      setPendingApprovalId(id);
+      return approvalsApi.reject(id);
+    },
+    onSettled: () => setPendingApprovalId(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       qc.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
@@ -211,26 +237,30 @@ export function Recruiting() {
             </div>
             <div className="col-span-2">
               <label className="text-[11px] text-muted-foreground">Capabilities</label>
-              <textarea
+              <Textarea
                 value={capabilities}
                 onChange={(e) => setCapabilities(e.target.value)}
                 placeholder="What does this agent do? Comma-separated strengths."
-                className="w-full min-h-[60px] text-xs p-2 rounded border border-border bg-background"
+                className="min-h-[60px] text-xs"
               />
             </div>
             <div>
               <label className="text-[11px] text-muted-foreground">Adapter type</label>
-              <select
+              <Select
                 value={adapterType}
-                onChange={(e) => setAdapterType(e.target.value as typeof adapterType)}
-                className="w-full h-8 text-sm rounded border border-border bg-background px-2"
+                onValueChange={(v) => setAdapterType(v as typeof adapterType)}
               >
-                {ADAPTER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ADAPTER_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="text-[11px] text-muted-foreground">Monthly budget (USD)</label>
@@ -245,11 +275,11 @@ export function Recruiting() {
             </div>
             <div className="col-span-2">
               <label className="text-[11px] text-muted-foreground">Why we need this hire</label>
-              <textarea
+              <Textarea
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 placeholder="Reasoning for the approver…"
-                className="w-full min-h-[50px] text-xs p-2 rounded border border-border bg-background"
+                className="min-h-[50px] text-xs"
               />
             </div>
           </div>
@@ -287,28 +317,33 @@ export function Recruiting() {
           <EmptyState icon={UserPlus} message="No pending hires. Propose someone above." />
         ) : (
           <div className="grid gap-3">
-            {pendingHires.map((a) => (
-              <ApprovalCard
-                key={a.id}
-                approval={a}
-                requesterAgent={
-                  a.requestedByAgentId
-                    ? (agents ?? []).find((x) => x.id === a.requestedByAgentId) ?? null
-                    : null
-                }
-                onApprove={() => approveMutation.mutate(a.id)}
-                onReject={() => rejectMutation.mutate(a.id)}
-                detailLink={`/approvals/${a.id}`}
-                isPending={approveMutation.isPending || rejectMutation.isPending}
-                pendingAction={
-                  approveMutation.isPending
-                    ? "approve"
-                    : rejectMutation.isPending
-                    ? "reject"
-                    : null
-                }
-              />
-            ))}
+            {pendingHires.map((a) => {
+              const isThisCardPending = pendingApprovalId === a.id;
+              return (
+                <ApprovalCard
+                  key={a.id}
+                  approval={a}
+                  requesterAgent={
+                    a.requestedByAgentId
+                      ? (agents ?? []).find((x) => x.id === a.requestedByAgentId) ?? null
+                      : null
+                  }
+                  onApprove={() => approveMutation.mutate(a.id)}
+                  onReject={() => rejectMutation.mutate(a.id)}
+                  detailLink={`/approvals/${a.id}`}
+                  isPending={isThisCardPending}
+                  pendingAction={
+                    !isThisCardPending
+                      ? null
+                      : approveMutation.isPending
+                      ? "approve"
+                      : rejectMutation.isPending
+                      ? "reject"
+                      : null
+                  }
+                />
+              );
+            })}
           </div>
         )}
       </div>

@@ -121,6 +121,37 @@ export function githubWebhookRoutes(db: Db): ExpressRouter {
       return;
     }
 
+    // Reviewer P1 finding J — validate required PR fields before we
+    // hand the payload to the service. A minimal `{ pull_request: {} }`
+    // from a malicious caller would otherwise reach `upsertWorkProduct`
+    // and insert NULL into NOT NULL columns, 500ing the process.
+    const pr = payload.pull_request;
+    if (
+      typeof pr.title !== "string" ||
+      typeof pr.html_url !== "string" ||
+      typeof pr.number !== "number"
+    ) {
+      res.status(400).json({ error: "pull_request missing required fields (title, html_url, number)" });
+      return;
+    }
+
+    // Reviewer P1 finding G — enforce https URL scheme so a
+    // `javascript:alert(1)` payload can't reach the DB and then the UI
+    // href renderer. `new URL()` also validates the general shape.
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(pr.html_url);
+    } catch {
+      res.status(400).json({ error: "pull_request.html_url is not a valid URL" });
+      return;
+    }
+    if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+      res.status(400).json({
+        error: `pull_request.html_url must be http(s), got ${parsedUrl.protocol}`,
+      });
+      return;
+    }
+
     // 4. Apply.
     const result = await svc.applyPullRequestEvent(companyId, payload);
 

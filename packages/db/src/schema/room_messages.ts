@@ -28,7 +28,12 @@ export const roomMessages = pgTable(
     // message carries a FK to the `approvals` row that gates it. Null
     // for text messages and for action messages created without a
     // requires_approval flag.
-    approvalId: uuid("approval_id").references(() => approvals.id, { onDelete: "set null" }),
+    //
+    // Hardening (0068): FK is `ON DELETE RESTRICT`, not SET NULL. A
+    // SET NULL would silently un-gate a message if its approval was
+    // ever deleted — the runtime check in updateActionStatus keys on
+    // `approvalId !== null`. RESTRICT fails loudly instead.
+    approvalId: uuid("approval_id").references(() => approvals.id, { onDelete: "restrict" }),
     attachments: jsonb("attachments").$type<
       Array<{
         assetId: string;

@@ -892,7 +892,13 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
             actionStatus: nextStatus,
             actionResult: nextStatus === "executed" ? (extras.result ?? null) : null,
             actionError: nextStatus === "failed" ? (extras.error ?? null) : null,
-            actionExecutedAt: new Date(),
+            // Phase 5.2f hardening: `actionExecutedAt` is a
+            // "successfully executed at" timestamp. Setting it on the
+            // `failed` path muddled the semantics — callers reading
+            // `actionExecutedAt IS NOT NULL` as a proxy for "did
+            // execute" would get false positives. Only stamp it on
+            // the executed transition.
+            actionExecutedAt: nextStatus === "executed" ? new Date() : null,
             actionExecutedByAgentId: actor.agentId ?? null,
             actionExecutedByUserId: actor.userId ?? null,
           })

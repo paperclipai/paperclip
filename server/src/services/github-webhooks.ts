@@ -31,9 +31,18 @@
  */
 
 import crypto from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts, issues, teamWorkflowStatuses } from "@paperclipai/db";
+
+/**
+ * Hard caps to prevent amplification DoS on webhook inputs. A
+ * malicious (or simply confused) PR body with thousands of identifier
+ * references would otherwise run one DB SELECT per identifier AND one
+ * upsert each, in sequence. Cap at 50 — realistic PRs mention a
+ * handful of issues, anything larger is almost certainly abuse.
+ */
+const MAX_IDENTIFIERS_PER_EVENT = 50;
 
 /** Extracted issue reference from a PR title/body. */
 export interface PrIssueRef {
@@ -75,8 +84,12 @@ export function extractIssueIdentifiers(text: string | null | undefined): PrIssu
 }
 
 /**
- * Constant-time HMAC signature verification. GitHub sends the hex
- * digest prefixed with `sha256=`; we accept either form.
+ * Constant-time HMAC signature verification. GitHub always sends the
+ * header as `sha256=<64 hex chars>` (71 bytes total), so we REQUIRE
+ * that exact prefix. Dropping the raw-hex fallback closes the length
+ * oracle the feature-dev reviewer flagged: the old code did a
+ * length-pre-check branch on two candidate lengths, leaking whether
+ * the caller submitted `sha256=...` or the bare digest.
  */
 export function verifyGithubSignature(
   rawBody: Buffer,
@@ -84,32 +97,26 @@ export function verifyGithubSignature(
   secret: string,
 ): boolean {
   if (!signatureHeader) return false;
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
-  const expectedFull = `sha256=${expected}`;
-  // Prefer comparing the full `sha256=...` form, falling back to the
-  // raw digest if the caller stripped the prefix.
   const provided = signatureHeader.trim();
-  const candidates = [expectedFull, expected];
-  for (const candidate of candidates) {
-    if (candidate.length !== provided.length) continue;
-    try {
-      if (
-        crypto.timingSafeEqual(
-          Buffer.from(provided, "utf8"),
-          Buffer.from(candidate, "utf8"),
-        )
-      ) {
-        return true;
-      }
-    } catch {
-      // timingSafeEqual throws on length mismatch; loop tries the next
-      // candidate.
-    }
+  const expected =
+    "sha256=" +
+    crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  // Pad both sides to the same length before timingSafeEqual so it
+  // never throws, and the compare always runs to completion regardless
+  // of what the attacker sent. This removes any length-dependent branch.
+  const providedBuf = Buffer.from(provided, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  if (providedBuf.length !== expectedBuf.length) {
+    // We MUST still do constant-work compare to avoid a timing branch;
+    // compare against a zero-padded buffer of the expected length.
+    const pad = Buffer.alloc(expectedBuf.length);
+    providedBuf.copy(pad, 0, 0, Math.min(providedBuf.length, pad.length));
+    // Always compare — result is guaranteed false because the real
+    // provided length didn't match expected.
+    crypto.timingSafeEqual(pad, expectedBuf);
+    return false;
   }
-  return false;
+  return crypto.timingSafeEqual(providedBuf, expectedBuf);
 }
 
 /**
@@ -225,12 +232,16 @@ export function githubWebhookService(db: Db) {
 
   /**
    * Find the "completed-category" workflow status for a team, so we
-   * can transition an issue when its linked PR merges. Falls back to
-   * literal status `"done"` if the team has no such row (backwards
-   * compat with seed data).
+   * can transition an issue when its linked PR merges.
+   *
+   * Reviewer P1 finding: previously fell back to the literal `"done"`,
+   * which could fail team-workflow validation for teams that use a
+   * custom slug (e.g. `resolved`). Returning null signals the caller
+   * to SKIP the transition silently rather than silently corrupt the
+   * row. For teamless issues we also return null.
    */
-  async function resolveCompletedStatusSlug(teamId: string | null): Promise<string> {
-    if (!teamId) return "done";
+  async function resolveCompletedStatusSlug(teamId: string | null): Promise<string | null> {
+    if (!teamId) return null;
     const row = await db
       .select({ slug: teamWorkflowStatuses.slug })
       .from(teamWorkflowStatuses)
@@ -242,7 +253,7 @@ export function githubWebhookService(db: Db) {
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    return row?.slug ?? "done";
+    return row?.slug ?? null;
   }
 
   return {
@@ -251,32 +262,48 @@ export function githubWebhookService(db: Db) {
       companyId: string,
       evt: PullRequestEventPayload,
     ): Promise<WebhookApplyResult> => {
-      const identifiers = extractIssueIdentifiers(
+      const allIdentifiers = extractIssueIdentifiers(
         `${evt.pull_request.title} ${evt.pull_request.body ?? ""}`,
       );
+      // Reviewer P1 finding C — cap per event to bound the loop.
+      const identifiers = allIdentifiers.slice(0, MAX_IDENTIFIERS_PER_EVENT);
       const result: WebhookApplyResult = {
         matchedIdentifiers: identifiers.map((i) => i.identifier),
         upserted: 0,
         transitioned: 0,
         unknownIdentifiers: [],
       };
+      if (identifiers.length === 0) return result;
+
+      // Reviewer P1 finding C/D/K — batch the issue lookup with a
+      // single `inArray` query AND pin it to the webhook's company.
+      // The previous per-identifier loop did a `limit(1)` without
+      // companyId which was a false-negative risk (another tenant's
+      // identifier collision could win the sort order).
+      const identifierStrs = identifiers.map((i) => i.identifier);
+      const foundIssues = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          companyId: issues.companyId,
+          teamId: issues.teamId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(
+          and(
+            inArray(issues.identifier, identifierStrs),
+            eq(issues.companyId, companyId),
+          ),
+        );
+      const byIdentifier = new Map<string, (typeof foundIssues)[number]>();
+      for (const row of foundIssues) {
+        if (row.identifier) byIdentifier.set(row.identifier, row);
+      }
 
       for (const ref of identifiers) {
-        const issueRow = await db
-          .select({
-            id: issues.id,
-            companyId: issues.companyId,
-            teamId: issues.teamId,
-            status: issues.status,
-          })
-          .from(issues)
-          .where(eq(issues.identifier, ref.identifier))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-
-        // Cross-company isolation: a PR might mention a `DOG-1` that
-        // exists in a different tenant. Skip — do NOT leak or mutate.
-        if (!issueRow || issueRow.companyId !== companyId) {
+        const issueRow = byIdentifier.get(ref.identifier);
+        if (!issueRow) {
           result.unknownIdentifiers.push(ref.identifier);
           continue;
         }
@@ -285,9 +312,12 @@ export function githubWebhookService(db: Db) {
         result.upserted += 1;
 
         // Transition to completed-category status on merge only.
+        // If the team has no completed-category status configured we
+        // skip the transition rather than silently writing "done"
+        // (reviewer P1 finding 2).
         if (evt.action === "closed" && evt.pull_request.merged) {
           const completedSlug = await resolveCompletedStatusSlug(issueRow.teamId);
-          if (issueRow.status !== completedSlug) {
+          if (completedSlug && issueRow.status !== completedSlug) {
             await db
               .update(issues)
               .set({

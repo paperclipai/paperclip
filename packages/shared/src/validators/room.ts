@@ -64,6 +64,17 @@ export const sendRoomMessageSchema = z
   .refine(
     (data) => data.body.trim().length > 0 || (data.attachments && data.attachments.length > 0),
     { message: "Message must have body text or at least one attachment" },
+  )
+  // Reviewer P2 finding — `requiresApproval=true` on a non-action
+  // message was previously accepted and silently dropped by the
+  // service. Reject it at the edge so clients get a clear error
+  // instead of thinking their sign-off gate was queued.
+  .refine(
+    (data) => !data.requiresApproval || data.type === "action",
+    {
+      message: "requiresApproval can only be set on action messages",
+      path: ["requiresApproval"],
+    },
   );
 export type SendRoomMessage = z.infer<typeof sendRoomMessageSchema>;
 

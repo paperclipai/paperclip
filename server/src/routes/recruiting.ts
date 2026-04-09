@@ -24,6 +24,8 @@
 import type { Request, Response, Router as ExpressRouter } from "express";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents as agentsTable } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { agentService } from "../services/agents.js";
@@ -69,49 +71,83 @@ export function recruitingRoutes(db: Db): ExpressRouter {
       const body = req.body as z.infer<typeof proposeAgentSchema>;
       const actor = getActorInfo(req);
 
-      // 1. Create the pending agent row.
-      const agent = await agentsSvc.create(companyId, {
-        name: body.name,
-        role: body.role,
-        title: body.title ?? null,
-        reportsTo: body.reportsTo ?? null,
-        capabilities: body.capabilities ?? null,
-        adapterType: body.adapterType,
-        adapterConfig: {},
-        budgetMonthlyCents: body.budgetMonthlyCents ?? 0,
-        metadata: { proposedVia: "recruiting", proposalReason: body.reason ?? null },
-        status: "pending_approval",
-        spentMonthlyCents: 0,
-        permissions: undefined,
-        lastHeartbeatAt: null,
-      });
-      if (!agent) {
-        res.status(500).json({ error: "Failed to create agent" });
-        return;
+      // Reviewer P0 finding E — cross-tenant reportsTo. Schema only
+      // checked that the value was a UUID, not that the referenced
+      // agent lived in the SAME company. A board user with write
+      // access to company A could propose an agent whose "reports to"
+      // pointed at a company B leader, silently linking tenants.
+      // Validate BEFORE any insert so we don't leak existence either.
+      if (body.reportsTo) {
+        const [row] = await db
+          .select({ id: agentsTable.id, companyId: agentsTable.companyId })
+          .from(agentsTable)
+          .where(
+            and(
+              eq(agentsTable.id, body.reportsTo),
+              eq(agentsTable.companyId, companyId),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          res
+            .status(404)
+            .json({ error: "reportsTo agent not found in this company" });
+          return;
+        }
       }
 
-      // 2. Create the hire_agent approval referencing that agent id so
-      // approval.approve() activates the existing row instead of
-      // creating a second one.
-      const approval = await approvalsSvc.create(companyId, {
-        type: "hire_agent",
-        status: "pending",
-        requestedByUserId: actor.actorId,
-        requestedByAgentId: null,
-        payload: {
-          agentId: agent.id,
+      // Reviewer P0 finding A — orphan pending agent. The original
+      // implementation called agentsSvc.create() + approvalsSvc.create()
+      // sequentially with no transaction. If the approval insert failed
+      // (FK, constraint, crash) the pending_approval agent row was
+      // orphaned and cluttered the agent list forever. Wrap both writes
+      // in a single transaction so either both land or neither does.
+      const created = await db.transaction(async (tx) => {
+        const txAgents = agentService(tx as unknown as Db);
+        const txApprovals = approvalService(tx as unknown as Db);
+
+        const agent = await txAgents.create(companyId, {
           name: body.name,
           role: body.role,
           title: body.title ?? null,
+          reportsTo: body.reportsTo ?? null,
           capabilities: body.capabilities ?? null,
           adapterType: body.adapterType,
+          adapterConfig: {},
           budgetMonthlyCents: body.budgetMonthlyCents ?? 0,
-          reason: body.reason ?? null,
-        },
-        decisionNote: null,
-        decidedByUserId: null,
-        decidedAt: null,
+          metadata: { proposedVia: "recruiting", proposalReason: body.reason ?? null },
+          status: "pending_approval",
+          spentMonthlyCents: 0,
+          permissions: undefined,
+          lastHeartbeatAt: null,
+        });
+        if (!agent) {
+          throw Object.assign(new Error("Failed to create agent"), { status: 500 });
+        }
+
+        const approval = await txApprovals.create(companyId, {
+          type: "hire_agent",
+          status: "pending",
+          requestedByUserId: actor.actorId,
+          requestedByAgentId: null,
+          payload: {
+            agentId: agent.id,
+            name: body.name,
+            role: body.role,
+            title: body.title ?? null,
+            capabilities: body.capabilities ?? null,
+            adapterType: body.adapterType,
+            budgetMonthlyCents: body.budgetMonthlyCents ?? 0,
+            reason: body.reason ?? null,
+          },
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: null,
+        });
+
+        return { agent, approval };
       });
+      const { agent, approval } = created;
 
       await logActivity(db, {
         companyId,
