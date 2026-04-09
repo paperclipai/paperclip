@@ -116,9 +116,26 @@ export function InstanceBackupSettings() {
       </div>
 
       {!configFileExists && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          No config file found. Run <code className="font-mono">paperclipai onboard</code> first to
-          create one, or set backup settings via environment variables.
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm space-y-2">
+          <p className="font-medium text-amber-600 dark:text-amber-400">
+            No config file found — settings are read-only
+          </p>
+          <p className="text-muted-foreground">
+            Unlike other Instance Settings (which are stored in the database), backup settings are read from{" "}
+            <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">config.json</code> at server startup.
+            Your instance is currently running on defaults.
+          </p>
+          <p className="text-muted-foreground">
+            To enable editing, either:
+          </p>
+          <ul className="list-disc list-inside text-muted-foreground ml-2 space-y-1">
+            <li>
+              Run <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">paperclipai onboard</code> to create a config file
+            </li>
+            <li>
+              Or set values via environment variables (see below)
+            </li>
+          </ul>
         </div>
       )}
 
