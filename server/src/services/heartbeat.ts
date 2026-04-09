@@ -1134,14 +1134,6 @@ function parseIssueAssigneeAdapterOverrides(
   };
 }
 
-/**
- * Synthetic task key for timer/heartbeat wakes that have no issue context.
- * This allows timer wakes to participate in the `agentTaskSessions` system
- * and benefit from robust session resume, instead of relying solely on the
- * simpler `agentRuntimeState.sessionId` fallback.
- */
-const HEARTBEAT_TASK_KEY = "__heartbeat__";
-
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -1158,13 +1150,9 @@ function deriveTaskKey(
 }
 
 /**
- * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
- *
- * The synthetic key is only used when:
- * - No explicit task/issue key exists in the context
- * - The wake source is "timer" (scheduled heartbeat)
+ * Extended task key derivation for wakeup context.
+ * If no explicit task/issue key exists in context/payload, the result is null
+ * to avoid session reuse across unrelated non-ticket work.
  */
 export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -1172,9 +1160,6 @@ export function deriveTaskKeyWithHeartbeatFallback(
 ) {
   const explicit = deriveTaskKey(contextSnapshot, payload);
   if (explicit) return explicit;
-
-  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
 
   return null;
 }
@@ -1466,7 +1451,8 @@ function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
-  return (left ?? null) === (right ?? null);
+  if (!left || !right) return false;
+  return left === right;
 }
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
@@ -1844,8 +1830,7 @@ export function heartbeatService(db: Db) {
       );
     }
 
-    const runtimeForRun = await getRuntimeState(agent.id);
-    return runtimeForRun?.sessionId ?? null;
+    return null;
   }
 
   async function resolveExplicitResumeSessionOverride(
@@ -4182,7 +4167,7 @@ export function heartbeatService(db: Db) {
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : sanitizeRuntimeSessionDisplayId(runtime.sessionId);
+    const runtimeSessionFallback = null;
     let previousSessionDisplayId = sanitizeRuntimeSessionDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
