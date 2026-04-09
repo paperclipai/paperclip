@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { teamsApi } from "../api/teams";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -47,6 +48,12 @@ export function Issues() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: teams } = useQuery({
+    queryKey: ["teams", selectedCompanyId],
+    queryFn: () => teamsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -104,6 +111,7 @@ export function Issues() {
       error={error as Error | null}
       agents={agents}
       projects={projects}
+      teams={(teams ?? []).filter(t => t.status !== "deleted")}
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:issues-view"
       issueLinkState={issueLinkState}

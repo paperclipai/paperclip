@@ -43,6 +43,7 @@ export type IssueViewState = {
   assignees: string[];
   labels: string[];
   projects: string[];
+  teams: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
@@ -57,6 +58,7 @@ const defaultViewState: IssueViewState = {
   assignees: [],
   labels: [],
   projects: [],
+  teams: [],
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
@@ -110,6 +112,7 @@ function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: st
   }
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
   if (state.projects.length > 0) result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
+  if (state.teams.length > 0) result = result.filter((i) => (i as any).teamId != null && state.teams.includes((i as any).teamId));
   return result;
 }
 
@@ -142,6 +145,7 @@ function countActiveFilters(state: IssueViewState): number {
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
   if (state.projects.length > 0) count++;
+  if (state.teams.length > 0) count++;
   return count;
 }
 
@@ -157,14 +161,23 @@ interface ProjectOption {
   name: string;
 }
 
+interface TeamOption {
+  id: string;
+  name: string;
+  identifier: string;
+  color: string | null;
+}
+
 interface IssuesListProps {
   issues: Issue[];
   isLoading?: boolean;
   error?: Error | null;
   agents?: Agent[];
   projects?: ProjectOption[];
+  teams?: TeamOption[];
   liveIssueIds?: Set<string>;
   projectId?: string;
+  teamId?: string;
   viewStateKey: string;
   issueLinkState?: unknown;
   initialAssignees?: string[];
@@ -182,7 +195,9 @@ export function IssuesList({
   error,
   agents,
   projects,
+  teams: teamsOption,
   liveIssueIds,
+  teamId,
   projectId,
   viewStateKey,
   issueLinkState,
@@ -315,6 +330,7 @@ export function IssuesList({
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, string> = {};
     if (projectId) defaults.projectId = projectId;
+    if (teamId) defaults.teamId = teamId;
     if (groupKey) {
       if (viewState.groupBy === "status") defaults.status = groupKey;
       else if (viewState.groupBy === "priority") defaults.priority = groupKey;
@@ -324,7 +340,7 @@ export function IssuesList({
       }
     }
     return defaults;
-  }, [projectId, viewState.groupBy]);
+  }, [projectId, teamId, viewState.groupBy]);
 
   const assignIssue = useCallback((issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
     onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });
@@ -390,7 +406,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] });
+                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [], teams: [] });
                     }}
                   />
                 )}
@@ -403,7 +419,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
+                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [], teams: [] })}
                     >
                       Clear
                     </button>
@@ -535,6 +551,27 @@ export function IssuesList({
                                 onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
                               />
                               <span className="text-sm">{project.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {teamsOption && teamsOption.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Team</span>
+                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                          {teamsOption.map((team) => (
+                            <label key={team.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                              <Checkbox
+                                checked={viewState.teams.includes(team.id)}
+                                onCheckedChange={() => updateView({ teams: toggleInArray(viewState.teams, team.id) })}
+                              />
+                              <span
+                                className="h-2.5 w-2.5 rounded-sm shrink-0"
+                                style={{ backgroundColor: team.color ?? "#6366f1" }}
+                              />
+                              <span className="text-sm">{team.name}</span>
                             </label>
                           ))}
                         </div>

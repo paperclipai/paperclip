@@ -200,6 +200,7 @@ export function TeamIssuesPage() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
+      teamId={teamId}
       viewStateKey={`paperclip:team-issues-view:${teamId ?? "__none__"}`}
       issueLinkState={issueLinkState}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
