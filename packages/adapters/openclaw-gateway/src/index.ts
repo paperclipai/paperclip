@@ -42,11 +42,10 @@ Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
-Standard outbound payload additions:
-- paperclip (object): standardized Paperclip context added to every gateway agent request
-- paperclip.workspace (object, optional): resolved execution workspace for this run
-- paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
-- paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+Standard outbound payload behavior:
+- Paperclip does not send a top-level paperclip object in gateway agent params.
+- Paperclip embeds wake context in the message field and exports PAPERCLIP_* env hints there.
+- Any payloadTemplate.paperclip field is stripped before the gateway request is sent.
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports

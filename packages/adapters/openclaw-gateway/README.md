@@ -54,6 +54,7 @@ The agent request is built as:
 - optional additions:
   - all `payloadTemplate` fields merged in
   - `agentId` from config if set and not already in template
+  - `payloadTemplate.paperclip` is always stripped before sending because OpenClaw rejects that top-level field
 
 ## Timeouts
 
