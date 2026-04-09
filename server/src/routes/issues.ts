@@ -423,7 +423,7 @@ export function issueRoutes(
   /**
    * Engineer evidence gate: code issues moving to in_review must include
    * browser testing evidence (browse command text + image attachment)
-   * from the transitioning agent.
+   * from the transitioning actor.
    */
   async function assertEngineerBrowseEvidence(
     req: Request,
@@ -432,27 +432,31 @@ export function issueRoutes(
     comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
     attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
   ): Promise<{ gate: string; reason: string } | null> {
-    if (!req.actor || req.actor.type !== "agent") return null;
+    if (!req.actor || (req.actor.type !== "agent" && req.actor.type !== "board")) return null;
     if (targetStatus !== "in_review") return null;
     if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
-    const agentId = req.actor.agentId ?? null;
+    const actorAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+    const actorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
     const sinceDate = issue.updatedAt;
 
     // Check persisted comments AND the inline PATCH comment (which hasn't been saved yet).
     // The inline comment avoids a timing race where comment.createdAt can be slightly before
     // issue.updatedAt when the comment insert itself triggers the updatedAt bump.
     // Actor check is unnecessary for the inline path: the PATCH actor IS the commenter (authenticated via req.actor).
-    const hasBrowseText = actorHasBrowseEvidence(comments, agentId, null, sinceDate)
+    const hasBrowseText = actorHasBrowseEvidence(comments, actorAgentId, actorUserId, sinceDate)
       || (req.body.comment && BROWSE_EVIDENCE_PATTERN.test(req.body.comment));
-    const hasImage = actorHasImageAttachment(attachments, agentId, null, sinceDate);
+    const hasImage = actorHasImageAttachment(attachments, actorAgentId, actorUserId, sinceDate);
 
     // No-browser-surface exemption: if the actor declared this issue has no browser
     // surface (e.g. Python backend, CLI tool), accept without screenshot evidence.
     const noBrowserSince = new Date(sinceDate).getTime() - EVIDENCE_TIMING_TOLERANCE_MS;
     const hasNoBrowserSurface = comments.some(c => {
       if (new Date(c.createdAt).getTime() < noBrowserSince) return false;
-      return (agentId && c.authorAgentId === agentId) && NO_BROWSER_SURFACE_PATTERN.test(c.body);
+      const isActor =
+        (actorAgentId && c.authorAgentId === actorAgentId) ||
+        (actorUserId && c.authorUserId === actorUserId);
+      return isActor && NO_BROWSER_SURFACE_PATTERN.test(c.body);
     }) || (req.body.comment && NO_BROWSER_SURFACE_PATTERN.test(req.body.comment));
 
     if (hasNoBrowserSurface) return null;

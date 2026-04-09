@@ -213,13 +213,13 @@ docker exec paperclip-server-1 bash -c '
 ## Known CI / PR workflow gotchas
 
 - **CONFLICTING PRs silently block CI**: GitHub won't trigger `pull_request` workflows on a PR in `CONFLICTING` state. Always check `gh pr view <N> --json mergeable,mergeStateStatus` before wondering why CI hasn't run. Rebase to fix.
-- **ai-review/verdict is automated**: The `ai-review.yml` workflow runs on every PR (`opened`, `synchronize`, `reopened`). It sends the diff to MiniMax M2.7 via OpenRouter, produces a verdict (`PASS`, `PASS_WITH_NOTES`, `FAIL`, `HIGH_RISK`), and posts the `ai-review/verdict` GitHub status. The existing `merge-automation.yml` then auto-merges when all checks pass. Manual posting is only needed as a fallback if the workflow fails:
+- **ai-review/verdict is automated**: The `ai-review.yml` workflow runs on every PR (`opened`, `synchronize`, `reopened`). It sends the diff directly to MiniMax M2.7, produces a verdict (`PASS`, `PASS_WITH_NOTES`, `FAIL`, `HIGH_RISK`), and posts the `ai-review/verdict` GitHub status. The existing `merge-automation.yml` then auto-merges when all checks pass. Manual posting is only needed as a fallback if the workflow fails:
   ```bash
   gh api repos/Viraforge/paperclip/statuses/<SHA> \
     -X POST -f state=success -f context="ai-review/verdict" \
     -f description="PASS – ..." -f target_url="<PR URL>"
   ```
-  **Required secret**: `OPENROUTER_API_KEY` must be configured in GitHub Actions secrets.
+  **Required secret**: `MINIMAX_API_KEY` must be configured in GitHub Actions secrets.
 - **Deploy Vultr auto-triggers on push to master (2026-04-04)**: `deploy-vultr.yml` now triggers automatically when code is pushed to master (including auto-merges). Manual fallback still available:
   ```bash
   gh workflow run deploy-vultr.yml --repo Viraforge/paperclip --ref master
@@ -779,14 +779,14 @@ The `docker.yml` workflow previously built `linux/amd64,linux/arm64` — the ARM
 
 ## Automated AI review pipeline
 
-Every PR to `master` is automatically reviewed by MiniMax M2.7 via OpenRouter. The `ai-review.yml` workflow posts `ai-review/verdict` as a GitHub commit status, which the existing `merge-automation.yml` consumes for auto-merge decisions.
+Every PR to `master` is automatically reviewed by MiniMax M2.7 directly. The `ai-review.yml` workflow posts `ai-review/verdict` as a GitHub commit status, which the existing `merge-automation.yml` consumes for auto-merge decisions.
 
 ### Flow
 
 1. PR opened/updated → `ai-review.yml` triggers
 2. Posts `pending` status on head SHA immediately
 3. Fetches PR diff via `gh pr diff`
-4. Sends diff + metadata to MiniMax M2.7 via OpenRouter (`scripts/ai-review.mjs`)
+4. Sends diff + metadata directly to MiniMax M2.7 (`scripts/ai-review.mjs`)
 5. Parses structured verdict: `PASS`, `PASS_WITH_NOTES`, `FAIL`, or `HIGH_RISK`
 6. Posts `ai-review/verdict` status (`success`/`failure`/`error`)
 7. Posts PR comment with findings (only for non-PASS verdicts; cleans up old comments on re-push)
@@ -810,7 +810,7 @@ Diffs exceeding 100KB are truncated. If the original verdict would be `PASS`, it
 
 | Secret | Purpose |
 |--------|---------|
-| `OPENROUTER_API_KEY` | OpenRouter API key for MiniMax M2.7 inference |
+| `MINIMAX_API_KEY` | MiniMax API key for MiniMax M2.7 inference |
 
 ### Key files
 

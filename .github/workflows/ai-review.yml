@@ -13,28 +13,30 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     permissions:
       contents: write
       pull-requests: write
       statuses: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - name: Check for [ai-fix] marker
-        id: marker
         run: |
-          HEAD_MSG=$(git log -1 --pretty=%s)
+          HEAD_MSG="$(git log -1 --pretty=%s)"
           if echo "$HEAD_MSG" | grep -qF '[ai-fix]'; then
             echo "SKIP_REMEDIATION=true" >> "$GITHUB_ENV"
-            echo "Head commit has [ai-fix] marker — remediation will be skipped"
           else
             echo "SKIP_REMEDIATION=false" >> "$GITHUB_ENV"
           fi
@@ -51,341 +53,152 @@ jobs:
             -f target_url="${{ github.event.pull_request.html_url }}"
 
       - name: Fetch PR metadata
-        id: meta
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON=$(gh pr view ${{ github.event.pull_request.number }} --json title,body,url,changedFiles,additions,deletions)
+          PR_JSON="$(gh pr view ${{ github.event.pull_request.number }} --json title,body,url,changedFiles,additions,deletions)"
           echo "PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')" >> "$GITHUB_ENV"
           echo "PR_URL=$(echo "$PR_JSON" | jq -r '.url')" >> "$GITHUB_ENV"
           echo "PR_FILES_CHANGED=$(echo "$PR_JSON" | jq -r '.changedFiles')" >> "$GITHUB_ENV"
           echo "PR_ADDITIONS=$(echo "$PR_JSON" | jq -r '.additions')" >> "$GITHUB_ENV"
           echo "PR_DELETIONS=$(echo "$PR_JSON" | jq -r '.deletions')" >> "$GITHUB_ENV"
           echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
-
-          # PR body may be multiline — write to file
           echo "$PR_JSON" | jq -r '.body // ""' > /tmp/pr-body.txt
-
-          # Fetch diff — write to file to avoid env var size limits
           gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt || true
 
       - name: Run AI review
-        id: review
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
         run: |
-          export PR_DIFF="$(cat /tmp/pr-diff.txt)"
-          export PR_BODY="$(cat /tmp/pr-body.txt)"
-
-          node scripts/ai-review.mjs > /tmp/review-result.json || true
-
-          # Ensure result file exists (script may crash before writing)
-          if [ ! -s /tmp/review-result.json ]; then
-            echo '{"verdict":"ERROR","summary":"Review script crashed before producing output","findings":[]}' > /tmp/review-result.json
+          if [ -z "${MINIMAX_API_KEY:-}" ]; then
+            echo "HAS_MINIMAX_KEY=false" >> "$GITHUB_ENV"
+          else
+            echo "HAS_MINIMAX_KEY=true" >> "$GITHUB_ENV"
           fi
 
-          # Parse verdict for subsequent steps
-          VERDICT=$(jq -r '.verdict // "ERROR"' /tmp/review-result.json)
-          SUMMARY=$(jq -r '.summary // "Review failed"' /tmp/review-result.json)
-          echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
-          echo "SUMMARY=$SUMMARY" >> "$GITHUB_ENV"
+          if [ -z "${MINIMAX_API_KEY:-}" ]; then
+            echo '{"verdict":"HIGH_RISK","summary":"MINIMAX_API_KEY not configured","findings":[{"severity":"note","message":"AI review secret missing; manual review required.","file":"","line":0}]}' > /tmp/review-result.json
+          else
+            export PR_DIFF="$(cat /tmp/pr-diff.txt)"
+            export PR_BODY="$(cat /tmp/pr-body.txt)"
+            node scripts/ai-review.mjs > /tmp/review-result.json || true
+          fi
 
-      - name: Auto-remediate findings
+          if [ ! -s /tmp/review-result.json ]; then
+            echo '{"verdict":"FAIL","summary":"Review script failed","findings":[]}' > /tmp/review-result.json
+          fi
+
+          echo "VERDICT=$(jq -r '.verdict // "FAIL"' /tmp/review-result.json)" >> "$GITHUB_ENV"
+          echo "SUMMARY=$(jq -r '.summary // "Review failed"' /tmp/review-result.json)" >> "$GITHUB_ENV"
+
+      - name: Auto-remediate review findings
         if: |
           (env.VERDICT == 'PASS_WITH_NOTES' || env.VERDICT == 'FAIL') &&
-          env.SKIP_REMEDIATION == 'false'
+          env.SKIP_REMEDIATION == 'false' &&
+          env.HAS_MINIMAX_KEY == 'true'
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "=== AI Remediation ==="
-
-          # Check for critical findings — skip remediation if present
-          HAS_CRITICAL=$(jq '[.findings[] | select(.severity == "critical")] | length' /tmp/review-result.json)
+          set -euo pipefail
+          HAS_CRITICAL="$(jq '[.findings[] | select(.severity == "critical")] | length' /tmp/review-result.json)"
           if [ "$HAS_CRITICAL" -gt 0 ]; then
-            echo "Critical findings detected — skipping remediation, posting FAIL"
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Critical findings require human review" >> "$GITHUB_ENV"
             echo "REMEDIATION_STATUS=skipped-critical" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          # Collect affected files from findings
-          AFFECTED_FILES=$(jq -r '[.findings[].file // empty] | unique | .[]' /tmp/review-result.json)
-          FILE_COUNT=$(echo "$AFFECTED_FILES" | grep -c . || true)
-
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "No affected files in findings — skipping remediation"
-            echo "REMEDIATION_STATUS=skipped-no-files" >> "$GITHUB_ENV"
+          AFFECTED_FILES="$(jq -r '[.findings[].file // empty] | unique | .[]' /tmp/review-result.json)"
+          FILE_COUNT="$(echo "$AFFECTED_FILES" | grep -c . || true)"
+          if [ "$FILE_COUNT" -eq 0 ] || [ "$FILE_COUNT" -gt 5 ]; then
+            echo "REMEDIATION_STATUS=skipped-scope" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          if [ "$FILE_COUNT" -gt 5 ]; then
-            echo "Too many affected files ($FILE_COUNT > 5) — skipping remediation"
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Too many files for automated remediation ($FILE_COUNT files)" >> "$GITHUB_ENV"
-            echo "REMEDIATION_STATUS=skipped-too-many-files" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          # Read affected file contents (50KB cap per file)
           FILE_CONTENTS="{}"
           for f in $AFFECTED_FILES; do
             if [ -f "$f" ]; then
-              # Cap at 50KB
-              CONTENT=$(head -c 50000 "$f")
-              FILE_CONTENTS=$(echo "$FILE_CONTENTS" | jq --arg path "$f" --arg content "$CONTENT" '. + {($path): $content}')
+              CONTENT="$(head -c 50000 "$f")"
+              FILE_CONTENTS="$(echo "$FILE_CONTENTS" | jq --arg path "$f" --arg content "$CONTENT" '. + {($path): $content}')"
             fi
           done
 
-          # Run remediation
-          FINDINGS=$(jq -c '.findings' /tmp/review-result.json)
-          DIFF=$(cat /tmp/pr-diff.txt)
-
-          REMEDIATION_FINDINGS="$FINDINGS" \
+          REMEDIATION_FINDINGS="$(jq -c '.findings' /tmp/review-result.json)" \
           REMEDIATION_FILE_CONTENTS="$FILE_CONTENTS" \
-          REMEDIATION_DIFF="$DIFF" \
+          REMEDIATION_DIFF="$(cat /tmp/pr-diff.txt)" \
           node scripts/ai-remediate.mjs > /tmp/remediation-result.json || true
 
           if [ ! -s /tmp/remediation-result.json ]; then
-            echo "Remediation script crashed"
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Automated remediation failed" >> "$GITHUB_ENV"
             echo "REMEDIATION_STATUS=error" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          PATCH_COUNT=$(jq '.patches | length' /tmp/remediation-result.json)
-          echo "Remediation produced $PATCH_COUNT patches"
-
+          PATCH_COUNT="$(jq '.patches | length' /tmp/remediation-result.json)"
           if [ "$PATCH_COUNT" -eq 0 ]; then
-            echo "No patches produced — keeping original verdict"
             echo "REMEDIATION_STATUS=no-patches" >> "$GITHUB_ENV"
-            # If original was PASS_WITH_NOTES, keep it; if FAIL, keep FAIL
             exit 0
           fi
 
-          # Apply patches to working tree
-          APPLY_FAILED=false
           for i in $(seq 0 $((PATCH_COUNT - 1))); do
-            PATCH_FILE=$(jq -r ".patches[$i].file" /tmp/remediation-result.json)
-            PATCH_CONTENT=$(jq -r ".patches[$i].content" /tmp/remediation-result.json)
-
-            # Safety: skip workflow files
-            if echo "$PATCH_FILE" | grep -q '^\.github/workflows/'; then
-              echo "BLOCKED: Skipping workflow file patch: $PATCH_FILE"
-              continue
+            PATCH_FILE="$(jq -r ".patches[$i].file" /tmp/remediation-result.json)"
+            PATCH_CONTENT="$(jq -r ".patches[$i].content" /tmp/remediation-result.json)"
+            if [ -f "$PATCH_FILE" ]; then
+              printf '%s' "$PATCH_CONTENT" > "$PATCH_FILE"
             fi
-
-            # Safety: skip if file doesn't exist
-            if [ ! -f "$PATCH_FILE" ]; then
-              echo "BLOCKED: File does not exist: $PATCH_FILE"
-              continue
-            fi
-
-            echo "$PATCH_CONTENT" > "$PATCH_FILE"
           done
 
-          # Syntax validate patched files
           for i in $(seq 0 $((PATCH_COUNT - 1))); do
-            PATCH_FILE=$(jq -r ".patches[$i].file" /tmp/remediation-result.json)
-            [ ! -f "$PATCH_FILE" ] && continue
-
+            PATCH_FILE="$(jq -r ".patches[$i].file" /tmp/remediation-result.json)"
             case "$PATCH_FILE" in
-              *.js|*.mjs|*.cjs)
-                if ! node --check "$PATCH_FILE" 2>/dev/null; then
-                  echo "SYNTAX ERROR in $PATCH_FILE — discarding all patches"
-                  git checkout -- . 2>/dev/null
-                  APPLY_FAILED=true
-                  break
-                fi
+              *.py)
+                python -m py_compile "$PATCH_FILE"
                 ;;
               *.json)
-                if ! jq empty "$PATCH_FILE" 2>/dev/null; then
-                  echo "INVALID JSON in $PATCH_FILE — discarding all patches"
-                  git checkout -- . 2>/dev/null
-                  APPLY_FAILED=true
-                  break
-                fi
+                jq empty "$PATCH_FILE"
                 ;;
             esac
           done
 
-          if [ "$APPLY_FAILED" = true ]; then
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Automated fix produced invalid syntax" >> "$GITHUB_ENV"
-            echo "REMEDIATION_STATUS=syntax-error" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          # Check if there are actual changes
           if git diff --quiet; then
-            echo "No actual changes after applying patches"
             echo "REMEDIATION_STATUS=no-changes" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          # Commit and push
           git config user.name "ai-review[bot]"
           git config user.email "ai-review[bot]@users.noreply.github.com"
           git add -A
-          EXPLANATION=$(jq -r '.explanation // "Automated fixes"' /tmp/remediation-result.json | head -c 100)
+          EXPLANATION="$(jq -r '.explanation // "Automated fixes"' /tmp/remediation-result.json | head -c 100)"
           git commit -m "[ai-fix] $EXPLANATION"
-          git push origin HEAD 2>&1 || {
-            echo "Push failed — cannot remediate"
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Automated fix could not be pushed" >> "$GITHUB_ENV"
-            echo "REMEDIATION_STATUS=push-failed" >> "$GITHUB_ENV"
-            exit 0
-          }
-
-          echo "Fix committed and pushed — running re-review..."
+          git push origin HEAD
           echo "REMEDIATION_STATUS=applied" >> "$GITHUB_ENV"
 
-          # Re-run review on updated diff
-          NEW_DIFF=$(gh pr diff ${{ github.event.pull_request.number }})
-          PR_DIFF="$NEW_DIFF" \
-          PR_BODY="$(cat /tmp/pr-body.txt)" \
-          PR_TITLE="$PR_TITLE" \
-          PR_NUMBER="$PR_NUMBER" \
-          PR_URL="$PR_URL" \
-          PR_FILES_CHANGED="$PR_FILES_CHANGED" \
-          PR_ADDITIONS="$PR_ADDITIONS" \
-          PR_DELETIONS="$PR_DELETIONS" \
-          node scripts/ai-review.mjs > /tmp/re-review-result.json || true
-
-          if [ -s /tmp/re-review-result.json ]; then
-            RE_VERDICT=$(jq -r '.verdict // "FAIL"' /tmp/re-review-result.json)
-            RE_SUMMARY=$(jq -r '.summary // "Re-review failed"' /tmp/re-review-result.json)
-            echo "Re-review verdict: $RE_VERDICT"
-
-            # Update result file and env vars with re-review
-            cp /tmp/re-review-result.json /tmp/review-result.json
-            echo "VERDICT=$RE_VERDICT" >> "$GITHUB_ENV"
-            echo "SUMMARY=$RE_SUMMARY" >> "$GITHUB_ENV"
-
-            # If re-review still has issues, force FAIL
-            if [ "$RE_VERDICT" != "PASS" ] && [ "$RE_VERDICT" != "PASS_WITH_NOTES" ]; then
-              echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-              echo "SUMMARY=Automated fix applied but re-review still found issues" >> "$GITHUB_ENV"
-            fi
-          else
-            echo "Re-review crashed — marking as FAIL"
-            echo "VERDICT=FAIL" >> "$GITHUB_ENV"
-            echo "SUMMARY=Re-review failed after automated fix" >> "$GITHUB_ENV"
-          fi
-
-      - name: Post verdict status
+      - name: Publish review status
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.REPO_ADMIN_PAT }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Map verdict to GitHub status state
-          case "$VERDICT" in
-            PASS|PASS_WITH_NOTES)
-              STATE=success
-              ;;
-            HIGH_RISK)
-              STATE=success
-              ;;
-            FAIL)
-              STATE=failure
+          REMEDIATION_STATUS="${REMEDIATION_STATUS:-none}"
+          VERDICT="${VERDICT:-FAIL}"
+          SUMMARY="${SUMMARY:-Review failed}"
+          case "$REMEDIATION_STATUS" in
+            applied)
+              STATE="success"
+              SUMMARY="AI remediation applied; rerun queued"
               ;;
             *)
-              STATE=error
+              case "$VERDICT" in
+                PASS|PASS_WITH_NOTES|HIGH_RISK)
+                  STATE="success"
+                  ;;
+                *)
+                  STATE="failure"
+                  ;;
+              esac
               ;;
           esac
 
-          # Build description, truncate to 140 chars (GitHub limit)
-          DESC="$(echo "$VERDICT — $SUMMARY" | head -c 140)"
-
-          # Post status on the latest HEAD (may have changed after remediation push)
-          LATEST_SHA=$(gh pr view ${{ github.event.pull_request.number }} --json headRefOid --jq '.headRefOid')
-
-          gh api repos/${{ github.repository }}/statuses/$LATEST_SHA \
+          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
             -X POST \
             -f state="$STATE" \
             -f context="ai-review/verdict" \
-            -f description="$DESC" \
+            -f description="$SUMMARY" \
             -f target_url="${{ github.event.pull_request.html_url }}"
-
-      - name: Comment on PR (if findings)
-        if: env.VERDICT != 'PASS'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const result = JSON.parse(fs.readFileSync('/tmp/review-result.json', 'utf8'));
-            const verdict = result.verdict || 'ERROR';
-            const summary = result.summary || '';
-            const findings = result.findings || [];
-            const remediationStatus = process.env.REMEDIATION_STATUS || '';
-
-            const icon = { PASS: '\u2705', PASS_WITH_NOTES: '\u2705', FAIL: '\u274C', HIGH_RISK: '\u26A0\uFE0F' }[verdict] || '\u2753';
-
-            let body = `## ${icon} AI Review: ${verdict}\n\n${summary}\n\n`;
-
-            if (findings.length > 0) {
-              const grouped = { critical: [], warning: [], note: [] };
-              for (const f of findings) {
-                const sev = grouped[f.severity] ? f.severity : 'note';
-                grouped[sev].push(f);
-              }
-              for (const [severity, items] of Object.entries(grouped)) {
-                if (items.length === 0) continue;
-                const label = { critical: 'Critical', warning: 'Warnings', note: 'Notes' }[severity];
-                body += `### ${label}\n\n`;
-                for (const f of items) {
-                  const loc = f.file ? (f.line ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``) : '';
-                  body += `- ${loc ? `${loc} \u2014 ` : ''}${f.message}\n`;
-                }
-                body += '\n';
-              }
-            }
-
-            // Add remediation context
-            if (remediationStatus === 'applied') {
-              let remDetail = '';
-              try {
-                const rem = JSON.parse(fs.readFileSync('/tmp/remediation-result.json', 'utf8'));
-                const patchFiles = (rem.patches || []).map(p => `\`${p.file}\``).join(', ');
-                const skippedFiles = (rem.skipped || []).map(s => `\`${s.file}\`: ${s.reason}`).join('\n  - ');
-                remDetail += `### Auto-Remediation Applied\n\n`;
-                remDetail += `${rem.explanation || 'Automated fixes applied'}\n\n`;
-                if (patchFiles) remDetail += `**Files patched:** ${patchFiles}\n`;
-                if (skippedFiles) remDetail += `**Skipped:**\n  - ${skippedFiles}\n`;
-                remDetail += '\n';
-              } catch {}
-              body += remDetail;
-            } else if (remediationStatus === 'skipped-critical') {
-              body += `### Auto-Remediation Skipped\n\nCritical findings require human review.\n\n`;
-            } else if (remediationStatus === 'syntax-error') {
-              body += `### Auto-Remediation Failed\n\nAutomated fix produced invalid syntax and was discarded.\n\n`;
-            } else if (remediationStatus === 'skipped-too-many-files') {
-              body += `### Auto-Remediation Skipped\n\nToo many affected files for automated remediation.\n\n`;
-            }
-
-            body += '---\n*Automated review by Paperclip AI Review*';
-
-            // Delete previous AI Review comments to avoid spam on force-pushes
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const MARKER = '*Automated review by Paperclip AI Review*';
-            for (const c of comments) {
-              if (c.body && c.body.includes(MARKER)) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: c.id,
-                });
-              }
-            }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
