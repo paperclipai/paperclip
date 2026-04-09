@@ -92,7 +92,7 @@ function TeamSubMenu({
                 : "text-foreground/70 hover:bg-accent/50 hover:text-foreground",
             )
           }
-          style={{ paddingLeft: `${12 + depth * 14 + 24}px` }}
+          style={{ paddingLeft: `${12 + depth * 14 + 12}px` }}
         >
           <Icon className="h-4 w-4 shrink-0" />
           <span className="flex-1 truncate">{label}</span>
