@@ -13,6 +13,9 @@ import type {
   PluginEvent,
   PluginStateClient,
   PluginLogger,
+  PluginIssuesClient,
+  PluginAgentsClient,
+  PluginCompaniesClient,
 } from "@paperclipai/plugin-sdk";
 
 // ---------------------------------------------------------------------------
@@ -25,6 +28,12 @@ export interface TelemetryContext {
   tracer: Tracer;
   state: PluginStateClient;
   logger: PluginLogger;
+  /** Issues client — used to look up assigned issues for run context enrichment. */
+  issues: PluginIssuesClient;
+  /** Agents client — used to look up agent companyId for run context enrichment. */
+  agents: PluginAgentsClient;
+  /** Companies client — used to look up companyId for run context enrichment. */
+  companies: PluginCompaniesClient;
 
   /** OTel Logger for structured log export via OTLP. Null if logs are disabled. */
   otelLogger: Logger | null;
@@ -53,8 +62,11 @@ export interface TelemetryContext {
   /** agentId → active issue context (populated from run.started events). */
   agentIssueMap: Map<string, { issueId: string; issueIdentifier: string; projectId: string }>;
 
-  /** issueId → { projectId, identifier, title } (refreshed by collect-metrics job). */
-  issueContextMap: Map<string, { projectId: string; identifier: string; title: string }>;
+  /** issueId → { projectId, identifier, title, parentId } (refreshed by collect-metrics job). */
+  issueContextMap: Map<string, { projectId: string; identifier: string; title: string; parentId?: string }>;
+
+  /** agentId → active runId (populated on run.started, cleaned on run.finished/failed/cancelled). */
+  agentActiveRunId: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------

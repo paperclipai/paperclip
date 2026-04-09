@@ -120,8 +120,10 @@ const activeSessionSpans = new Map<string, Span>();
 const projectNameMap = new Map<string, string>();
 // agentId → active issue context (populated from run.started events)
 const agentIssueMap = new Map<string, { issueId: string; issueIdentifier: string; projectId: string }>();
-// issueId → { projectId, identifier, title } (refreshed by collect-metrics job)
-const issueContextMap = new Map<string, { projectId: string; identifier: string; title: string }>();
+// issueId → { projectId, identifier, title, parentId } (refreshed by collect-metrics job)
+const issueContextMap = new Map<string, { projectId: string; identifier: string; title: string; parentId?: string }>();
+// agentId → active runId (populated on run.started, cleaned on run.finished/failed/cancelled)
+const agentActiveRunId = new Map<string, string>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
@@ -301,18 +303,21 @@ const plugin: PaperclipPlugin = definePlugin({
           tracer: otel.tracer,
           state: ctx.state,
           logger: ctx.logger,
+          issues: ctx.issues,
+          companies: ctx.companies,
+          agents: ctx.agents,
           otelLogger: otel.otelLogger,
           activeRunSpans,
           activeIssueSpans,
           activeApprovalSpans,
           activeSessionSpans,
-          getTracerForAgent(agentId: string, agentName: string) {
-            if (!agentId || !otel) return otel!.tracer;
-            return otel!.agentTracers.getTracer(agentId, agentName);
+          getTracerForAgent(_agentId: string, _agentName: string) {
+            return otel!.tracer;
           },
           projectNameMap,
           agentIssueMap,
           issueContextMap,
+          agentActiveRunId,
         }
       : null;
 
@@ -602,11 +607,12 @@ const plugin: PaperclipPlugin = definePlugin({
               });
             }
 
-            // Build issue context map for cost attribution
+            // Build issue context map for cost attribution and delegation linking
             issueContextMap.set(issue.id, {
               projectId,
               identifier: issue.identifier ?? "",
               title: issue.title ?? "",
+              parentId: (issue as unknown as Record<string, unknown>).parentId as string | undefined,
             });
           }
         }
