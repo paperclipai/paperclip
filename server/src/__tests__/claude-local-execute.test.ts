@@ -14,6 +14,7 @@ const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[pro
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
+  home: process.env.HOME || null,
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
   appendedSystemPromptFilePath,
   appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
@@ -393,6 +394,233 @@ describe("claude execute", () => {
       expect(loggedEnv.HOME).toBe(root);
       expect(loggedEnv.CLAUDE_CONFIG_DIR).toBe(claudeConfigDir);
       expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses agent home as HOME and isolates Claude config during heartbeat runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-agent-home-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const capturePath = path.join(root, "capture.json");
+    const agentHome = path.join(root, "agent-home");
+    const sharedClaudeConfigDir = path.join(root, ".claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(sharedClaudeConfigDir, { recursive: true });
+    await fs.writeFile(path.join(sharedClaudeConfigDir, "credentials.json"), '{"token":"shared"}\n', "utf8");
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    delete process.env.CLAUDE_CONFIG_DIR;
+
+    try {
+      const result = await execute({
+        runId: "run-agent-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        home: string | null;
+        claudeConfigDir: string | null;
+      };
+      expect(capture.home).toBe(agentHome);
+      expect(capture.claudeConfigDir).toBe(path.join(agentHome, ".claude"));
+      expect((await fs.lstat(path.join(agentHome, ".claude", "credentials.json"))).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(path.join(agentHome, ".claude", "credentials.json"))).toBe(
+        await fs.realpath(path.join(sharedClaudeConfigDir, "credentials.json")),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an explicit relative CLAUDE_CONFIG_DIR resolved when agent home is present", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-explicit-config-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const capturePath = path.join(root, "capture.json");
+    const agentHome = path.join(root, "agent-home");
+    const explicitClaudeConfigDir = path.join(root, "custom-claude-config");
+    const relativeClaudeConfigDir = path.relative(process.cwd(), explicitClaudeConfigDir);
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(explicitClaudeConfigDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    delete process.env.CLAUDE_CONFIG_DIR;
+
+    try {
+      const result = await execute({
+        runId: "run-explicit-config",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: {
+            CLAUDE_CONFIG_DIR: relativeClaudeConfigDir,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        claudeConfigDir: string | null;
+      };
+      expect(capture.claudeConfigDir).toBe(path.resolve(relativeClaudeConfigDir));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces stale credential files in the managed Claude config dir with symlinks", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-managed-config-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const capturePath = path.join(root, "capture.json");
+    const agentHome = path.join(root, "agent-home");
+    const sharedClaudeConfigDir = path.join(root, ".claude");
+    const managedCredentialsPath = path.join(agentHome, ".claude", "credentials.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(path.dirname(managedCredentialsPath), { recursive: true });
+    await fs.mkdir(sharedClaudeConfigDir, { recursive: true });
+    await fs.writeFile(path.join(sharedClaudeConfigDir, "credentials.json"), '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(managedCredentialsPath, '{"token":"stale"}\n', "utf8");
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    delete process.env.CLAUDE_CONFIG_DIR;
+
+    try {
+      const result = await execute({
+        runId: "run-stale-credentials",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect((await fs.lstat(managedCredentialsPath)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(managedCredentialsPath)).toBe(
+        await fs.realpath(path.join(sharedClaudeConfigDir, "credentials.json")),
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
