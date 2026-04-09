@@ -4270,6 +4270,49 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  async function cancelQueuedRunsForIssueInternal(
+    issueId: string,
+    opts?: { agentId?: string; reason?: string },
+  ) {
+    const reason = opts?.reason ?? "Issue reassigned or closed";
+    // Cancel queued runs for this issue, optionally scoped to a specific agent.
+    // On reassignment we only cancel the OLD agent's runs — the new agent's
+    // runs must not be touched. On closure we cancel all agents' runs.
+    //
+    // We loop until no matching runs remain to handle a TOCTOU race:
+    // cancelRunInternal calls startNextQueuedRunForAgent which may promote
+    // another queued run for the same issue after our initial select.
+    const buildConditions = () => {
+      const conditions = [
+        eq(heartbeatRuns.status, "queued" as const),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+      ];
+      if (opts?.agentId) {
+        conditions.push(eq(heartbeatRuns.agentId, opts.agentId));
+      }
+      return conditions;
+    };
+
+    let totalCancelled = 0;
+    const seenRunIds = new Set<string>();
+    for (let iteration = 0; iteration < 10; iteration++) {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(...buildConditions()));
+
+      const freshRuns = runs.filter((r) => !seenRunIds.has(r.id));
+      if (freshRuns.length === 0) break;
+
+      for (const run of freshRuns) {
+        seenRunIds.add(run.id);
+        await cancelRunInternal(run.id, reason);
+        totalCancelled++;
+      }
+    }
+    return totalCancelled;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -4475,6 +4518,9 @@ export function heartbeatService(db: Db) {
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+
+    cancelQueuedRunsForIssue: (issueId: string, opts?: { agentId?: string; reason?: string }) =>
+      cancelQueuedRunsForIssueInternal(issueId, opts),
 
     cancelBudgetScopeWork,
 

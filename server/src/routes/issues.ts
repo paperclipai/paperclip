@@ -1301,6 +1301,26 @@ export function issueRoutes(
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
+    // Cancel orphaned queued/running runs when issue is reassigned or closed (#3168).
+    // Best-effort: failure is logged but does not block the issue update.
+    const wasReassigned =
+      req.body.assigneeAgentId !== undefined &&
+      req.body.assigneeAgentId !== existing.assigneeAgentId;
+    const wasClosed =
+      issue.status === "done" || issue.status === "cancelled";
+    if (wasReassigned || (wasClosed && existing.status !== "done" && existing.status !== "cancelled")) {
+      try {
+        // On reassignment, only cancel the OLD agent's queued runs — the new
+        // agent's runs must continue. On closure, cancel all agents' runs.
+        await heartbeat.cancelQueuedRunsForIssue(existing.id, {
+          agentId: wasReassigned && existing.assigneeAgentId ? existing.assigneeAgentId : undefined,
+          reason: wasReassigned ? "Issue reassigned to another agent" : "Issue closed",
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: existing.id }, "failed to cancel queued runs for issue");
+      }
+    }
+
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
