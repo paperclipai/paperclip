@@ -453,18 +453,40 @@ export function syncInstructionsBundleConfigFromFilePath(
 
 export function agentInstructionsService() {
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
-    if (!state.rootPath) return toBundle(agent, state, []);
+    const { bundle } = await getBundleWithSync(agent);
+    return bundle;
+  }
+
+  /**
+   * Returns the bundle plus an optional `adapterConfig` when the persisted
+   * config is out of sync with the recovered (disk-derived) state.
+   * The caller should persist `adapterConfig` when it is non-null.
+   */
+  async function getBundleWithSync(agent: AgentLike): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown> | null;
+  }> {
+    const derived = deriveBundleState(agent);
+    const state = await recoverManagedBundleState(agent, derived);
+    if (!state.rootPath) return { bundle: toBundle(agent, state, []), adapterConfig: null };
     const stat = await statIfExists(state.rootPath);
     if (!stat?.isDirectory()) {
-      return toBundle(agent, {
-        ...state,
-        warnings: [...state.warnings, `Instructions root does not exist: ${state.rootPath}`],
-      }, []);
+      return {
+        bundle: toBundle(agent, {
+          ...state,
+          warnings: [...state.warnings, `Instructions root does not exist: ${state.rootPath}`],
+        }, []),
+        adapterConfig: null,
+      };
     }
     const files = await listFilesRecursive(state.rootPath);
     const summaries = await Promise.all(files.map((relativePath) => readFileSummary(state.rootPath!, relativePath, state.entryFile)));
-    return toBundle(agent, state, summaries);
+    const bundle = toBundle(agent, state, summaries);
+
+    // Check if the persisted config needs syncing to the recovered state
+    const syncedConfig = buildPersistedBundleConfig(derived, state);
+    const configChanged = syncedConfig !== derived.config;
+    return { bundle, adapterConfig: configChanged ? syncedConfig : null };
   }
 
   async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
@@ -724,6 +746,7 @@ export function agentInstructionsService() {
 
   return {
     getBundle,
+    getBundleWithSync,
     readFile,
     updateBundle,
     writeFile,

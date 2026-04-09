@@ -1646,7 +1646,12 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanReadAgent(req, existing);
-    res.json(await instructions.getBundle(existing));
+    const { bundle, adapterConfig } = await instructions.getBundleWithSync(existing);
+    if (adapterConfig) {
+      // Auto-persist recovered bundle config so recovery doesn't repeat
+      await svc.update(id, { adapterConfig });
+    }
+    res.json(bundle);
   });
 
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
