@@ -279,7 +279,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
   );
 }
 
-function CommentCard({
+const CommentCard = memo(function CommentCard({
   comment,
   agentMap,
   companyId,
@@ -300,6 +300,7 @@ function CommentCard({
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
   onVote?: (
+    commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
@@ -309,6 +310,10 @@ function CommentCard({
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
+  const handleVote = useMemo(
+    () => onVote ? (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => onVote(comment.id, vote, options) : undefined,
+    [onVote, comment.id],
+  );
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
 
   return (
@@ -388,13 +393,13 @@ function CommentCard({
           />
         </div>
       ) : null}
-      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+      {comment.authorAgentId && handleVote && !isQueued && !isPending ? (
         <OutputFeedbackButtons
           activeVote={feedbackVote}
           disabled={voting}
           sharingPreference={feedbackDataSharingPreference}
           termsUrl={feedbackTermsUrl}
-          onVote={onVote}
+          onVote={handleVote}
           rightSlot={comment.runId && !isPending ? (
             comment.runAgentId ? (
               <Link
@@ -411,7 +416,7 @@ function CommentCard({
           ) : undefined}
         />
       ) : null}
-      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+      {comment.runId && !isPending && !(comment.authorAgentId && handleVote && !isQueued) ? (
         <div className="mt-3 pt-3 border-t border-border/60">
           {comment.runAgentId ? (
             <Link
@@ -429,7 +434,7 @@ function CommentCard({
       ) : null}
     </div>
   );
-}
+});
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
@@ -621,7 +626,7 @@ const TimelineList = memo(function TimelineList({
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={feedbackTermsUrl}
-            onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
+            onVote={onVote}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
           />
