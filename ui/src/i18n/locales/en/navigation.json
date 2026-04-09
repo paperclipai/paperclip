@@ -6,6 +6,8 @@
     "inbox": "Inbox",
     "issues": "Issues",
     "goals": "Goals",
+    "routines": "Routines",
+    "skills": "Skills",
     "org": "Org",
     "costs": "Costs",
     "activity": "Activity",
@@ -14,10 +16,12 @@
     "agents": "Agents",
     "work": "Work",
     "company": "Company",
+    "general": "General",
     "experimental": "Experimental",
     "instanceSettings": "Instance Settings",
     "heartbeats": "Heartbeats",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "adapters": "Adapters"
   },
   "commandPalette": {
     "searchPlaceholder": "Search issues, agents, projects...",

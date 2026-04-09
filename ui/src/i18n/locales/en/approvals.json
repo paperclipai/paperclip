@@ -36,10 +36,14 @@
     "board": "Board"
   },
   "card": {
-    "requestedBy": "requested by",
+    "requestedBy": "Requested by",
+    "createdAt": "Approval request created {{time}}",
+    "decisionNoteLabel": "Decision note.",
     "viewDetails": "View details",
     "approve": "Approve",
+    "approving": "Approving...",
     "reject": "Reject",
+    "rejecting": "Rejecting...",
     "note": "Note: {{note}}"
   }
 }

@@ -1,8 +1,4 @@
-import {
-  redactHomePathUserSegments,
-  redactHomePathUserSegmentsInValue,
-  type TranscriptEntry,
-} from "@paperclipai/adapter-utils";
+import { type TranscriptEntry } from "@paperclipai/adapter-utils";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -43,12 +39,12 @@ function errorText(value: unknown): string {
 }
 
 function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return redactHomePathUserSegments(value);
+  if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
   try {
-    return JSON.stringify(redactHomePathUserSegmentsInValue(value), null, 2);
+    return JSON.stringify(value, null, 2);
   } catch {
-    return redactHomePathUserSegments(String(value));
+    return String(value);
   }
 }
 
@@ -61,8 +57,8 @@ function parseCommandExecutionItem(
   const command = asString(item.command);
   const status = asString(item.status);
   const exitCode = typeof item.exit_code === "number" && Number.isFinite(item.exit_code) ? item.exit_code : null;
-  const safeCommand = redactHomePathUserSegments(command);
-  const output = redactHomePathUserSegments(asString(item.aggregated_output)).replace(/\s+$/, "");
+  const safeCommand = command;
+  const output = asString(item.aggregated_output).replace(/\s+$/, "");
 
   if (phase === "started") {
     return [{
@@ -109,7 +105,7 @@ function parseFileChangeItem(item: Record<string, unknown>, ts: string): Transcr
     .filter((change): change is Record<string, unknown> => Boolean(change))
     .map((change) => {
       const kind = asString(change.kind, "update");
-      const path = redactHomePathUserSegments(asString(change.path, "unknown"));
+      const path = asString(change.path, "unknown");
       return `${kind} ${path}`;
     });
 
@@ -131,13 +127,13 @@ function parseCodexItem(
 
   if (itemType === "agent_message") {
     const text = asString(item.text);
-    if (text) return [{ kind: "assistant", ts, text: redactHomePathUserSegments(text) }];
+    if (text) return [{ kind: "assistant", ts, text }];
     return [];
   }
 
   if (itemType === "reasoning") {
     const text = asString(item.text);
-    if (text) return [{ kind: "thinking", ts, text: redactHomePathUserSegments(text) }];
+    if (text) return [{ kind: "thinking", ts, text }];
     return [{ kind: "system", ts, text: phase === "started" ? "reasoning started" : "reasoning completed" }];
   }
 
@@ -153,9 +149,9 @@ function parseCodexItem(
     return [{
       kind: "tool_call",
       ts,
-      name: redactHomePathUserSegments(asString(item.name, "unknown")),
+      name: asString(item.name, "unknown"),
       toolUseId: asString(item.id),
-      input: redactHomePathUserSegmentsInValue(item.input ?? {}),
+      input: item.input ?? {},
     }];
   }
 
@@ -167,12 +163,12 @@ function parseCodexItem(
       asString(item.result) ||
       stringifyUnknown(item.content ?? item.output ?? item.result);
     const isError = item.is_error === true || asString(item.status) === "error";
-    return [{ kind: "tool_result", ts, toolUseId, content: redactHomePathUserSegments(content), isError }];
+    return [{ kind: "tool_result", ts, toolUseId, content, isError }];
   }
 
   if (itemType === "error" && phase === "completed") {
     const text = errorText(item.message ?? item.error ?? item);
-    return [{ kind: "stderr", ts, text: redactHomePathUserSegments(text || "error") }];
+    return [{ kind: "stderr", ts, text: text || "error" }];
   }
 
   const id = asString(item.id);
@@ -181,14 +177,14 @@ function parseCodexItem(
   return [{
     kind: "system",
     ts,
-    text: redactHomePathUserSegments(`item ${phase}: ${itemType || "unknown"}${meta ? ` (${meta})` : ""}`),
+    text: `item ${phase}: ${itemType || "unknown"}${meta ? ` (${meta})` : ""}`,
   }];
 }
 
 export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[] {
   const parsed = asRecord(safeJsonParse(line));
   if (!parsed) {
-    return [{ kind: "stdout", ts, text: redactHomePathUserSegments(line) }];
+    return [{ kind: "stdout", ts, text: line }];
   }
 
   const type = asString(parsed.type);
@@ -198,8 +194,8 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "init",
       ts,
-      model: redactHomePathUserSegments(asString(parsed.model, "codex")),
-      sessionId: redactHomePathUserSegments(threadId),
+      model: asString(parsed.model, "codex"),
+      sessionId: threadId,
     }];
   }
 
@@ -221,15 +217,15 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "result",
       ts,
-      text: redactHomePathUserSegments(asString(parsed.result)),
+      text: asString(parsed.result),
       inputTokens,
       outputTokens,
       cachedTokens,
       costUsd: asNumber(parsed.total_cost_usd),
-      subtype: redactHomePathUserSegments(asString(parsed.subtype)),
+      subtype: asString(parsed.subtype),
       isError: parsed.is_error === true,
       errors: Array.isArray(parsed.errors)
-        ? parsed.errors.map(errorText).map(redactHomePathUserSegments).filter(Boolean)
+        ? parsed.errors.map(errorText).filter(Boolean)
         : [],
     }];
   }
@@ -243,21 +239,21 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "result",
       ts,
-      text: redactHomePathUserSegments(asString(parsed.result)),
+      text: asString(parsed.result),
       inputTokens,
       outputTokens,
       cachedTokens,
       costUsd: asNumber(parsed.total_cost_usd),
-      subtype: redactHomePathUserSegments(asString(parsed.subtype, "turn.failed")),
+      subtype: asString(parsed.subtype, "turn.failed"),
       isError: true,
-      errors: message ? [redactHomePathUserSegments(message)] : [],
+      errors: message ? [message] : [],
     }];
   }
 
   if (type === "error") {
     const message = errorText(parsed.message ?? parsed.error ?? parsed);
-    return [{ kind: "stderr", ts, text: redactHomePathUserSegments(message || line) }];
+    return [{ kind: "stderr", ts, text: message || line }];
   }
 
-  return [{ kind: "stdout", ts, text: redactHomePathUserSegments(line) }];
+  return [{ kind: "stdout", ts, text: line }];
 }

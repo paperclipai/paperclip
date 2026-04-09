@@ -1,4 +1,12 @@
-export { getUIAdapter } from "./registry";
+export {
+  getUIAdapter,
+  listUIAdapters,
+  findUIAdapter,
+  registerUIAdapter,
+  unregisterUIAdapter,
+  syncExternalAdapters,
+  onAdapterChange,
+} from "./registry";
 export { buildTranscript } from "./transcript";
 export type {
   TranscriptEntry,

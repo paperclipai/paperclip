@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { patchInstanceExperimentalSettingsSchema } from "@paperclipai/shared";
+import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
@@ -20,8 +20,51 @@ export function instanceSettingsRoutes(db: Db) {
   const router = Router();
   const svc = instanceSettingsService(db);
 
+  router.get("/instance/settings/general", async (req, res) => {
+    // General settings (e.g. keyboardShortcuts) are readable by any
+    // authenticated board user.  Only PATCH requires instance-admin.
+    if (req.actor.type !== "board") {
+      throw forbidden("Board access required");
+    }
+    res.json(await svc.getGeneral());
+  });
+
+  router.patch(
+    "/instance/settings/general",
+    validate(patchInstanceGeneralSettingsSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const updated = await svc.updateGeneral(req.body);
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.general_updated",
+            entityType: "instance_settings",
+            entityId: updated.id,
+            details: {
+              general: updated.general,
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json(updated.general);
+    },
+  );
+
   router.get("/instance/settings/experimental", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    // Experimental settings are readable by any authenticated board user.
+    // Only PATCH requires instance-admin.
+    if (req.actor.type !== "board") {
+      throw forbidden("Board access required");
+    }
     res.json(await svc.getExperimental());
   });
 

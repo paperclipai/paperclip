@@ -1,8 +1,10 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
-import { instanceUserRoles, invites } from "@paperclipai/db";
+import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
 export function healthRoutes(
@@ -24,6 +26,17 @@ export function healthRoutes(
   router.get("/", async (_req, res) => {
     if (!db) {
       res.json({ status: "ok", version: serverVersion });
+      return;
+    }
+
+    try {
+      await db.execute(sql`SELECT 1`);
+    } catch {
+      res.status(503).json({
+        status: "unhealthy",
+        version: serverVersion,
+        error: "database_unreachable",
+      });
       return;
     }
 
@@ -55,6 +68,23 @@ export function healthRoutes(
       }
     }
 
+    const persistedDevServerStatus = readPersistedDevServerStatus();
+    let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
+    if (persistedDevServerStatus) {
+      const instanceSettings = instanceSettingsService(db);
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const activeRunCount = await db
+        .select({ count: count() })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      devServer = toDevServerHealthStatus(persistedDevServerStatus, {
+        autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
+        activeRunCount,
+      });
+    }
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -66,6 +96,7 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      ...(devServer ? { devServer } : {}),
     });
   });
 

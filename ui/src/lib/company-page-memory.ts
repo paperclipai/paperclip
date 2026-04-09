@@ -4,7 +4,7 @@ import {
   toCompanyRelativePath,
 } from "./company-routes";
 
-const GLOBAL_SEGMENTS = new Set(["auth", "invite", "board-claim", "docs"]);
+const GLOBAL_SEGMENTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs"]);
 
 export function isRememberableCompanyPath(path: string): boolean {
   const pathname = path.split("?")[0] ?? "";

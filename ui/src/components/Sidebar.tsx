@@ -8,6 +8,8 @@ import {
   Search,
   SquarePen,
   Network,
+  Boxes,
+  Repeat,
   Settings,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -99,6 +101,7 @@ export function Sidebar() {
 
         <SidebarSection label={t("sidebar.work")}>
           <SidebarNavItem to="/issues" label={t("sidebar.issues")} icon={CircleDot} />
+          <SidebarNavItem to="/routines" label={t("sidebar.routines")} icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
           <SidebarNavItem to="/goals" label={t("sidebar.goals")} icon={Target} />
         </SidebarSection>
 
@@ -108,6 +111,7 @@ export function Sidebar() {
 
         <SidebarSection label={t("sidebar.company")}>
           <SidebarNavItem to="/org" label={t("sidebar.org")} icon={Network} />
+          <SidebarNavItem to="/skills" label={t("sidebar.skills")} icon={Boxes} />
           <SidebarNavItem to="/costs" label={t("sidebar.costs")} icon={DollarSign} />
           <SidebarNavItem to="/activity" label={t("sidebar.activity")} icon={History} />
           <SidebarNavItem to="/company/settings" label={t("sidebar.settings")} icon={Settings} />

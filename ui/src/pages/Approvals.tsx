@@ -125,6 +125,9 @@ export function Approvals() {
               onReject={() => rejectMutation.mutate(approval.id)}
               detailLink={`/approvals/${approval.id}`}
               isPending={approveMutation.isPending || rejectMutation.isPending}
+              pendingAction={
+                approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null
+              }
             />
           ))}
         </div>

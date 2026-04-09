@@ -2,14 +2,23 @@
   "title": "Inbox",
   "selectCompany": "Select a company to view inbox.",
   "tabs": {
+    "mine": "Mine",
     "recent": "Recent",
     "unread": "Unread",
     "all": "All"
   },
   "empty": {
+    "inboxZero": "Inbox zero.",
+    "noSearch": "No inbox items match your search.",
     "noUnread": "No new inbox items.",
     "noRecent": "No recent inbox items.",
     "noMatch": "No inbox items match these filters."
+  },
+  "markAllRead": {
+    "title": "Mark all as read?",
+    "description": "This will mark {{count}} unread {{items}} as read.",
+    "item": "item",
+    "items": "items"
   },
   "categories": {
     "allCategories": "All categories",

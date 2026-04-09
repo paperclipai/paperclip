@@ -7,6 +7,12 @@ function readNumericField(record: Record<string, unknown>, key: string) {
   return key in record ? record[key] ?? null : undefined;
 }
 
+function readCommentText(value: unknown) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function summarizeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -32,4 +38,19 @@ export function summarizeHeartbeatRunResultJson(
   }
 
   return Object.keys(summary).length > 0 ? summary : null;
+}
+
+export function buildHeartbeatRunIssueComment(
+  resultJson: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
+    return null;
+  }
+
+  return (
+    readCommentText(resultJson.summary)
+    ?? readCommentText(resultJson.result)
+    ?? readCommentText(resultJson.message)
+    ?? null
+  );
 }

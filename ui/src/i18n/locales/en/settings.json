@@ -5,8 +5,27 @@
     "general": "General",
     "appearance": "Appearance",
     "hiring": "Hiring",
+    "feedbackSharing": "Feedback Sharing",
     "invites": "Invites",
+    "companyPackages": "Company Packages",
     "dangerZone": "Danger Zone"
+  },
+  "feedbackSharing": {
+    "toggleLabel": "Allow sharing voted AI outputs with Paperclip Labs",
+    "toggleHint": "Only AI-generated outputs you explicitly vote on are eligible for feedback sharing.",
+    "description": "Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.",
+    "termsVersion": "Terms version: {{version}}",
+    "enabledAt": "Enabled {{date}}",
+    "currentlyDisabled": "Sharing is currently disabled.",
+    "tosLink": "Read our terms of service",
+    "enabledToast": "Feedback sharing enabled",
+    "disabledToast": "Feedback sharing disabled",
+    "failedToast": "Failed to update feedback sharing"
+  },
+  "companyPackages": {
+    "description": "Import and export have moved to dedicated pages accessible from the Org Chart header.",
+    "export": "Export",
+    "import": "Import"
   },
   "general": {
     "companyName": "Company name",
@@ -85,7 +104,10 @@
     "never": "never",
     "fullAgentConfig": "Full agent config",
     "disableTimerHeartbeat": "Disable Timer Heartbeat",
-    "enableTimerHeartbeat": "Enable Timer Heartbeat"
+    "enableTimerHeartbeat": "Enable Timer Heartbeat",
+    "disableAll": "Disable All",
+    "disabling": "Disabling…",
+    "disableAllConfirm": "Disable timer heartbeats for all {{count}} enabled agents?"
   },
   "executionWorkspaceDetail": {
     "subtitle": "Execution workspace",
@@ -115,9 +137,14 @@
     "description": "Opt into features that are still being evaluated before they become default behavior.",
     "updateError": "Failed to update experimental settings.",
     "isolatedWorkspaces": {
-      "title": "Enabled Isolated Workspaces",
+      "title": "Enable Isolated Workspaces",
       "description": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.",
       "ariaLabel": "Toggle isolated workspaces experimental setting"
+    },
+    "autoRestartDevServer": {
+      "title": "Auto-Restart Dev Server When Idle",
+      "description": "In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale.",
+      "ariaLabel": "Toggle guarded dev-server auto-restart"
     }
   }
 }

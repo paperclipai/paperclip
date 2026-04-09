@@ -1,7 +1,19 @@
 import { redactHomePathUserSegments, redactTranscriptEntryPaths } from "@paperclipai/adapter-utils";
-import type { TranscriptEntry, StdoutLineParser } from "./types";
+import type { TranscriptEntry, StdoutLineParser, TranscriptParserSource } from "./types";
 
 export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
+type TranscriptBuildOptions = { censorUsernameInLogs?: boolean };
+
+function resolveStdoutParser(source: StdoutLineParser | TranscriptParserSource) {
+  if (typeof source === "function") {
+    return { parseLine: source, reset: null as (() => void) | null };
+  }
+  if (source.createStdoutParser) {
+    const parser = source.createStdoutParser();
+    return { parseLine: parser.parseLine, reset: parser.reset };
+  }
+  return { parseLine: source.parseStdoutLine, reset: null as (() => void) | null };
+}
 
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
   if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
@@ -21,17 +33,23 @@ export function appendTranscriptEntries(entries: TranscriptEntry[], incoming: Tr
   }
 }
 
-export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser): TranscriptEntry[] {
+export function buildTranscript(
+  chunks: RunLogChunk[],
+  parserSource: StdoutLineParser | TranscriptParserSource,
+  opts?: TranscriptBuildOptions,
+): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   let stdoutBuffer = "";
+  const redactionOptions = { enabled: opts?.censorUsernameInLogs ?? false };
+  const { parseLine, reset } = resolveStdoutParser(parserSource);
 
   for (const chunk of chunks) {
     if (chunk.stream === "stderr") {
-      entries.push({ kind: "stderr", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk) });
+      entries.push({ kind: "stderr", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk, redactionOptions) });
       continue;
     }
     if (chunk.stream === "system") {
-      entries.push({ kind: "system", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk) });
+      entries.push({ kind: "system", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk, redactionOptions) });
       continue;
     }
 
@@ -41,15 +59,17 @@ export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser)
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      appendTranscriptEntries(entries, parser(trimmed, chunk.ts).map(redactTranscriptEntryPaths));
+      appendTranscriptEntries(entries, parseLine(trimmed, chunk.ts).map((entry) => redactTranscriptEntryPaths(entry, redactionOptions)));
     }
   }
 
   const trailing = stdoutBuffer.trim();
   if (trailing) {
     const ts = chunks.length > 0 ? chunks[chunks.length - 1]!.ts : new Date().toISOString();
-    appendTranscriptEntries(entries, parser(trailing, ts).map(redactTranscriptEntryPaths));
+    appendTranscriptEntries(entries, parseLine(trailing, ts).map((entry) => redactTranscriptEntryPaths(entry, redactionOptions)));
   }
+
+  reset?.();
 
   return entries;
 }

@@ -8,6 +8,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 
@@ -34,8 +35,13 @@ export interface LogActivityInput {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
+  const currentUserRedactionOptions = {
+    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+  };
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  const redactedDetails = sanitizedDetails ? redactCurrentUserValue(sanitizedDetails) : null;
+  const redactedDetails = sanitizedDetails
+    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
+    : null;
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,

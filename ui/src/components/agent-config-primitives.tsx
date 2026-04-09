@@ -4,6 +4,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Dialog,
   DialogContent,
@@ -25,12 +26,12 @@ export const help: Record<string, string> = {
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
   adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Default working directory fallback for local adapters. Use an absolute path on the machine running Paperclip.",
+  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
   promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
   model: "Override the default model used by the adapter.",
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
   chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run Claude without permission prompts. Required for unattended operation.",
+  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
   workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
@@ -57,16 +58,9 @@ export const help: Record<string, string> = {
   budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
 };
 
-export const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabels } from "../adapters/adapter-display-registry";
+
+export const adapterLabels = getAdapterLabels();
 
 export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -104,11 +98,13 @@ export function ToggleField({
   hint,
   checked,
   onChange,
+  toggleTestId,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  toggleTestId?: string;
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -116,20 +112,11 @@ export function ToggleField({
         <span className="text-xs text-muted-foreground">{label}</span>
         {hint && <HintIcon text={hint} />}
       </div>
-      <button
-        className={cn(
-          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
-        )}
-        onClick={() => onChange(!checked)}
-      >
-        <span
-          className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-            checked ? "translate-x-4.5" : "translate-x-0.5"
-          )}
-        />
-      </button>
+      <ToggleSwitch
+        checked={checked}
+        onCheckedChange={onChange}
+        data-testid={toggleTestId}
+      />
     </div>
   );
 }
@@ -164,20 +151,10 @@ export function ToggleWithNumber({
           <span className="text-xs text-muted-foreground">{label}</span>
           {hint && <HintIcon text={hint} />}
         </div>
-        <button
-          className={cn(
-            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
-            checked ? "bg-green-600" : "bg-muted"
-          )}
-          onClick={() => onCheckedChange(!checked)}
-        >
-          <span
-            className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-              checked ? "translate-x-4.5" : "translate-x-0.5"
-            )}
-          />
-        </button>
+        <ToggleSwitch
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
       </div>
       {showNumber && (
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

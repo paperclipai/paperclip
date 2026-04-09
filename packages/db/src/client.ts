@@ -670,7 +670,18 @@ export async function applyPendingMigrations(url: string): Promise<void> {
       await sql.end();
     }
 
-    const bootstrappedState = await inspectMigrations(url);
+    let bootstrappedState = await inspectMigrations(url);
+    if (bootstrappedState.status === "upToDate") return;
+    if (bootstrappedState.reason === "pending-migrations") {
+      const repair = await reconcilePendingMigrationHistory(url);
+      if (repair.repairedMigrations.length > 0) {
+        bootstrappedState = await inspectMigrations(url);
+      }
+      if (bootstrappedState.status === "needsMigrations" && bootstrappedState.reason === "pending-migrations") {
+        await applyPendingMigrationsManually(url, bootstrappedState.pendingMigrations);
+        bootstrappedState = await inspectMigrations(url);
+      }
+    }
     if (bootstrappedState.status === "upToDate") return;
     throw new Error(
       `Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`,

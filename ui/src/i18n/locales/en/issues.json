@@ -35,7 +35,8 @@
       "activity": "Activity",
       "documents": "Documents",
       "comments": "Comments",
-      "subissues": "Sub-issues"
+      "subissues": "Sub-issues",
+      "chat": "Chat"
     },
     "loading": "Loading\u2026",
     "copyAsMarkdown": "Copy issue as markdown",
@@ -48,6 +49,7 @@
     "noProject": "No project",
     "attachments": "Attachments",
     "uploadAttachment": "Upload attachment",
+    "upload": "Upload",
     "uploading": "Uploading\u2026",
     "linkedApprovals": "Linked Approvals ({{count}})",
     "costSummary": "Cost Summary",
@@ -59,6 +61,7 @@
   },
   "newIssueDialog": {
     "title": "New Issue",
+    "titleSubIssue": "New sub-issue",
     "titlePlaceholder": "Issue title",
     "descriptionPlaceholder": "Add a description...",
     "descriptionEditorPlaceholder": "Add description...",
@@ -103,6 +106,7 @@
     "discardDraft": "Discard Draft",
     "creating": "Creating issue\u2026",
     "createIssue": "Create Issue",
+    "createSubIssue": "Create Sub-Issue",
     "creatingLabel": "Creating\u2026"
   },
   "list": {
@@ -157,6 +161,23 @@
     "branchLabel": "Branch:",
     "repoLabel": "Repo:",
     "copied": "Copied!",
-    "copyToClipboard": "Copy to clipboard"
+    "copyToClipboard": "Copy to clipboard",
+    "blockedBy": "Blocked by",
+    "blocking": "Blocking",
+    "noBlockers": "No blockers",
+    "searchIssues": "Search issues...",
+    "subIssues": "Sub-issues",
+    "addSubIssue": "Add sub-issue",
+    "none": "None",
+    "reviewers": "Reviewers",
+    "approvers": "Approvers",
+    "noReviewers": "No reviewers",
+    "noApprovers": "No approvers",
+    "searchReviewers": "Search reviewers...",
+    "searchApprovers": "Search approvers...",
+    "requester": "Requester",
+    "execution": "Execution",
+    "branch": "Branch",
+    "folder": "Folder"
   }
 }

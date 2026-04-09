@@ -13,18 +13,9 @@ import { useTranslation } from "react-i18next";
 type JoinType = "human" | "agent";
 const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor"]);
+const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -69,6 +60,7 @@ export function InviteLandingPage() {
   });
 
   const invite = inviteQuery.data;
+  const companyName = invite?.companyName?.trim() || null;
   const allowedJoinTypes = invite?.allowedJoinTypes ?? "both";
   const availableJoinTypes = useMemo(() => {
     if (invite?.inviteType === "bootstrap_ceo") return ["human"] as JoinType[];
@@ -227,9 +219,18 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo" ? t("invite.bootstrapTitle") : t("invite.joinTitle")}
+          {invite.inviteType === "bootstrap_ceo"
+            ? t("invite.bootstrapTitle")
+            : companyName
+              ? t("invite.joinTitleCompany", { company: companyName })
+              : t("invite.joinTitle")}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">{t("invite.inviteExpires", { dateTime: dateTime(invite.expiresAt) })}</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {invite.inviteType !== "bootstrap_ceo" && companyName
+            ? t("invite.invitedToJoin", { company: companyName })
+            : null}
+          {t("invite.inviteExpires", { dateTime: dateTime(invite.expiresAt) })}
+        </p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-5 flex gap-2">
@@ -269,7 +270,7 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? t("invite.comingSoon") : ""}
+                    {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? t("invite.comingSoon") : ""}
                   </option>
                 ))}
               </select>

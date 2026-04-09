@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
 import {
   DndContext,
-  PointerSensor,
+  MouseSensor,
   closestCenter,
   type DragEndEvent,
   useSensor,
@@ -153,7 +153,8 @@ export function SidebarProjects() {
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    // Project reordering is intentionally desktop-only; touch should remain tap/scroll behavior.
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     }),
   );

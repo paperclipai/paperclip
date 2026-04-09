@@ -1,11 +1,12 @@
-import { useState, type ComponentType } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useTranslation } from "react-i18next";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
-import { queryKeys } from "../lib/queryKeys";
+import { adaptersApi } from "../api/adapters";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
   DialogContent,
@@ -14,23 +15,21 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowLeft,
   Bot,
-  Code,
-  Gem,
-  MousePointer2,
-  Sparkles,
-  Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { listUIAdapters } from "../adapters";
+import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
-type AdvancedAdapterType =
-  | "claude_local"
-  | "codex_local"
-  | "gemini_local"
-  | "opencode_local"
-  | "pi_local"
-  | "cursor"
-  | "openclaw_gateway";
+/**
+ * Adapter types that are suitable for agent creation (excludes internal
+ * system adapters like "process" and "http").
+ */
+const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+
+function isAgentAdapterType(type: string): boolean {
+  return !SYSTEM_ADAPTER_TYPES.has(type);
+}
 
 export function NewAgentDialog() {
   const { t } = useTranslation("agents");
@@ -38,60 +37,16 @@ export function NewAgentDialog() {
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const [showAdvancedCards, setShowAdvancedCards] = useState(false);
+  const disabledTypes = useDisabledAdaptersSync();
 
-  const ADVANCED_ADAPTER_OPTIONS: Array<{
-    value: AdvancedAdapterType;
-    label: string;
-    desc: string;
-    icon: ComponentType<{ className?: string }>;
-    recommended?: boolean;
-  }> = [
-    {
-      value: "claude_local",
-      label: t("newAgentDialog.adapterOptions.claudeCode"),
-      icon: Sparkles,
-      desc: t("newAgentDialog.adapterOptions.claudeCodeDesc"),
-      recommended: true,
-    },
-    {
-      value: "codex_local",
-      label: t("newAgentDialog.adapterOptions.codex"),
-      icon: Code,
-      desc: t("newAgentDialog.adapterOptions.codexDesc"),
-      recommended: true,
-    },
-    {
-      value: "gemini_local",
-      label: t("newAgentDialog.adapterOptions.geminiCli"),
-      icon: Gem,
-      desc: t("newAgentDialog.adapterOptions.geminiCliDesc"),
-    },
-    {
-      value: "opencode_local",
-      label: t("newAgentDialog.adapterOptions.openCode"),
-      icon: OpenCodeLogoIcon,
-      desc: t("newAgentDialog.adapterOptions.openCodeDesc"),
-    },
-    {
-      value: "pi_local",
-      label: t("newAgentDialog.adapterOptions.pi"),
-      icon: Terminal,
-      desc: t("newAgentDialog.adapterOptions.piDesc"),
-    },
-    {
-      value: "cursor",
-      label: t("newAgentDialog.adapterOptions.cursor"),
-      icon: MousePointer2,
-      desc: t("newAgentDialog.adapterOptions.cursorDesc"),
-    },
-    {
-      value: "openclaw_gateway",
-      label: t("newAgentDialog.adapterOptions.openClawGateway"),
-      icon: Bot,
-      desc: t("newAgentDialog.adapterOptions.openClawGatewayDesc"),
-    },
-  ];
+  // Fetch registered adapters from server (syncs disabled store + provides data)
+  const { data: serverAdapters } = useQuery({
+    queryKey: queryKeys.adapters.all,
+    queryFn: () => adaptersApi.list(),
+    staleTime: 5 * 60 * 1000,
+  });
 
+  // Fetch existing agents for the "Ask CEO" flow
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -99,6 +54,33 @@ export function NewAgentDialog() {
   });
 
   const ceoAgent = (agents ?? []).find((a) => a.role === "ceo");
+
+  // Build the adapter grid from the UI registry merged with display metadata.
+  // This automatically includes external/plugin adapters.
+  const adapterGrid = useMemo(() => {
+    const registered = listUIAdapters()
+      .filter((a) => isAgentAdapterType(a.type) && !disabledTypes.has(a.type));
+
+    // Sort: recommended first, then alphabetical
+    return registered
+      .map((a) => {
+        const display = getAdapterDisplay(a.type);
+        return {
+          value: a.type,
+          label: display.label,
+          desc: display.description,
+          icon: display.icon,
+          recommended: display.recommended,
+          comingSoon: display.comingSoon,
+          disabledLabel: display.disabledLabel,
+        };
+      })
+      .sort((a, b) => {
+        if (a.recommended && !b.recommended) return -1;
+        if (!a.recommended && b.recommended) return 1;
+        return a.label.localeCompare(b.label);
+      });
+  }, [disabledTypes, serverAdapters]);
 
   function handleAskCeo() {
     closeNewAgent();
@@ -113,7 +95,7 @@ export function NewAgentDialog() {
     setShowAdvancedCards(true);
   }
 
-  function handleAdvancedAdapterPick(adapterType: AdvancedAdapterType) {
+  function handleAdvancedAdapterPick(adapterType: string) {
     closeNewAgent();
     setShowAdvancedCards(false);
     navigate(`/agents/new?adapterType=${encodeURIComponent(adapterType)}`);
@@ -155,7 +137,7 @@ export function NewAgentDialog() {
               {/* Recommendation */}
               <div className="text-center space-y-3">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-accent">
-                  <Sparkles className="h-6 w-6 text-foreground" />
+                  <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {t("newAgentDialog.recommendation")}
@@ -193,13 +175,18 @@ export function NewAgentDialog() {
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                {ADVANCED_ADAPTER_OPTIONS.map((opt) => (
+                {adapterGrid.map((opt) => (
                   <button
                     key={opt.value}
                     className={cn(
-                      "flex flex-col items-center gap-1.5 rounded-md border border-border p-3 text-xs transition-colors hover:bg-accent/50 relative"
+                      "flex flex-col items-center gap-1.5 rounded-md border border-border p-3 text-xs transition-colors hover:bg-accent/50 relative",
+                      opt.comingSoon && "opacity-40 cursor-not-allowed",
                     )}
-                    onClick={() => handleAdvancedAdapterPick(opt.value)}
+                    disabled={!!opt.comingSoon}
+                    title={opt.comingSoon ? opt.disabledLabel : undefined}
+                    onClick={() => {
+                      if (!opt.comingSoon) handleAdvancedAdapterPick(opt.value);
+                    }}
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">

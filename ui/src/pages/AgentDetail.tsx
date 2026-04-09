@@ -2,9 +2,16 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, type AgentKey, type ClaudeLoginResult, type AvailableSkill } from "../api/agents";
+import {
+  agentsApi,
+  type AgentKey,
+  type ClaudeLoginResult,
+  type AgentPermissionUpdate,
+} from "../api/agents";
+import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -12,13 +19,17 @@ import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
-import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
-import { getUIAdapter, buildTranscript } from "../adapters";
+import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { MarkdownEditor } from "../components/MarkdownEditor";
+import { assetsApi } from "../api/assets";
+import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -26,13 +37,16 @@ import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Popover,
   PopoverContent,
@@ -40,8 +54,6 @@ import {
 } from "@/components/ui/popover";
 import {
   MoreHorizontal,
-  Play,
-  Pause,
   CheckCircle2,
   XCircle,
   Clock,
@@ -58,13 +70,20 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  HelpCircle,
+  FolderOpen,
 } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
   isUuidLike,
   type Agent,
+  type AgentSkillEntry,
+  type AgentSkillSnapshot,
+  type AgentDetail as AgentDetailRecord,
   type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
@@ -74,6 +93,11 @@ import {
 } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import {
+  applyAgentSkillSnapshot,
+  arraysEqual,
+  isReadOnlyUnmanagedSkillEntry,
+} from "../lib/agent-skills-state";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -89,13 +113,21 @@ const SECRET_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 
+function redactPathText(value: string, censorUsernameInLogs: boolean) {
+  return redactHomePathUserSegments(value, { enabled: censorUsernameInLogs });
+}
+
+function redactPathValue<T>(value: T, censorUsernameInLogs: boolean): T {
+  return redactHomePathUserSegmentsInValue(value, { enabled: censorUsernameInLogs });
+}
+
 function shouldRedactSecretValue(key: string, value: unknown): boolean {
   if (SECRET_ENV_KEY_RE.test(key)) return true;
   if (typeof value !== "string") return false;
   return JWT_VALUE_RE.test(value);
 }
 
-function redactEnvValue(key: string, value: unknown): string {
+function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boolean): string {
   if (
     typeof value === "object" &&
     value !== null &&
@@ -106,15 +138,19 @@ function redactEnvValue(key: string, value: unknown): string {
   }
   if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return redactHomePathUserSegments(value);
+  if (typeof value === "string") return redactPathText(value, censorUsernameInLogs);
   try {
-    return JSON.stringify(redactHomePathUserSegmentsInValue(value));
+    return JSON.stringify(redactPathValue(value, censorUsernameInLogs));
   } catch {
-    return redactHomePathUserSegments(String(value));
+    return redactPathText(String(value), censorUsernameInLogs);
   }
 }
 
-function formatEnvForDisplay(envValue: unknown): string {
+function isMarkdown(pathValue: string) {
+  return pathValue.toLowerCase().endsWith(".md");
+}
+
+function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
   const env = asRecord(envValue);
   if (!env) return "<unable-to-parse>";
 
@@ -123,7 +159,7 @@ function formatEnvForDisplay(envValue: unknown): string {
 
   return keys
     .sort()
-    .map((key) => `${key}=${redactEnvValue(key, env[key])}`)
+    .map((key) => `${key}=${redactEnvValue(key, env[key], censorUsernameInLogs)}`)
     .join("\n");
 }
 
@@ -183,12 +219,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
+  if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
-  if (value === "skills") return value;
-  if (value === "budget") return value;
+  if (value === "skills") return "skills";
+  if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
 }
@@ -200,6 +237,14 @@ function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return 0;
+}
+
+function setsEqual<T>(left: Set<T>, right: Set<T>) {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
 }
 
 function runMetrics(run: HeartbeatRun) {
@@ -215,12 +260,16 @@ function runMetrics(run: HeartbeatRun) {
   );
   const cost =
     visibleRunCostUsd(usage, result);
+  const provider = asNonEmptyString(usage?.provider) ?? null;
+  const model = asNonEmptyString(usage?.model) ?? null;
   return {
     input,
     output,
     cached,
     cost,
     totalTokens: input + output,
+    provider,
+    model,
   };
 }
 
@@ -235,6 +284,98 @@ function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+export function RunInvocationCard({
+  payload,
+  censorUsernameInLogs,
+}: {
+  payload: Record<string, unknown>;
+  censorUsernameInLogs: boolean;
+}) {
+  const commandLine = [
+    typeof payload.command === "string" ? payload.command : null,
+    ...(Array.isArray(payload.commandArgs)
+      ? payload.commandArgs.filter((value): value is string => typeof value === "string")
+      : []),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  const hasAdvancedDetails =
+    commandLine.length > 0
+    || (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0)
+    || payload.prompt !== undefined
+    || payload.context !== undefined
+    || payload.env !== undefined;
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      {typeof payload.adapterType === "string" && (
+        <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{payload.adapterType}</div>
+      )}
+      {typeof payload.cwd === "string" && (
+        <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
+      )}
+      {hasAdvancedDetails && (
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
+            <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+            Details
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2 space-y-2">
+            {commandLine && (
+              <div className="text-xs break-all">
+                <span className="text-muted-foreground">Command: </span>
+                <span className="font-mono">{commandLine}</span>
+              </div>
+            )}
+            {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  {payload.commandNotes
+                    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                    .map((note, idx) => (
+                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                        {note}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+            {payload.prompt !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {typeof payload.prompt === "string"
+                    ? redactPathText(payload.prompt, censorUsernameInLogs)
+                    : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.context !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Context</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.env !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                  {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
+                </pre>
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
 }
 
 function parseStoredLogContent(content: string): RunLogChunk[] {
@@ -300,7 +441,13 @@ function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation[
   );
 }
 
-function WorkspaceOperationLogViewer({ operation }: { operation: WorkspaceOperation }) {
+function WorkspaceOperationLogViewer({
+  operation,
+  censorUsernameInLogs,
+}: {
+  operation: WorkspaceOperation;
+  censorUsernameInLogs: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const { data: logData, isLoading, error } = useQuery({
     queryKey: ["workspace-operation-log", operation.id],
@@ -353,7 +500,7 @@ function WorkspaceOperationLogViewer({ operation }: { operation: WorkspaceOperat
                   >
                     [{chunk.stream}]
                   </span>
-                  <span className="whitespace-pre-wrap break-all">{redactHomePathUserSegments(chunk.chunk)}</span>
+                  <span className="whitespace-pre-wrap break-all">{redactPathText(chunk.chunk, censorUsernameInLogs)}</span>
                 </div>
               ))}
             </div>
@@ -364,7 +511,13 @@ function WorkspaceOperationLogViewer({ operation }: { operation: WorkspaceOperat
   );
 }
 
-function WorkspaceOperationsSection({ operations }: { operations: WorkspaceOperation[] }) {
+function WorkspaceOperationsSection({
+  operations,
+  censorUsernameInLogs,
+}: {
+  operations: WorkspaceOperation[];
+  censorUsernameInLogs: boolean;
+}) {
   if (operations.length === 0) return null;
 
   return (
@@ -429,7 +582,7 @@ function WorkspaceOperationsSection({ operations }: { operations: WorkspaceOpera
                 <div>
                   <div className="mb-1 text-xs text-red-700 dark:text-red-300">stderr excerpt</div>
                   <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
-                    {redactHomePathUserSegments(operation.stderrExcerpt)}
+                    {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
               )}
@@ -437,11 +590,16 @@ function WorkspaceOperationsSection({ operations }: { operations: WorkspaceOpera
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">stdout excerpt</div>
                   <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
-                    {redactHomePathUserSegments(operation.stdoutExcerpt)}
+                    {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
               )}
-              {operation.logRef && <WorkspaceOperationLogViewer operation={operation} />}
+              {operation.logRef && (
+                <WorkspaceOperationLogViewer
+                  operation={operation}
+                  censorUsernameInLogs={censorUsernameInLogs}
+                />
+              )}
             </div>
           );
         })}
@@ -467,6 +625,9 @@ export function AgentDetail() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  const needsDashboardData = activeView === "dashboard";
+  const needsRunData = activeView === "runs" || Boolean(urlRunId);
+  const shouldLoadHeartbeats = needsDashboardData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -483,7 +644,7 @@ export function AgentDetail() {
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
 
-  const { data: agent, isLoading, error } = useQuery({
+  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
@@ -496,25 +657,25 @@ export function AgentDetail() {
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId),
+    enabled: Boolean(resolvedAgentId) && needsDashboardData,
   });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
     queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
-    enabled: !!resolvedCompanyId && !!agent?.id,
+    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(resolvedCompanyId!),
-    queryFn: () => issuesApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
   });
 
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && needsDashboardData,
   });
 
   const { data: budgetOverview } = useQuery({
@@ -526,7 +687,6 @@ export function AgentDetail() {
   });
 
   const assignedIssues = (allIssues ?? [])
-    .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
@@ -575,15 +735,17 @@ export function AgentDetail() {
       return;
     }
     const canonicalTab =
-      activeView === "configuration"
-        ? "configuration"
-        : activeView === "skills"
-          ? "skills"
-          : activeView === "runs"
-            ? "runs"
-            : activeView === "budget"
-              ? "budget"
-            : "dashboard";
+      activeView === "instructions"
+        ? "instructions"
+        : activeView === "configuration"
+          ? "configuration"
+          : activeView === "skills"
+            ? "skills"
+            : activeView === "runs"
+              ? "runs"
+              : activeView === "budget"
+                ? "budget"
+              : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -669,8 +831,8 @@ export function AgentDetail() {
   });
 
   const updatePermissions = useMutation({
-    mutationFn: (canCreateAgents: boolean) =>
-      agentsApi.updatePermissions(agentLookupRef, { canCreateAgents }, resolvedCompanyId ?? undefined),
+    mutationFn: (permissions: AgentPermissionUpdate) =>
+      agentsApi.updatePermissions(agentLookupRef, permissions, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
@@ -696,6 +858,8 @@ export function AgentDetail() {
       if (urlRunId) {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
+      } else if (activeView === "instructions") {
+        crumbs.push({ label: "Instructions" });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
       // } else if (activeView === "skills") { // TODO: bring back later
@@ -731,7 +895,7 @@ export function AgentDetail() {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
-  const showConfigActionBar = activeView === "configuration" && (configDirty || configSaving);
+  const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
@@ -763,36 +927,17 @@ export function AgentDetail() {
             <Plus className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">{t("detail.actions.assignTask")}</span>
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
+          <RunButton
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
-          >
-            <Play className="h-3.5 w-3.5 sm:mr-1" />
-            <span className="hidden sm:inline">{t("detail.actions.runHeartbeat")}</span>
-          </Button>
-          {agent.status === "paused" ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => agentAction.mutate("resume")}
-              disabled={agentAction.isPending || isPendingApproval}
-            >
-              <Play className="h-3.5 w-3.5 sm:mr-1" />
-              <span className="hidden sm:inline">{t("detail.actions.resume")}</span>
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => agentAction.mutate("pause")}
-              disabled={agentAction.isPending || isPendingApproval}
-            >
-              <Pause className="h-3.5 w-3.5 sm:mr-1" />
-              <span className="hidden sm:inline">{t("detail.actions.pause")}</span>
-            </Button>
-          )}
+            label={t("detail.actions.runHeartbeat")}
+          />
+          <PauseResumeButton
+            isPaused={agent.status === "paused"}
+            onPause={() => agentAction.mutate("pause")}
+            onResume={() => agentAction.mutate("resume")}
+            disabled={agentAction.isPending || isPendingApproval}
+          />
           <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
           {mobileLiveRun && (
             <Link
@@ -858,8 +1003,9 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "dashboard", label: t("detail.tabs.dashboard") },
+              { value: "instructions", label: t("detail.tabs.instructions") },
+              { value: "skills", label: t("detail.tabs.skills") },
               { value: "configuration", label: t("detail.tabs.configuration") },
-              // { value: "skills", label: t("detail.tabs.skills") }, // TODO: bring back later
               { value: "runs", label: t("detail.tabs.runs") },
               { value: "budget", label: t("detail.tabs.budget") },
             ]}
@@ -877,9 +1023,14 @@ export function AgentDetail() {
       )}
 
       {/* Floating Save/Cancel (desktop) */}
-      {!isMobile && showConfigActionBar && (
+      {!isMobile && (
         <div
-          className="sticky top-6 z-10 float-right transition-opacity duration-150"
+          className={cn(
+            "sticky top-6 z-10 float-right transition-opacity duration-150",
+            showConfigActionBar
+              ? "opacity-100"
+              : "opacity-0 pointer-events-none"
+          )}
         >
           <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
             <Button
@@ -939,6 +1090,17 @@ export function AgentDetail() {
         />
       )}
 
+      {activeView === "instructions" && (
+        <PromptsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+          onDirtyChange={setConfigDirty}
+          onSaveActionChange={setSaveConfigAction}
+          onCancelActionChange={setCancelConfigAction}
+          onSavingChange={setConfigSaving}
+        />
+      )}
+
       {activeView === "configuration" && (
         <AgentConfigurePage
           agent={agent}
@@ -952,11 +1114,12 @@ export function AgentDetail() {
         />
       )}
 
-      {/* {activeView === "skills" && (
-        <SkillsTab
+      {activeView === "skills" && (
+        <AgentSkillsTab
           agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
         />
-      )} */}{/* TODO: bring back later */}
+      )}
 
       {activeView === "runs" && (
         <RunsTab
@@ -966,6 +1129,7 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+          adapterConfig={agent.adapterConfig}
         />
       )}
 
@@ -1007,9 +1171,27 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const isLive = run.status === "running" || run.status === "queued";
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
-  const summary = run.resultJson
+  const summaryRaw = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
     : run.error ?? "";
+
+  // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
+  const summary = useMemo(() => {
+    if (!summaryRaw) return "";
+    const lines = summaryRaw
+      .replace(/^#{1,6}\s+/gm, "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+    const excerpt: string[] = [];
+    let chars = 0;
+    for (const line of lines) {
+      if (excerpt.length >= 3 || chars + line.length > 280) break;
+      excerpt.push(line);
+      chars += line.length;
+    }
+    return excerpt.join(" ");
+  }, [summaryRaw]);
 
   return (
     <div className="space-y-3">
@@ -1074,7 +1256,7 @@ function AgentOverview({
   agentId,
   agentRouteId,
 }: {
-  agent: Agent;
+  agent: AgentDetailRecord;
   runs: HeartbeatRun[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
@@ -1107,7 +1289,10 @@ function AgentOverview({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">{t("detail.recentIssues")}</h3>
-          <Link to={`/issues?assignee=${agentId}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <Link
+            to={`/issues?participantAgentId=${agentId}`}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
             See All &rarr;
           </Link>
         </div>
@@ -1233,14 +1418,14 @@ function AgentConfigurePage({
   onSavingChange,
   updatePermissions,
 }: {
-  agent: Agent;
+  agent: AgentDetailRecord;
   agentId: string;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
+  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
@@ -1270,6 +1455,8 @@ function AgentConfigurePage({
         onSavingChange={onSavingChange}
         updatePermissions={updatePermissions}
         companyId={companyId}
+        hidePromptTemplate
+        hideInstructionsFile
       />
       <div>
         <h3 className="text-sm font-medium mb-3">{t("detail.configSection.apiKeys")}</h3>
@@ -1340,17 +1527,22 @@ function ConfigurationTab({
   onCancelActionChange,
   onSavingChange,
   updatePermissions,
+  hidePromptTemplate,
+  hideInstructionsFile,
 }: {
-  agent: Agent;
+  agent: AgentDetailRecord;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
+  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
+  hidePromptTemplate?: boolean;
+  hideInstructionsFile?: boolean;
 }) {
   const { t } = useTranslation("agents");
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
@@ -1372,9 +1564,17 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
     },
-    onError: () => {
+    onError: (err) => {
       setAwaitingRefreshAfterSave(false);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not save agent";
+      pushToast({ title: "Save failed", body: message, tone: "error" });
     },
   });
 
@@ -1384,12 +1584,24 @@ function ConfigurationTab({
     }
     lastAgentRef.current = agent;
   }, [agent, awaitingRefreshAfterSave]);
-
   const isConfigSaving = updateAgent.isPending || awaitingRefreshAfterSave;
 
   useEffect(() => {
     onSavingChange(isConfigSaving);
   }, [onSavingChange, isConfigSaving]);
+
+  const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
+  const canAssignTasks = Boolean(agent.access?.canAssignTasks);
+  const taskAssignSource = agent.access?.taskAssignSource ?? "none";
+  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignHint =
+    taskAssignSource === "ceo_role"
+      ? "Enabled automatically for CEO agents."
+      : taskAssignSource === "agent_creator"
+        ? "Enabled automatically while this agent can create new agents."
+        : taskAssignSource === "explicit_grant"
+          ? "Enabled via explicit company permission grant."
+          : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">
@@ -1403,25 +1615,49 @@ function ConfigurationTab({
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         hideInlineSave
+        hidePromptTemplate={hidePromptTemplate}
+        hideInstructionsFile={hideInstructionsFile}
         sectionLayout="cards"
       />
 
       <div>
         <h3 className="text-sm font-medium mb-3">{t("detail.configSection.permissions")}</h3>
-        <div className="border border-border rounded-lg p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span>{t("detail.configSection.canCreateAgents")}</span>
-            <Button
-              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              onClick={() =>
-                updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))
+        <div className="border border-border rounded-lg p-4 space-y-4">
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>{t("detail.configSection.canCreateAgents")}</div>
+              <p className="text-xs text-muted-foreground">
+                {t("detail.configSection.canCreateAgentsDesc")}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canCreateAgents}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents: !canCreateAgents,
+                  canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                })
               }
               disabled={updatePermissions.isPending}
-            >
-              {agent.permissions?.canCreateAgents ? t("detail.configSection.enabled") : t("detail.configSection.disabled")}
-            </Button>
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>{t("detail.configSection.canAssignTasks")}</div>
+              <p className="text-xs text-muted-foreground">
+                {taskAssignHint}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canAssignTasks}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canAssignTasks: !canAssignTasks,
+                })
+              }
+              disabled={updatePermissions.isPending || taskAssignLocked}
+            />
           </div>
         </div>
       </div>
@@ -1429,75 +1665,1166 @@ function ConfigurationTab({
   );
 }
 
-function SkillsTab({ agent }: { agent: Agent }) {
+/* ---- Prompts Tab ---- */
+
+function PromptsTab({
+  agent,
+  companyId,
+  onDirtyChange,
+  onSaveActionChange,
+  onCancelActionChange,
+  onSavingChange,
+}: {
+  agent: Agent;
+  companyId?: string;
+  onDirtyChange: (dirty: boolean) => void;
+  onSaveActionChange: (save: (() => void) | null) => void;
+  onCancelActionChange: (cancel: (() => void) | null) => void;
+  onSavingChange: (saving: boolean) => void;
+}) {
   const { t } = useTranslation("agents");
-  const instructionsPath =
-    typeof agent.adapterConfig?.instructionsFilePath === "string" && agent.adapterConfig.instructionsFilePath.trim().length > 0
-      ? agent.adapterConfig.instructionsFilePath
-      : null;
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.skills.available,
-    queryFn: () => agentsApi.availableSkills(),
+  const queryClient = useQueryClient();
+  const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
+  const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [showFilePanel, setShowFilePanel] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [bundleDraft, setBundleDraft] = useState<{
+    mode: "managed" | "external";
+    rootPath: string;
+    entryFile: string;
+  } | null>(null);
+  const [newFilePath, setNewFilePath] = useState("");
+  const [showNewFileInput, setShowNewFileInput] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<string[]>([]);
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+  const [filePanelWidth, setFilePanelWidth] = useState(260);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [awaitingRefresh, setAwaitingRefresh] = useState(false);
+  const lastFileVersionRef = useRef<string | null>(null);
+  const externalBundleRef = useRef<{
+    rootPath: string;
+    entryFile: string;
+    selectedFile: string;
+  } | null>(null);
+
+  useEffect(() => {
+    setSelectedFile("AGENTS.md");
+    setShowFilePanel(false);
+    setDraft(null);
+    setBundleDraft(null);
+    setNewFilePath("");
+    setShowNewFileInput(false);
+    setPendingFiles([]);
+    setExpandedDirs(new Set());
+    setAwaitingRefresh(false);
+    lastFileVersionRef.current = null;
+    externalBundleRef.current = null;
+  }, [agent.id]);
+
+  const isLocal =
+    agent.adapterType === "claude_local" ||
+    agent.adapterType === "codex_local" ||
+    agent.adapterType === "opencode_local" ||
+    agent.adapterType === "pi_local" ||
+    agent.adapterType === "hermes_local" ||
+    agent.adapterType === "cursor";
+
+  const { data: bundle, isLoading: bundleLoading } = useQuery({
+    queryKey: queryKeys.agents.instructionsBundle(agent.id),
+    queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
+    enabled: Boolean(companyId && isLocal),
   });
-  const skills = data?.skills ?? [];
+
+  const persistedMode = bundle?.mode ?? "managed";
+  const persistedRootPath = persistedMode === "managed"
+    ? (bundle?.managedRootPath ?? bundle?.rootPath ?? "")
+    : (bundle?.rootPath ?? "");
+  const currentMode = bundleDraft?.mode ?? persistedMode;
+  const currentEntryFile = bundleDraft?.entryFile ?? bundle?.entryFile ?? "AGENTS.md";
+  const currentRootPath = bundleDraft?.rootPath ?? persistedRootPath;
+  const fileOptions = useMemo(
+    () => bundle?.files.map((file) => file.path) ?? [],
+    [bundle],
+  );
+  const bundleMatchesDraft = Boolean(
+    bundle &&
+    currentMode === persistedMode &&
+    currentEntryFile === bundle.entryFile &&
+    currentRootPath === persistedRootPath,
+  );
+  const visibleFilePaths = useMemo(
+    () => bundleMatchesDraft
+      ? [...new Set([currentEntryFile, ...fileOptions, ...pendingFiles])]
+      : [currentEntryFile, ...pendingFiles],
+    [bundleMatchesDraft, currentEntryFile, fileOptions, pendingFiles],
+  );
+  const fileTree = useMemo(
+    () => buildFileTree(Object.fromEntries(visibleFilePaths.map((filePath) => [filePath, ""]))),
+    [visibleFilePaths],
+  );
+  const selectedOrEntryFile = selectedFile || currentEntryFile;
+  const selectedFileExists = bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
+  const selectedFileSummary = bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
+
+  const { data: selectedFileDetail, isLoading: fileLoading } = useQuery({
+    queryKey: queryKeys.agents.instructionsFile(agent.id, selectedOrEntryFile),
+    queryFn: () => agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
+    enabled: Boolean(companyId && isLocal && selectedFileExists),
+  });
+
+  const updateBundle = useMutation({
+    mutationFn: (data: {
+      mode?: "managed" | "external";
+      rootPath?: string | null;
+      entryFile?: string;
+      clearLegacyPromptTemplate?: boolean;
+    }) => agentsApi.updateInstructionsBundle(agent.id, data, companyId),
+    onMutate: () => setAwaitingRefresh(true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    },
+    onError: () => setAwaitingRefresh(false),
+  });
+
+  const saveFile = useMutation({
+    mutationFn: (data: { path: string; content: string; clearLegacyPromptTemplate?: boolean }) =>
+      agentsApi.saveInstructionsFile(agent.id, data, companyId),
+    onMutate: () => setAwaitingRefresh(true),
+    onSuccess: (_, variables) => {
+      setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, variables.path) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    },
+    onError: () => setAwaitingRefresh(false),
+  });
+
+  const deleteFile = useMutation({
+    mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
+    onMutate: () => setAwaitingRefresh(true),
+    onSuccess: (_, relativePath) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    },
+    onError: () => setAwaitingRefresh(false),
+  });
+
+  const uploadMarkdownImage = useMutation({
+    mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      return assetsApi.uploadImage(selectedCompanyId, file, namespace);
+    },
+  });
+
+  useEffect(() => {
+    if (!bundle) return;
+    if (!bundleMatchesDraft) {
+      if (selectedFile !== currentEntryFile) setSelectedFile(currentEntryFile);
+      return;
+    }
+    const availablePaths = bundle.files.map((file) => file.path);
+    if (availablePaths.length === 0) {
+      if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
+      return;
+    }
+    if (!availablePaths.includes(selectedFile) && selectedFile !== currentEntryFile && !pendingFiles.includes(selectedFile)) {
+      setSelectedFile(availablePaths.includes(bundle.entryFile) ? bundle.entryFile : availablePaths[0]!);
+    }
+  }, [bundle, bundleMatchesDraft, currentEntryFile, pendingFiles, selectedFile]);
+
+  useEffect(() => {
+    const nextExpanded = new Set<string>();
+    for (const filePath of visibleFilePaths) {
+      const parts = filePath.split("/");
+      let currentPath = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]!;
+        nextExpanded.add(currentPath);
+      }
+    }
+    setExpandedDirs((current) => (setsEqual(current, nextExpanded) ? current : nextExpanded));
+  }, [visibleFilePaths]);
+
+  useEffect(() => {
+    const versionKey = selectedFileExists && selectedFileDetail
+      ? `${selectedFileDetail.path}:${selectedFileDetail.content}`
+      : `draft:${currentMode}:${currentRootPath}:${selectedOrEntryFile}`;
+    if (awaitingRefresh) {
+      setAwaitingRefresh(false);
+      setBundleDraft(null);
+      setDraft(null);
+      lastFileVersionRef.current = versionKey;
+      return;
+    }
+    if (lastFileVersionRef.current !== versionKey) {
+      setDraft(null);
+      lastFileVersionRef.current = versionKey;
+    }
+  }, [awaitingRefresh, currentMode, currentRootPath, selectedFileDetail, selectedFileExists, selectedOrEntryFile]);
+
+  useEffect(() => {
+    if (!bundle) return;
+    setBundleDraft((current) => {
+      if (current) return current;
+      return {
+        mode: persistedMode,
+        rootPath: persistedRootPath,
+        entryFile: bundle.entryFile,
+      };
+    });
+  }, [bundle, persistedMode, persistedRootPath]);
+
+  useEffect(() => {
+    if (!bundle || currentMode !== "external") return;
+    externalBundleRef.current = {
+      rootPath: currentRootPath,
+      entryFile: currentEntryFile,
+      selectedFile: selectedOrEntryFile,
+    };
+  }, [bundle, currentEntryFile, currentMode, currentRootPath, selectedOrEntryFile]);
+
+  const currentContent = selectedFileExists ? (selectedFileDetail?.content ?? "") : "";
+  const displayValue = draft ?? currentContent;
+  const bundleDirty = Boolean(
+    bundleDraft &&
+      (
+        bundleDraft.mode !== persistedMode ||
+        bundleDraft.rootPath !== persistedRootPath ||
+        bundleDraft.entryFile !== (bundle?.entryFile ?? "AGENTS.md")
+      ),
+  );
+  const fileDirty = draft !== null && draft !== currentContent;
+  const isDirty = bundleDirty || fileDirty;
+  const isSaving = updateBundle.isPending || saveFile.isPending || deleteFile.isPending || awaitingRefresh;
+
+  useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
+  useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
+
+  useEffect(() => {
+    onSaveActionChange(isDirty ? () => {
+      const save = async () => {
+        const shouldClearLegacy =
+          Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
+        if (bundleDirty && bundleDraft) {
+          await updateBundle.mutateAsync({
+            mode: bundleDraft.mode,
+            rootPath: bundleDraft.mode === "external" ? bundleDraft.rootPath : null,
+            entryFile: bundleDraft.entryFile,
+          });
+        }
+        if (fileDirty) {
+          await saveFile.mutateAsync({
+            path: selectedOrEntryFile,
+            content: displayValue,
+            clearLegacyPromptTemplate: shouldClearLegacy,
+          });
+        }
+      };
+      void save().catch(() => undefined);
+    } : null);
+  }, [
+    bundle,
+    bundleDirty,
+    bundleDraft,
+    displayValue,
+    fileDirty,
+    isDirty,
+    onSaveActionChange,
+    saveFile,
+    selectedOrEntryFile,
+    updateBundle,
+  ]);
+
+  useEffect(() => {
+    onCancelActionChange(isDirty ? () => {
+      setDraft(null);
+      if (bundle) {
+        setBundleDraft({
+          mode: persistedMode,
+          rootPath: persistedRootPath,
+          entryFile: bundle.entryFile,
+        });
+      }
+    } : null);
+  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath]);
+
+  const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = filePanelWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const next = Math.max(180, Math.min(500, startWidth + delta));
+      setFilePanelWidth(next);
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [filePanelWidth]);
+
+  if (!isLocal) {
+    return (
+      <div className="max-w-3xl">
+        <p className="text-sm text-muted-foreground">
+          {t("detail.prompts.localAdaptersOnly")}
+        </p>
+      </div>
+    );
+  }
+
+  if (bundleLoading && !bundle) {
+    return <PromptsTabSkeleton />;
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="border border-border rounded-lg p-4 space-y-2">
-        <h3 className="text-sm font-medium">{t("detail.skills.title")}</h3>
-        <p className="text-sm text-muted-foreground">
-          {t("detail.skills.description")}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Agent: <span className="font-mono">{agent.name}</span>
-        </p>
-        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-            {t("detail.skills.instructionsFile")}
+    <div className="space-y-6">
+      {(bundle?.warnings ?? []).length > 0 && (
+        <div className="space-y-2">
+          {(bundle?.warnings ?? []).map((warning) => (
+            <div key={warning} className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+              {warning}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Collapsible defaultOpen={currentMode === "external"}>
+        <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
+          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+          {t("detail.prompts.advanced")}
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-4 pb-6">
+          <TooltipProvider>
+            <div className="grid gap-x-6 gap-y-4 sm:grid-cols-[auto_1fr_1fr]">
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  {t("detail.prompts.mode")}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={4}>
+                      {t("detail.prompts.modeTooltip")}
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={currentMode === "managed" ? "default" : "outline"}
+                    onClick={() => {
+                      if (currentMode === "external") {
+                        externalBundleRef.current = {
+                          rootPath: currentRootPath,
+                          entryFile: currentEntryFile,
+                          selectedFile: selectedOrEntryFile,
+                        };
+                      }
+                      const nextEntryFile = currentEntryFile || "AGENTS.md";
+                      setBundleDraft({
+                        mode: "managed",
+                        rootPath: bundle?.managedRootPath ?? currentRootPath,
+                        entryFile: nextEntryFile,
+                      });
+                      setSelectedFile(nextEntryFile);
+                    }}
+                  >
+                    {t("detail.prompts.managed")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={currentMode === "external" ? "default" : "outline"}
+                    onClick={() => {
+                      const externalBundle = externalBundleRef.current;
+                      const nextEntryFile = externalBundle?.entryFile ?? currentEntryFile ?? "AGENTS.md";
+                      setBundleDraft({
+                        mode: "external",
+                        rootPath: externalBundle?.rootPath ?? (bundle?.mode === "external" ? (bundle.rootPath ?? "") : ""),
+                        entryFile: nextEntryFile,
+                      });
+                      setSelectedFile(externalBundle?.selectedFile ?? nextEntryFile);
+                    }}
+                  >
+                    {t("detail.prompts.external")}
+                  </Button>
+                </div>
+              </label>
+              <label className="space-y-1.5 min-w-0">
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  {t("detail.prompts.rootPath")}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={4}>
+                      {t("detail.prompts.rootPathTooltip")}
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                {currentMode === "managed" ? (
+                  <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground pt-1.5">
+                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || "(managed)"}</span>
+                    {currentRootPath && (
+                      <CopyText text={currentRootPath} className="shrink-0">
+                        <Copy className="h-3.5 w-3.5" />
+                      </CopyText>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={currentRootPath}
+                      onChange={(event) => {
+                        const nextRootPath = event.target.value;
+                        externalBundleRef.current = {
+                          rootPath: nextRootPath,
+                          entryFile: currentEntryFile,
+                          selectedFile: selectedOrEntryFile,
+                        };
+                        setBundleDraft({
+                          mode: "external",
+                          rootPath: nextRootPath,
+                          entryFile: currentEntryFile,
+                        });
+                      }}
+                      className="font-mono text-sm"
+                      placeholder="/absolute/path/to/agent/prompts"
+                    />
+                    {currentRootPath && (
+                      <CopyText text={currentRootPath} className="shrink-0">
+                        <Copy className="h-3.5 w-3.5" />
+                      </CopyText>
+                    )}
+                  </div>
+                )}
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                  {t("detail.prompts.entryFile")}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={4}>
+                      {t("detail.prompts.entryFileTooltip")}
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Input
+                  value={currentEntryFile}
+                  onChange={(event) => {
+                    const nextEntryFile = event.target.value || "AGENTS.md";
+                    const nextSelectedFile = selectedOrEntryFile === currentEntryFile
+                      ? nextEntryFile
+                      : selectedOrEntryFile;
+                    if (currentMode === "external") {
+                      externalBundleRef.current = {
+                        rootPath: currentRootPath,
+                        entryFile: nextEntryFile,
+                        selectedFile: nextSelectedFile,
+                      };
+                    }
+                    if (selectedOrEntryFile === currentEntryFile) setSelectedFile(nextEntryFile);
+                    setBundleDraft({
+                      mode: currentMode,
+                      rootPath: currentRootPath,
+                      entryFile: nextEntryFile,
+                    });
+                  }}
+                  className="font-mono text-sm"
+                />
+              </label>
+            </div>
+          </TooltipProvider>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
+        <div className={cn(
+          "border border-border rounded-lg p-3 space-y-3 shrink-0",
+          isMobile && showFilePanel && "block",
+          isMobile && !showFilePanel && "hidden",
+        )} style={isMobile ? undefined : { width: filePanelWidth }}>
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium">{t("detail.prompts.files")}</h4>
+            <div className="flex items-center gap-1">
+              {!showNewFileInput && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  onClick={() => setShowNewFileInput(true)}
+                >
+                  +
+                </Button>
+              )}
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setShowFilePanel(false)}
+                >
+                  ✕
+                </Button>
+              )}
+            </div>
           </div>
-          <div className="font-mono break-all">
-            {instructionsPath ?? t("detail.skills.noInstructionsFile")}
-          </div>
+          {showNewFileInput && (
+            <div className="space-y-2">
+              <Input
+                value={newFilePath}
+                onChange={(event) => setNewFilePath(event.target.value)}
+                placeholder="TOOLS.md"
+                className="font-mono text-sm"
+                autoFocus
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setShowNewFileInput(false);
+                    setNewFilePath("");
+                  }
+                }}
+              />
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="flex-1"
+                  disabled={!newFilePath.trim() || newFilePath.includes("..")}
+                  onClick={() => {
+                    const candidate = newFilePath.trim();
+                    if (!candidate || candidate.includes("..")) return;
+                    setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
+                    setSelectedFile(candidate);
+                    setDraft("");
+                    setNewFilePath("");
+                    setShowNewFileInput(false);
+                  }}
+                >
+                  {t("detail.prompts.createFile")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => {
+                    setShowNewFileInput(false);
+                    setNewFilePath("");
+                  }}
+                >
+                  {t("detail.prompts.cancel")}
+                </Button>
+              </div>
+            </div>
+          )}
+          <PackageFileTree
+            nodes={fileTree}
+            selectedFile={selectedOrEntryFile}
+            expandedDirs={expandedDirs}
+            checkedFiles={new Set()}
+            onToggleDir={(dirPath) => setExpandedDirs((current) => {
+              const next = new Set(current);
+              if (next.has(dirPath)) next.delete(dirPath);
+              else next.add(dirPath);
+              return next;
+            })}
+            onSelectFile={(filePath) => {
+              setSelectedFile(filePath);
+              if (!fileOptions.includes(filePath)) setDraft("");
+              if (isMobile) setShowFilePanel(false);
+            }}
+            onToggleCheck={() => {}}
+            showCheckboxes={false}
+            renderFileExtra={(node) => {
+              const file = bundle?.files.find((entry) => entry.path === node.path);
+              if (!file) return null;
+              if (file.deprecated) {
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
+                        {t("detail.prompts.virtualFileBadge")}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={4}>
+                      {t("detail.prompts.virtualFileTooltip")}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              }
+              return (
+                <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                  {file.isEntryFile ? "entry" : `${file.size}b`}
+                </span>
+              );
+            }}
+          />
         </div>
 
-        <div className="space-y-2">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-            {t("detail.skills.availableSkills")}
-          </div>
-          {isLoading ? (
-            <p className="text-sm text-muted-foreground">{t("detail.skills.loading")}</p>
-          ) : error ? (
-            <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : t("detail.skills.loadError")}
-            </p>
-          ) : skills.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t("detail.skills.noSkills")}</p>
-          ) : (
-            <div className="space-y-2">
-              {skills.map((skill) => (
-                <SkillRow key={skill.name} skill={skill} />
-              ))}
+        {/* Draggable separator */}
+        {!isMobile && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
+            onMouseDown={handleSeparatorDrag}
+          />
+        )}
+
+        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => setShowFilePanel(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+                <p className="text-xs text-muted-foreground">
+                  {selectedFileExists
+                    ? selectedFileSummary?.deprecated
+                      ? t("detail.prompts.deprecatedVirtualFile")
+                      : `${selectedFileDetail?.language ?? "text"} ${t("detail.prompts.fileLabel")}`
+                    : t("detail.prompts.newFileInBundle")}
+                </p>
+              </div>
             </div>
+            {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                    deleteFile.mutate(selectedOrEntryFile, {
+                      onSuccess: () => {
+                        setSelectedFile(currentEntryFile);
+                        setDraft(null);
+                      },
+                    });
+                  }
+                }}
+                disabled={deleteFile.isPending}
+              >
+                {t("detail.prompts.deleteFile")}
+              </Button>
+            )}
+          </div>
+
+          {selectedFileExists && fileLoading && !selectedFileDetail ? (
+            <PromptEditorSkeleton />
+          ) : isMarkdown(selectedOrEntryFile) ? (
+            <MarkdownEditor
+              key={selectedOrEntryFile}
+              value={displayValue}
+              onChange={(value) => setDraft(value ?? "")}
+              placeholder="# Agent instructions"
+              contentClassName="min-h-[420px] text-sm font-mono"
+              imageUploadHandler={async (file) => {
+                const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
+                const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                return asset.contentPath;
+              }}
+            />
+          ) : (
+            <textarea
+              value={displayValue}
+              onChange={(event) => setDraft(event.target.value)}
+              className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              placeholder="File contents"
+            />
           )}
         </div>
       </div>
+
     </div>
   );
 }
 
-function SkillRow({ skill }: { skill: AvailableSkill }) {
-  const { t } = useTranslation("agents");
+function PromptsTabSkeleton() {
   return (
-    <div className="rounded-md border border-border bg-muted/20 px-3 py-2 space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-sm">{skill.name}</span>
-        <Badge variant={skill.isPaperclipManaged ? "secondary" : "outline"}>
-          {skill.isPaperclipManaged ? t("detail.skills.paperclip") : t("detail.skills.local")}
-        </Badge>
+    <div className="max-w-5xl space-y-4">
+      <div className="rounded-lg border border-border p-4 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-[30rem] max-w-full" />
+          </div>
+          <Skeleton className="h-4 w-16" />
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="space-y-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ))}
+        </div>
       </div>
-      <p className="text-sm text-muted-foreground">
-        {skill.description || t("detail.skills.noDescription")}
-      </p>
+      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="rounded-lg border border-border p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <Skeleton className="h-4 w-12" />
+            <Skeleton className="h-8 w-16" />
+          </div>
+          <Skeleton className="h-10 w-full" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, index) => (
+              <Skeleton key={index} className="h-9 w-full rounded-none" />
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border p-4 space-y-3">
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-3 w-28" />
+          </div>
+          <PromptEditorSkeleton />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptEditorSkeleton() {
+  return (
+    <div className="space-y-3">
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-[420px] w-full" />
+    </div>
+  );
+}
+
+function AgentSkillsTab({
+  agent,
+  companyId,
+}: {
+  agent: Agent;
+  companyId?: string;
+}) {
+  type SkillRow = {
+    id: string;
+    key: string;
+    name: string;
+    description: string | null;
+    detail: string | null;
+    locationLabel: string | null;
+    originLabel: string | null;
+    linkTo: string | null;
+    readOnly: boolean;
+    adapterEntry: AgentSkillEntry | null;
+  };
+
+  const { t } = useTranslation("agents");
+  const queryClient = useQueryClient();
+  const [skillDraft, setSkillDraft] = useState<string[]>([]);
+  const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const [unmanagedOpen, setUnmanagedOpen] = useState(false);
+  const lastSavedSkillsRef = useRef<string[]>([]);
+  const hasHydratedSkillSnapshotRef = useRef(false);
+  const skipNextSkillAutosaveRef = useRef(true);
+
+  const { data: skillSnapshot, isLoading } = useQuery({
+    queryKey: queryKeys.agents.skills(agent.id),
+    queryFn: () => agentsApi.skills(agent.id, companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const { data: companySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId ?? ""),
+    queryFn: () => companySkillsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+
+  const syncSkills = useMutation({
+    mutationFn: (desiredSkills: string[]) => agentsApi.syncSkills(agent.id, desiredSkills, companyId),
+    onSuccess: async (snapshot) => {
+      queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
+      lastSavedSkillsRef.current = snapshot.desiredSkills;
+      setLastSavedSkills(snapshot.desiredSkills);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
+      ]);
+    },
+  });
+
+  useEffect(() => {
+    setSkillDraft([]);
+    setLastSavedSkills([]);
+    lastSavedSkillsRef.current = [];
+    hasHydratedSkillSnapshotRef.current = false;
+    skipNextSkillAutosaveRef.current = true;
+  }, [agent.id]);
+
+  useEffect(() => {
+    if (!skillSnapshot) return;
+    const nextState = applyAgentSkillSnapshot(
+      {
+        draft: skillDraft,
+        lastSaved: lastSavedSkillsRef.current,
+        hasHydratedSnapshot: hasHydratedSkillSnapshotRef.current,
+      },
+      skillSnapshot.desiredSkills,
+    );
+    skipNextSkillAutosaveRef.current = nextState.shouldSkipAutosave;
+    hasHydratedSkillSnapshotRef.current = nextState.hasHydratedSnapshot;
+    setSkillDraft(nextState.draft);
+    lastSavedSkillsRef.current = nextState.lastSaved;
+    setLastSavedSkills(nextState.lastSaved);
+  }, [skillDraft, skillSnapshot]);
+
+  useEffect(() => {
+    if (!skillSnapshot) return;
+    if (skipNextSkillAutosaveRef.current) {
+      skipNextSkillAutosaveRef.current = false;
+      return;
+    }
+    if (syncSkills.isPending) return;
+    if (arraysEqual(skillDraft, lastSavedSkillsRef.current)) return;
+
+    const timeout = window.setTimeout(() => {
+      if (!arraysEqual(skillDraft, lastSavedSkillsRef.current)) {
+        syncSkills.mutate(skillDraft);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.mutate]);
+
+  const companySkillByKey = useMemo(
+    () => new Map((companySkills ?? []).map((skill) => [skill.key, skill])),
+    [companySkills],
+  );
+  const companySkillKeys = useMemo(
+    () => new Set((companySkills ?? []).map((skill) => skill.key)),
+    [companySkills],
+  );
+  const adapterEntryByKey = useMemo(
+    () => new Map((skillSnapshot?.entries ?? []).map((entry) => [entry.key, entry])),
+    [skillSnapshot],
+  );
+  const optionalSkillRows = useMemo<SkillRow[]>(
+    () =>
+      (companySkills ?? [])
+        .filter((skill) => !adapterEntryByKey.get(skill.key)?.required)
+        .map((skill) => ({
+          id: skill.id,
+          key: skill.key,
+          name: skill.name,
+          description: skill.description,
+          detail: adapterEntryByKey.get(skill.key)?.detail ?? null,
+          locationLabel: adapterEntryByKey.get(skill.key)?.locationLabel ?? null,
+          originLabel: adapterEntryByKey.get(skill.key)?.originLabel ?? null,
+          linkTo: `/skills/${skill.id}`,
+          readOnly: false,
+          adapterEntry: adapterEntryByKey.get(skill.key) ?? null,
+        })),
+    [adapterEntryByKey, companySkills],
+  );
+  const requiredSkillRows = useMemo<SkillRow[]>(
+    () =>
+      (skillSnapshot?.entries ?? [])
+        .filter((entry) => entry.required)
+        .map((entry) => {
+          const companySkill = companySkillByKey.get(entry.key);
+          return {
+            id: companySkill?.id ?? `required:${entry.key}`,
+            key: entry.key,
+            name: companySkill?.name ?? entry.key,
+            description: companySkill?.description ?? null,
+            detail: entry.detail ?? null,
+            locationLabel: entry.locationLabel ?? null,
+            originLabel: entry.originLabel ?? null,
+            linkTo: companySkill ? `/skills/${companySkill.id}` : null,
+            readOnly: false,
+            adapterEntry: entry,
+          };
+        }),
+    [companySkillByKey, skillSnapshot],
+  );
+  const unmanagedSkillRows = useMemo<SkillRow[]>(
+    () =>
+      (skillSnapshot?.entries ?? [])
+        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .map((entry) => ({
+          id: `external:${entry.key}`,
+          key: entry.key,
+          name: entry.runtimeName ?? entry.key,
+          description: null,
+          detail: entry.detail ?? null,
+          locationLabel: entry.locationLabel ?? null,
+          originLabel: entry.originLabel ?? null,
+          linkTo: null,
+          readOnly: true,
+          adapterEntry: entry,
+        })),
+    [companySkillKeys, skillSnapshot],
+  );
+  const desiredOnlyMissingSkills = useMemo(
+    () => skillDraft.filter((key) => !companySkillByKey.has(key)),
+    [companySkillByKey, skillDraft],
+  );
+  const skillApplicationLabel = useMemo(() => {
+    switch (skillSnapshot?.mode) {
+      case "persistent":
+        return t("detail.agentSkills.modeKeptInWorkspace");
+      case "ephemeral":
+        return t("detail.agentSkills.modeAppliedWhenRuns");
+      case "unsupported":
+        return t("detail.agentSkills.modeTrackedOnly");
+      default:
+        return t("detail.agentSkills.modeUnknown");
+    }
+  }, [skillSnapshot?.mode, t]);
+  const unsupportedSkillMessage = useMemo(() => {
+    if (skillSnapshot?.mode !== "unsupported") return null;
+    if (agent.adapterType === "openclaw_gateway") {
+      return t("detail.agentSkills.unsupportedOpenClaw");
+    }
+    return t("detail.agentSkills.unsupportedAdapter");
+  }, [agent.adapterType, skillSnapshot?.mode, t]);
+  const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
+  const saveStatusLabel = syncSkills.isPending
+    ? t("detail.agentSkills.savingChanges")
+    : hasUnsavedChanges
+      ? t("detail.agentSkills.savingSoon")
+      : null;
+
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          to="/skills"
+          className="text-sm font-medium text-foreground underline-offset-4 no-underline transition-colors hover:text-foreground/70 hover:underline"
+        >
+          {t("detail.agentSkills.viewCompanyLibrary")}
+        </Link>
+        {saveStatusLabel ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {syncSkills.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            <span>{saveStatusLabel}</span>
+          </div>
+        ) : null}
+      </div>
+
+      {skillSnapshot?.warnings.length ? (
+        <div className="space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+          {skillSnapshot.warnings.map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      ) : null}
+
+      {unsupportedSkillMessage ? (
+        <div className="rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
+          {unsupportedSkillMessage}
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <PageSkeleton variant="list" />
+      ) : (
+        <>
+          {(() => {
+            const renderSkillRow = (skill: SkillRow) => {
+              const adapterEntry = skill.adapterEntry ?? adapterEntryByKey.get(skill.key);
+              const required = Boolean(adapterEntry?.required);
+              const rowClassName = cn(
+                "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
+                skill.readOnly ? "bg-muted/20" : "hover:bg-accent/20",
+              );
+              const body = (
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="truncate font-medium">{skill.name}</span>
+                    </div>
+                    {skill.linkTo ? (
+                      <Link
+                        to={skill.linkTo}
+                        className="shrink-0 text-xs text-muted-foreground no-underline hover:text-foreground"
+                      >
+                        {t("detail.agentSkills.view")}
+                      </Link>
+                    ) : null}
+                  </div>
+                  {skill.description && (
+                    <MarkdownBody className="mt-1 text-xs text-muted-foreground prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                      {skill.description}
+                    </MarkdownBody>
+                  )}
+                  {skill.readOnly && skill.originLabel && (
+                    <p className="mt-1 text-xs text-muted-foreground">{skill.originLabel}</p>
+                  )}
+                  {skill.readOnly && skill.locationLabel && (
+                    <p className="mt-1 text-xs text-muted-foreground">{t("detail.agentSkills.location")}: {skill.locationLabel}</p>
+                  )}
+                  {skill.detail && (
+                    <p className="mt-1 text-xs text-muted-foreground">{skill.detail}</p>
+                  )}
+                </div>
+              );
+
+              if (skill.readOnly) {
+                return (
+                  <div key={skill.id} className={rowClassName}>
+                    <span className="mt-1 h-2 w-2 rounded-full bg-muted-foreground/40" />
+                    {body}
+                  </div>
+                );
+              }
+
+              const checked = required || skillDraft.includes(skill.key);
+              const disabled = required || skillSnapshot?.mode === "unsupported";
+              const checkbox = (
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                      ? Array.from(new Set([...skillDraft, skill.key]))
+                      : skillDraft.filter((value) => value !== skill.key);
+                    setSkillDraft(next);
+                  }}
+                  className="mt-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              );
+
+              return (
+                <label key={skill.id} className={rowClassName}>
+                  {required && adapterEntry?.requiredReason ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>{checkbox}</span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">{adapterEntry.requiredReason}</TooltipContent>
+                    </Tooltip>
+                  ) : skillSnapshot?.mode === "unsupported" ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>{checkbox}</span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {unsupportedSkillMessage ?? t("detail.agentSkills.unsupportedAdapter")}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    checkbox
+                  )}
+                  {body}
+                </label>
+              );
+            };
+
+            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
+              return (
+                <section className="border-y border-border">
+                  <div className="px-3 py-6 text-sm text-muted-foreground">
+                    {t("detail.agentSkills.importFirst")}
+                  </div>
+                </section>
+              );
+            }
+
+            return (
+              <>
+                {optionalSkillRows.length > 0 && (
+                  <section className="border-y border-border">
+                    {optionalSkillRows.map(renderSkillRow)}
+                  </section>
+                )}
+
+                {requiredSkillRows.length > 0 && (
+                  <section className="border-y border-border">
+                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {t("detail.agentSkills.requiredByPaperclip")}
+                      </span>
+                    </div>
+                    {requiredSkillRows.map(renderSkillRow)}
+                  </section>
+                )}
+
+                {unmanagedSkillRows.length > 0 && (
+                  <section className="border-y border-border">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="flex cursor-pointer items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 select-none"
+                      onClick={() => setUnmanagedOpen((v) => !v)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
+                    >
+                      <span className="text-xs font-medium text-muted-foreground">
+                        ({unmanagedSkillRows.length}) {t("detail.agentSkills.userInstalledSkills")}
+                      </span>
+                      {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                    </div>
+                    {unmanagedOpen && unmanagedSkillRows.map(renderSkillRow)}
+                  </section>
+                )}
+              </>
+            );
+          })()}
+
+          {desiredOnlyMissingSkills.length > 0 && (
+            <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+              <div className="font-medium">{t("detail.agentSkills.requestedSkillsMissing")}</div>
+              <div className="mt-1 text-xs">
+                {desiredOnlyMissingSkills.join(", ")}
+              </div>
+            </div>
+          )}
+
+          <section className="border-t border-border pt-4">
+            <div className="grid gap-2 text-sm sm:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">{t("detail.agentSkills.adapter")}</span>
+                <span className="font-medium">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">{t("detail.agentSkills.skillsApplied")}</span>
+                <span>{skillApplicationLabel}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">{t("detail.agentSkills.selectedSkills")}</span>
+                <span>{skillDraft.length}</span>
+              </div>
+            </div>
+
+            {syncSkills.isError && (
+              <p className="mt-3 text-xs text-destructive">
+                {syncSkills.error instanceof Error ? syncSkills.error.message : t("detail.agentSkills.failedToUpdate")}
+              </p>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -1561,6 +2888,7 @@ function RunsTab({
   agentRouteId,
   selectedRunId,
   adapterType,
+  adapterConfig,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -1568,6 +2896,7 @@ function RunsTab({
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
+  adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
   const { t } = useTranslation("agents");
@@ -1597,7 +2926,7 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             {t("detail.runDetail.backToRuns")}
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       );
     }
@@ -1628,7 +2957,7 @@ function RunsTab({
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       )}
     </div>
@@ -1637,7 +2966,7 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const { t } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1687,7 +3016,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: resumePayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error("Resume request was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Resume request was skipped.");
       }
       return result;
     },
@@ -1719,7 +3048,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: retryPayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error("Retry was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Retry was skipped.");
       }
       return result;
     },
@@ -1832,6 +3161,27 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 </Button>
               )}
             </div>
+            {/* Adapter type · provider · model */}
+            {(() => {
+              const displayProvider = metrics.provider
+                ?? asNonEmptyString(adapterConfig?.provider);
+              const displayModel = metrics.model
+                ?? asNonEmptyString(adapterConfig?.model);
+              if (!adapterType && !displayProvider && !displayModel) return null;
+              return (
+                <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
+                  {adapterType && (
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
+                  )}
+                  {displayProvider && displayModel && (
+                    <span>{displayProvider}/{displayModel}</span>
+                  )}
+                  {!displayProvider && displayModel && (
+                    <span>{displayModel}</span>
+                  )}
+                </div>
+              );
+            })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : t("detail.runActions.failedToResume")}
@@ -2411,13 +3761,31 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     };
   }, [isLive, run.companyId, run.id, run.agentId]);
 
+  const censorUsernameInLogs = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  }).data?.censorUsernameInLogs === true;
+
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
-    return redactHomePathUserSegmentsInValue(asRecord(evt?.payload ?? null));
-  }, [events]);
+    return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
+  }, [censorUsernameInLogs, events]);
 
-  const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
-  const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
+  // NOTE: adapter is NOT memoized because external adapters replace their
+  // parseStdoutLine asynchronously after dynamic parser loading. Memoizing
+  // on adapterType alone would stale the transcript with the fallback parser.
+  // We subscribe to adapter registry changes to force transcript recomputation.
+  const [parserTick, setParserTick] = useState(0);
+  const adapter = getUIAdapter(adapterType);
+
+  useEffect(() => {
+    return onAdapterChange(() => setParserTick((t) => t + 1));
+  }, []);
+
+  const transcript = useMemo(
+    () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
+    [adapter, censorUsernameInLogs, logLines, parserTick],
+  );
 
   useEffect(() => {
     setTranscriptMode("nice");
@@ -2445,70 +3813,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   return (
     <div className="space-y-3">
-      <WorkspaceOperationsSection operations={workspaceOperations} />
+      <WorkspaceOperationsSection
+        operations={workspaceOperations}
+        censorUsernameInLogs={censorUsernameInLogs}
+      />
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">{t("detail.logViewer.invocation")}</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">{t("detail.logViewer.adapter")}</span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">{t("detail.logViewer.workingDir")}</span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">{t("detail.logViewer.command")}</span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">{t("detail.logViewer.commandNotes")}</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">{t("detail.logViewer.prompt")}</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? redactHomePathUserSegments(adapterInvokePayload.prompt)
-                  : JSON.stringify(redactHomePathUserSegmentsInValue(adapterInvokePayload.prompt), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">{t("detail.logViewer.context")}</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(redactHomePathUserSegmentsInValue(adapterInvokePayload.context), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">{t("detail.logViewer.environment")}</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
-              </pre>
-            </div>
-          )}
-        </div>
+        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
       )}
 
       <div className="flex items-center justify-between">
@@ -2580,14 +3890,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
               <span className="text-red-700 dark:text-red-300">{t("detail.failure.error")}</span>
-              {redactHomePathUserSegments(run.error)}
+              {redactPathText(run.error, censorUsernameInLogs)}
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("detail.failure.stderrExcerpt")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactHomePathUserSegments(run.stderrExcerpt)}
+                {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
           )}
@@ -2595,7 +3905,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("detail.failure.adapterResultJson")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(redactHomePathUserSegmentsInValue(run.resultJson), null, 2)}
+                {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
               </pre>
             </div>
           )}
@@ -2603,7 +3913,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("detail.failure.stdoutExcerpt")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactHomePathUserSegments(run.stdoutExcerpt)}
+                {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
           )}
@@ -2630,9 +3940,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                   </span>
                   <span className={cn("break-all", color)}>
                     {evt.message
-                      ? redactHomePathUserSegments(evt.message)
+                      ? redactPathText(evt.message, censorUsernameInLogs)
                       : evt.payload
-                        ? JSON.stringify(redactHomePathUserSegmentsInValue(evt.payload))
+                        ? JSON.stringify(redactPathValue(evt.payload, censorUsernameInLogs))
                         : ""}
                   </span>
                 </div>

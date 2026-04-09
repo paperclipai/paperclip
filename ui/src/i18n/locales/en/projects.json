@@ -10,6 +10,7 @@
     "tabs": {
       "overview": "Overview",
       "issues": "Issues",
+      "workspaces": "Workspaces",
       "configuration": "Configuration",
       "budget": "Budget"
     },
@@ -70,7 +71,9 @@
     "saved": "Saved",
     "failed": "Failed",
     "localFolderAbsolutePathError": "Local folder must be a full absolute path.",
-    "repoUrlInvalidError": "Repo workspace must use a valid GitHub repo URL.",
+    "repoUrlInvalidError": "Repo must use a valid GitHub or GitHub Enterprise repo URL.",
+    "env": "Env",
+    "envHelp": "Applied to all runs for issues in this project. Project values override agent env on key conflicts.",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "codebase": "Codebase",
