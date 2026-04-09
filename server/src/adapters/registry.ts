@@ -146,6 +146,7 @@ const copilotLocalAdapter: ServerAdapterModule = {
   sessionCodec: copilotSessionCodec,
   sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
   models: copilotModels,
+  listModels: listCopilotModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: copilotAgentConfigurationDoc,
 };

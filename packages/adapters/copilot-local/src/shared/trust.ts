@@ -4,6 +4,7 @@ export function hasCursorTrustBypassArg(args: readonly string[]): boolean {
       arg === "--trust" ||
       arg === "--yolo" ||
       arg === "-f" ||
+      arg === "--allow-all-tools" ||
       arg.startsWith("--trust="),
   );
 }
