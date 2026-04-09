@@ -1297,3 +1297,197 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+describeEmbeddedPostgres("issueService.update auto-reassign on in_review", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-auto-reassign-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("reassigns to createdByAgentId when status transitions to in_review", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Worker",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test auto-reassign",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      createdByAgentId: creatorAgentId,
+    });
+
+    const updated = await svc.update(issueId, { status: "in_review" });
+
+    expect(updated!.assigneeAgentId).toBe(creatorAgentId);
+    expect(updated!.assigneeUserId).toBeNull();
+  });
+
+  it("reassigns to createdByUserId when status transitions to in_review", async () => {
+    const companyId = randomUUID();
+    const creatorUserId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test auto-reassign to user",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      createdByUserId: creatorUserId,
+    });
+
+    const updated = await svc.update(issueId, { status: "in_review" });
+
+    expect(updated!.assigneeAgentId).toBeNull();
+    expect(updated!.assigneeUserId).toBe(creatorUserId);
+  });
+
+  it("does not override explicit assignee in patch when transitioning to in_review", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const explicitAssigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Worker",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: explicitAssigneeAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test explicit assignee wins",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      createdByAgentId: creatorAgentId,
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "in_review",
+      assigneeAgentId: explicitAssigneeAgentId,
+    });
+
+    expect(updated!.assigneeAgentId).toBe(explicitAssigneeAgentId);
+  });
+});

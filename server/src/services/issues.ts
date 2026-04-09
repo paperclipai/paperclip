@@ -49,6 +49,7 @@ function assertTransition(from: string, to: string) {
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
+  existing?: typeof issues.$inferSelect,
 ): Partial<typeof issues.$inferInsert> {
   if (!status) return patch;
 
@@ -61,6 +62,21 @@ function applyStatusSideEffects(
   if (status === "cancelled") {
     patch.cancelledAt = new Date();
   }
+
+  // Auto-reassign on in_review: return to creator/delegator
+  if (status === "in_review" && existing) {
+    // Only if no explicit assignee is being set in this patch
+    if (patch.assigneeAgentId === undefined && patch.assigneeUserId === undefined) {
+      if (existing.createdByAgentId) {
+        patch.assigneeAgentId = existing.createdByAgentId;
+        patch.assigneeUserId = null;
+      } else if (existing.createdByUserId) {
+        patch.assigneeAgentId = null;
+        patch.assigneeUserId = existing.createdByUserId;
+      }
+    }
+  }
+
   return patch;
 }
 
@@ -1669,7 +1685,7 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(issueData.status, patch, existing);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
