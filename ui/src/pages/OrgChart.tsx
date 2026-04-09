@@ -132,7 +132,7 @@ const defaultDotColor = "#a3a3a3";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
 
@@ -175,8 +175,74 @@ export function OrgChart() {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
 
+  // Build team-based org tree: Board → Team nodes → agents.
+  // Each agent appears only in its primary team (first membership, lead preferred).
+  const teamBasedTree = useMemo<OrgNode[]>(() => {
+    const memberships = teamMemberships ?? [];
+    const agentList = agents ?? [];
+    if (agentList.length === 0) return orgTree ?? [];
+
+    // Group memberships by teamId
+    const teamAgents = new Map<string, { teamId: string; name: string; identifier: string; color: string | null; agents: Array<{ agentId: string; role: string }> }>();
+    for (const m of memberships) {
+      if (!teamAgents.has(m.teamId)) {
+        teamAgents.set(m.teamId, { teamId: m.teamId, name: m.name, identifier: m.identifier, color: m.color, agents: [] });
+      }
+      teamAgents.get(m.teamId)!.agents.push({ agentId: m.agentId, role: m.role });
+    }
+
+    // Allow agents in multiple teams — use team:agentId composite key for uniqueness
+    const agentById = new Map(agentList.map((a) => [a.id, a]));
+    const assignedIds = new Set<string>();
+    const teamNodes: OrgNode[] = [];
+
+    for (const [, team] of teamAgents) {
+      const children = team.agents
+        .map((ta) => {
+          assignedIds.add(ta.agentId);
+          const a = agentById.get(ta.agentId);
+          if (!a || a.status === "terminated") return null;
+          return { id: `${team.teamId}:${a.id}`, name: a.name, role: a.role ?? "general", status: a.status, reports: [] } as OrgNode;
+        })
+        .filter((n): n is OrgNode => n !== null)
+        .sort((a, b) => {
+          const aLead = team.agents.find((ta) => ta.agentId === a.id)?.role === "lead" ? 0 : 1;
+          const bLead = team.agents.find((ta) => ta.agentId === b.id)?.role === "lead" ? 0 : 1;
+          return aLead - bLead || a.name.localeCompare(b.name);
+        });
+      if (children.length > 0) {
+        teamNodes.push({ id: `team:${team.teamId}`, name: team.name, role: "team", status: "active", reports: children });
+      }
+    }
+
+    // Unassigned agents
+    const unassigned = agentList.filter((a) => !assignedIds.has(a.id) && a.status !== "terminated");
+    if (unassigned.length > 0) {
+      teamNodes.push({
+        id: "team:__unassigned",
+        name: "Unassigned",
+        role: "team",
+        status: "active",
+        reports: unassigned.map((a) => ({ id: `unassigned:${a.id}`, name: a.name, role: a.role ?? "general", status: a.status, reports: [] })),
+      });
+    }
+
+    teamNodes.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Wrap everything under a Board root node
+    const boardRoot: OrgNode = {
+      id: "board:root",
+      name: selectedCompany?.name ?? "Board",
+      role: "board",
+      status: "active",
+      reports: teamNodes,
+    };
+
+    return [boardRoot];
+  }, [orgTree, agents, teamMemberships, selectedCompany]);
+
   // Layout computation
-  const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
+  const layout = useMemo(() => layoutForest(teamBasedTree), [teamBasedTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
 
@@ -397,8 +463,69 @@ export function OrgChart() {
         }}
       >
         {allNodes.map((node) => {
-          const agent = agentMap.get(node.id);
+          const isBoardNode = node.id === "board:root";
+          const isTeamNode = node.id.startsWith("team:");
+          // Agent nodes use composite keys (teamId:agentId or unassigned:agentId)
+          const realAgentId = (!isBoardNode && !isTeamNode) ? node.id.split(":").pop()! : undefined;
+          const agent = realAgentId ? agentMap.get(realAgentId) : undefined;
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+
+          // Board root card
+          if (isBoardNode) {
+            return (
+              <div
+                key={node.id}
+                data-org-card
+                className="absolute border-2 border-foreground/30 rounded-lg shadow-md select-none bg-card"
+                style={{ left: node.x, top: node.y, width: CARD_W, minHeight: 60 }}
+              >
+                <div className="flex items-center px-4 py-3 gap-2">
+                  <div className="shrink-0 h-8 w-8 rounded-full bg-foreground/10 flex items-center justify-center">
+                    <Network className="h-4 w-4 text-foreground/70" />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm font-bold text-foreground">{node.name}</span>
+                    <span className="text-[10px] text-muted-foreground">Board</span>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Team header card
+          if (isTeamNode) {
+            const teamId = node.id.replace("team:", "");
+            const teamData = (teamMemberships ?? []).find((m) => m.teamId === teamId);
+            const teamColor = teamData?.color ?? "#6366f1";
+            return (
+              <div
+                key={node.id}
+                data-org-card
+                className="absolute border-2 rounded-lg shadow-sm select-none"
+                style={{
+                  left: node.x,
+                  top: node.y,
+                  width: CARD_W,
+                  minHeight: 60,
+                  borderColor: teamColor,
+                  backgroundColor: `${teamColor}15`,
+                }}
+              >
+                <div className="flex items-center px-4 py-3 gap-2">
+                  <span
+                    className="shrink-0 h-6 w-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white"
+                    style={{ backgroundColor: teamColor }}
+                  >
+                    {node.name.slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm font-bold text-foreground">{node.name}</span>
+                    <span className="text-[10px] text-muted-foreground">{node.children.length} agents</span>
+                  </div>
+                </div>
+              </div>
+            );
+          }
 
           return (
             <div
