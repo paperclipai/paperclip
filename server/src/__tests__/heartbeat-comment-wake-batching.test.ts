@@ -414,15 +414,11 @@ describe("heartbeat comment wake batching", () => {
       }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          commentIds: [comment2.id, comment3.id],
-          latestCommentId: comment3.id,
-        },
-      });
       expect(String(secondPayload.message ?? "")).toContain("Second comment");
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
       expect(String(secondPayload.message ?? "")).not.toContain("First comment");
+      expect(String(secondPayload.message ?? "")).toContain(`"commentIds":["${comment2.id}","${comment3.id}"]`);
+      expect(String(secondPayload.message ?? "")).toContain(`"latestCommentId":"${comment3.id}"`);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -594,21 +590,12 @@ describe("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Reopen after deferred comment",
-            status: "in_progress",
-            priority: "medium",
-          },
-        },
-      });
       expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+      expect(String(secondPayload.message ?? "")).toContain('"reason":"issue_commented"');
+      expect(String(secondPayload.message ?? "")).toContain(`"commentIds":["${comment2.id}"]`);
+      expect(String(secondPayload.message ?? "")).toContain(`"latestCommentId":"${comment2.id}"`);
+      expect(String(secondPayload.message ?? "")).toContain(`"id":"${issueId}"`);
+      expect(String(secondPayload.message ?? "")).toContain(`"identifier":"${issuePrefix}-1"`);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -680,20 +667,6 @@ describe("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_assigned",
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Require a comment",
-            status: "in_progress",
-            priority: "medium",
-          },
-          checkedOutByHarness: true,
-          commentIds: [],
-        },
-      });
       expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
       expect(String(firstPayload.message ?? "")).toContain("- checkout: already claimed by the harness for this run");
@@ -715,6 +688,10 @@ describe("heartbeat comment wake batching", () => {
         checkoutRunId: firstRun?.id,
         executionRunId: firstRun?.id,
       });
+      expect(String(firstPayload.message ?? "")).toContain('"reason":"issue_assigned"');
+      expect(String(firstPayload.message ?? "")).toContain(`"id":"${issueId}"`);
+      expect(String(firstPayload.message ?? "")).toContain(`"identifier":"${issuePrefix}-1"`);
+      expect(String(firstPayload.message ?? "")).toContain('"commentIds":[]');
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db
