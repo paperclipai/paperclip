@@ -30,13 +30,11 @@ export function SidebarRooms() {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex-1 min-w-0">
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Rooms
-            </span>
-          </CollapsibleTrigger>
+      <CollapsibleTrigger asChild>
+        <div className="flex items-center py-1.5 cursor-pointer">
+          <span className="flex-1 text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            Rooms
+          </span>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -48,7 +46,7 @@ export function SidebarRooms() {
             <Plus className="h-3 w-3" />
           </button>
         </div>
-      </div>
+      </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="flex flex-col gap-0.5 mt-0.5">
           {visible.length === 0 ? (

@@ -286,22 +286,21 @@ export function SidebarTeams() {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex-1 min-w-0">
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Teams
-            </span>
-          </CollapsibleTrigger>
+      <CollapsibleTrigger asChild>
+        <div className="flex items-center py-1.5 cursor-pointer">
+          <span className="flex-1 text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            Teams
+          </span>
           <NavLink
             to="/teams/new"
+            onClick={(e) => e.stopPropagation()}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
             aria-label="New team"
           >
             <Plus className="h-3 w-3" />
           </NavLink>
         </div>
-      </div>
+      </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="flex flex-col gap-0.5 mt-0.5">
           {tree.length === 0 ? (
