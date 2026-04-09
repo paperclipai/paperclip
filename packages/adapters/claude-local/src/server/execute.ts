@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { formatWikiForPrompt, type WikiContextBundle } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -412,8 +413,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const wikiBundle = config.paperclipAgentWiki as WikiContextBundle | undefined;
+  const wikiPromptSection = wikiBundle ? formatWikiForPrompt(wikiBundle) : "";
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
+    wikiPromptSection,
     wakePrompt,
     sessionHandoffNote,
     renderedPrompt,

@@ -408,6 +408,9 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  WikiContextBundle,
+  WikiUpdate,
+  WikiPageInfo,
 } from "./types/index.js";
 
 export {

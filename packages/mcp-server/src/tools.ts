@@ -411,6 +411,20 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         }),
     ),
     makeTool(
+      "paperclipWikiListPages",
+      "List all pages in your personal wiki. Returns page paths, titles, and last updated timestamps.",
+      z.object({}),
+      async () => client.requestJson("GET", "/agents/me/wiki"),
+    ),
+    makeTool(
+      "paperclipWikiReadPage",
+      "Read a specific page from your personal wiki by its path (e.g. 'topics/kafka-patterns.md'). Use the index to discover available pages.",
+      z.object({
+        path: z.string().min(1).describe("Relative path within your wiki, e.g. 'topics/kafka-patterns.md'"),
+      }),
+      async ({ path }) => client.requestJson("GET", `/agents/me/wiki/${encodeURIComponent(path)}`),
+    ),
+    makeTool(
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
