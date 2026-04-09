@@ -9,7 +9,7 @@ export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
-export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "labels", "updated"] as const;
+export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "parent", "labels", "updated"] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
 export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "updated"];
 export type InboxWorkItem =
@@ -362,7 +362,7 @@ export function computeInboxBadgeData({
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !dismissed.has(`join:${jr.id}`),
   ).length;
-  const visibleMineIssues = mineIssues.length;
+  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;

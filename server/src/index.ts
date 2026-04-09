@@ -560,7 +560,7 @@ export async function startServer(): Promise<StartedServer> {
   const storageService = createStorageServiceFromConfig(config);
   const storageProvider = createStorageProviderFromConfig(config);
   const feedback = feedbackService(db as any, {
-    shareClient: createFeedbackTraceShareClientFromConfig(config) ?? undefined,
+    shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const app = await createApp(db as any, {
     uiMode,
@@ -585,6 +585,12 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+
+  // Increase keep-alive timeouts to safely outlive default idle timeouts
+  // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
+  // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
+  server.keepAliveTimeout = 185000;
+  server.headersTimeout = 186000;
   
   if (listenPort !== config.port) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
@@ -779,6 +785,12 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
     }, backupIntervalMs);
   }
   
+  // Wait for external adapters to finish loading before accepting requests.
+  // Without this, adapter type validation (assertKnownAdapterType) would
+  // reject valid external adapter types during the startup loading window.
+  const { waitForExternalAdapters } = await import("./adapters/registry.js");
+  await waitForExternalAdapters();
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

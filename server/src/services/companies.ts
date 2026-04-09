@@ -6,7 +6,6 @@ import {
   companyLogos,
   companySecrets,
   companySecretVersions,
-  companySkills,
   companySubscriptions,
   subscriptionPlans,
   assets,
@@ -46,6 +45,7 @@ import {
   invites,
   principalPermissionGrants,
   companyMemberships,
+  companySkills,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -357,6 +357,7 @@ export function companyService(db: Db) {
         // Heartbeat
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
@@ -389,13 +390,14 @@ export function companyService(db: Db) {
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         // Execution workspaces (before issues/projects)
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
+        // companySkills must be deleted before issues (FK constraint added upstream)
+        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         // Issues (after all issue children)
         await tx.delete(issues).where(eq(issues.companyId, id));
         // Project children (before projects)
         await tx.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, id));
         await tx.delete(projectGoals).where(eq(projectGoals.companyId, id));
-        // Skills & subscriptions
-        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        // Subscriptions
         await tx.delete(companySubscriptions).where(eq(companySubscriptions.companyId, id));
         // Top-level entities
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));

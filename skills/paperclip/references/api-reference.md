@@ -109,6 +109,8 @@ POST /api/companies/company-1/exports
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
 
+The response also includes `blockedBy` and `blocks` arrays showing first-class dependency relationships:
+
 ```json
 {
   "id": "issue-99",
@@ -116,6 +118,10 @@ Includes the issue's `project` and `goal` (with descriptions), plus each ancesto
   "parentId": "issue-50",
   "projectId": "proj-1",
   "goalId": null,
+  "blockedBy": [
+    { "id": "issue-80", "identifier": "PAP-80", "title": "Design auth schema", "status": "in_progress", "priority": "high", "assigneeAgentId": "agent-55", "assigneeUserId": null }
+  ],
+  "blocks": [],
   "project": {
     "id": "proj-1",
     "name": "Auth System",
@@ -183,6 +189,60 @@ Includes the issue's `project` and `goal` (with descriptions), plus each ancesto
 }
 ```
 
+Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
+
+### Execution Policy Fields On An Issue
+
+When an issue has review or approval gates, `GET /api/issues/:issueId` can also include `executionPolicy` and `executionState`:
+
+```json
+{
+  "status": "in_review",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "stages": [
+      {
+        "id": "stage-review",
+        "type": "review",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-qa", "type": "agent", "agentId": "qa-agent-id" }
+        ]
+      },
+      {
+        "id": "stage-approval",
+        "type": "approval",
+        "approvalsNeeded": 1,
+        "participants": [
+          { "id": "participant-cto", "type": "user", "userId": "cto-user-id" }
+        ]
+      }
+    ]
+  },
+  "executionState": {
+    "status": "pending",
+    "currentStageId": "stage-review",
+    "currentStageIndex": 0,
+    "currentStageType": "review",
+    "currentParticipant": { "type": "agent", "agentId": "qa-agent-id" },
+    "returnAssignee": { "type": "agent", "agentId": "coder-agent-id" },
+    "completedStageIds": [],
+    "lastDecisionId": null,
+    "lastDecisionOutcome": null
+  }
+}
+```
+
+Interpretation:
+
+- `currentStageType` tells you whether the active gate is `review` or `approval`
+- `currentParticipant` is the only actor allowed to advance the stage
+- `returnAssignee` is who gets the task back when changes are requested
+- `lastDecisionOutcome` shows the latest gate decision
+
+There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
+
 ---
 
 ## Worked Example: IC Heartbeat
@@ -195,7 +255,7 @@ GET /api/agents/me
 -> { id: "agent-42", companyId: "company-1", ... }
 
 # 2. Check inbox
-GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,blocked
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,in_review,blocked
 -> [
     { id: "issue-101", title: "Fix rate limiter bug", status: "in_progress", priority: "high" },
     { id: "issue-99", title: "Implement login API", status: "todo", priority: "medium" }
@@ -216,7 +276,7 @@ PATCH /api/issues/issue-101
 
 # 6. Still have time. Checkout the next task.
 POST /api/issues/issue-99/checkout
-{ "agentId": "agent-42", "expectedStatuses": ["todo"] }
+{ "agentId": "agent-42", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
 GET /api/issues/issue-99
 -> { ..., ancestors: [{ title: "Build auth system", ... }] }
@@ -254,6 +314,43 @@ PATCH /api/issues/issue-200
 { "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
 ```
 
+### Worked Example: Reviewer / Approver Heartbeat
+
+When you wake up on an issue in `in_review`, inspect `executionState` first:
+
+```
+GET /api/issues/issue-77
+-> {
+     id: "issue-77",
+     status: "in_review",
+     assigneeAgentId: "qa-agent-id",
+     executionState: {
+       status: "pending",
+       currentStageType: "review",
+       currentParticipant: { type: "agent", agentId: "qa-agent-id" },
+       returnAssignee: { type: "agent", agentId: "coder-agent-id" }
+     }
+   }
+```
+
+If `currentParticipant` is you, approve the current stage by patching the issue to `done` with a required comment:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "done", "comment": "QA signoff complete. Verified the regression and test coverage." }
+```
+
+Paperclip writes the execution decision automatically. If another stage remains, the issue stays in `in_review` and is reassigned to the next participant. If this was the final stage, the issue reaches actual `done`.
+
+To request changes, use a non-`done` status with a required comment. Prefer `in_progress`:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "in_progress", "comment": "Changes requested: add a regression test for the empty-state path." }
+```
+
+Paperclip converts that into a `changes_requested` decision, reassigns the issue to `returnAssignee`, and routes it back to the same stage when the executor resubmits.
+
 ---
 
 ## Worked Example: Manager Heartbeat
@@ -283,14 +380,15 @@ GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progres
 -> [ { id: "issue-30", title: "Break down Q2 roadmap into tasks", status: "todo" } ]
 
 POST /api/issues/issue-30/checkout
-{ "agentId": "mgr-1", "expectedStatuses": ["todo"] }
+{ "agentId": "mgr-1", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
 # 6. Create subtasks and delegate.
 POST /api/companies/company-1/issues
 { "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
 
 POST /api/companies/company-1/issues
-{ "title": "Write load test suite", "assigneeAgentId": "agent-55", "parentId": "issue-30", "status": "todo", "priority": "medium", "goalId": "goal-1" }
+{ "title": "Write load test suite", "assigneeAgentId": "agent-55", "parentId": "issue-30", "status": "blocked", "priority": "medium", "goalId": "goal-1", "blockedByIssueIds": ["<caching-layer-issue-id>"] }
+# ^ Load tests depend on caching layer being done first. Paperclip will auto-wake agent-55 when the blocker resolves.
 
 PATCH /api/issues/issue-30
 { "status": "done", "comment": "Broke down into subtasks for caching layer and load testing." }
@@ -617,8 +715,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue                                                                             |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field adds a comment in same call)                      |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
+| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
@@ -719,3 +817,4 @@ Terminal states: `done`, `cancelled`
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
+| Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

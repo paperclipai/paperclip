@@ -319,6 +319,21 @@ describe("inbox helpers", () => {
     });
   });
 
+  it("excludes read mine issues from the inbox badge count", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
+      dismissed: new Set<string>(),
+    });
+
+    expect(result.mineIssues).toBe(1);
+    // inbox = mineIssues(1) + agent-error alert(1) + budget alert(1)
+    expect(result.inbox).toBe(3);
+  });
+
   it("keeps read issues in the touched list but excludes them from unread counts", () => {
     const issues = [makeIssue("1", true), makeIssue("2", false)];
 
@@ -515,13 +530,14 @@ describe("inbox helpers", () => {
   });
 
   it("hides the workspace column option unless isolated workspaces are enabled", () => {
-    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "updated"]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
       "status",
       "id",
       "assignee",
       "project",
       "workspace",
+      "parent",
       "labels",
       "updated",
     ]);

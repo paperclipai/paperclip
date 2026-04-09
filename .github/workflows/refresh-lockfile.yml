@@ -50,30 +50,47 @@ jobs:
             exit 1
           fi
 
-      - name: Create PR to update lockfile
+      - name: Create or update pull request
+        id: upsert-pr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
+            echo "pr_url=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          branch="chore/refresh-lockfile"
+          BRANCH="chore/refresh-lockfile"
           git config user.name "lockfile-bot"
           git config user.email "lockfile-bot@users.noreply.github.com"
 
-          git checkout -b "$branch"
+          git checkout -B "$BRANCH"
           git add pnpm-lock.yaml
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
-          git push -f origin "$branch"
+          git push --force origin "$BRANCH"
 
-          if gh pr view "$branch" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "PR already exists, updated branch."
-          else
-            gh pr create \
+          # Only reuse an open PR from this repository owner, not a fork with the same branch name.
+          pr_url="$(
+            gh pr list --state open --head "$BRANCH" --json url,headRepositoryOwner \
+              --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url" |
+            head -n 1
+          )"
+          if [ -z "$pr_url" ]; then
+            pr_url="$(gh pr create \
+              --head "$BRANCH" \
               --title "chore(lockfile): refresh pnpm-lock.yaml" \
-              --body "Auto-generated lockfile refresh. Merge to unblock Docker builds." \
-              --head "$branch" \
-              --base main
+              --body "Auto-generated lockfile refresh after dependencies changed on main. This PR only updates pnpm-lock.yaml.")"
+            echo "Created new PR: $pr_url"
+          else
+            echo "PR already exists: $pr_url"
           fi
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge for lockfile PR
+        if: steps.upsert-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"

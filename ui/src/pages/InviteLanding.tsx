@@ -8,25 +8,21 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 type JoinType = "human" | "agent";
 const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
-const adapterLabels: Record<string, string> = {
-  cloud_sandbox: "Cloud Sandbox",
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  pi_local: "Pi (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
-  process: "Process",
-  http: "HTTP",
-};
-
-const ENABLED_INVITE_ADAPTERS = new Set(["cloud_sandbox", "claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
+const ENABLED_INVITE_ADAPTERS = new Set([
+  "cloud_sandbox",
+  "claude_local",
+  "codex_local",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "hermes_local",
+]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -280,7 +276,7 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                   </option>
                 ))}
               </select>

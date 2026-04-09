@@ -51,10 +51,21 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
   syncSkills: vi.fn(),
+}));
+
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackAgentCreated: mockTrackAgentCreated,
+  trackErrorHandlerCrash: vi.fn(),
+}));
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -75,7 +86,9 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
+  findActiveServerAdapter: vi.fn(() => mockAdapter),
   listAdapterModels: vi.fn(),
+  detectAdapterModel: vi.fn(),
 }));
 
 function createDb(requireBoardApprovalForNewAgents = false) {
@@ -132,6 +145,7 @@ function makeAgent(adapterType: string) {
 describe("agent skill routes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),
@@ -330,6 +344,9 @@ describe("agent skill routes", () => {
         }),
       }),
     );
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(expect.anything(), {
+      agentRole: "engineer",
+    });
   });
 
   it("materializes a managed AGENTS.md for directly created local agents", async () => {

@@ -617,4 +617,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
   });
+
+  it("accepts GitHub-style X-Hub-Signature-256 with github_hmac signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "github_hmac",
+      },
+      {},
+    );
+
+    const payload = { action: "opened", pull_request: { number: 1 } };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(rawBody)
+      .digest("hex")}`;
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      hubSignatureHeader: signature,
+      rawBody,
+      payload,
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
+  });
+
+  it("rejects invalid signature for github_hmac signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "github_hmac",
+      },
+      {},
+    );
+
+    const rawBody = Buffer.from(JSON.stringify({ ok: true }));
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, {
+        hubSignatureHeader: "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+        rawBody,
+        payload: { ok: true },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("accepts any request with none signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "error.created" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
+  });
 });

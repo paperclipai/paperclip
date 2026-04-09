@@ -1,4 +1,13 @@
-export { getUIAdapter, getCloudSandboxRuntimeParser, listUIAdapters } from "./registry";
+export {
+  getUIAdapter,
+  getCloudSandboxRuntimeParser,
+  listUIAdapters,
+  findUIAdapter,
+  registerUIAdapter,
+  unregisterUIAdapter,
+  syncExternalAdapters,
+  onAdapterChange,
+} from "./registry";
 export { buildTranscript } from "./transcript";
 export type {
   TranscriptEntry,

@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MarkdownEditor } from "./MarkdownEditor";
+import { computeMentionMenuPosition, findMentionMatch, MarkdownEditor } from "./MarkdownEditor";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -79,6 +79,10 @@ vi.mock("@mdxeditor/editor", async () => {
 
 vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
+}));
+
+vi.mock("../lib/paste-normalization", () => ({
+  pasteNormalizationPlugin: () => ({}),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,5 +161,56 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 180, viewportLeft: 120 },
+        { offsetLeft: 24, offsetTop: 320, width: 320, height: 260 },
+      ),
+    ).toEqual({
+      top: 372,
+      left: 144,
+    });
+  });
+
+  it("clamps the mention menu back into view near the viewport edges", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 260, viewportLeft: 240 },
+        { offsetLeft: 0, offsetTop: 0, width: 280, height: 220 },
+      ),
+    ).toEqual({
+      top: 12,
+      left: 92,
+    });
+  });
+
+  it("keeps a short mention menu on the same line when it fits below the caret", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 160, viewportLeft: 120 },
+        { offsetLeft: 0, offsetTop: 0, width: 320, height: 220 },
+        { width: 188, height: 42 },
+      ),
+    ).toEqual({
+      top: 164,
+      left: 120,
+    });
+  });
+
+  it("keeps mention queries active across spaces", () => {
+    expect(findMentionMatch("Ping @Paperclip App", "Ping @Paperclip App".length)).toEqual({
+      trigger: "mention",
+      marker: "@",
+      query: "Paperclip App",
+      atPos: 5,
+      endPos: "Ping @Paperclip App".length,
+    });
+  });
+
+  it("still rejects slash commands once spaces are typed", () => {
+    expect(findMentionMatch("/open issue", "/open issue".length)).toBeNull();
   });
 });

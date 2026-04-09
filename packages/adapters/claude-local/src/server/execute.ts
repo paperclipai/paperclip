@@ -20,6 +20,8 @@ import {
   ensurePathInEnv,
   resolveCommandForLogs,
   renderTemplate,
+  renderPaperclipWakePrompt,
+  stringifyPaperclipWakePayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -30,6 +32,7 @@ import {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
+import { isBedrockModelId } from "./models.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,8 +103,16 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
-  // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
+function isBedrockAuth(env: Record<string, string>): boolean {
+  return (
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")
+  );
+}
+
+function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+  if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
@@ -170,6 +181,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
 
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
@@ -188,6 +200,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (linkedIssueIds.length > 0) {
     env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  }
+  if (wakePayloadJson) {
+    env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
@@ -317,7 +332,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
+  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const commandNotes = instructionsFilePath
@@ -398,20 +413,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedPrompt = renderTemplate(promptTemplate, templateData);
   const renderedBootstrapPrompt =
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
+    wakePrompt,
     sessionHandoffNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
@@ -421,7 +440,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (chrome) args.push("--chrome");
-    if (model) args.push("--model", model);
+    // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
+    // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
+    // on Bedrock, so skip them and let the CLI use its own configured model.
+    if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
+      args.push("--model", model);
+    }
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
     if (effectiveInstructionsFilePath) {
@@ -568,7 +592,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: "anthropic",
-      biller: "anthropic",
+      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
