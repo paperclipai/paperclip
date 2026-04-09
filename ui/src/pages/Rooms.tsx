@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Send, Trash2, Check, CheckCheck, X, Zap, Paperclip, FileIcon, Download } from "lucide-react";
+import { Send, Trash2, Check, CheckCheck, X, Zap, Paperclip, FileIcon, Download, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { roomsApi, type Room, type RoomMessage, type RoomParticipant, type RoomAttachment } from "../api/rooms";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { authApi } from "../api/auth";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
@@ -869,66 +870,75 @@ export function RoomDetailPage() {
           <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
             Participants ({participants.data?.length ?? 0})
           </h3>
-          <ul className="space-y-1 mb-2">
+          <div className="rounded-lg bg-card overflow-hidden mb-2">
             {(participants.data ?? []).map((p) => (
-              <li
+              <div
                 key={p.id}
-                className="text-xs flex items-center gap-2 border border-border rounded px-2 py-1"
+                className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors group"
               >
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 rounded-full">
                   {p.role}
                 </Badge>
-                <span className="flex-1 truncate">
+                <span className="flex-1 truncate text-foreground/80">
                   {p.agentId ? agentName(p.agentId) : p.userId}
                 </span>
                 <button
                   onClick={() => removeParticipantMutation.mutate(p.id)}
                   aria-label={`remove participant ${p.id}`}
-                  className="text-muted-foreground hover:text-destructive"
+                  className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
-              </li>
+              </div>
             ))}
-          </ul>
-          <select
-            data-testid="room-add-participant"
-            className="w-full text-xs border border-border rounded px-2 py-1 bg-background"
-            onChange={(e) => {
-              if (e.target.value) {
-                addParticipantMutation.mutate(e.target.value);
-                e.target.value = "";
-              }
-            }}
-            defaultValue=""
-          >
-            <option value="">+ Add agent…</option>
-            {linkableAgents.map((a: any) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+          </div>
+          {linkableAgents.length > 0 && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start text-xs text-muted-foreground h-7"
+                >
+                  <Plus className="h-3 w-3 mr-1.5" />
+                  Add agent
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-48 p-1" align="start">
+                {linkableAgents.map((a: any) => (
+                  <button
+                    key={a.id}
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-md hover:bg-accent/50 text-left"
+                    onClick={() => addParticipantMutation.mutate(a.id)}
+                  >
+                    {a.name}
+                  </button>
+                ))}
+              </PopoverContent>
+            </Popover>
+          )}
         </section>
 
         <section data-testid="room-issues-section">
           <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
             Linked Issues ({issues.data?.length ?? 0})
           </h3>
-          <ul className="space-y-1">
+          <div className="rounded-lg bg-card overflow-hidden">
             {(issues.data ?? []).map((link) => (
-              <li
+              <div
                 key={link.issueId}
-                className="text-xs flex items-center gap-2 border border-border rounded px-2 py-1"
+                className="flex items-center gap-2 px-3 h-7 text-[13px] hover:bg-accent/30 transition-colors"
               >
-                <span className="font-mono">{link.issue.identifier ?? "—"}</span>
-                <span className="flex-1 truncate">{link.issue.title}</span>
-              </li>
+                <span className="font-mono text-xs text-muted-foreground">{link.issue.identifier ?? "—"}</span>
+                <span className="flex-1 truncate text-foreground/80">{link.issue.title}</span>
+              </div>
             ))}
             {(issues.data ?? []).length === 0 && (
-              <li className="text-xs text-muted-foreground italic">No issues linked</li>
+              <div className="px-3 h-7 flex items-center text-xs text-muted-foreground/60 italic">
+                No issues linked
+              </div>
             )}
-          </ul>
+          </div>
         </section>
       </div>
     </div>
