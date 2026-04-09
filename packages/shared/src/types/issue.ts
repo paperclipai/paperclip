@@ -3,6 +3,7 @@ import type {
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueKind,
   IssueOriginKind,
   IssuePriority,
   IssueStatus,
@@ -181,6 +182,7 @@ export interface Issue {
   goalId: string | null;
   parentId: string | null;
   ancestors?: IssueAncestor[];
+  kind: IssueKind;
   title: string;
   description: string | null;
   status: IssueStatus;

@@ -25,7 +25,7 @@ import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
-interface CommentWithRunMeta extends IssueComment {
+export interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
   runAgentId?: string | null;
   clientId?: string;
@@ -86,6 +86,14 @@ interface CommentThreadProps {
   mentions?: MentionOption[];
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  submitLabel?: string;
+  placeholder?: string;
+  stickyInput?: boolean;
+  hideReopen?: boolean;
+  hideHeader?: boolean;
+  emptyState?: React.ReactNode;
+  onFilePathClick?: (path: string) => void;
+  onDirPathClick?: (dirPath: string) => void;
   composerDisabledReason?: string | null;
 }
 
@@ -241,6 +249,8 @@ function CommentCard({
   voting = false,
   highlightCommentId,
   queued = false,
+  onFilePathClick,
+  onDirPathClick,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -256,6 +266,9 @@ function CommentCard({
   voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
+  onFilePathClick?: (path: string) => void;
+  onDirPathClick?: (dirPath: string) => void;
+
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
@@ -319,7 +332,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" onFilePathClick={onFilePathClick} onDirPathClick={onDirPathClick}>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -386,6 +399,8 @@ type TimelineItem =
   | { kind: "approval"; id: string; createdAtMs: number; approval: Approval }
   | { kind: "event"; id: string; createdAtMs: number; event: IssueTimelineEvent }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
+
+const DEFAULT_EMPTY_STATE = <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
 
 function TimelineEventCard({
   event,
@@ -465,6 +480,9 @@ const TimelineList = memo(function TimelineList({
   onVote,
   votingTargetId,
   highlightCommentId,
+  emptyState = DEFAULT_EMPTY_STATE,
+  onFilePathClick,
+  onDirPathClick,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -487,9 +505,12 @@ const TimelineList = memo(function TimelineList({
   ) => Promise<void>;
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
+  emptyState?: React.ReactNode;
+  onFilePathClick?: (path: string) => void;
+  onDirPathClick?: (dirPath: string) => void;
 }) {
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
+    return emptyState ? <>{emptyState}</> : null;
   }
 
   return (
@@ -574,6 +595,8 @@ const TimelineList = memo(function TimelineList({
             onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
+            onFilePathClick={onFilePathClick}
+            onDirPathClick={onDirPathClick}
           />
         );
       })}
@@ -610,6 +633,14 @@ export const CommentThread = memo(function CommentThread({
   mentions: providedMentions,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  submitLabel,
+  placeholder: placeholderProp,
+  stickyInput = false,
+  hideReopen = false,
+  hideHeader = false,
+  emptyState,
+  onFilePathClick,
+  onDirPathClick,
   composerDisabledReason = null,
 }: CommentThreadProps) {
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
@@ -732,6 +763,9 @@ export const CommentThread = memo(function CommentThread({
         votingTargetId={votingTargetId}
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
+        emptyState={emptyState}
+        onFilePathClick={onFilePathClick}
+        onDirPathClick={onDirPathClick}
       />
     ),
     [
@@ -801,6 +835,10 @@ export const CommentThread = memo(function CommentThread({
           currentAssigneeValue={currentAssigneeValue}
           suggestedAssigneeValue={effectiveSuggestedAssigneeValue}
           agentMap={agentMap}
+          stickyInput={stickyInput}
+          placeholder={placeholderProp}
+          submitLabel={submitLabel}
+          hideReopen={hideReopen}
         />
       )}
 
@@ -823,6 +861,10 @@ interface CommentComposerProps {
   currentAssigneeValue: string;
   suggestedAssigneeValue: string;
   agentMap?: Map<string, Agent>;
+  stickyInput?: boolean;
+  placeholder?: string;
+  submitLabel?: string;
+  hideReopen?: boolean;
 }
 
 const CommentComposer = memo(function CommentComposer({
@@ -836,6 +878,10 @@ const CommentComposer = memo(function CommentComposer({
   currentAssigneeValue,
   suggestedAssigneeValue,
   agentMap,
+  stickyInput,
+  placeholder: placeholderProp,
+  submitLabel,
+  hideReopen,
 }: CommentComposerProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -917,16 +963,16 @@ const CommentComposer = memo(function CommentComposer({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-2">
+    <div className={stickyInput ? "space-y-2 sticky bottom-0 bg-background pt-2 pb-1 max-h-[33vh] overflow-y-auto border-t border-border" : "space-y-2"}>
       <MarkdownEditor
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Leave a comment..."
+        placeholder={placeholderProp ?? "Leave a comment..."}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={imageUploadHandler}
-        contentClassName="min-h-[60px] text-sm"
+        contentClassName={stickyInput ? "min-h-[60px] max-h-[25vh] overflow-y-auto text-sm" : "min-h-[60px] text-sm"}
       />
       <div className="flex items-center justify-end gap-3">
         {(imageUploadHandler || onAttachImage) && (
@@ -949,15 +995,17 @@ const CommentComposer = memo(function CommentComposer({
             </Button>
           </div>
         )}
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={reopen}
-            onChange={(e) => setReopen(e.target.checked)}
-            className="rounded border-border"
-          />
-          Re-open
-        </label>
+        {!hideReopen && (
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={reopen}
+              onChange={(e) => setReopen(e.target.checked)}
+              className="rounded border-border"
+            />
+            Re-open
+          </label>
+        )}
         {enableReassign && reassignOptions.length > 0 && (
           <InlineEntitySelector
             value={reassignTarget}
@@ -996,8 +1044,8 @@ const CommentComposer = memo(function CommentComposer({
             }}
           />
         )}
-        <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-          {submitting ? "Posting..." : "Comment"}
+        <Button size="sm" className="min-w-[5rem]" disabled={!canSubmit} onClick={handleSubmit}>
+          {submitting ? "Sending..." : (submitLabel ?? "Comment")}
         </Button>
       </div>
     </div>

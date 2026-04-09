@@ -66,6 +66,7 @@ function applyStatusSideEffects(
 
 export interface IssueFilters {
   status?: string;
+  kind?: string;
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -942,6 +943,9 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
+      if (filters?.kind) {
+        conditions.push(eq(issues.kind, filters.kind));
+      }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
@@ -1403,6 +1407,23 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+
+      // Conversations without an explicit project inherit the company's primary
+      // project workspace so agents resolve the correct CWD during runs.  This
+      // keeps conversations working out of the box for operators who configure a
+      // project workspace but don't manually set adapterConfig.cwd.
+      if (issueData.kind === "conversation" && !issueData.projectId) {
+        const defaultProject = await db
+          .select({ projectId: projectWorkspaces.projectId })
+          .from(projectWorkspaces)
+          .where(eq(projectWorkspaces.companyId, companyId))
+          .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt))
+          .then((rows) => rows[0] ?? null);
+        if (defaultProject) {
+          issueData.projectId = defaultProject.projectId;
+        }
+      }
+
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);

@@ -249,6 +249,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    kind: "task",
     title: "Routine execution issue",
     description: null,
     status: "todo",

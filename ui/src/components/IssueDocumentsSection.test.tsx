@@ -183,6 +183,7 @@ function createIssue(): Issue {
     goalId: null,
     parentId: null,
     title: "Plan rendering",
+    kind: "task",
     description: null,
     status: "in_progress",
     priority: "medium",

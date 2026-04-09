@@ -11,7 +11,9 @@ import {
   Boxes,
   Repeat,
   Settings,
+  MessageSquare,
 } from "lucide-react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -21,7 +23,9 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
+import { issuesApi } from "../api/issues";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useConversationUnread } from "../hooks/useConversationUnread";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -35,7 +39,24 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const { data: convoIssues } = useQuery({
+    queryKey: queryKeys.conversations.ids(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { kind: "conversation" }),
+    enabled: !!selectedCompanyId,
+  });
+  const convoIssueIds = useMemo(
+    () => new Set((convoIssues ?? []).map((i) => i.id)),
+    [convoIssues],
+  );
+  const taskLiveCount = useMemo(
+    () => (liveRuns ?? []).filter((r) => !r.issueId || !convoIssueIds.has(r.issueId)).length,
+    [liveRuns, convoIssueIds],
+  );
+  const convoLiveCount = useMemo(
+    () => (liveRuns ?? []).filter((r) => r.issueId && convoIssueIds.has(r.issueId)).length,
+    [liveRuns, convoIssueIds],
+  );
+  const { unreadCount: unreadConvoCount } = useConversationUnread(selectedCompanyId);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -79,7 +100,8 @@ export function Sidebar() {
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">New Issue</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={taskLiveCount} />
+          <SidebarNavItem to="/conversations" label="Conversations" icon={MessageSquare} badge={unreadConvoCount || undefined} liveCount={convoLiveCount} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"

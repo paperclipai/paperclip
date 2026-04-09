@@ -1137,3 +1137,202 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 });
+describeEmbeddedPostgres("issueService.create conversation project auto-association", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-convo-assoc-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "ceo",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return agentId;
+  }
+
+  async function seedProjectWithWorkspace(companyId: string, opts?: { isPrimary?: boolean; cwd?: string }) {
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Phase 0",
+      status: "active",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "main",
+      cwd: opts?.cwd ?? "/tmp/test-workspace",
+      isPrimary: opts?.isPrimary ?? true,
+    });
+    return { projectId, workspaceId };
+  }
+
+  it("auto-associates a conversation issue with the company's primary project workspace", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const { projectId } = await seedProjectWithWorkspace(companyId, { isPrimary: true });
+
+    const issue = await svc.create(companyId, {
+      kind: "conversation",
+      title: "Conversation: TestAgent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBe(projectId);
+  });
+
+  it("does not override an explicitly provided projectId on a conversation", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const { projectId: autoProjectId } = await seedProjectWithWorkspace(companyId, { isPrimary: true });
+
+    const explicitProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: explicitProjectId,
+      companyId,
+      name: "Explicit Project",
+      status: "active",
+    });
+
+    const issue = await svc.create(companyId, {
+      kind: "conversation",
+      title: "Conversation: TestAgent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      projectId: explicitProjectId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBe(explicitProjectId);
+    expect(issue.projectId).not.toBe(autoProjectId);
+  });
+
+  it("does not auto-associate task issues — only conversations", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    await seedProjectWithWorkspace(companyId, { isPrimary: true });
+
+    const issue = await svc.create(companyId, {
+      kind: "task",
+      title: "Fix bug",
+      status: "todo",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBeNull();
+  });
+
+  it("leaves projectId null when the company has no project workspaces", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+
+    const issue = await svc.create(companyId, {
+      kind: "conversation",
+      title: "Conversation: TestAgent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBeNull();
+  });
+
+  it("prefers the primary workspace when multiple projects exist", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+
+    // Non-primary project created first
+    const secondaryProjectId = randomUUID();
+    const secondaryWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: secondaryProjectId,
+      companyId,
+      name: "Secondary",
+      status: "active",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: secondaryWorkspaceId,
+      companyId,
+      projectId: secondaryProjectId,
+      name: "secondary-ws",
+      cwd: "/tmp/secondary",
+      isPrimary: false,
+    });
+
+    // Primary project created after
+    const { projectId: primaryProjectId } = await seedProjectWithWorkspace(companyId, {
+      isPrimary: true,
+      cwd: "/tmp/primary",
+    });
+
+    const issue = await svc.create(companyId, {
+      kind: "conversation",
+      title: "Conversation: TestAgent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBe(primaryProjectId);
+  });
+
+  it("resolves projectWorkspaceId when conversation inherits a project", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const { projectId, workspaceId } = await seedProjectWithWorkspace(companyId, { isPrimary: true });
+
+    const issue = await svc.create(companyId, {
+      kind: "conversation",
+      title: "Conversation: TestAgent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      priority: "medium",
+    });
+
+    expect(issue.projectId).toBe(projectId);
+    expect(issue.projectWorkspaceId).toBe(workspaceId);
+  });
+});

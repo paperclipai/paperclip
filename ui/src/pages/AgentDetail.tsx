@@ -70,6 +70,7 @@ import {
   ChevronDown,
   ArrowLeft,
   HelpCircle,
+  MessageSquare,
   FolderOpen,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
@@ -97,6 +98,8 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+
+import { ensureConversation } from "../api/conversations";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -622,11 +625,13 @@ export function AgentDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
+  const { pushToast } = useToast();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [startingChat, setStartingChat] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
@@ -922,6 +927,28 @@ export function AgentDetail() {
           </div>
         </div>
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+          {(agent.reportsTo === null || directReports.length > 0) && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={startingChat}
+              onClick={async () => {
+                if (!selectedCompanyId || startingChat) return;
+                setStartingChat(true);
+                try {
+                  const issue = await ensureConversation(selectedCompanyId, agent.id, agent.name);
+                  navigate(`/conversations/${issue.id}`);
+                } catch {
+                  pushToast({ title: "Failed to start conversation", tone: "error" });
+                } finally {
+                  setStartingChat(false);
+                }
+              }}
+            >
+              <MessageSquare className="h-3.5 w-3.5 sm:mr-1" />
+              <span className="hidden sm:inline">Chat</span>
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
