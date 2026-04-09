@@ -184,6 +184,11 @@ Invariant: at least one root `company` level goal per company.
 - `status` enum: `backlog | planned | in_progress | completed | cancelled`
 - `lead_agent_id` uuid fk `agents.id` null
 - `target_date` date null
+- `env` jsonb null (same secret-aware env binding format used by agent config)
+
+Invariant:
+
+- project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
 
 ## 7.6 `issues` (core task entity)
 

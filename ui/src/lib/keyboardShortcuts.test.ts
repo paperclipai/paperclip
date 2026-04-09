@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
+  resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
 } from "./keyboardShortcuts";
 
@@ -54,7 +55,7 @@ describe("keyboardShortcuts helpers", () => {
     })).toBe("archive");
   });
 
-  it("disarms on the first non-y keypress", () => {
+  it("ignores non-y keypresses", () => {
     const button = document.createElement("button");
 
     expect(resolveInboxQuickArchiveKeyAction({
@@ -66,7 +67,7 @@ describe("keyboardShortcuts helpers", () => {
       altKey: false,
       target: button,
       hasOpenDialog: false,
-    })).toBe("disarm");
+    })).toBe("ignore");
   });
 
   it("stays inert for modifier combos before a real keypress", () => {
@@ -95,13 +96,73 @@ describe("keyboardShortcuts helpers", () => {
     })).toBe("ignore");
   });
 
-  it("disarms instead of archiving when typing into an editor", () => {
+  it("ignores input typing instead of archiving", () => {
     const input = document.createElement("input");
 
     expect(resolveInboxQuickArchiveKeyAction({
       armed: true,
       defaultPrevented: false,
       key: "y",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: input,
+      hasOpenDialog: false,
+    })).toBe("ignore");
+  });
+
+  it("arms go-to-inbox on a clean g press", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: false,
+      defaultPrevented: false,
+      key: "g",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("arm");
+  });
+
+  it("navigates to inbox on i after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "i",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("navigate_inbox");
+  });
+
+  it("focuses the comment composer on c after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "c",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("focus_comment");
+  });
+
+  it("disarms go-to-inbox instead of firing from an editor", () => {
+    const input = document.createElement("textarea");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "i",
       metaKey: false,
       ctrlKey: false,
       altKey: false,

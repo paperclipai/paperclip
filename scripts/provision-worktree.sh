@@ -346,7 +346,6 @@ list_base_node_modules_paths() {
       ! -path './.paperclip/*' \
       | sed 's#^\./##'
 }
-
 if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
   needs_install=0
 
@@ -361,7 +360,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
   done < <(list_base_node_modules_paths)
 
   if [[ "$needs_install" -eq 1 ]]; then
-    backup_suffix=".paperclip-backup-$BASHPID"
+    backup_suffix=".paperclip-backup-${BASHPID:-$$}"
     moved_symlink_paths=()
 
     while IFS= read -r relative_path; do
@@ -377,6 +376,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
     restore_moved_symlinks() {
       local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
       for relative_path in "${moved_symlink_paths[@]}"; do
         target_path="$worktree_cwd/$relative_path"
         backup_path="${target_path}${backup_suffix}"
@@ -388,6 +388,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
     cleanup_moved_symlinks() {
       local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
       for relative_path in "${moved_symlink_paths[@]}"; do
         target_path="$worktree_cwd/$relative_path"
         backup_path="${target_path}${backup_suffix}"

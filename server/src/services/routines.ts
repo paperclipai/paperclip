@@ -27,6 +27,7 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
+  getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -230,6 +231,23 @@ function assertScheduleCompatibleVariables(variables: RoutineVariable[]) {
   }
 }
 
+function statusRequiresDefaultAgent(status: string) {
+  return status === "active";
+}
+
+function normalizeDraftRoutineStatus(status: string, assigneeAgentId: string | null | undefined) {
+  if (statusRequiresDefaultAgent(status) && !assigneeAgentId) {
+    return "paused";
+  }
+  return status;
+}
+
+function assertRoutineCanEnable(status: string, assigneeAgentId: string | null | undefined) {
+  if (statusRequiresDefaultAgent(status) && !assigneeAgentId) {
+    throw unprocessable("Default agent required");
+  }
+}
+
 function collectProvidedRoutineVariables(
   source: "schedule" | "manual" | "api" | "webhook",
   payload: Record<string, unknown> | null | undefined,
@@ -319,7 +337,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     return routine;
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
+  async function assertAssignableAgent(companyId: string, agentId: string | null | undefined) {
+    if (!agentId) return;
     const agent = await db
       .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
       .from(agents)
@@ -331,7 +350,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
   }
 
-  async function assertProject(companyId: string, projectId: string) {
+  async function assertProject(companyId: string, projectId: string | null | undefined) {
+    if (!projectId) return;
     const project = await db
       .select({ id: projects.id, companyId: projects.companyId })
       .from(projects)
@@ -669,13 +689,22 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
+    projectId?: string | null;
+    assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
   }) {
+    const projectId = input.projectId ?? input.routine.projectId ?? null;
+    const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
+    if (!assigneeAgentId) {
+      throw unprocessable("Default agent required");
+    }
     const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
-    const description = interpolateRoutineTemplate(input.routine.description, resolvedVariables);
+    const allVariables = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
+    const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
+    const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -745,14 +774,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId: input.routine.projectId,
+            projectId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
-            title: input.routine.title,
+            title,
             description,
             status: "todo",
             priority: input.routine.priority,
-            assigneeAgentId: input.routine.assigneeAgentId,
+            assigneeAgentId,
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
@@ -905,8 +934,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const row = await getRoutineById(id);
       if (!row) return null;
       const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
-        db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
-        db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
+        row.projectId
+          ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
+          : null,
+        row.assigneeAgentId
+          ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null)
+          : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
         db
@@ -991,27 +1024,28 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId);
-      await assertAssignableAgent(companyId, input.assigneeAgentId);
+      await assertProject(companyId, input.projectId ?? null);
+      await assertAssignableAgent(companyId, input.assigneeAgentId ?? null);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const variables = syncRoutineVariablesWithTemplate(
-        input.description,
+        [input.title, input.description],
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
+      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
       const [created] = await db
         .insert(routines)
         .values({
           companyId,
-          projectId: input.projectId,
+          projectId: input.projectId ?? null,
           goalId: input.goalId ?? null,
           parentIssueId: input.parentIssueId ?? null,
           title: input.title,
           description: input.description ?? null,
-          assigneeAgentId: input.assigneeAgentId,
+          assigneeAgentId: input.assigneeAgentId ?? null,
           priority: input.priority,
-          status: input.status,
+          status,
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
           variables,
@@ -1027,15 +1061,23 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
-      const nextProjectId = patch.projectId ?? existing.projectId;
-      const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
+      const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
+      const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
+      const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
+      const requestedStatus = patch.status ?? existing.status;
+      if (patch.status === "active") {
+        assertRoutineCanEnable(patch.status, nextAssigneeAgentId);
+      }
+      const nextStatus = patch.assigneeAgentId === undefined
+        ? requestedStatus
+        : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId);
       const nextVariables = syncRoutineVariablesWithTemplate(
-        nextDescription,
+        [nextTitle, nextDescription],
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
-      if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
+      if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
@@ -1060,11 +1102,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           projectId: nextProjectId,
           goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
-          title: patch.title ?? existing.title,
+          title: nextTitle,
           description: nextDescription,
           assigneeAgentId: nextAssigneeAgentId,
           priority: patch.priority ?? existing.priority,
-          status: patch.status ?? existing.status,
+          status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
           variables: nextVariables,
@@ -1231,6 +1273,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
+      await assertProject(routine.companyId, input.projectId ?? null);
+      await assertAssignableAgent(routine.companyId, input.assigneeAgentId ?? null);
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
@@ -1240,6 +1284,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         source: input.source,
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
+        projectId: input.projectId ?? null,
+        assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
@@ -1251,6 +1297,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     firePublicTrigger: async (publicId: string, input: {
       authorizationHeader?: string | null;
       signatureHeader?: string | null;
+      hubSignatureHeader?: string | null;
       timestampHeader?: string | null;
       idempotencyKey?: string | null;
       rawBody?: Buffer | null;
@@ -1266,8 +1313,29 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
-      const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
-      if (trigger.signingMode === "bearer") {
+      if (trigger.signingMode === "none") {
+        // No authentication — the publicId in the URL acts as a shared secret.
+      } else if (trigger.signingMode === "github_hmac") {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+        const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
+        // Accept X-Hub-Signature-256 (GitHub/Sentry) or fall back to the
+        // generic X-Paperclip-Signature header so operators can use github_hmac
+        // mode with either header convention.
+        const providedSignature = (input.hubSignatureHeader ?? input.signatureHeader)?.trim() ?? "";
+        if (!providedSignature) throw unauthorized();
+        const expectedHmac = crypto
+          .createHmac("sha256", secretValue)
+          .update(rawBody)
+          .digest("hex");
+        const normalizedSignature = providedSignature.replace(/^sha256=/, "");
+        const normalizedBuf = Buffer.from(normalizedSignature);
+        const expectedBuf = Buffer.from(expectedHmac);
+        const valid =
+          normalizedBuf.length === expectedBuf.length &&
+          crypto.timingSafeEqual(normalizedBuf, expectedBuf);
+        if (!valid) throw unauthorized();
+      } else if (trigger.signingMode === "bearer") {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const expected = `Bearer ${secretValue}`;
         const provided = input.authorizationHeader?.trim() ?? "";
         const expectedBuf = Buffer.from(expected);
@@ -1280,6 +1348,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           throw unauthorized();
         }
       } else {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
         const providedSignature = input.signatureHeader?.trim() ?? "";
         const providedTimestamp = input.timestampHeader?.trim() ?? "";
