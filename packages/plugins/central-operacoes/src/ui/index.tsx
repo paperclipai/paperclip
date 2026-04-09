@@ -176,6 +176,8 @@ type ProcessResult = {
   finishedAt: string;
 };
 
+type OperationsView = "overview" | "flow" | "aghouse" | "workbench";
+
 const layoutStack: CSSProperties = {
   display: "grid",
   gap: "12px",
@@ -495,14 +497,33 @@ const gatherLampStyle: CSSProperties = {
   boxShadow: "0 0 0 3px color-mix(in srgb, #ffffff 24%, transparent)",
 };
 
+function gatherAvatarHeadStyle(color: string, highlight = false): CSSProperties {
+  return {
+    position: "absolute",
+    top: "4px",
+    left: "50%",
+    width: "28px",
+    height: "28px",
+    transform: "translateX(-50%)",
+    borderRadius: "999px",
+    border: `3px solid ${highlight ? "#111827" : "color-mix(in srgb, #0f172a 62%, transparent)"}`,
+    background: `radial-gradient(circle at 35% 30%, #ffffff 0 18%, color-mix(in srgb, ${color} 24%, #fde68a) 18% 56%, color-mix(in srgb, ${color} 88%, #0f172a) 56% 100%)`,
+    boxShadow: highlight ? "0 0 0 4px color-mix(in srgb, #ffffff 46%, transparent)" : "0 8px 14px rgba(15, 23, 42, 0.12)",
+  };
+}
+
 function gatherAvatarBodyStyle(color: string, highlight = false): CSSProperties {
   return {
-    width: "24px",
+    position: "absolute",
+    left: "50%",
+    bottom: "6px",
+    width: "40px",
     height: "30px",
-    borderRadius: "10px 10px 8px 8px",
+    transform: "translateX(-50%)",
+    borderRadius: "18px 18px 12px 12px",
     border: `3px solid ${highlight ? "#111827" : "color-mix(in srgb, #111827 72%, transparent)"}`,
-    background: color,
-    boxShadow: highlight ? "0 0 0 4px color-mix(in srgb, #ffffff 46%, transparent)" : undefined,
+    background: `linear-gradient(180deg, color-mix(in srgb, ${color} 82%, #ffffff) 0%, color-mix(in srgb, ${color} 96%, #111827) 100%)`,
+    boxShadow: highlight ? "0 0 0 4px color-mix(in srgb, #ffffff 46%, transparent)" : "0 10px 18px rgba(15, 23, 42, 0.12)",
   };
 }
 
@@ -564,8 +585,35 @@ function hostPath(companyPrefix: string | null | undefined, suffix: string): str
   return companyPrefix ? `/${companyPrefix}${suffix}` : suffix;
 }
 
-function pluginPagePath(companyPrefix: string | null | undefined): string {
-  return hostPath(companyPrefix, `/${PAGE_ROUTE}`);
+function normalizeOperationsView(value: string | null | undefined): OperationsView {
+  if (value === "flow") return "flow";
+  if (value === "aghouse" || value === "gather") return "aghouse";
+  if (value === "workbench") return "workbench";
+  return "overview";
+}
+
+function readOperationsViewFromLocation(): OperationsView {
+  if (typeof window === "undefined") return "overview";
+  return normalizeOperationsView(new URLSearchParams(window.location.search).get("view"));
+}
+
+function writeOperationsViewToLocation(view: OperationsView) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (view === "overview") url.searchParams.delete("view");
+  else url.searchParams.set("view", view);
+  const nextHref = `${url.pathname}${url.search}${url.hash}`;
+  const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextHref !== currentHref) {
+    window.history.replaceState(window.history.state, "", nextHref);
+  }
+}
+
+function pluginPagePath(companyPrefix: string | null | undefined, view?: OperationsView | "gather"): string {
+  const basePath = hostPath(companyPrefix, `/${PAGE_ROUTE}`);
+  const normalizedView = normalizeOperationsView(view);
+  if (normalizedView === "overview") return basePath;
+  return `${basePath}?view=${normalizedView}`;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -3196,7 +3244,7 @@ function GatherAvatar({
   highlight?: boolean;
 }) {
   return (
-    <div style={{ position: "absolute", top, left, display: "grid", justifyItems: "center", gap: "6px" }}>
+    <div style={{ position: "absolute", top, left, display: "grid", justifyItems: "center", gap: "8px" }}>
       <div
         style={{
           padding: "6px 10px",
@@ -3225,10 +3273,58 @@ function GatherAvatar({
         />
         <span>{name}</span>
       </div>
-      <div style={{ ...gatherAvatarBodyStyle(color, highlight), display: "grid", placeItems: "center", color: "#0f172a", fontSize: "10px", fontWeight: 800 }}>
-        {highlight ? "VO" : getInitials(name)}
+      <div style={{ position: "relative", width: "54px", height: "66px" }}>
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: "0",
+            width: "34px",
+            height: "10px",
+            transform: "translateX(-50%)",
+            borderRadius: "999px",
+            background: "rgba(15, 23, 42, 0.14)",
+            filter: "blur(1px)",
+          }}
+        />
+        <div style={gatherAvatarHeadStyle(color, highlight)} />
+        <div style={gatherAvatarBodyStyle(color, highlight)} />
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: "14px",
+            transform: "translateX(-50%)",
+            padding: "3px 7px",
+            borderRadius: "999px",
+            background: "rgba(255, 255, 255, 0.88)",
+            border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
+            color: "#0f172a",
+            fontSize: "10px",
+            fontWeight: 800,
+            lineHeight: 1,
+            boxShadow: "0 8px 14px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          {highlight ? "VO" : getInitials(name)}
+        </div>
       </div>
-      <div style={{ fontSize: "11px", fontWeight: 600, color: "#334155", textAlign: "center" }}>{detail}</div>
+      <div
+        style={{
+          padding: "4px 8px",
+          borderRadius: "999px",
+          background: "rgba(255, 255, 255, 0.84)",
+          border: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
+          fontSize: "10px",
+          fontWeight: 700,
+          color: "#334155",
+          textAlign: "center",
+          boxShadow: "0 8px 16px rgba(15, 23, 42, 0.06)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {detail}
+      </div>
     </div>
   );
 }
@@ -3307,7 +3403,7 @@ function OperationsGather({ context }: { context: PluginPageProps["context"] }) 
           >
             <Gamepad2 size={18} aria-hidden="true" />
           </div>
-          <strong style={{ fontSize: "20px", lineHeight: 1.1 }}>Gather</strong>
+          <strong style={{ fontSize: "20px", lineHeight: 1.1 }}>AGhouse</strong>
         </div>
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
           <GatherHudBadge icon={Users} value={presence.length} label="presenças" tint="color-mix(in srgb, #22c55e 18%, white)" />
@@ -3625,7 +3721,14 @@ function OperationsGather({ context }: { context: PluginPageProps["context"] }) 
 }
 
 export function KitchenSinkPage({ context }: PluginPageProps) {
-  const [activeTab, setActiveTab] = useState<"overview" | "flow" | "gather" | "workbench">("overview");
+  const [activeTab, setActiveTab] = useState<OperationsView>(() => readOperationsViewFromLocation());
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const syncFromUrl = () => setActiveTab(readOperationsViewFromLocation());
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+  }, []);
 
   const tabs = [
     {
@@ -3664,9 +3767,9 @@ export function KitchenSinkPage({ context }: PluginPageProps) {
       content: <KitchenSinkEmbeddedApp context={context} />,
     },
     {
-      id: "gather" as const,
+      id: "aghouse" as const,
       icon: Gamepad2,
-      label: "Gather",
+      label: "AGhouse",
       content: <OperationsGather context={context} />,
     },
     {
@@ -3690,7 +3793,10 @@ export function KitchenSinkPage({ context }: PluginPageProps) {
               key={tab.id}
               type="button"
               style={tabButtonStyle(tab.id === activeTab)}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id);
+                writeOperationsViewToLocation(tab.id);
+              }}
             >
               <ButtonLabel icon={tab.icon}>{tab.label}</ButtonLabel>
             </button>
@@ -3863,31 +3969,51 @@ export function KitchenSinkSidebarLink({ context }: PluginSidebarProps) {
   const config = usePluginConfigData();
   if (config.data && config.data.showSidebarEntry === false) return null;
   const href = pluginPagePath(context.companyPrefix);
-  const isActive = typeof window !== "undefined" && window.location.pathname === href;
+  const aghouseHref = pluginPagePath(context.companyPrefix, "aghouse");
+  const isPluginPage = typeof window !== "undefined" && window.location.pathname === href;
+  const activeView = isPluginPage ? readOperationsViewFromLocation() : "overview";
+  const isAghouseActive = isPluginPage && activeView === "aghouse";
   return (
-    <a
-      href={href}
-      aria-current={isActive ? "page" : undefined}
-      className={[
-        "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
-        isActive
-          ? "bg-accent text-foreground"
-          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-      ].join(" ")}
-    >
-      <span className="relative shrink-0">
-        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="4" y="4" width="7" height="7" rx="1.5" />
-          <rect x="13" y="4" width="7" height="7" rx="1.5" />
-          <rect x="4" y="13" width="7" height="7" rx="1.5" />
-          <path d="M13 16.5h7" />
-          <path d="M16.5 13v7" />
-        </svg>
-      </span>
-      <span className="flex-1 truncate">
-        {PLUGIN_DISPLAY_NAME}
-      </span>
-    </a>
+    <div className="flex flex-col gap-0.5">
+      <a
+        href={href}
+        aria-current={isPluginPage ? "page" : undefined}
+        className={[
+          "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+          isPluginPage
+            ? "bg-accent text-foreground"
+            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+        ].join(" ")}
+      >
+        <span className="relative shrink-0">
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="7" height="7" rx="1.5" />
+            <rect x="13" y="4" width="7" height="7" rx="1.5" />
+            <rect x="4" y="13" width="7" height="7" rx="1.5" />
+            <path d="M13 16.5h7" />
+            <path d="M16.5 13v7" />
+          </svg>
+        </span>
+        <span className="flex-1 truncate">
+          {PLUGIN_DISPLAY_NAME}
+        </span>
+      </a>
+      <div className="ml-5 border-l border-border/70 pl-2">
+        <a
+          href={aghouseHref}
+          aria-current={isAghouseActive ? "page" : undefined}
+          className={[
+            "flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium transition-colors",
+            isAghouseActive
+              ? "bg-accent/70 text-foreground"
+              : "text-foreground/65 hover:bg-accent/40 hover:text-foreground",
+          ].join(" ")}
+        >
+          <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">AGhouse</span>
+        </a>
+      </div>
+    </div>
   );
 }
 

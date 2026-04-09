@@ -2,7 +2,7 @@ import type { PluginLauncherRegistration } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "paperclip-kitchen-sink-example";
 export const PLUGIN_DISPLAY_NAME = "Central de Operações";
-export const PLUGIN_VERSION = "0.8.1";
+export const PLUGIN_VERSION = "0.8.2";
 export const PAGE_ROUTE = "central-operacoes";
 
 export const SLOT_IDS = {

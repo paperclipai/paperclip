@@ -1,6 +1,6 @@
 {
   "name": "@goldneuron/plugin-central-operacoes",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Cockpit operacional para intake, automações, diagnósticos, follow-up, métricas e coordenação entre agentes",
   "license": "MIT",
   "type": "module",
