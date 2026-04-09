@@ -180,6 +180,7 @@ function TeamBranch({
             className="flex-1 flex items-center gap-2 px-3 h-8 text-[13px] font-medium min-w-0 text-left text-foreground/80 hover:text-foreground transition-colors"
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
+            <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="flex-1 truncate">{team.name}</span>
             <ChevronRight
               className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform", open && "rotate-90")}
