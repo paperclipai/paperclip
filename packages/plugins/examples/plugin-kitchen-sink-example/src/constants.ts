@@ -1,8 +1,8 @@
 import type { PluginLauncherRegistration } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "paperclip-kitchen-sink-example";
-export const PLUGIN_VERSION = "0.1.0";
-export const PAGE_ROUTE = "kitchensink";
+export const PLUGIN_VERSION = "0.2.0";
+export const PAGE_ROUTE = "operations-console";
 
 export const SLOT_IDS = {
   page: "kitchen-sink-page",
@@ -38,11 +38,11 @@ export const EXPORT_NAMES = {
 } as const;
 
 export const JOB_KEYS = {
-  heartbeat: "demo-heartbeat",
+  heartbeat: "ops-heartbeat",
 } as const;
 
 export const WEBHOOK_KEYS = {
-  demo: "demo-ingest",
+  demo: "incident-ingest",
 } as const;
 
 export const TOOL_NAMES = {
@@ -93,13 +93,13 @@ export const DEFAULT_CONFIG = {
   secretRefExample: "",
   httpDemoUrl: "https://httpbin.org/anything",
   allowedCommands: SAFE_COMMANDS.map((command) => command.key),
-  workspaceScratchFile: ".paperclip-kitchen-sink-demo.txt",
+  workspaceScratchFile: ".paperclip-ops-console.txt",
 } as const;
 
 export const RUNTIME_LAUNCHER: PluginLauncherRegistration = {
   id: "kitchen-sink-runtime-launcher",
-  displayName: "Kitchen Sink Modal",
-  description: "Demonstrates runtime launcher registration from the worker.",
+  displayName: "Operations Console Modal",
+  description: "Quick operational overlay registered by the worker runtime.",
   placementZone: "toolbarButton",
   entityTypes: ["project", "issue"],
   action: {

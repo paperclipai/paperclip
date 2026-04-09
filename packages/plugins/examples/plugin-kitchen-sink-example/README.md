@@ -1,21 +1,18 @@
 # @paperclipai/plugin-kitchen-sink-example
 
-Kitchen Sink is the first-party reference plugin that demonstrates nearly the full currently implemented Paperclip plugin surface in one package.
+Operations Console is a first-party internal plugin built on top of the former kitchen-sink package.
 
-It is intentionally broad:
+It now serves as a practical operations cockpit for Paperclip operators:
 
-- full plugin page
-- dashboard widget
-- project and issue surfaces
-- comment surfaces
-- sidebar surfaces
-- settings page
-- worker bridge data/actions
-- events, jobs, webhooks, tools, streams
-- state, entities, assets, metrics, activity
-- local workspace and process demos
+- operational page route
+- dashboard widget and sidebar surfaces
+- project and issue operational views
+- comment capture surfaces
+- diagnostics, state, metrics, activity, and streams
+- issue intake through actions, tools, and webhooks
+- workspace notes and curated local diagnostics
 
-This plugin is for local development, contributor onboarding, and runtime regression testing. It is not meant as a production plugin template to ship unchanged.
+The package name stays the same for compatibility with existing installs, but the UI and worker behavior now target real internal operations instead of generic demo-only flows.
 
 ## Install
 
@@ -28,6 +25,16 @@ Or install it from the Paperclip plugin manager as a bundled example once this r
 
 ## Notes
 
-- Local workspace and process demos are trusted-only and default to safe, curated commands.
-- The plugin settings page lets you toggle optional demo surfaces and local runtime behavior.
-- Some SDK-defined host surfaces still depend on the Paperclip host wiring them visibly; this package aims to exercise the currently mounted ones and make the rest obvious.
+- Local workspace access and process diagnostics are trusted-only and default to safe, curated commands.
+- The webhook intake can create a follow-up issue when the payload includes `companyId` and `title`, with optional `projectId` and `description`.
+- The settings page controls which operational surfaces are visible and whether local diagnostics are enabled.
+
+## Maintainer
+
+- Instagram: @monrars
+- Site: goldneuron.io
+- GitHub: @monrars1995
+
+## License
+
+Distributed under the repository MIT license. See `/Users/monrars/paperclip/LICENSE`.

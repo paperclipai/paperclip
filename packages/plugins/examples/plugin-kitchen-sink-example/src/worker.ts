@@ -262,6 +262,7 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
     const agents = companyId ? await ctx.agents.list({ companyId, limit: 200, offset: 0 }) : [];
     const lastJob = await readInstanceState(ctx, "last-job-run");
     const lastWebhook = await readInstanceState(ctx, "last-webhook");
+    const lastWebhookIssue = await readInstanceState(ctx, "last-webhook-issue");
     const entityRecords = await ctx.entities.list({ limit: 10 } satisfies PluginEntityQuery);
     return {
       pluginId: PLUGIN_ID,
@@ -280,6 +281,7 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
       },
       lastJob,
       lastWebhook,
+      lastWebhookIssue,
       lastProcessResult,
       streamChannels: STREAM_CHANNELS,
       safeCommands: SAFE_COMMANDS,
@@ -392,10 +394,10 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const message = typeof params.message === "string" && params.message.trim().length > 0
       ? params.message.trim()
-      : "Kitchen Sink demo event";
-    await ctx.events.emit("demo-event", companyId, {
+      : "Operations note recorded";
+    await ctx.events.emit("ops-event", companyId, {
       message,
-      source: "kitchen-sink",
+      source: "operations-console",
       emittedAt: new Date().toISOString(),
     });
     pushRecord({
@@ -404,15 +406,15 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
       message,
       data: { companyId },
     });
-    await ctx.metrics.write("demo.events.emitted", 1, { source: "manual" });
-    await ctx.telemetry.track("demo_event", {
+    await ctx.metrics.write("ops.events.emitted", 1, { source: "manual" });
+    await ctx.telemetry.track("ops_event", {
       source: "manual",
       has_company: Boolean(companyId),
     });
     pushRecord({
       level: "info",
       source: "telemetry",
-      message: "Tracked plugin telemetry event demo_event",
+      message: "Tracked plugin telemetry event ops_event",
       data: { companyId },
     });
     return { ok: true, message };
@@ -429,7 +431,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
       message: `Wrote state key ${input.stateKey}`,
       data: input,
     });
-    await ctx.metrics.write("demo.state.write", 1, { scope: input.scopeKind });
+    await ctx.metrics.write("ops.state.write", 1, { scope: input.scopeKind });
     return { ok: true, scope: input, value };
   });
 
@@ -446,10 +448,10 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   });
 
   ctx.actions.register("upsert-entity", async (params) => {
-    const title = typeof params.title === "string" && params.title.length > 0 ? params.title : "Kitchen Sink Entity";
+    const title = typeof params.title === "string" && params.title.length > 0 ? params.title : "Operations Record";
     const entityType = typeof params.entityType === "string" && params.entityType.length > 0
       ? params.entityType
-      : "demo-record";
+      : "ops-record";
     const scopeKind = isScopeKind(params.scopeKind)
       ? params.scopeKind
       : "instance";
@@ -478,7 +480,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const title = typeof params.title === "string" && params.title.trim().length > 0
       ? params.title.trim()
-      : "Kitchen Sink demo issue";
+      : "Operational follow-up issue";
     const description = typeof params.description === "string" ? params.description : undefined;
     const projectId = typeof params.projectId === "string" && params.projectId.length > 0 ? params.projectId : undefined;
     const issue = await ctx.issues.create({ companyId, projectId, title, description });
@@ -492,7 +494,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
       companyId,
       entityType: "issue",
       entityId: issue.id,
-      message: `Kitchen Sink created issue "${issue.title}"`,
+      message: `Operations Console created issue "${issue.title}"`,
       metadata: { plugin: PLUGIN_ID },
     });
     return issue;
@@ -518,7 +520,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const title = typeof params.title === "string" && params.title.trim().length > 0
       ? params.title.trim()
-      : "Kitchen Sink demo goal";
+      : "Reliability milestone";
     const description = typeof params.description === "string" ? params.description : undefined;
     const goal = await ctx.goals.create({ companyId, title, description, level: "team", status: "planned" });
     pushRecord({
@@ -552,7 +554,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const entityId = typeof params.entityId === "string" ? params.entityId : undefined;
     const message = typeof params.message === "string" && params.message.length > 0
       ? params.message
-      : "Kitchen Sink wrote an activity entry";
+      : "Operations Console wrote an activity entry";
     await ctx.activity.log({
       companyId,
       entityType,
@@ -572,11 +574,11 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   ctx.actions.register("write-metric", async (params) => {
     const value = typeof params.value === "number" ? params.value : Number(params.value ?? 1);
     const name = typeof params.name === "string" && params.name.length > 0 ? params.name : "manual";
-    await ctx.metrics.write(`demo.${name}`, Number.isFinite(value) ? value : 1, { source: "manual" });
+    await ctx.metrics.write(`ops.${name}`, Number.isFinite(value) ? value : 1, { source: "manual" });
     pushRecord({
       level: "info",
       source: "metrics",
-      message: `Wrote metric demo.${name}`,
+      message: `Wrote metric ops.${name}`,
       data: { value },
     });
     return { ok: true, value };
@@ -670,7 +672,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const relativePath = typeof params.relativePath === "string" && params.relativePath.length > 0
       ? params.relativePath
       : config.workspaceScratchFile || DEFAULT_CONFIG.workspaceScratchFile;
-    const content = typeof params.content === "string" ? params.content : "Kitchen Sink workspace demo";
+    const content = typeof params.content === "string" ? params.content : "Operations Console workspace note";
     if (!projectId) throw new Error("projectId is required");
     const workspace = await resolveWorkspace(ctx, companyId, projectId, workspaceId);
     const fullPath = ensureInsideWorkspace(workspace.path, relativePath);
@@ -678,7 +680,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "workspace",
-      message: `Wrote scratch file ${relativePath}`,
+      message: `Wrote workspace note ${relativePath}`,
       data: { workspaceId: workspace.id },
     });
     return {
@@ -714,9 +716,9 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
     const prompt = typeof params.prompt === "string" && params.prompt.length > 0
       ? params.prompt
-      : "Kitchen Sink test invocation";
+      : "Summarize the current operational state.";
     if (!agentId) throw new Error("agentId is required");
-    const result = await ctx.agents.invoke(agentId, companyId, { prompt, reason: "Kitchen Sink plugin demo" });
+    const result = await ctx.agents.invoke(agentId, companyId, { prompt, reason: "Operations Console operator request" });
     pushRecord({
       level: "info",
       source: "agents.invoke",
@@ -745,17 +747,17 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
     const prompt = typeof params.prompt === "string" && params.prompt.length > 0
       ? params.prompt
-      : "Say hello from the Kitchen Sink plugin.";
+      : "Give a short operational summary.";
     if (!agentId) throw new Error("agentId is required");
 
     ctx.streams.open(STREAM_CHANNELS.agentChat, companyId);
     const session = await ctx.agents.sessions.create(agentId, companyId, {
-      reason: "Kitchen Sink plugin chat demo",
+      reason: "Operations Console operator chat",
     });
 
     await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
       prompt,
-      reason: "Kitchen Sink demo",
+      reason: "Operations Console follow-up",
       onEvent: (event) => {
         ctx.streams.emit(STREAM_CHANNELS.agentChat, {
           eventType: event.eventType,
@@ -817,7 +819,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.echo,
     {
-      displayName: "Kitchen Sink Echo",
+      displayName: "Operations Note Echo",
       description: "Echoes the provided message back to the caller.",
       parametersSchema: {
         type: "object",
@@ -842,7 +844,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.companySummary,
     {
-      displayName: "Kitchen Sink Company Summary",
+      displayName: "Operations Company Summary",
       description: "Summarizes current company counts from the Paperclip APIs.",
       parametersSchema: { type: "object", properties: {} },
     },
@@ -867,7 +869,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.createIssue,
     {
-      displayName: "Kitchen Sink Create Issue",
+      displayName: "Operations Create Issue",
       description: "Creates an issue in the current run context.",
       parametersSchema: {
         type: "object",
@@ -916,11 +918,11 @@ async function registerEventHandlers(ctx: PluginContext): Promise<void> {
     });
   });
 
-  ctx.events.on(`plugin.${PLUGIN_ID}.demo-event`, async (event: PluginEvent) => {
+  ctx.events.on(`plugin.${PLUGIN_ID}.ops-event`, async (event: PluginEvent) => {
     pushRecord({
       level: "info",
       source: "plugin-event",
-      message: "Observed plugin demo event",
+      message: "Observed plugin operations event",
       data: event,
     });
   });
@@ -939,10 +941,10 @@ async function registerJobs(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "jobs",
-      message: "Kitchen Sink demo job ran",
+      message: "Operations heartbeat ran",
       data: payload,
     });
-    await ctx.metrics.write("jobs.demo_heartbeat", 1, { trigger: job.trigger });
+    await ctx.metrics.write("jobs.ops_heartbeat", 1, { trigger: job.trigger });
   });
 }
 
@@ -954,7 +956,7 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "info",
       source: "setup",
-      message: "Kitchen Sink plugin setup complete",
+      message: "Operations Console setup complete",
       data: { pluginId: PLUGIN_ID },
     });
     await registerEventHandlers(ctx);
@@ -969,7 +971,7 @@ const plugin: PaperclipPlugin = definePlugin({
     const config = ctx ? await getConfig(ctx) : DEFAULT_CONFIG;
     return {
       status: "ok",
-      message: "Kitchen Sink plugin ready",
+      message: "Operations Console ready",
       details: {
         recordsTracked: recentRecords.length,
         runtimeLaunchers: runtimeLaunchers.size,
@@ -983,7 +985,7 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "info",
       source: "config",
-      message: "Kitchen Sink config changed",
+      message: "Operations Console config changed",
       data: newConfig,
     });
   },
@@ -1006,7 +1008,7 @@ const plugin: PaperclipPlugin = definePlugin({
       }
     }
     if (typed.enableProcessDemos) {
-      warnings.push("Process demos run local child processes and are intended only for trusted development environments.");
+      warnings.push("Local diagnostics run child processes and should stay enabled only in trusted environments.");
     }
     return {
       ok: errors.length === 0,
@@ -1036,13 +1038,45 @@ const plugin: PaperclipPlugin = definePlugin({
     if (input.endpointKey !== WEBHOOK_KEYS.demo) {
       throw new Error(`Unsupported webhook endpoint "${input.endpointKey}"`);
     }
+    if (ctx && input.parsedBody && typeof input.parsedBody === "object") {
+      const body = input.parsedBody as Record<string, unknown>;
+      const companyId = typeof body.companyId === "string" ? body.companyId : "";
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      const projectId = typeof body.projectId === "string" && body.projectId.trim().length > 0 ? body.projectId : undefined;
+      const description = typeof body.description === "string" && body.description.trim().length > 0
+        ? body.description
+        : `Created from incident intake webhook ${input.requestId}`;
+
+      if (companyId && title) {
+        const issue = await ctx.issues.create({
+          companyId,
+          projectId,
+          title,
+          description,
+        });
+        const issuePayload = {
+          issueId: issue.id,
+          title: issue.title,
+          companyId,
+          projectId: projectId ?? null,
+          createdAt: new Date().toISOString(),
+        };
+        await writeInstanceState(ctx, "last-webhook-issue", issuePayload);
+        pushRecord({
+          level: "warning",
+          source: "webhook",
+          message: `Created follow-up issue ${issue.title}`,
+          data: issuePayload,
+        });
+      }
+    }
   },
 
   async onShutdown() {
     pushRecord({
       level: "warning",
       source: "shutdown",
-      message: "Kitchen Sink plugin shutting down",
+      message: "Operations Console shutting down",
     });
   },
 });

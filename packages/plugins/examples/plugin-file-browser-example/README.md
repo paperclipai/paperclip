@@ -1,22 +1,23 @@
-# File Browser Example Plugin
+# Workspace Explorer Plugin
 
-Example Paperclip plugin that demonstrates:
+Workspace Explorer turns the original file-browser example into a practical project workspace surface.
 
-- **projectSidebarItem** — An optional "Files" link under each project in the sidebar that opens the project detail with this plugin’s tab selected. This is controlled by plugin settings and defaults to off.
-- **detailTab** (entityType project) — A project detail tab with a workspace-path selector, a desktop two-column layout (file tree left, editor right), and a mobile one-panel flow with a back button from editor to file tree, including save support.
+- **projectSidebarItem** — An optional "Workspace" link under each project in the sidebar that opens the project detail with this plugin’s tab selected.
+- **detailTab** (entityType project) — A project detail tab with workspace selection, file browsing, inline editing, quick creation of files/folders, metadata, and mobile-safe navigation.
+- **comment surfaces** — File links mentioned in comments can open the matching file directly in the workspace tab.
 
-This is a repo-local example plugin for development. It should not be assumed to ship in a generic production build unless it is explicitly included.
+The package name remains the same for compatibility with existing installs.
 
 ## Slots
 
 | Slot                | Type                | Description                                      |
 |---------------------|---------------------|--------------------------------------------------|
-| Files (sidebar)     | `projectSidebarItem`| Optional link under each project → project detail + tab. |
-| Files (tab)         | `detailTab`         | Responsive tree/editor layout with save support.|
+| Workspace (sidebar) | `projectSidebarItem`| Optional link under each project → project detail + tab. |
+| Workspace (tab)     | `detailTab`         | Responsive tree/editor layout with save and creation flows.|
 
 ## Settings
 
-- `Show Files in Sidebar` — toggles the project sidebar link on or off. Defaults to off.
+- `Show Workspace in Sidebar` — toggles the project sidebar link on or off. Defaults to off.
 - `Comment File Links` — controls whether comment annotations and the comment context-menu action are shown.
 
 ## Capabilities
@@ -29,9 +30,11 @@ This is a repo-local example plugin for development. It should not be assumed to
 ## Worker
 
 - **getData `workspaces`** — `ctx.projects.listWorkspaces(projectId, companyId)` (ordered, primary first).
-- **getData `fileList`** — `{ projectId, workspaceId, directoryPath? }` → list directory entries for the workspace root or a subdirectory (Node `fs`).
-- **getData `fileContent`** — `{ projectId, workspaceId, filePath }` → read file content using workspace-relative paths (Node `fs`).
+- **getData `fileList`** — `{ projectId, workspaceId, directoryPath? }` → list directory entries plus metadata (type, size, extension, updatedAt).
+- **getData `fileContent`** — `{ projectId, workspaceId, filePath }` → read text file content with guards for binary files and oversized files.
 - **performAction `writeFile`** — `{ projectId, workspaceId, filePath, content }` → write the current editor buffer back to disk.
+- **performAction `createFile`** — create a new file within the selected workspace.
+- **performAction `createDirectory`** — create a new folder within the selected workspace.
 
 ## Local Install (Dev)
 
@@ -60,3 +63,13 @@ pnpm paperclipai plugin uninstall paperclip-file-browser-example --force
 - `src/manifest.ts` — manifest with `projectSidebarItem` and `detailTab` (entityTypes `["project"]`).
 - `src/worker.ts` — data handlers for workspaces, file list, file content.
 - `src/ui/index.tsx` — `FilesLink` (sidebar) and `FilesTab` (workspace path selector + two-panel file tree/editor).
+
+## Maintainer
+
+- Instagram: @monrars
+- Site: goldneuron.io
+- GitHub: @monrars1995
+
+## License
+
+Distributed under the repository MIT license. See `/Users/monrars/paperclip/LICENSE`.

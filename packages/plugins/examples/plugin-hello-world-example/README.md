@@ -1,24 +1,28 @@
 # @paperclipai/plugin-hello-world-example
 
-First-party reference plugin showing the smallest possible UI extension.
+Company Pulse is a lightweight operational widget for the Paperclip dashboard.
 
-## What It Demonstrates
+The package name is kept for compatibility with existing installs, but the plugin now behaves like a real dashboard surface instead of a scaffold-only example.
 
-- a manifest with a `dashboardWidget` UI slot
-- `entrypoints.ui` wiring for plugin UI bundles
-- a minimal React widget rendered in the Paperclip dashboard
-- reading host context (`companyId`) from `PluginWidgetProps`
-- worker lifecycle hooks (`setup`, `onHealth`) for basic runtime observability
+## What It Adds
+
+- a `dashboardWidget` that summarizes company workload
+- worker-backed data loading for projects, issues, goals, and agents
+- company-scoped operational counts directly inside the dashboard
+- a compact widget suitable for daily operator use
 
 ## API Surface
 
-- This example does not add custom HTTP endpoints.
-- The widget is discovered/rendered through host-managed plugin APIs (for example `GET /api/plugins/ui-contributions`).
+- `getData company-pulse` loads current company totals for:
+  - projects
+  - issues and open issues
+  - goals and active goals
+  - agents and active agents
+- The widget is discovered/rendered through host-managed plugin APIs such as `GET /api/plugins/ui-contributions`.
 
 ## Notes
 
-This is intentionally simple and is designed as the quickest "hello world" starting point for UI plugin authors.
-It is a repo-local example plugin for development, not a plugin that should be assumed to ship in generic production builds.
+This remains a repo-local plugin package, but it is now a useful operational surface rather than a placeholder. It works best as a simple dashboard summary for operators who want company health at a glance.
 
 ## Local Install (Dev)
 
@@ -36,3 +40,13 @@ pnpm paperclipai plugin install ./packages/plugins/examples/plugin-hello-world-e
 - **Reinstall after pulling.** If you installed a plugin by local path before the server stored `package_path`, the plugin may show status **error** (worker not found). Uninstall and install again so the server persists the path and can activate the plugin:  
   `pnpm paperclipai plugin uninstall paperclip.hello-world-example --force` then  
   `pnpm paperclipai plugin install ./packages/plugins/examples/plugin-hello-world-example`.
+
+## Maintainer
+
+- Instagram: @monrars
+- Site: goldneuron.io
+- GitHub: @monrars1995
+
+## License
+
+Distributed under the repository MIT license. See `/Users/monrars/paperclip/LICENSE`.

@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/plugin-file-browser-example",
-  "version": "0.1.0",
-  "description": "Example plugin: project sidebar Files link + project detail tab with workspace selector and file browser",
+  "version": "0.3.0",
+  "description": "Project workspace explorer with browsing, editing, creation, and comment-linked navigation",
   "type": "module",
   "private": true,
   "exports": {

@@ -15,8 +15,8 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Kitchen Sink (Example)",
-  description: "Reference plugin that demonstrates the current Paperclip plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
+  displayName: "Operations Console",
+  description: "Internal operations console for diagnostics, issue intake, workspace notes, tools, streams, jobs, and webhook-driven follow-up.",
   author: "Paperclip",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
@@ -93,23 +93,23 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       enableWorkspaceDemos: {
         type: "boolean",
-        title: "Enable Workspace Demos",
+        title: "Enable Workspace Access",
         default: DEFAULT_CONFIG.enableWorkspaceDemos,
       },
       enableProcessDemos: {
         type: "boolean",
-        title: "Enable Process Demos",
+        title: "Enable Local Diagnostics",
         default: DEFAULT_CONFIG.enableProcessDemos,
-        description: "Allows curated local child-process demos in project workspaces.",
+        description: "Allows curated local child-process diagnostics in project workspaces.",
       },
       secretRefExample: {
         type: "string",
-        title: "Secret Reference Example",
+        title: "Secret Reference",
         default: DEFAULT_CONFIG.secretRefExample,
       },
       httpDemoUrl: {
         type: "string",
-        title: "HTTP Demo URL",
+        title: "HTTP Endpoint URL",
         default: DEFAULT_CONFIG.httpDemoUrl,
       },
       allowedCommands: {
@@ -123,7 +123,7 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       workspaceScratchFile: {
         type: "string",
-        title: "Workspace Scratch File",
+        title: "Workspace Notes File",
         default: DEFAULT_CONFIG.workspaceScratchFile,
       },
     },
@@ -131,23 +131,23 @@ const manifest: PaperclipPluginManifestV1 = {
   jobs: [
     {
       jobKey: JOB_KEYS.heartbeat,
-      displayName: "Demo Heartbeat",
-      description: "Periodic demo job that records plugin runtime activity.",
+      displayName: "Operations Heartbeat",
+      description: "Periodic job that records plugin runtime health and recent activity.",
       schedule: "*/15 * * * *",
     },
   ],
   webhooks: [
     {
       endpointKey: WEBHOOK_KEYS.demo,
-      displayName: "Demo Ingest",
-      description: "Accepts arbitrary webhook payloads and records the latest delivery in plugin state.",
+      displayName: "Incident Intake",
+      description: "Accepts webhook payloads and optionally creates a follow-up issue when company and title are provided.",
     },
   ],
   tools: [
     {
       name: TOOL_NAMES.echo,
-      displayName: "Kitchen Sink Echo",
-      description: "Returns the provided message and the current run context.",
+      displayName: "Operations Note Echo",
+      description: "Returns the provided message and current run context for quick operator verification.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -158,7 +158,7 @@ const manifest: PaperclipPluginManifestV1 = {
     },
     {
       name: TOOL_NAMES.companySummary,
-      displayName: "Kitchen Sink Company Summary",
+      displayName: "Operations Company Summary",
       description: "Summarizes the current company using the Paperclip domain APIs.",
       parametersSchema: {
         type: "object",
@@ -167,7 +167,7 @@ const manifest: PaperclipPluginManifestV1 = {
     },
     {
       name: TOOL_NAMES.createIssue,
-      displayName: "Kitchen Sink Create Issue",
+      displayName: "Operations Create Issue",
       description: "Creates an issue in the current project from an agent tool call.",
       parametersSchema: {
         type: "object",
@@ -184,87 +184,87 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: SLOT_IDS.page,
-        displayName: "Kitchen Sink",
+        displayName: "Operations Console",
         exportName: EXPORT_NAMES.page,
         routePath: PAGE_ROUTE,
       },
       {
         type: "settingsPage",
         id: SLOT_IDS.settingsPage,
-        displayName: "Kitchen Sink Settings",
+        displayName: "Operations Console Settings",
         exportName: EXPORT_NAMES.settingsPage,
       },
       {
         type: "dashboardWidget",
         id: SLOT_IDS.dashboardWidget,
-        displayName: "Kitchen Sink",
+        displayName: "Operations Console",
         exportName: EXPORT_NAMES.dashboardWidget,
       },
       {
         type: "sidebar",
         id: SLOT_IDS.sidebar,
-        displayName: "Kitchen Sink",
+        displayName: "Operations Console",
         exportName: EXPORT_NAMES.sidebar,
       },
       {
         type: "sidebarPanel",
         id: SLOT_IDS.sidebarPanel,
-        displayName: "Kitchen Sink Panel",
+        displayName: "Operations Panel",
         exportName: EXPORT_NAMES.sidebarPanel,
       },
       {
         type: "projectSidebarItem",
         id: SLOT_IDS.projectSidebarItem,
-        displayName: "Kitchen Sink",
+        displayName: "Operations",
         exportName: EXPORT_NAMES.projectSidebarItem,
         entityTypes: ["project"],
       },
       {
         type: "detailTab",
         id: SLOT_IDS.projectTab,
-        displayName: "Kitchen Sink",
+        displayName: "Operations",
         exportName: EXPORT_NAMES.projectTab,
         entityTypes: ["project"],
       },
       {
         type: "detailTab",
         id: SLOT_IDS.issueTab,
-        displayName: "Kitchen Sink",
+        displayName: "Operations",
         exportName: EXPORT_NAMES.issueTab,
         entityTypes: ["issue"],
       },
       {
         type: "taskDetailView",
         id: SLOT_IDS.taskDetailView,
-        displayName: "Kitchen Sink Task View",
+        displayName: "Operations Task View",
         exportName: EXPORT_NAMES.taskDetailView,
         entityTypes: ["issue"],
       },
       {
         type: "toolbarButton",
         id: SLOT_IDS.toolbarButton,
-        displayName: "Kitchen Sink Action",
+        displayName: "Ops Action",
         exportName: EXPORT_NAMES.toolbarButton,
         entityTypes: ["project", "issue"],
       },
       {
         type: "contextMenuItem",
         id: SLOT_IDS.contextMenuItem,
-        displayName: "Kitchen Sink Context",
+        displayName: "Ops Context",
         exportName: EXPORT_NAMES.contextMenuItem,
         entityTypes: ["project", "issue"],
       },
       {
         type: "commentAnnotation",
         id: SLOT_IDS.commentAnnotation,
-        displayName: "Kitchen Sink Comment Annotation",
+        displayName: "Operations Comment Annotation",
         exportName: EXPORT_NAMES.commentAnnotation,
         entityTypes: ["comment"],
       },
       {
         type: "commentContextMenuItem",
         id: SLOT_IDS.commentContextMenuItem,
-        displayName: "Kitchen Sink Comment Action",
+        displayName: "Operations Comment Action",
         exportName: EXPORT_NAMES.commentContextMenuItem,
         entityTypes: ["comment"],
       },
@@ -272,7 +272,7 @@ const manifest: PaperclipPluginManifestV1 = {
     launchers: [
       {
         id: "kitchen-sink-launcher",
-        displayName: "Kitchen Sink Modal",
+        displayName: "Operations Console Modal",
         placementZone: "toolbarButton",
         entityTypes: ["project", "issue"],
         action: {

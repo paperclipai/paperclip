@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/plugin-kitchen-sink-example",
-  "version": "0.1.0",
-  "description": "Reference plugin that demonstrates the full Paperclip plugin surface area in one package",
+  "version": "0.2.0",
+  "description": "Internal operations console for diagnostics, intake, tools, streams, jobs, and webhook follow-up",
   "type": "module",
   "private": true,
   "exports": {

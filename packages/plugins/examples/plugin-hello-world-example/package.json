@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/plugin-hello-world-example",
-  "version": "0.1.0",
-  "description": "First-party reference plugin that adds a Hello World dashboard widget",
+  "version": "0.2.0",
+  "description": "Dashboard widget that summarizes current company workload, active agents, and goals",
   "type": "module",
   "private": true,
   "exports": {

@@ -9,9 +9,9 @@ const COMMENT_OPEN_FILES_SLOT_ID = "comment-open-files";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
-  displayName: "File Browser (Example)",
-  description: "Example plugin that adds a Files link under each project in the sidebar, a file browser + editor tab on the project detail page, and per-comment file link annotations with a context menu action to open referenced files.",
+  version: "0.3.0",
+  displayName: "Workspace Explorer",
+  description: "Project workspace explorer with file browsing, editing, creation, and comment-linked navigation.",
   author: "Paperclip",
   categories: ["workspace", "ui"],
   capabilities: [
@@ -29,16 +29,16 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       showFilesInSidebar: {
         type: "boolean",
-        title: "Show Files in Sidebar",
+        title: "Show Workspace in Sidebar",
         default: false,
-        description: "Adds the Files link under each project in the sidebar.",
+        description: "Adds the Workspace link under each project in the sidebar.",
       },
       commentAnnotationMode: {
         type: "string",
         title: "Comment File Links",
         enum: ["annotation", "contextMenu", "both", "none"],
         default: "both",
-        description: "Controls which comment extensions are active: 'annotation' shows file links below each comment, 'contextMenu' adds an \"Open in Files\" action to the comment menu, 'both' enables both, 'none' disables comment features.",
+        description: "Controls which comment extensions are active: 'annotation' shows file links below each comment, 'contextMenu' adds an \"Open in Workspace\" action to the comment menu, 'both' enables both, 'none' disables comment features.",
       },
     },
   },
@@ -51,7 +51,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "projectSidebarItem",
         id: FILES_SIDEBAR_SLOT_ID,
-        displayName: "Files",
+        displayName: "Workspace",
         exportName: "FilesLink",
         entityTypes: ["project"],
         order: 10,
@@ -59,7 +59,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "detailTab",
         id: FILES_TAB_SLOT_ID,
-        displayName: "Files",
+        displayName: "Workspace",
         exportName: "FilesTab",
         entityTypes: ["project"],
         order: 10,
@@ -74,7 +74,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "commentContextMenuItem",
         id: COMMENT_OPEN_FILES_SLOT_ID,
-        displayName: "Open in Files",
+        displayName: "Open in Workspace",
         exportName: "CommentOpenFiles",
         entityTypes: ["comment"],
       },
