@@ -15,6 +15,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
+  resolvePaperclipSkillsDir,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
@@ -23,10 +24,6 @@ import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../skills"),
-  path.resolve(__moduleDir, "../../../../../skills"),
-];
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -82,14 +79,6 @@ function cursorSkillsHome(): string {
   return path.join(os.homedir(), ".cursor", "skills");
 }
 
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
-}
-
 type EnsureCursorSkillsInjectedOptions = {
   skillsDir?: string | null;
   skillsHome?: string;
@@ -100,7 +89,7 @@ export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
 ) {
-  const skillsDir = options.skillsDir ?? await resolvePaperclipSkillsDir();
+  const skillsDir = options.skillsDir ?? await resolvePaperclipSkillsDir(__moduleDir);
   if (!skillsDir) return;
 
   const skillsHome = options.skillsHome ?? cursorSkillsHome();

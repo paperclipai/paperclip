@@ -135,6 +135,53 @@ export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
+/**
+ * Resolve the Paperclip skills directory for a `*-local` adapter.
+ *
+ * Priority order:
+ *   1. `PAPERCLIP_SKILLS_DIR` env var — explicit override, highest priority.
+ *      Must be an existing directory; if set but invalid, a warning is logged
+ *      and the fallback path math is used instead.
+ *   2. Module-relative candidates derived from `moduleDir`:
+ *      - `<moduleDir>/../../skills`         (published package layout)
+ *      - `<moduleDir>/../../../../../skills` (dev / pnpm workspace layout)
+ *
+ * Callers pass their own `__moduleDir` so that the helper can compute the
+ * fallback candidates relative to the specific adapter's source file.
+ *
+ * Returns the first existing directory, or `null` if none match.
+ */
+export async function resolvePaperclipSkillsDir(moduleDir: string): Promise<string | null> {
+  const envDir = process.env.PAPERCLIP_SKILLS_DIR?.trim();
+  if (envDir) {
+    try {
+      const stat = await fs.stat(envDir);
+      if (stat.isDirectory()) {
+        return envDir;
+      }
+      console.warn(
+        { skillsDir: envDir },
+        "PAPERCLIP_SKILLS_DIR is set but not a directory; falling back to module-relative search",
+      );
+    } catch (err) {
+      console.warn(
+        { skillsDir: envDir, err: err instanceof Error ? err.message : String(err) },
+        "PAPERCLIP_SKILLS_DIR is set but not accessible; falling back to module-relative search",
+      );
+    }
+  }
+
+  const candidates = [
+    path.resolve(moduleDir, "../../skills"),
+    path.resolve(moduleDir, "../../../../../skills"),
+  ];
+  for (const candidate of candidates) {
+    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
+    if (isDir) return candidate;
+  }
+  return null;
+}
+
 export async function ensureAbsoluteDirectory(
   cwd: string,
   opts: { createIfMissing?: boolean } = {},

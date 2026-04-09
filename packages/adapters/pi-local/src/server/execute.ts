@@ -14,16 +14,13 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
+  resolvePaperclipSkillsDir,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../skills"),
-  path.resolve(__moduleDir, "../../../../../skills"),
-];
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 
@@ -50,16 +47,8 @@ function parseModelId(model: string | null): string | null {
   return trimmed.slice(trimmed.indexOf("/") + 1).trim() || null;
 }
 
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
-}
-
 async function ensurePiSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
-  const skillsDir = await resolvePaperclipSkillsDir();
+  const skillsDir = await resolvePaperclipSkillsDir(__moduleDir);
   if (!skillsDir) return;
 
   const piSkillsHome = path.join(os.homedir(), ".pi", "agent", "skills");
