@@ -443,7 +443,71 @@ async function executeToolCall(
     }
   }
 
+  // Plugin-contributed tools are routed via /api/plugins/tools/execute.
+  // The namespaced name format is "<pluginKey>:<toolName>" and always contains a colon,
+  // which disambiguates them from the built-in AGENT_TOOLS above (all flat names, no colon).
+  if (name.includes(":") && apiContext) {
+    try {
+      const res = await fetch(`http://localhost:${apiContext.port}/api/plugins/tools/execute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiContext.authHeader ? { Authorization: apiContext.authHeader } : {}),
+        },
+        body: JSON.stringify({
+          tool: name,
+          parameters: args,
+          runContext: {
+            agentId: apiContext.agentId,
+            runId: apiContext.runId,
+            companyId: apiContext.companyId,
+            projectId: apiContext.agentId,
+          },
+        }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      const text = await res.text();
+      if (!res.ok) return `Plugin tool ${name} failed (${res.status}): ${text.substring(0, 2000)}`;
+      return text.substring(0, 50_000);
+    } catch (err: unknown) {
+      return `Plugin tool ${name} error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   return `Unknown tool: ${name}`;
+}
+
+/**
+ * Fetch plugin-contributed tools from the host and convert them to the
+ * OpenRouter/OpenAI ToolDefinition format. Returns [] on error so chat agents
+ * can continue with just the built-in AGENT_TOOLS if discovery fails.
+ */
+async function fetchPluginTools(port: string, authHeader: string): Promise<ToolDefinition[]> {
+  try {
+    const res = await fetch(`http://localhost:${port}/api/plugins/tools`, {
+      headers: authHeader ? { Authorization: authHeader } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const tools = await res.json() as Array<{
+      name: string;
+      displayName?: string;
+      description?: string;
+      parametersSchema?: Record<string, unknown>;
+    }>;
+    return tools.map((t) => ({
+      type: "function" as const,
+      function: {
+        name: t.name,
+        description: (t.description || t.displayName || t.name).substring(0, 1024),
+        parameters: (t.parametersSchema && typeof t.parametersSchema === "object")
+          ? t.parametersSchema
+          : { type: "object", properties: {} },
+      },
+    }));
+  } catch {
+    return [];
+  }
 }
 
 async function callOpenRouter(
@@ -719,6 +783,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     { role: "user", content: userParts.join("\n\n") },
   ];
 
+  // ── Discover plugin-contributed tools ──────────────────────
+  // Chat agents see AGENT_TOOLS + every tool contributed by ready plugins
+  // (e.g. paperclip-plugin-kalshi:kalshi-portfolio-balance). Discovery is
+  // best-effort — if the endpoint is unreachable, we fall back to AGENT_TOOLS.
+  const pluginPort = process.env.PORT || "3100";
+  const pluginTools = await fetchPluginTools(pluginPort, jwtAuthHeader);
+  const availableTools: ToolDefinition[] = [...AGENT_TOOLS, ...pluginTools];
+  if (pluginTools.length > 0) {
+    await onLog("stdout", `[openrouter] Loaded ${pluginTools.length} plugin tool(s): ${pluginTools.map((t) => t.function.name).join(", ")}\n`);
+  }
+
   await onLog("stdout", `[openrouter] Starting (model: ${model}, cwd: ${cwd})\n`);
 
   // ── Conversation loop ──────────────────────────────────────
@@ -734,7 +809,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isLastTurn = turn === maxTurns - 1;
     let result;
     try {
-      result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : AGENT_TOOLS, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+      result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : availableTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "API call failed";
       await onLog("stderr", `[openrouter] ${msg}\n`);

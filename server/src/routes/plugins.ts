@@ -48,6 +48,7 @@ import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { forbidden } from "../errors.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -483,7 +484,12 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoard(req);
+    // Allow both board actors (UI/diagnostics) and agent actors (chat adapters
+    // discovering the plugin-tool catalog at run start). Agent actors are
+    // automatically scoped to their own company below.
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Board or agent access required");
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -517,7 +523,13 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoard(req);
+    // Allow both board actors (host-smoke, UI) and agent actors (chat adapters
+    // invoking plugin tools during a run). When the caller is an agent actor,
+    // we derive the runContext fields from the trusted actor rather than the
+    // request body so an agent can't spoof another agent's identity.
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Board or agent access required");
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -530,7 +542,8 @@ export function pluginRoutes(
       return;
     }
 
-    const { tool, parameters, runContext } = body;
+    const { tool, parameters } = body;
+    let runContext = body.runContext;
 
     // Validate required fields
     if (!tool || typeof tool !== "string") {
@@ -538,16 +551,33 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext || typeof runContext !== "object") {
-      res.status(400).json({ error: '"runContext" is required and must be an object' });
-      return;
-    }
-
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
-      res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
-      });
-      return;
+    if (req.actor.type === "agent") {
+      if (!req.actor.companyId || !req.actor.agentId) {
+        res.status(400).json({ error: "Agent actor missing companyId/agentId" });
+        return;
+      }
+      // Trust the JWT-derived actor, not the request body
+      runContext = {
+        agentId: req.actor.agentId,
+        runId: req.actor.runId ?? runContext?.runId ?? "",
+        companyId: req.actor.companyId,
+        projectId: runContext?.projectId || req.actor.agentId,
+      };
+    } else {
+      if (!runContext || typeof runContext !== "object") {
+        res.status(400).json({ error: '"runContext" is required and must be an object' });
+        return;
+      }
+      if (!runContext.agentId || !runContext.runId || !runContext.companyId) {
+        res.status(400).json({
+          error: '"runContext" must include agentId, runId, and companyId',
+        });
+        return;
+      }
+      // projectId is optional — some callers (e.g. chat adapters) don't have
+      // a real project scope. Default to empty string; plugin workers that
+      // care can assert on it themselves.
+      runContext = { ...runContext, projectId: runContext.projectId || "" };
     }
 
     assertCompanyAccess(req, runContext.companyId);

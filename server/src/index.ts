@@ -61,11 +61,25 @@ type BundledPlugin =
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 
 const BUNDLED_PLUGINS: BundledPlugin[] = [
-  "@lucitra/paperclip-plugin-linear",
-  "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-secrets",
   "@lucitra/paperclip-plugin-updater",
   "paperclip-plugin-slack",
+  // Linear plugin: lives as a sibling submodule. Loaded from source so local
+  // bugfixes (e.g. the totalCount GraphQL schema drift) take effect without
+  // an npm publish round-trip.
+  {
+    packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-linear"),
+    isLocalPath: true,
+    pluginKey: "paperclip-plugin-linear",
+  },
+  // Chat plugin: lives as a sibling submodule in lucitra-dev.
+  // Loaded from source so the Agent SDK rewrite + @lucitra/mcp-paperclip
+  // file: dep resolve without an npm publish round-trip.
+  {
+    packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-chat"),
+    isLocalPath: true,
+    pluginKey: "paperclip-chat",
+  },
   // Lucitra Capital — Kalshi event-market broker. Lives as a sibling
   // submodule in lucitra-dev; private repo, not published to npm.
   {
