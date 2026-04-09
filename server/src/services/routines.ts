@@ -1434,10 +1434,22 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (row.routine.catchUpPolicy === "skip_missed") {
-          runCount = 0;
-          console.warn(
-            `scheduler: skipping missed run for routine ${row.routine.id} (catchUpPolicy: skip_missed, nextRunAt was ${row.trigger.nextRunAt.toISOString()})`,
+          // Only skip when genuinely missed (nextRunAt is more than one cron
+          // interval in the past). Normal tick jitter (a few seconds) should
+          // still trigger a run.
+          const nextAfterDue = nextCronTickInTimeZone(
+            row.trigger.cronExpression,
+            row.trigger.timezone,
+            row.trigger.nextRunAt,
           );
+          if (nextAfterDue && nextAfterDue <= now) {
+            // nextRunAt is at least one full interval behind - genuinely missed
+            runCount = 0;
+            console.warn(
+              `scheduler: skipping missed run for routine ${row.routine.id} (catchUpPolicy: skip_missed, nextRunAt was ${row.trigger.nextRunAt.toISOString()})`,
+            );
+          }
+          // else: nextRunAt is within the current interval (normal jitter), run once
         } else if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
