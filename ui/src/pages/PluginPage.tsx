@@ -13,7 +13,7 @@ import { NotFoundPage } from "./NotFound";
 const PLUGIN_ROUTE_ALIASES: Record<string, string[]> = {
   // Compatibility bridge while older local installs still expose the legacy
   // example route slug from persisted plugin manifests.
-  "paperclip-kitchen-sink-example": ["kitchensink", "operations-console"],
+  "paperclip-kitchen-sink-example": ["kitchensink", "operations-console", "central-operacoes"],
 };
 
 function matchesPluginPageRoute(

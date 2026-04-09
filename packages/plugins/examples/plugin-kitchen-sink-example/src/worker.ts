@@ -25,6 +25,7 @@ import type { Goal, Issue } from "@paperclipai/shared";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,
+  PLUGIN_DISPLAY_NAME,
   PLUGIN_ID,
   RUNTIME_LAUNCHER,
   SAFE_COMMANDS,
@@ -115,12 +116,12 @@ async function resolveWorkspace(
 ): Promise<PluginWorkspace> {
   const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
   if (workspaces.length === 0) {
-    throw new Error("No workspaces configured for this project");
+    throw new Error("Nenhum workspace foi configurado para este projeto");
   }
   if (!workspaceId) return workspaces[0]!;
   const workspace = workspaces.find((entry) => entry.id === workspaceId);
   if (!workspace) {
-    throw new Error("Workspace not found");
+    throw new Error("Workspace não encontrado");
   }
   return workspace;
 }
@@ -130,7 +131,7 @@ function ensureInsideWorkspace(workspacePath: string, relativePath: string): str
   const resolved = path.resolve(root, relativePath);
   const relative = path.relative(root, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Requested path escapes the selected workspace");
+    throw new Error("O caminho solicitado sai do workspace selecionado");
   }
   return resolved;
 }
@@ -164,15 +165,15 @@ async function runCuratedCommand(
   commandKey: string,
 ): Promise<ProcessResult> {
   if (!config.enableProcessDemos) {
-    throw new Error("Process demos are disabled in plugin settings");
+    throw new Error("Os diagnósticos de processo estão desabilitados nas configurações do plugin");
   }
   const allowedCommands = new Set(config.allowedCommands ?? DEFAULT_CONFIG.allowedCommands);
   if (!allowedCommands.has(commandKey)) {
-    throw new Error(`Command "${commandKey}" is not allowed by plugin settings`);
+    throw new Error(`O comando "${commandKey}" não é permitido pelas configurações do plugin`);
   }
   const definition = SAFE_COMMANDS.find((entry) => entry.key === commandKey);
   if (!definition) {
-    throw new Error(`Unknown curated command "${commandKey}"`);
+    throw new Error(`Comando controlado desconhecido: "${commandKey}"`);
   }
   const workspace = await resolveWorkspace(ctx, companyId, projectId, workspaceId);
   const cwd = workspace.path;
@@ -210,7 +211,7 @@ async function runCuratedCommand(
   pushRecord({
     level: code === 0 ? "info" : "warning",
     source: "process",
-    message: `Ran curated command "${commandKey}"`,
+    message: `Executou o comando controlado "${commandKey}"`,
     data: { code, cwd },
   });
   await ctx.metrics.write("process.run", 1, { command: commandKey, exit_code: String(code ?? -1) });
@@ -220,7 +221,7 @@ async function runCuratedCommand(
 function getCurrentCompanyId(params: Record<string, unknown>): string {
   const companyId = typeof params.companyId === "string" ? params.companyId : "";
   if (!companyId) {
-    throw new Error("companyId is required");
+    throw new Error("companyId é obrigatório");
   }
   return companyId;
 }
@@ -394,7 +395,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const message = typeof params.message === "string" && params.message.trim().length > 0
       ? params.message.trim()
-      : "Operations note recorded";
+      : "Nota operacional registrada";
     await ctx.events.emit("ops-event", companyId, {
       message,
       source: "operations-console",
@@ -414,7 +415,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "telemetry",
-      message: "Tracked plugin telemetry event ops_event",
+      message: "Evento de telemetria ops_event registrado",
       data: { companyId },
     });
     return { ok: true, message };
@@ -428,7 +429,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "state",
-      message: `Wrote state key ${input.stateKey}`,
+      message: `Gravou a chave de estado ${input.stateKey}`,
       data: input,
     });
     await ctx.metrics.write("ops.state.write", 1, { scope: input.scopeKind });
@@ -441,17 +442,17 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "warning",
       source: "state",
-      message: `Deleted state key ${input.stateKey}`,
+      message: `Removeu a chave de estado ${input.stateKey}`,
       data: input,
     });
     return { ok: true, scope: input };
   });
 
   ctx.actions.register("upsert-entity", async (params) => {
-    const title = typeof params.title === "string" && params.title.length > 0 ? params.title : "Operations Record";
+    const title = typeof params.title === "string" && params.title.length > 0 ? params.title : "Registro Operacional";
     const entityType = typeof params.entityType === "string" && params.entityType.length > 0
       ? params.entityType
-      : "ops-record";
+      : "registro-operacional";
     const scopeKind = isScopeKind(params.scopeKind)
       ? params.scopeKind
       : "instance";
@@ -470,7 +471,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "entities",
-      message: `Upserted entity ${record.entityType}`,
+      message: `Atualizou ou criou a entidade ${record.entityType}`,
       data: { id: record.id, scopeKind: record.scopeKind },
     });
     return record;
@@ -480,21 +481,21 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const title = typeof params.title === "string" && params.title.trim().length > 0
       ? params.title.trim()
-      : "Operational follow-up issue";
+      : "Issue operacional de acompanhamento";
     const description = typeof params.description === "string" ? params.description : undefined;
     const projectId = typeof params.projectId === "string" && params.projectId.length > 0 ? params.projectId : undefined;
     const issue = await ctx.issues.create({ companyId, projectId, title, description });
     pushRecord({
       level: "info",
       source: "issues.create",
-      message: `Created issue ${issue.title}`,
+      message: `Criou a issue ${issue.title}`,
       data: { issueId: issue.id },
     });
     await ctx.activity.log({
       companyId,
       entityType: "issue",
       entityId: issue.id,
-      message: `Operations Console created issue "${issue.title}"`,
+      message: `Central de Operações criou a issue "${issue.title}"`,
       metadata: { plugin: PLUGIN_ID },
     });
     return issue;
@@ -505,13 +506,13 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const issueId = typeof params.issueId === "string" ? params.issueId : "";
     const status = typeof params.status === "string" ? params.status : "";
     if (!issueId || !status) {
-      throw new Error("issueId and status are required");
+      throw new Error("issueId e status são obrigatórios");
     }
     const issue = await ctx.issues.update(issueId, { status: status as Issue["status"] }, companyId);
     pushRecord({
       level: "info",
       source: "issues.update",
-      message: `Updated issue ${issue.id} to ${issue.status}`,
+      message: `Atualizou a issue ${issue.id} para ${issue.status}`,
     });
     return issue;
   });
@@ -520,13 +521,13 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const companyId = getCurrentCompanyId(params);
     const title = typeof params.title === "string" && params.title.trim().length > 0
       ? params.title.trim()
-      : "Reliability milestone";
+      : "Marco de confiabilidade";
     const description = typeof params.description === "string" ? params.description : undefined;
     const goal = await ctx.goals.create({ companyId, title, description, level: "team", status: "planned" });
     pushRecord({
       level: "info",
       source: "goals.create",
-      message: `Created goal ${goal.title}`,
+      message: `Criou a meta ${goal.title}`,
       data: { goalId: goal.id },
     });
     return goal;
@@ -537,13 +538,13 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const goalId = typeof params.goalId === "string" ? params.goalId : "";
     const status = typeof params.status === "string" ? params.status : "";
     if (!goalId || !status) {
-      throw new Error("goalId and status are required");
+      throw new Error("goalId e status são obrigatórios");
     }
     const goal = await ctx.goals.update(goalId, { status: status as Goal["status"] }, companyId);
     pushRecord({
       level: "info",
       source: "goals.update",
-      message: `Updated goal ${goal.id} to ${goal.status}`,
+      message: `Atualizou a meta ${goal.id} para ${goal.status}`,
     });
     return goal;
   });
@@ -554,7 +555,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const entityId = typeof params.entityId === "string" ? params.entityId : undefined;
     const message = typeof params.message === "string" && params.message.length > 0
       ? params.message
-      : "Operations Console wrote an activity entry";
+      : "A Central de Operações registrou uma atividade";
     await ctx.activity.log({
       companyId,
       entityType,
@@ -578,7 +579,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "metrics",
-      message: `Wrote metric ops.${name}`,
+      message: `Gravou a métrica ops.${name}`,
       data: { value },
     });
     return { ok: true, value };
@@ -602,7 +603,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: response.ok ? "info" : "warning",
       source: "http",
-      message: `Fetched ${url}`,
+      message: `Consultou ${url}`,
       data: { status: response.status },
     });
     return result;
@@ -614,13 +615,13 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
       ? params.secretRef
       : config.secretRefExample || "";
     if (!secretRef) {
-      throw new Error("No secret reference configured");
+      throw new Error("Nenhuma referência de segredo foi configurada");
     }
     const resolved = await ctx.secrets.resolve(secretRef);
     pushRecord({
       level: "info",
       source: "secrets",
-      message: `Resolved secret reference ${secretRef}`,
+      message: `Resolveu a referência de segredo ${secretRef}`,
     });
     return {
       secretRef,
@@ -635,14 +636,14 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
     const workspaceId = typeof params.workspaceId === "string" && params.workspaceId.length > 0 ? params.workspaceId : undefined;
     const commandKey = typeof params.commandKey === "string" ? params.commandKey : "pwd";
-    if (!projectId) throw new Error("projectId is required");
+    if (!projectId) throw new Error("projectId é obrigatório");
     return await runCuratedCommand(ctx, config, companyId, projectId, workspaceId, commandKey);
   });
 
   ctx.actions.register("read-workspace-file", async (params) => {
     const config = await getConfig(ctx);
     if (!config.enableWorkspaceDemos) {
-      throw new Error("Workspace demos are disabled in plugin settings");
+      throw new Error("O acesso ao workspace está desabilitado nas configurações do plugin");
     }
     const companyId = getCurrentCompanyId(params);
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
@@ -650,7 +651,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const relativePath = typeof params.relativePath === "string" && params.relativePath.length > 0
       ? params.relativePath
       : config.workspaceScratchFile || DEFAULT_CONFIG.workspaceScratchFile;
-    if (!projectId) throw new Error("projectId is required");
+    if (!projectId) throw new Error("projectId é obrigatório");
     const workspace = await resolveWorkspace(ctx, companyId, projectId, workspaceId);
     const fullPath = ensureInsideWorkspace(workspace.path, relativePath);
     const content = await fs.readFile(fullPath, "utf8");
@@ -664,7 +665,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   ctx.actions.register("write-workspace-scratch", async (params) => {
     const config = await getConfig(ctx);
     if (!config.enableWorkspaceDemos) {
-      throw new Error("Workspace demos are disabled in plugin settings");
+      throw new Error("O acesso ao workspace está desabilitado nas configurações do plugin");
     }
     const companyId = getCurrentCompanyId(params);
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
@@ -672,15 +673,15 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const relativePath = typeof params.relativePath === "string" && params.relativePath.length > 0
       ? params.relativePath
       : config.workspaceScratchFile || DEFAULT_CONFIG.workspaceScratchFile;
-    const content = typeof params.content === "string" ? params.content : "Operations Console workspace note";
-    if (!projectId) throw new Error("projectId is required");
+    const content = typeof params.content === "string" ? params.content : "Nota de workspace da Central de Operações";
+    if (!projectId) throw new Error("projectId é obrigatório");
     const workspace = await resolveWorkspace(ctx, companyId, projectId, workspaceId);
     const fullPath = ensureInsideWorkspace(workspace.path, relativePath);
     await fs.writeFile(fullPath, content, "utf8");
     pushRecord({
       level: "info",
       source: "workspace",
-      message: `Wrote workspace note ${relativePath}`,
+      message: `Gravou a nota de workspace ${relativePath}`,
       data: { workspaceId: workspace.id },
     });
     return {
@@ -700,7 +701,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
           ctx.streams.emit(STREAM_CHANNELS.progress, {
             step: index,
             total: steps,
-            message: `Progress step ${index}/${steps}`,
+            message: `Passo ${index}/${steps}`,
           });
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
@@ -716,13 +717,13 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
     const prompt = typeof params.prompt === "string" && params.prompt.length > 0
       ? params.prompt
-      : "Summarize the current operational state.";
-    if (!agentId) throw new Error("agentId is required");
-    const result = await ctx.agents.invoke(agentId, companyId, { prompt, reason: "Operations Console operator request" });
+      : "Resuma o estado operacional atual.";
+    if (!agentId) throw new Error("agentId é obrigatório");
+    const result = await ctx.agents.invoke(agentId, companyId, { prompt, reason: "Solicitação operacional da Central de Operações" });
     pushRecord({
       level: "info",
       source: "agents.invoke",
-      message: `Invoked agent ${agentId}`,
+      message: `Invocou o agente ${agentId}`,
       data: result,
     });
     return result;
@@ -731,14 +732,14 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   ctx.actions.register("pause-agent", async (params) => {
     const companyId = getCurrentCompanyId(params);
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
-    if (!agentId) throw new Error("agentId is required");
+    if (!agentId) throw new Error("agentId é obrigatório");
     return await ctx.agents.pause(agentId, companyId);
   });
 
   ctx.actions.register("resume-agent", async (params) => {
     const companyId = getCurrentCompanyId(params);
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
-    if (!agentId) throw new Error("agentId is required");
+    if (!agentId) throw new Error("agentId é obrigatório");
     return await ctx.agents.resume(agentId, companyId);
   });
 
@@ -747,17 +748,17 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const agentId = typeof params.agentId === "string" ? params.agentId : "";
     const prompt = typeof params.prompt === "string" && params.prompt.length > 0
       ? params.prompt
-      : "Give a short operational summary.";
-    if (!agentId) throw new Error("agentId is required");
+      : "Forneça um resumo operacional curto.";
+    if (!agentId) throw new Error("agentId é obrigatório");
 
     ctx.streams.open(STREAM_CHANNELS.agentChat, companyId);
     const session = await ctx.agents.sessions.create(agentId, companyId, {
-      reason: "Operations Console operator chat",
+      reason: "Chat operacional da Central de Operações",
     });
 
     await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
       prompt,
-      reason: "Operations Console follow-up",
+      reason: "Acompanhamento da Central de Operações",
       onEvent: (event) => {
         ctx.streams.emit(STREAM_CHANNELS.agentChat, {
           eventType: event.eventType,
@@ -774,7 +775,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "agent.sessions",
-      message: `Started agent session ${session.sessionId}`,
+      message: `Iniciou a sessão de agente ${session.sessionId}`,
       data: { agentId, sessionId: session.sessionId },
     });
     return { channel: STREAM_CHANNELS.agentChat, sessionId: session.sessionId };
@@ -785,19 +786,19 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     const issueId = typeof params.issueId === "string" ? params.issueId : "";
     const commentId = typeof params.commentId === "string" ? params.commentId : "";
     if (!issueId || !commentId) {
-      throw new Error("issueId and commentId are required");
+      throw new Error("issueId e commentId são obrigatórios");
     }
     const comments = await ctx.issues.listComments(issueId, companyId);
     const comment = comments.find((entry) => entry.id === commentId);
     if (!comment) {
-      throw new Error("Comment not found");
+      throw new Error("Comentário não encontrado");
     }
     const record = await ctx.entities.upsert({
       entityType: "copied-comment",
       scopeKind: "issue",
       scopeId: issueId,
       externalId: comment.id,
-      title: `Copied comment ${comment.id.slice(0, 8)}`,
+      title: `Comentário copiado ${comment.id.slice(0, 8)}`,
       status: "captured",
       data: {
         commentId: comment.id,
@@ -808,7 +809,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "comments",
-      message: `Copied comment ${comment.id} into plugin entities`,
+      message: `Copiou o comentário ${comment.id} para as entidades do plugin`,
       data: { recordId: record.id },
     });
     return record;
@@ -819,8 +820,8 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.echo,
     {
-      displayName: "Operations Note Echo",
-      description: "Echoes the provided message back to the caller.",
+      displayName: "Eco de Nota Operacional",
+      description: "Repete a mensagem enviada de volta para quem chamou a ferramenta.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -832,7 +833,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
     async (params, runCtx): Promise<ToolResult> => {
       const payload = params as { message?: string };
       return {
-        content: payload.message ?? "No message provided",
+        content: payload.message ?? "Nenhuma mensagem foi enviada",
         data: {
           runCtx,
           message: payload.message ?? "",
@@ -844,8 +845,8 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.companySummary,
     {
-      displayName: "Operations Company Summary",
-      description: "Summarizes current company counts from the Paperclip APIs.",
+      displayName: "Resumo Operacional da Empresa",
+      description: "Resume as contagens da empresa atual usando as APIs do Paperclip.",
       parametersSchema: { type: "object", properties: {} },
     },
     async (_params, runCtx): Promise<ToolResult> => {
@@ -854,7 +855,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
       const goals = await ctx.goals.list({ companyId: runCtx.companyId, limit: 50, offset: 0 });
       const agents = await ctx.agents.list({ companyId: runCtx.companyId, limit: 50, offset: 0 });
       return {
-        content: `Company has ${projects.length} projects, ${issues.length} issues, ${goals.length} goals, and ${agents.length} agents.`,
+        content: `A empresa possui ${projects.length} projetos, ${issues.length} issues, ${goals.length} metas e ${agents.length} agentes.`,
         data: {
           companyId: runCtx.companyId,
           projects: projects.length,
@@ -869,8 +870,8 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
   ctx.tools.register(
     TOOL_NAMES.createIssue,
     {
-      displayName: "Operations Create Issue",
-      description: "Creates an issue in the current run context.",
+      displayName: "Criar Issue Operacional",
+      description: "Cria uma issue no contexto atual da execução.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -883,7 +884,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
     async (params, runCtx): Promise<ToolResult> => {
       const payload = params as { title?: string; description?: string };
       if (!payload.title) {
-        return { error: "title is required" };
+        return { error: "title é obrigatório" };
       }
       const issue = await ctx.issues.create({
         companyId: runCtx.companyId,
@@ -892,7 +893,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
         description: payload.description,
       });
       return {
-        content: `Created issue ${issue.title}`,
+        content: `Issue criada: ${issue.title}`,
         data: issue,
       };
     },
@@ -904,7 +905,7 @@ async function registerEventHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "events.subscribe",
-      message: "Observed issue.created",
+      message: "Observou issue.created",
       data: event,
     });
   });
@@ -913,7 +914,7 @@ async function registerEventHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "events.subscribe",
-      message: "Observed issue.updated",
+      message: "Observou issue.updated",
       data: event,
     });
   });
@@ -922,7 +923,7 @@ async function registerEventHandlers(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "plugin-event",
-      message: "Observed plugin operations event",
+      message: "Observou um evento operacional do plugin",
       data: event,
     });
   });
@@ -941,7 +942,7 @@ async function registerJobs(ctx: PluginContext): Promise<void> {
     pushRecord({
       level: "info",
       source: "jobs",
-      message: "Operations heartbeat ran",
+      message: "O heartbeat operacional foi executado",
       data: payload,
     });
     await ctx.metrics.write("jobs.ops_heartbeat", 1, { trigger: job.trigger });
@@ -956,8 +957,8 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "info",
       source: "setup",
-      message: "Operations Console setup complete",
-      data: { pluginId: PLUGIN_ID },
+      message: "Configuração inicial da Central de Operações concluída",
+      data: { plugin: PLUGIN_DISPLAY_NAME },
     });
     await registerEventHandlers(ctx);
     await registerJobs(ctx);
@@ -971,7 +972,7 @@ const plugin: PaperclipPlugin = definePlugin({
     const config = ctx ? await getConfig(ctx) : DEFAULT_CONFIG;
     return {
       status: "ok",
-      message: "Operations Console ready",
+      message: "Central de Operações pronta",
       details: {
         recordsTracked: recentRecords.length,
         runtimeLaunchers: runtimeLaunchers.size,
@@ -985,7 +986,7 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "info",
       source: "config",
-      message: "Operations Console config changed",
+      message: "A configuração da Central de Operações foi alterada",
       data: newConfig,
     });
   },
@@ -995,20 +996,20 @@ const plugin: PaperclipPlugin = definePlugin({
     const warnings: string[] = [];
     const typed = config as KitchenSinkConfig;
     if (typed.httpDemoUrl && typeof typed.httpDemoUrl !== "string") {
-      errors.push("httpDemoUrl must be a string");
+      errors.push("httpDemoUrl deve ser uma string");
     }
     if (typed.allowedCommands && !Array.isArray(typed.allowedCommands)) {
-      errors.push("allowedCommands must be an array");
+      errors.push("allowedCommands deve ser um array");
     }
     if (Array.isArray(typed.allowedCommands)) {
       const allowed = new Set<string>(SAFE_COMMANDS.map((command) => command.key));
       const invalid = typed.allowedCommands.filter((value) => typeof value !== "string" || !allowed.has(value));
       if (invalid.length > 0) {
-        errors.push(`allowedCommands contains unsupported values: ${invalid.join(", ")}`);
+        errors.push(`allowedCommands contém valores não suportados: ${invalid.join(", ")}`);
       }
     }
     if (typed.enableProcessDemos) {
-      warnings.push("Local diagnostics run child processes and should stay enabled only in trusted environments.");
+      warnings.push("Os diagnósticos locais executam subprocessos e devem permanecer habilitados apenas em ambientes confiáveis.");
     }
     return {
       ok: errors.length === 0,
@@ -1032,11 +1033,11 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "info",
       source: "webhook",
-      message: `Received webhook ${input.endpointKey}`,
+      message: `Recebeu o webhook ${input.endpointKey}`,
       data: payload,
     });
     if (input.endpointKey !== WEBHOOK_KEYS.demo) {
-      throw new Error(`Unsupported webhook endpoint "${input.endpointKey}"`);
+      throw new Error(`Endpoint de webhook não suportado: "${input.endpointKey}"`);
     }
     if (ctx && input.parsedBody && typeof input.parsedBody === "object") {
       const body = input.parsedBody as Record<string, unknown>;
@@ -1045,7 +1046,7 @@ const plugin: PaperclipPlugin = definePlugin({
       const projectId = typeof body.projectId === "string" && body.projectId.trim().length > 0 ? body.projectId : undefined;
       const description = typeof body.description === "string" && body.description.trim().length > 0
         ? body.description
-        : `Created from incident intake webhook ${input.requestId}`;
+          : `Criado a partir do webhook de entrada de incidente ${input.requestId}`;
 
       if (companyId && title) {
         const issue = await ctx.issues.create({
@@ -1065,7 +1066,7 @@ const plugin: PaperclipPlugin = definePlugin({
         pushRecord({
           level: "warning",
           source: "webhook",
-          message: `Created follow-up issue ${issue.title}`,
+          message: `Criou a issue de acompanhamento ${issue.title}`,
           data: issuePayload,
         });
       }
@@ -1076,7 +1077,7 @@ const plugin: PaperclipPlugin = definePlugin({
     pushRecord({
       level: "warning",
       source: "shutdown",
-      message: "Operations Console shutting down",
+      message: "A Central de Operações está sendo encerrada",
     });
   },
 });

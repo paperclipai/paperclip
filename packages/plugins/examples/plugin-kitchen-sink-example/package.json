@@ -1,7 +1,7 @@
 {
-  "name": "@paperclipai/plugin-kitchen-sink-example",
-  "version": "0.2.0",
-  "description": "Internal operations console for diagnostics, intake, tools, streams, jobs, and webhook follow-up",
+  "name": "@paperclipai/plugin-central-operacoes",
+  "version": "0.4.0",
+  "description": "Central operacional interna para diagnósticos, intake, ferramentas, streams, jobs e follow-up por webhook",
   "type": "module",
   "private": true,
   "exports": {

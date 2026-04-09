@@ -132,10 +132,10 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     tag: "example",
   },
   {
-    packageName: "@paperclipai/plugin-kitchen-sink-example",
+    packageName: "@paperclipai/plugin-central-operacoes",
     pluginKey: "paperclip-kitchen-sink-example",
-    displayName: "Operations Console",
-    description: "Internal operations console for diagnostics, intake, tools, streams, jobs, and webhook-driven follow-up.",
+    displayName: "Central de Operações",
+    description: "Central operacional interna para diagnósticos, intake, ferramentas, streams, jobs e follow-up por webhook.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },

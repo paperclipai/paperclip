@@ -1,40 +1,40 @@
-# @paperclipai/plugin-kitchen-sink-example
+# Central de Operações
 
-Operations Console is a first-party internal plugin built on top of the former kitchen-sink package.
+A Central de Operações é um plugin interno de primeira parte construído sobre o antigo pacote `kitchen-sink`.
 
-It now serves as a practical operations cockpit for Paperclip operators:
+Hoje ele funciona como um cockpit operacional prático para operadores do Paperclip:
 
-- operational page route
-- dashboard widget and sidebar surfaces
-- project and issue operational views
-- comment capture surfaces
-- diagnostics, state, metrics, activity, and streams
-- issue intake through actions, tools, and webhooks
-- workspace notes and curated local diagnostics
+- rota operacional dedicada
+- widget de dashboard e superfícies na barra lateral
+- visões operacionais de projeto e issue
+- superfícies de captura de comentários
+- diagnósticos, estado, métricas, atividade e streams
+- intake de issues via ações, ferramentas e webhooks
+- notas de workspace e diagnósticos locais controlados
 
-The package name stays the same for compatibility with existing installs, but the UI and worker behavior now target real internal operations instead of generic demo-only flows.
+O pacote agora usa o nome `@paperclipai/plugin-central-operacoes`, enquanto o identificador técnico do plugin permanece compatível com instalações existentes. A UI e o worker agora atendem fluxos operacionais reais em vez de um demo genérico.
 
-## Install
+## Instalação
 
 ```sh
-pnpm --filter @paperclipai/plugin-kitchen-sink-example build
+pnpm --filter @paperclipai/plugin-central-operacoes build
 pnpm paperclipai plugin install ./packages/plugins/examples/plugin-kitchen-sink-example
 ```
 
-Or install it from the Paperclip plugin manager as a bundled example once this repo is built.
+Ou instale pelo gerenciador de plugins do Paperclip como exemplo embutido depois que este repositório estiver compilado.
 
-## Notes
+## Notas
 
-- Local workspace access and process diagnostics are trusted-only and default to safe, curated commands.
-- The webhook intake can create a follow-up issue when the payload includes `companyId` and `title`, with optional `projectId` and `description`.
-- The settings page controls which operational surfaces are visible and whether local diagnostics are enabled.
+- O acesso ao workspace local e os diagnósticos de processo são restritos a ambientes confiáveis e usam comandos controlados por padrão.
+- O intake por webhook pode criar uma issue de follow-up quando o payload inclui `companyId` e `title`, com `projectId` e `description` opcionais.
+- A página de configurações controla quais superfícies operacionais ficam visíveis e se os diagnósticos locais ficam habilitados.
 
-## Maintainer
+## Responsável
 
 - Instagram: @monrars
 - Site: goldneuron.io
 - GitHub: @monrars1995
 
-## License
+## Licença
 
-Distributed under the repository MIT license. See `/Users/monrars/paperclip/LICENSE`.
+Distribuído sob a licença MIT deste repositório. Veja `/Users/monrars/paperclip/LICENSE`.

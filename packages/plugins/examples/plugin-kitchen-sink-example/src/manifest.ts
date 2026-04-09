@@ -15,8 +15,8 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Operations Console",
-  description: "Internal operations console for diagnostics, issue intake, workspace notes, tools, streams, jobs, and webhook-driven follow-up.",
+  displayName: "Central de Operações",
+  description: "Central operacional interna para diagnósticos, intake de issues, notas de workspace, ferramentas, streams, jobs e follow-up por webhook.",
   author: "Paperclip",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
@@ -68,53 +68,53 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       showSidebarEntry: {
         type: "boolean",
-        title: "Show Sidebar Entry",
+        title: "Exibir entrada na barra lateral",
         default: DEFAULT_CONFIG.showSidebarEntry,
       },
       showSidebarPanel: {
         type: "boolean",
-        title: "Show Sidebar Panel",
+        title: "Exibir painel lateral",
         default: DEFAULT_CONFIG.showSidebarPanel,
       },
       showProjectSidebarItem: {
         type: "boolean",
-        title: "Show Project Sidebar Item",
+        title: "Exibir atalho lateral do projeto",
         default: DEFAULT_CONFIG.showProjectSidebarItem,
       },
       showCommentAnnotation: {
         type: "boolean",
-        title: "Show Comment Annotation",
+        title: "Exibir anotação em comentário",
         default: DEFAULT_CONFIG.showCommentAnnotation,
       },
       showCommentContextMenuItem: {
         type: "boolean",
-        title: "Show Comment Action",
+        title: "Exibir ação de comentário",
         default: DEFAULT_CONFIG.showCommentContextMenuItem,
       },
       enableWorkspaceDemos: {
         type: "boolean",
-        title: "Enable Workspace Access",
+        title: "Habilitar acesso ao workspace",
         default: DEFAULT_CONFIG.enableWorkspaceDemos,
       },
       enableProcessDemos: {
         type: "boolean",
-        title: "Enable Local Diagnostics",
+        title: "Habilitar diagnósticos locais",
         default: DEFAULT_CONFIG.enableProcessDemos,
-        description: "Allows curated local child-process diagnostics in project workspaces.",
+        description: "Permite diagnósticos locais controlados com subprocessos nos workspaces do projeto.",
       },
       secretRefExample: {
         type: "string",
-        title: "Secret Reference",
+        title: "Referência de segredo",
         default: DEFAULT_CONFIG.secretRefExample,
       },
       httpDemoUrl: {
         type: "string",
-        title: "HTTP Endpoint URL",
+        title: "URL do endpoint HTTP",
         default: DEFAULT_CONFIG.httpDemoUrl,
       },
       allowedCommands: {
         type: "array",
-        title: "Allowed Process Commands",
+        title: "Comandos de processo permitidos",
         items: {
           type: "string",
           enum: DEFAULT_CONFIG.allowedCommands,
@@ -123,7 +123,7 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       workspaceScratchFile: {
         type: "string",
-        title: "Workspace Notes File",
+        title: "Arquivo de notas do workspace",
         default: DEFAULT_CONFIG.workspaceScratchFile,
       },
     },
@@ -131,23 +131,23 @@ const manifest: PaperclipPluginManifestV1 = {
   jobs: [
     {
       jobKey: JOB_KEYS.heartbeat,
-      displayName: "Operations Heartbeat",
-      description: "Periodic job that records plugin runtime health and recent activity.",
+      displayName: "Heartbeat Operacional",
+      description: "Job periódico que registra a saúde do runtime do plugin e a atividade recente.",
       schedule: "*/15 * * * *",
     },
   ],
   webhooks: [
     {
       endpointKey: WEBHOOK_KEYS.demo,
-      displayName: "Incident Intake",
-      description: "Accepts webhook payloads and optionally creates a follow-up issue when company and title are provided.",
+      displayName: "Entrada de Incidente",
+      description: "Aceita payloads de webhook e pode criar uma issue de follow-up quando empresa e título são informados.",
     },
   ],
   tools: [
     {
       name: TOOL_NAMES.echo,
-      displayName: "Operations Note Echo",
-      description: "Returns the provided message and current run context for quick operator verification.",
+      displayName: "Eco de Nota Operacional",
+      description: "Retorna a mensagem enviada e o contexto atual da execução para validação rápida.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -158,8 +158,8 @@ const manifest: PaperclipPluginManifestV1 = {
     },
     {
       name: TOOL_NAMES.companySummary,
-      displayName: "Operations Company Summary",
-      description: "Summarizes the current company using the Paperclip domain APIs.",
+      displayName: "Resumo Operacional da Empresa",
+      description: "Resume a empresa atual usando as APIs de domínio do Paperclip.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -167,8 +167,8 @@ const manifest: PaperclipPluginManifestV1 = {
     },
     {
       name: TOOL_NAMES.createIssue,
-      displayName: "Operations Create Issue",
-      description: "Creates an issue in the current project from an agent tool call.",
+      displayName: "Criar Issue Operacional",
+      description: "Cria uma issue no projeto atual a partir de uma chamada de ferramenta do agente.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -184,95 +184,95 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: SLOT_IDS.page,
-        displayName: "Operations Console",
+        displayName: "Central de Operações",
         exportName: EXPORT_NAMES.page,
         routePath: PAGE_ROUTE,
       },
       {
         type: "settingsPage",
         id: SLOT_IDS.settingsPage,
-        displayName: "Operations Console Settings",
+        displayName: "Configurações da Central de Operações",
         exportName: EXPORT_NAMES.settingsPage,
       },
       {
         type: "dashboardWidget",
         id: SLOT_IDS.dashboardWidget,
-        displayName: "Operations Console",
+        displayName: "Central de Operações",
         exportName: EXPORT_NAMES.dashboardWidget,
       },
       {
         type: "sidebar",
         id: SLOT_IDS.sidebar,
-        displayName: "Operations Console",
+        displayName: "Central de Operações",
         exportName: EXPORT_NAMES.sidebar,
       },
       {
         type: "sidebarPanel",
         id: SLOT_IDS.sidebarPanel,
-        displayName: "Operations Panel",
+        displayName: "Painel Operacional",
         exportName: EXPORT_NAMES.sidebarPanel,
       },
       {
         type: "projectSidebarItem",
         id: SLOT_IDS.projectSidebarItem,
-        displayName: "Operations",
+        displayName: "Operações",
         exportName: EXPORT_NAMES.projectSidebarItem,
         entityTypes: ["project"],
       },
       {
         type: "detailTab",
         id: SLOT_IDS.projectTab,
-        displayName: "Operations",
+        displayName: "Operações",
         exportName: EXPORT_NAMES.projectTab,
         entityTypes: ["project"],
       },
       {
         type: "detailTab",
         id: SLOT_IDS.issueTab,
-        displayName: "Operations",
+        displayName: "Operações",
         exportName: EXPORT_NAMES.issueTab,
         entityTypes: ["issue"],
       },
       {
         type: "taskDetailView",
         id: SLOT_IDS.taskDetailView,
-        displayName: "Operations Task View",
+        displayName: "Visão Operacional da Task",
         exportName: EXPORT_NAMES.taskDetailView,
         entityTypes: ["issue"],
       },
       {
         type: "toolbarButton",
         id: SLOT_IDS.toolbarButton,
-        displayName: "Ops Action",
+        displayName: "Ação Operacional",
         exportName: EXPORT_NAMES.toolbarButton,
         entityTypes: ["project", "issue"],
       },
       {
         type: "contextMenuItem",
         id: SLOT_IDS.contextMenuItem,
-        displayName: "Ops Context",
+        displayName: "Contexto Operacional",
         exportName: EXPORT_NAMES.contextMenuItem,
         entityTypes: ["project", "issue"],
       },
       {
         type: "commentAnnotation",
         id: SLOT_IDS.commentAnnotation,
-        displayName: "Operations Comment Annotation",
+        displayName: "Anotação Operacional do Comentário",
         exportName: EXPORT_NAMES.commentAnnotation,
         entityTypes: ["comment"],
       },
       {
         type: "commentContextMenuItem",
         id: SLOT_IDS.commentContextMenuItem,
-        displayName: "Operations Comment Action",
+        displayName: "Ação Operacional do Comentário",
         exportName: EXPORT_NAMES.commentContextMenuItem,
         entityTypes: ["comment"],
       },
     ],
     launchers: [
       {
-        id: "kitchen-sink-launcher",
-        displayName: "Operations Console Modal",
+        id: "central-operacoes-launcher",
+        displayName: "Modal da Central de Operações",
         placementZone: "toolbarButton",
         entityTypes: ["project", "issue"],
         action: {

@@ -18,6 +18,7 @@ import {
   DEFAULT_CONFIG,
   JOB_KEYS,
   PAGE_ROUTE,
+  PLUGIN_DISPLAY_NAME,
   PLUGIN_ID,
   SAFE_COMMANDS,
   SLOT_IDS,
@@ -249,6 +250,40 @@ const mutedTextStyle: CSSProperties = {
   lineHeight: 1.45,
 };
 
+const TOKEN_LABELS: Record<string, string> = {
+  active: "ativo",
+  agent: "agente",
+  archived: "arquivado",
+  assignment: "atribuição",
+  automation: "automação",
+  backlog: "backlog",
+  blocked: "bloqueado",
+  cancelled: "cancelado",
+  comment: "comentário",
+  company: "empresa",
+  done: "concluído",
+  failed: "falhou",
+  goal: "meta",
+  in_progress: "em andamento",
+  in_review: "em revisão",
+  instance: "instância",
+  issue: "issue",
+  manual: "manual",
+  none: "nenhum",
+  on_demand: "sob demanda",
+  paused: "pausado",
+  planned: "planejado",
+  project: "projeto",
+  queued: "na fila",
+  running: "executando",
+  schedule: "agendado",
+  task: "task",
+  timer: "temporizador",
+  todo: "a fazer",
+  unknown: "desconhecido",
+  workspace: "workspace",
+};
+
 function hostPath(companyPrefix: string | null | undefined, suffix: string): string {
   return companyPrefix ? `/${companyPrefix}${suffix}` : suffix;
 }
@@ -259,6 +294,11 @@ function pluginPagePath(companyPrefix: string | null | undefined): string {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatToken(value: string | null | undefined): string {
+  if (!value) return "não definido";
+  return TOKEN_LABELS[value] ?? value.replaceAll("_", " ").replaceAll("-", " ");
 }
 
 function getObjectString(value: unknown, key: string): string | null {
@@ -494,10 +534,10 @@ function CompactSurfaceSummary({ label, entityType }: { label: string; entityTyp
     <div style={layoutStack}>
       <div style={rowStyle}>
         <strong>{label}</strong>
-        {resolvedEntityType ? <Pill label={resolvedEntityType} /> : null}
+        {resolvedEntityType ? <Pill label={formatToken(resolvedEntityType)} /> : null}
       </div>
       <div style={mutedTextStyle}>
-        This surface shows the host context for the current mount point. The metric button records an operational counter so you can verify metrics wiring from a contextual surface.
+        Esta superfície mostra o contexto do host no ponto atual de montagem. O botão de métrica registra um contador operacional para validar a instrumentação a partir de uma superfície contextual.
       </div>
       <JsonBlock value={context} />
       <button
@@ -508,7 +548,7 @@ function CompactSurfaceSummary({ label, entityType }: { label: string; entityTyp
           void writeMetric({ name: "surface_click", value: 1, companyId }).catch(console.error);
         }}
       >
-        Record metric
+        Registrar métrica
       </button>
       {entityQuery.data ? <JsonBlock value={entityQuery.data} /> : null}
     </div>
@@ -535,64 +575,64 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
     const latest = progressStream.events.at(-1);
     if (!latest) return;
     setQuickActionStatus({
-      title: "Progress stream update",
-      body: latest.message ?? `Step ${latest.step ?? "?"}`,
+      title: "Atualização do stream de progresso",
+      body: latest.message ?? `Passo ${latest.step ?? "?"}`,
       tone: "info",
     });
   }, [progressStream.events]);
 
   return (
     <div style={widgetGridStyle}>
-      <MiniWidget title="Runtime Summary" eyebrow="Overview">
+      <MiniWidget title="Resumo do Runtime" eyebrow="Visão Geral">
         <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-          <div>Companies: {overview.data?.counts.companies ?? 0}</div>
-          <div>Projects: {overview.data?.counts.projects ?? 0}</div>
+          <div>Empresas: {overview.data?.counts.companies ?? 0}</div>
+          <div>Projetos: {overview.data?.counts.projects ?? 0}</div>
           <div>Issues: {overview.data?.counts.issues ?? 0}</div>
-          <div>Agents: {overview.data?.counts.agents ?? 0}</div>
+          <div>Agentes: {overview.data?.counts.agents ?? 0}</div>
         </div>
       </MiniWidget>
 
-      <MiniWidget title="Quick Actions" eyebrow="Try It">
+      <MiniWidget title="Ações Rápidas" eyebrow="Teste Rápido">
         <div style={rowStyle}>
           <button
             type="button"
             style={toneButtonStyle("success")}
             onClick={() =>
               toast({
-                title: "Operations Console success toast",
-                body: "This is rendered by the host toast system from plugin UI.",
+                title: "Toast de sucesso da Central de Operações",
+                body: "Este toast é renderizado pelo sistema do host a partir da UI do plugin.",
                 tone: "success",
               })}
           >
-            Success toast
+            Toast de sucesso
           </button>
           <button
             type="button"
             style={toneButtonStyle("warn")}
             onClick={() =>
               toast({
-                title: "Operations Console warning toast",
-                body: "Use this pattern for user-facing plugin feedback.",
+                title: "Toast de alerta da Central de Operações",
+                body: "Use este padrão para feedback visível ao operador.",
                 tone: "warn",
               })}
           >
-            Warning toast
+            Toast de alerta
           </button>
           <button
             type="button"
             style={toneButtonStyle("info")}
             onClick={() =>
               toast({
-                title: "Open dashboard",
-                body: "Toasts can link back into host pages.",
+                title: "Abrir painel",
+                body: "Toasts podem apontar de volta para páginas do host.",
                 tone: "info",
                 action: {
-                  label: "Go",
+                  label: "Abrir",
                   href: hostPath(context.companyPrefix, "/dashboard"),
                 },
               })}
           >
-            Action toast
+            Toast com ação
           </button>
         </div>
         <div style={rowStyle}>
@@ -601,17 +641,17 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
             style={buttonStyle}
             onClick={() => {
               if (!context.companyId) return;
-              void emitDemoEvent({ companyId: context.companyId, message: "Triggered from Operations Console page" })
+              void emitDemoEvent({ companyId: context.companyId, message: "Disparado pela página da Central de Operações" })
                 .then((next) => {
                   overview.refresh();
-                  const message = getObjectString(next, "message") ?? "Operations event emitted";
+                  const message = getObjectString(next, "message") ?? "Evento operacional emitido";
                   setQuickActionStatus({
-                    title: "Event emitted",
+                    title: "Evento emitido",
                     body: message,
                     tone: "success",
                   });
                   toast({
-                    title: "Event emitted",
+                    title: "Evento emitido",
                     body: message,
                     tone: "success",
                   });
@@ -619,19 +659,19 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
                 .catch((error) => {
                   const message = getErrorMessage(error);
                   setQuickActionStatus({
-                    title: "Event failed",
+                    title: "Falha ao emitir evento",
                     body: message,
                     tone: "error",
                   });
                   toast({
-                    title: "Event failed",
+                    title: "Falha ao emitir evento",
                     body: message,
                     tone: "error",
                   });
                 });
             }}
           >
-            Emit event
+            Emitir evento
           </button>
           <button
             type="button"
@@ -641,32 +681,32 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
               void startProgressStream({ companyId: context.companyId, steps: 4 })
                 .then(() => {
                   setQuickActionStatus({
-                    title: "Stream started",
-                    body: "Watch the live progress updates below.",
+                    title: "Stream iniciado",
+                    body: "Acompanhe abaixo as atualizações em tempo real.",
                     tone: "info",
                   });
                   toast({
-                    title: "Progress stream started",
-                    body: "Live updates will appear in the quick action panel.",
+                    title: "Stream de progresso iniciado",
+                    body: "As atualizações aparecerão no painel de ações rápidas.",
                     tone: "info",
                   });
                 })
                 .catch((error) => {
                   const message = getErrorMessage(error);
                   setQuickActionStatus({
-                    title: "Stream failed",
+                    title: "Falha ao iniciar stream",
                     body: message,
                     tone: "error",
                   });
                   toast({
-                    title: "Progress stream failed",
+                    title: "Falha no stream de progresso",
                     body: message,
                     tone: "error",
                   });
                 });
             }}
           >
-            Start stream
+            Iniciar stream
           </button>
           <button
             type="button"
@@ -677,14 +717,14 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
                 .then((next) => {
                   overview.refresh();
                   const value = getObjectNumber(next, "value") ?? 1;
-                  const body = `Recorded ops.page_quick_action = ${value}`;
+                  const body = `Registrou ops.page_quick_action = ${value}`;
                   setQuickActionStatus({
-                    title: "Metric recorded",
+                    title: "Métrica registrada",
                     body,
                     tone: "success",
                   });
                   toast({
-                    title: "Metric recorded",
+                    title: "Métrica registrada",
                     body,
                     tone: "success",
                   });
@@ -692,24 +732,24 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
                 .catch((error) => {
                   const message = getErrorMessage(error);
                   setQuickActionStatus({
-                    title: "Metric failed",
+                    title: "Falha ao registrar métrica",
                     body: message,
                     tone: "error",
                   });
                   toast({
-                    title: "Metric failed",
+                    title: "Falha ao registrar métrica",
                     body: message,
                     tone: "error",
                   });
                 });
             }}
           >
-            Write metric
+            Registrar métrica
           </button>
         </div>
         <div style={{ display: "grid", gap: "6px" }}>
           <div style={mutedTextStyle}>
-            Recent progress events: {progressStream.events.length}
+            Eventos recentes de progresso: {progressStream.events.length}
           </div>
           {quickActionStatus ? (
             <div
@@ -735,28 +775,28 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
         </div>
       </MiniWidget>
 
-      <MiniWidget title="Surface Map" eyebrow="UI">
+      <MiniWidget title="Mapa de Superfícies" eyebrow="UI">
         <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-          <div>Sidebar link and panel</div>
-          <div>Dashboard widget</div>
-          <div>Project link, tab, toolbar button, launcher</div>
-          <div>Issue tab, task view, toolbar button, launcher</div>
-          <div>Comment annotation and comment action</div>
+          <div>Link e painel lateral</div>
+          <div>Widget de dashboard</div>
+          <div>Link de projeto, aba, botão de toolbar e launcher</div>
+          <div>Aba de issue, visão da task, botão de toolbar e launcher</div>
+          <div>Anotação e ação de comentário</div>
         </div>
       </MiniWidget>
 
-      <MiniWidget title="Manifest Coverage" eyebrow="Worker">
+      <MiniWidget title="Cobertura do Manifest" eyebrow="Worker">
         <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
           <div>Jobs: {overview.data?.manifest.jobs.length ?? 0}</div>
           <div>Webhooks: {overview.data?.manifest.webhooks.length ?? 0}</div>
-          <div>Tools: {overview.data?.manifest.tools.length ?? 0}</div>
+          <div>Ferramentas: {overview.data?.manifest.tools.length ?? 0}</div>
           <div>Launchers: {overview.data?.runtimeLaunchers.length ?? 0}</div>
         </div>
       </MiniWidget>
 
-      <MiniWidget title="Latest Runtime State" eyebrow="Diagnostics">
+      <MiniWidget title="Estado Mais Recente do Runtime" eyebrow="Diagnósticos">
         <div style={mutedTextStyle}>
-          This updates as you use the operational actions below.
+          Este bloco é atualizado conforme você usa as ações operacionais abaixo.
         </div>
         <JsonBlock
           value={{
@@ -775,8 +815,8 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
   const toast = usePluginToast();
   const [issues, setIssues] = useState<HostIssueRecord[]>([]);
   const [drafts, setDrafts] = useState<Record<string, { title: string; status: string }>>({});
-  const [createTitle, setCreateTitle] = useState("Operational follow-up issue");
-  const [createDescription, setCreateDescription] = useState("Created from the Operations Console page.");
+  const [createTitle, setCreateTitle] = useState("Issue operacional de acompanhamento");
+  const [createDescription, setCreateDescription] = useState("Criada a partir da página da Central de Operações.");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -816,12 +856,12 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
           priority: "medium",
         }),
       });
-      toast({ title: "Issue created", body: createTitle.trim(), tone: "success" });
-      setCreateTitle("Operational follow-up issue");
-      setCreateDescription("Created from the Operations Console page.");
+      toast({ title: "Issue criada", body: createTitle.trim(), tone: "success" });
+      setCreateTitle("Issue operacional de acompanhamento");
+      setCreateDescription("Criada a partir da página da Central de Operações.");
       await loadIssues();
     } catch (nextError) {
-      toast({ title: "Issue create failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao criar issue", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
@@ -836,40 +876,40 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
           status: draft.status,
         }),
       });
-      toast({ title: "Issue updated", body: draft.title.trim(), tone: "success" });
+      toast({ title: "Issue atualizada", body: draft.title.trim(), tone: "success" });
       await loadIssues();
     } catch (nextError) {
-      toast({ title: "Issue update failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao atualizar issue", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
   async function handleDelete(issueId: string) {
     try {
       await hostFetchJson(`/api/issues/${issueId}`, { method: "DELETE" });
-      toast({ title: "Issue deleted", tone: "info" });
+      toast({ title: "Issue excluída", tone: "info" });
       await loadIssues();
     } catch (nextError) {
-      toast({ title: "Issue delete failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao excluir issue", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
   return (
-    <Section title="Issue Management">
+    <Section title="Gestão de Issues">
       <div style={mutedTextStyle}>
-        This embedded React page calls the board API directly to create, update, and delete issues for the current company.
+        Esta página React embarcada chama a API do board diretamente para criar, atualizar e excluir issues da empresa atual.
       </div>
       {!context.companyId ? (
-        <div style={mutedTextStyle}>Select a company to manage operational issues.</div>
+        <div style={mutedTextStyle}>Selecione uma empresa para gerenciar as issues operacionais.</div>
       ) : (
         <>
           <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr) auto" }}>
-            <input style={inputStyle} value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="Issue title" />
-            <input style={inputStyle} value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Issue description" />
+            <input style={inputStyle} value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="Título da issue" />
+            <input style={inputStyle} value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Descrição da issue" />
             <button type="button" style={primaryButtonStyle} onClick={() => void handleCreate()}>
-              Create issue
+              Criar issue
             </button>
           </div>
-          {loading ? <div style={mutedTextStyle}>Loading issues…</div> : null}
+          {loading ? <div style={mutedTextStyle}>Carregando issues…</div> : null}
           {error ? <div style={{ ...mutedTextStyle, color: "var(--destructive, #dc2626)" }}>{error}</div> : null}
           <div style={{ display: "grid", gap: "10px" }}>
             {issues.map((issue) => {
@@ -895,25 +935,25 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
                           [issue.id]: { ...draft, status: event.target.value },
                         }))}
                     >
-                      <option value="backlog">backlog</option>
-                      <option value="todo">todo</option>
-                      <option value="in_progress">in_progress</option>
-                      <option value="in_review">in_review</option>
-                      <option value="done">done</option>
-                      <option value="blocked">blocked</option>
-                      <option value="cancelled">cancelled</option>
+                      <option value="backlog">{formatToken("backlog")}</option>
+                      <option value="todo">{formatToken("todo")}</option>
+                      <option value="in_progress">{formatToken("in_progress")}</option>
+                      <option value="in_review">{formatToken("in_review")}</option>
+                      <option value="done">{formatToken("done")}</option>
+                      <option value="blocked">{formatToken("blocked")}</option>
+                      <option value="cancelled">{formatToken("cancelled")}</option>
                     </select>
                     <button type="button" style={buttonStyle} onClick={() => void handleSave(issue.id)}>
-                      Save
+                      Salvar
                     </button>
                     <button type="button" style={buttonStyle} onClick={() => void handleDelete(issue.id)}>
-                      Delete
+                      Excluir
                     </button>
                   </div>
                 </div>
               );
             })}
-            {!loading && issues.length === 0 ? <div style={mutedTextStyle}>No issues yet for this company.</div> : null}
+            {!loading && issues.length === 0 ? <div style={mutedTextStyle}>Ainda não há issues para esta empresa.</div> : null}
           </div>
         </>
       )}
@@ -925,7 +965,7 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
   const toast = usePluginToast();
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [drafts, setDrafts] = useState<Record<string, { name: string; status: string }>>({});
-  const [newCompanyName, setNewCompanyName] = useState(`Company ${new Date().toLocaleTimeString()}`);
+  const [newCompanyName, setNewCompanyName] = useState(`Empresa ${new Date().toLocaleTimeString()}`);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -960,14 +1000,14 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
         method: "POST",
         body: JSON.stringify({
           name,
-          description: "Created from the Operations Console page.",
+          description: "Criada a partir da página da Central de Operações.",
         }),
       });
-      toast({ title: "Company created", body: name, tone: "success" });
-      setNewCompanyName(`Company ${Date.now()}`);
+      toast({ title: "Empresa criada", body: name, tone: "success" });
+      setNewCompanyName(`Empresa ${Date.now()}`);
       await loadCompanies();
     } catch (nextError) {
-      toast({ title: "Company create failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao criar empresa", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
@@ -982,20 +1022,20 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
           status: draft.status,
         }),
       });
-      toast({ title: "Company updated", body: draft.name.trim(), tone: "success" });
+      toast({ title: "Empresa atualizada", body: draft.name.trim(), tone: "success" });
       await loadCompanies();
     } catch (nextError) {
-      toast({ title: "Company update failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao atualizar empresa", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
   async function handleDelete(company: CompanyRecord) {
     try {
       await hostFetchJson(`/api/companies/${company.id}`, { method: "DELETE" });
-      toast({ title: "Company deleted", body: company.name, tone: "info" });
+      toast({ title: "Empresa excluída", body: company.name, tone: "info" });
       await loadCompanies();
     } catch (nextError) {
-      toast({ title: "Company delete failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao excluir empresa", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
@@ -1003,29 +1043,29 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
   const managedCompanies = companies;
 
   return (
-    <Section title="Company Management">
+    <Section title="Gestão de Empresas">
       <div style={mutedTextStyle}>
-        The worker SDK currently exposes company reads. This panel complements that with direct host API actions for board-level company management.
+        O SDK do worker já expõe leitura de empresas. Este painel complementa isso com ações diretas no host para gestão de empresas em nível de board.
       </div>
       <div style={subtleCardStyle}>
         <div style={rowStyle}>
-          <strong>Current Company</strong>
-          {currentCompany ? <Pill label={currentCompany.issuePrefix ?? "no-prefix"} /> : null}
+          <strong>Empresa Atual</strong>
+          {currentCompany ? <Pill label={currentCompany.issuePrefix ?? "sem-prefixo"} /> : null}
         </div>
-        <div style={{ fontSize: "12px" }}>{currentCompany?.name ?? "No current company selected"}</div>
+        <div style={{ fontSize: "12px" }}>{currentCompany?.name ?? "Nenhuma empresa atual selecionada"}</div>
       </div>
       <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "minmax(0, 1fr) auto" }}>
         <input
           style={inputStyle}
           value={newCompanyName}
           onChange={(event) => setNewCompanyName(event.target.value)}
-          placeholder="New company name"
+          placeholder="Nome da nova empresa"
         />
         <button type="button" style={primaryButtonStyle} onClick={() => void handleCreate()}>
-          Create company
+          Criar empresa
         </button>
       </div>
-      {loading ? <div style={mutedTextStyle}>Loading companies…</div> : null}
+      {loading ? <div style={mutedTextStyle}>Carregando empresas…</div> : null}
       {error ? <div style={{ ...mutedTextStyle, color: "var(--destructive, #dc2626)" }}>{error}</div> : null}
       <div style={{ display: "grid", gap: "10px" }}>
         {managedCompanies.map((company) => {
@@ -1052,23 +1092,23 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
                       [company.id]: { ...draft, status: event.target.value },
                     }))}
                 >
-                  <option value="active">active</option>
-                  <option value="paused">paused</option>
-                  <option value="archived">archived</option>
+                  <option value="active">{formatToken("active")}</option>
+                  <option value="paused">{formatToken("paused")}</option>
+                  <option value="archived">{formatToken("archived")}</option>
                 </select>
                 <button type="button" style={buttonStyle} onClick={() => void handleSave(company.id)}>
-                  Save
+                  Salvar
                 </button>
                 <button type="button" style={buttonStyle} onClick={() => void handleDelete(company)} disabled={isCurrent}>
-                  Delete
+                  Excluir
                 </button>
               </div>
-              {isCurrent ? <div style={{ ...mutedTextStyle, marginTop: "8px" }}>Current company cannot be deleted from this view.</div> : null}
+              {isCurrent ? <div style={{ ...mutedTextStyle, marginTop: "8px" }}>A empresa atual não pode ser excluída nesta visualização.</div> : null}
             </div>
           );
         })}
         {!loading && managedCompanies.length === 0 ? (
-          <div style={mutedTextStyle}>No companies found. Create one above to initialize a new company scope.</div>
+          <div style={mutedTextStyle}>Nenhuma empresa encontrada. Crie uma acima para inicializar um novo escopo de empresa.</div>
         ) : null}
       </div>
     </Section>
@@ -1085,23 +1125,23 @@ function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] })
         alignItems: "stretch",
       }}
     >
-      <Section title="Embedded App">
+      <Section title="Aplicação Embarcada">
         <div style={{ fontSize: "13px", lineHeight: 1.5 }}>
-          Plugins can host their own React page and behave like a native company page. Operations Console uses this route as the primary operator workspace, then keeps the lower-level worker console below for deeper diagnostics.
+          Plugins podem hospedar sua própria página React e se comportar como uma página nativa da empresa. A Central de Operações usa esta rota como workspace principal do operador e mantém o console do worker abaixo para diagnósticos mais profundos.
         </div>
       </Section>
       <div style={{ display: "grid", gap: "14px" }}>
-        <Section title="Plugin Page Route">
+        <Section title="Rota da Página do Plugin">
           <div style={mutedTextStyle}>
-            The company sidebar entry opens this route directly, so the plugin feels like a first-class company page instead of a settings subpage.
+            A entrada na barra lateral da empresa abre esta rota diretamente, então o plugin se comporta como uma página de primeira classe e não como uma subpágina de configurações.
           </div>
           <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>
             {pluginPagePath(context.companyPrefix)}
           </a>
         </Section>
-      <Section title="Paperclip Animation">
+      <Section title="Animação Paperclip">
         <div style={mutedTextStyle}>
-          This is the same Paperclip ASCII treatment used in onboarding, copied into the plugin so the package stays self-contained.
+          Este é o mesmo tratamento ASCII do Paperclip usado no onboarding, copiado para o plugin para manter o pacote autocontido.
         </div>
           <AsciiArtAnimation />
         </Section>
@@ -1112,7 +1152,7 @@ function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] })
 
 function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context"] }) {
   const toast = usePluginToast();
-  const stateKey = "revenue_clicker";
+  const stateKey = "contador_operacional";
   const revenueState = usePluginData<StateValueData>(
     "state-value",
     context.companyId
@@ -1140,7 +1180,7 @@ function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context
       });
       revenueState.refresh();
     } catch (nextError) {
-      toast({ title: "Storage write failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao gravar estado", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
@@ -1152,25 +1192,25 @@ function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context
         scopeId: context.companyId,
         stateKey,
       });
-      toast({ title: "Ops counter reset", tone: "info" });
+      toast({ title: "Contador operacional resetado", tone: "info" });
       revenueState.refresh();
     } catch (nextError) {
-      toast({ title: "Storage reset failed", body: getErrorMessage(nextError), tone: "error" });
+      toast({ title: "Falha ao resetar estado", body: getErrorMessage(nextError), tone: "error" });
     }
   }
 
   return (
-    <Section title="Plugin Storage">
+    <Section title="Armazenamento do Plugin">
       <div style={mutedTextStyle}>
-        This counter persists into plugin-scoped company storage. A real operations plugin could store counters, sync cursors, acknowledgements, or cached external IDs the same way.
+        Este contador persiste no armazenamento da empresa escopado pelo plugin. Um plugin operacional real poderia guardar contadores, cursores de sync, confirmações ou IDs externos em cache da mesma forma.
       </div>
       {!context.companyId ? (
-            <div style={mutedTextStyle}>Select a company to use company-scoped plugin storage.</div>
+            <div style={mutedTextStyle}>Selecione uma empresa para usar o armazenamento escopado por empresa.</div>
       ) : (
         <>
           <div style={{ display: "grid", gap: "4px" }}>
             <div style={{ fontSize: "26px", fontWeight: 700 }}>{currentValue}</div>
-            <div style={mutedTextStyle}>Stored at `company/{context.companyId}/{stateKey}`</div>
+            <div style={mutedTextStyle}>Armazenado em `company/{context.companyId}/{stateKey}`</div>
           </div>
           <div style={rowStyle}>
             {[-10, -1, 1, 10].map((delta) => (
@@ -1179,7 +1219,7 @@ function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context
               </button>
             ))}
             <button type="button" style={buttonStyle} onClick={() => void reset()}>
-              Reset
+              Resetar
             </button>
           </div>
           <JsonBlock value={revenueState.data ?? { scopeKind: "company", stateKey, value: 0 }} />
@@ -1218,47 +1258,47 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
   }, [context.companyId]);
 
   return (
-    <Section title="Host Integrations">
+    <Section title="Integrações com o Host">
       <div style={mutedTextStyle}>
-        Plugin pages can feel like native Paperclip pages. This section demonstrates host toasts, company-scoped routing, and reading live heartbeat data from the embedded page.
+        Páginas de plugin podem se comportar como páginas nativas do Paperclip. Esta seção demonstra toasts do host, roteamento escopado por empresa e leitura do heartbeat ao vivo a partir da página embarcada.
       </div>
       <div style={subtleCardStyle}>
         <div style={rowStyle}>
-          <strong>Company Route</strong>
+          <strong>Rota da Empresa</strong>
           <Pill label={pluginPagePath(context.companyPrefix)} />
         </div>
         <div style={mutedTextStyle}>
-          This page is mounted as a real company route instead of living only under `/plugins/:pluginId`.
+          Esta página é montada como uma rota real da empresa em vez de existir apenas sob `/plugins/:pluginId`.
         </div>
       </div>
       {!context.companyId ? (
-        <div style={mutedTextStyle}>Select a company to read run data.</div>
+        <div style={mutedTextStyle}>Selecione uma empresa para ler os dados de execução.</div>
       ) : (
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
           <div style={subtleCardStyle}>
             <div style={sectionHeaderStyle}>
-              <strong>Live Runs</strong>
+              <strong>Execuções ao Vivo</strong>
               <button type="button" style={buttonStyle} onClick={() => void loadRuns()}>
-                Refresh
+                Atualizar
               </button>
             </div>
-            {loading ? <div style={mutedTextStyle}>Loading run data…</div> : null}
+            {loading ? <div style={mutedTextStyle}>Carregando execuções…</div> : null}
             {error ? <div style={{ ...mutedTextStyle, color: "var(--destructive, #dc2626)" }}>{error}</div> : null}
             <MiniList
               items={liveRuns}
-              empty="No live runs right now."
+              empty="Nenhuma execução ao vivo neste momento."
               render={(item) => {
                 const run = item as HostLiveRunRecord;
                 return (
                   <div style={{ display: "grid", gap: "6px", fontSize: "12px" }}>
                     <div style={rowStyle}>
-                      <strong>{run.status}</strong>
+                      <strong>{formatToken(run.status)}</strong>
                       {run.agentName ? <Pill label={run.agentName} /> : null}
                     </div>
                     <div>{run.id}</div>
                     {run.agentId ? (
                       <a href={hostPath(context.companyPrefix, `/agents/${run.agentId}/runs/${run.id}`)}>
-                        Open run
+                        Abrir execução
                       </a>
                     ) : null}
                   </div>
@@ -1267,17 +1307,17 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
             />
           </div>
           <div style={subtleCardStyle}>
-            <strong>Recent Heartbeats</strong>
+            <strong>Heartbeats Recentes</strong>
             <MiniList
               items={recentRuns}
-              empty="No recent heartbeat runs."
+              empty="Nenhum heartbeat recente."
               render={(item) => {
                 const run = item as HostHeartbeatRunRecord;
                 return (
                   <div style={{ display: "grid", gap: "6px", fontSize: "12px" }}>
                     <div style={rowStyle}>
-                      <strong>{run.status}</strong>
-                      {run.invocationSource ? <Pill label={run.invocationSource} /> : null}
+                      <strong>{formatToken(run.status)}</strong>
+                      {run.invocationSource ? <Pill label={formatToken(run.invocationSource)} /> : null}
                     </div>
                     <div>{run.id}</div>
                   </div>
@@ -1316,15 +1356,15 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
   const goals = usePluginData<GoalRecord[]>("goals", companyId ? { companyId, limit: goalsLimit } : {});
   const agents = usePluginData<AgentRecord[]>("agents", companyId ? { companyId } : {});
 
-  const [issueTitle, setIssueTitle] = useState("Operational follow-up issue");
-  const [goalTitle, setGoalTitle] = useState("Reliability milestone");
+  const [issueTitle, setIssueTitle] = useState("Issue operacional de acompanhamento");
+  const [goalTitle, setGoalTitle] = useState("Marco de confiabilidade");
   const [stateScopeKind, setStateScopeKind] = useState("instance");
   const [stateScopeId, setStateScopeId] = useState("");
   const [stateNamespace, setStateNamespace] = useState("");
-  const [stateKey, setStateKey] = useState("ops-note");
+  const [stateKey, setStateKey] = useState("nota-operacional");
   const [stateValue, setStateValue] = useState("{\"hello\":\"world\"}");
-  const [entityType, setEntityType] = useState("ops-record");
-  const [entityTitle, setEntityTitle] = useState("Operations Record");
+  const [entityType, setEntityType] = useState("registro-operacional");
+  const [entityTitle, setEntityTitle] = useState("Registro Operacional");
   const [entityScopeKind, setEntityScopeKind] = useState("instance");
   const [entityScopeId, setEntityScopeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -1337,9 +1377,9 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
   const [metricValue, setMetricValue] = useState("1");
   const [workspaceId, setWorkspaceId] = useState("");
   const [workspacePath, setWorkspacePath] = useState<string>(DEFAULT_CONFIG.workspaceScratchFile);
-  const [workspaceContent, setWorkspaceContent] = useState("Operations Console wrote this note.");
+  const [workspaceContent, setWorkspaceContent] = useState("A Central de Operações gravou esta nota.");
   const [commandKey, setCommandKey] = useState<string>(SAFE_COMMANDS[0]?.key ?? "pwd");
-  const [toolMessage, setToolMessage] = useState("Summarize the current operational state");
+  const [toolMessage, setToolMessage] = useState("Resuma o estado operacional atual");
   const [toolOutput, setToolOutput] = useState<unknown>(null);
   const [jobOutput, setJobOutput] = useState<unknown>(null);
   const [webhookOutput, setWebhookOutput] = useState<unknown>(null);
@@ -1432,7 +1472,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
 
   async function executeTool(name: string) {
     if (!companyId || !selectedAgentId || !projectRef) {
-      setToolOutput({ error: "Select a company, project, and agent first." });
+      setToolOutput({ error: "Selecione primeiro uma empresa, um projeto e um agente." });
       return;
     }
     try {
@@ -1441,7 +1481,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
         name === TOOL_NAMES.echo
           ? { message: toolMessage }
           : name === TOOL_NAMES.createIssue
-            ? { title: issueTitle, description: "Created through the tool dispatcher from the Operations Console." }
+            ? { title: issueTitle, description: "Criada pelo despachante de ferramentas a partir da Central de Operações." }
             : {};
       const response = await hostFetchJson(`/api/plugins/tools/execute`, {
         method: "POST",
@@ -1489,8 +1529,8 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
           source: "operations-console-ui",
           companyId,
           projectId: projectRef || undefined,
-          title: "Webhook-created operational follow-up",
-          description: "Created by the Operations Console webhook test action.",
+          title: "Issue operacional criada por webhook",
+          description: "Criada pela ação de teste de webhook da Central de Operações.",
           sentAt: new Date().toISOString(),
         }),
       });
@@ -1504,41 +1544,41 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
   return (
     <div style={{ display: "grid", gap: "14px" }}>
       <Section
-        title="Overview"
-        action={<button type="button" style={buttonStyle} onClick={() => refreshAll()}>Refresh</button>}
+        title="Visão Geral"
+        action={<button type="button" style={buttonStyle} onClick={() => refreshAll()}>Atualizar</button>}
       >
         <div style={rowStyle}>
-          <Pill label={`Plugin: ${overview.data?.pluginId ?? PLUGIN_ID}`} />
-          <Pill label={`Version: ${overview.data?.version ?? "loading"}`} />
-          <Pill label={`Company: ${companyId ?? "none"}`} />
-          {context.entityType ? <Pill label={`Entity: ${context.entityType}`} /> : null}
+          <Pill label={`Plugin: ${PLUGIN_DISPLAY_NAME}`} />
+          <Pill label={`Versão: ${overview.data?.version ?? "carregando"}`} />
+          <Pill label={`Empresa: ${companyId ?? "nenhuma"}`} />
+          {context.entityType ? <Pill label={`Entidade: ${formatToken(context.entityType)}`} /> : null}
         </div>
         {overview.data ? (
           <>
             <div style={{ display: "grid", gap: "8px", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
-              <StatusLine label="Companies" value={overview.data.counts.companies} />
-              <StatusLine label="Projects" value={overview.data.counts.projects} />
+              <StatusLine label="Empresas" value={overview.data.counts.companies} />
+              <StatusLine label="Projetos" value={overview.data.counts.projects} />
               <StatusLine label="Issues" value={overview.data.counts.issues} />
-              <StatusLine label="Goals" value={overview.data.counts.goals} />
-              <StatusLine label="Agents" value={overview.data.counts.agents} />
-              <StatusLine label="Entities" value={overview.data.counts.entities} />
+              <StatusLine label="Metas" value={overview.data.counts.goals} />
+              <StatusLine label="Agentes" value={overview.data.counts.agents} />
+              <StatusLine label="Entidades" value={overview.data.counts.entities} />
             </div>
             <JsonBlock value={overview.data.config} />
           </>
         ) : (
-          <div style={{ fontSize: "12px", opacity: 0.7 }}>Loading overview…</div>
+          <div style={{ fontSize: "12px", opacity: 0.7 }}>Carregando visão geral…</div>
         )}
       </Section>
 
-      <Section title="UI Surfaces">
+      <Section title="Superfícies de UI">
         <div style={rowStyle}>
-          <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Open plugin page</a>
+          <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Abrir página do plugin</a>
           {projectRef ? (
             <a
               href={hostPath(context.companyPrefix, `/projects/${projectRef}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
               style={{ fontSize: "12px" }}
             >
-              Open project tab
+              Abrir aba do projeto
             </a>
           ) : null}
           {selectedIssueId ? (
@@ -1546,20 +1586,20 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
               href={hostPath(context.companyPrefix, `/issues/${selectedIssueId}`)}
               style={{ fontSize: "12px" }}
             >
-              Open selected issue
+              Abrir issue selecionada
             </a>
           ) : null}
         </div>
         <JsonBlock value={overview.data?.runtimeLaunchers ?? []} />
       </Section>
 
-      <Section title="Operational Inventory">
+      <Section title="Inventário Operacional">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
           <PaginatedDomainCard
-            title="Companies"
+            title="Empresas"
             items={companies.data ?? []}
             totalCount={overview.data?.counts.companies ?? null}
-            empty="No companies."
+            empty="Nenhuma empresa."
             onLoadMore={() => setCompaniesLimit((current) => current + 20)}
             render={(item) => {
               const company = item as CompanyRecord;
@@ -1567,42 +1607,42 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
             }}
           />
           <PaginatedDomainCard
-            title="Projects"
+            title="Projetos"
             items={projects.data ?? []}
             totalCount={overview.data?.counts.projects ?? null}
-            empty="No projects."
+            empty="Nenhum projeto."
             onLoadMore={() => setProjectsLimit((current) => current + 20)}
             render={(item) => {
               const project = item as ProjectRecord;
-              return <div>{project.name} <span style={{ opacity: 0.6 }}>({project.status ?? "unknown"})</span></div>;
+              return <div>{project.name} <span style={{ opacity: 0.6 }}>({formatToken(project.status ?? "unknown")})</span></div>;
             }}
           />
           <PaginatedDomainCard
             title="Issues"
             items={issues.data ?? []}
             totalCount={overview.data?.counts.issues ?? null}
-            empty="No issues."
+            empty="Nenhuma issue."
             onLoadMore={() => setIssuesLimit((current) => current + 20)}
             render={(item) => {
               const issue = item as IssueRecord;
-              return <div>{issue.title} <span style={{ opacity: 0.6 }}>({issue.status})</span></div>;
+              return <div>{issue.title} <span style={{ opacity: 0.6 }}>({formatToken(issue.status)})</span></div>;
             }}
           />
           <PaginatedDomainCard
-            title="Goals"
+            title="Metas"
             items={goals.data ?? []}
             totalCount={overview.data?.counts.goals ?? null}
-            empty="No goals."
+            empty="Nenhuma meta."
             onLoadMore={() => setGoalsLimit((current) => current + 20)}
             render={(item) => {
               const goal = item as GoalRecord;
-              return <div>{goal.title} <span style={{ opacity: 0.6 }}>({goal.status})</span></div>;
+              return <div>{goal.title} <span style={{ opacity: 0.6 }}>({formatToken(goal.status)})</span></div>;
             }}
           />
         </div>
       </Section>
 
-      <Section title="Issue + Goal Actions">
+      <Section title="Ações de Issue e Meta">
         <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <form
             style={layoutStack}
@@ -1617,9 +1657,9 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Create issue</strong>
+            <strong>Criar issue</strong>
             <input style={inputStyle} value={issueTitle} onChange={(event) => setIssueTitle(event.target.value)} />
-            <button type="submit" style={primaryButtonStyle} disabled={!companyId}>Create issue</button>
+            <button type="submit" style={primaryButtonStyle} disabled={!companyId}>Criar issue</button>
           </form>
           <form
             style={layoutStack}
@@ -1634,13 +1674,13 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Advance selected issue</strong>
+            <strong>Avançar issue selecionada</strong>
             <select style={inputStyle} value={selectedIssueId} onChange={(event) => setSelectedIssueId(event.target.value)}>
               {(issues.data ?? []).map((issue) => (
                 <option key={issue.id} value={issue.id}>{issue.title}</option>
               ))}
             </select>
-            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedIssueId}>Move to in_review</button>
+            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedIssueId}>Mover para em revisão</button>
           </form>
           <form
             style={layoutStack}
@@ -1655,9 +1695,9 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Create goal</strong>
+            <strong>Criar meta</strong>
             <input style={inputStyle} value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} />
-            <button type="submit" style={primaryButtonStyle} disabled={!companyId}>Create goal</button>
+            <button type="submit" style={primaryButtonStyle} disabled={!companyId}>Criar meta</button>
           </form>
           <form
             style={layoutStack}
@@ -1672,18 +1712,18 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Advance selected goal</strong>
+            <strong>Avançar meta selecionada</strong>
             <select style={inputStyle} value={selectedGoalId} onChange={(event) => setSelectedGoalId(event.target.value)}>
               {(goals.data ?? []).map((goal) => (
                 <option key={goal.id} value={goal.id}>{goal.title}</option>
               ))}
             </select>
-            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedGoalId}>Move to active</button>
+            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedGoalId}>Mover para ativa</button>
           </form>
         </div>
       </Section>
 
-      <Section title="State + Entities">
+      <Section title="Estado e Entidades">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
           <form
             style={layoutStack}
@@ -1703,14 +1743,14 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>State</strong>
+            <strong>Estado</strong>
             <input style={inputStyle} value={stateScopeKind} onChange={(event) => setStateScopeKind(event.target.value)} placeholder="scopeKind" />
-            <input style={inputStyle} value={stateScopeId} onChange={(event) => setStateScopeId(event.target.value)} placeholder="scopeId (optional)" />
-            <input style={inputStyle} value={stateNamespace} onChange={(event) => setStateNamespace(event.target.value)} placeholder="namespace (optional)" />
+            <input style={inputStyle} value={stateScopeId} onChange={(event) => setStateScopeId(event.target.value)} placeholder="scopeId (opcional)" />
+            <input style={inputStyle} value={stateNamespace} onChange={(event) => setStateNamespace(event.target.value)} placeholder="namespace (opcional)" />
             <input style={inputStyle} value={stateKey} onChange={(event) => setStateKey(event.target.value)} placeholder="stateKey" />
             <textarea style={{ ...inputStyle, minHeight: "88px" }} value={stateValue} onChange={(event) => setStateValue(event.target.value)} />
             <div style={rowStyle}>
-              <button type="submit" style={primaryButtonStyle}>Write state</button>
+              <button type="submit" style={primaryButtonStyle}>Gravar estado</button>
               <button
                 type="button"
                 style={buttonStyle}
@@ -1728,7 +1768,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                     .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
                 }}
               >
-                Delete state
+                Excluir estado
               </button>
             </div>
             <JsonBlock value={stateQuery.data ?? { loading: true }} />
@@ -1752,25 +1792,25 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Entities</strong>
+            <strong>Entidades</strong>
             <input style={inputStyle} value={entityType} onChange={(event) => setEntityType(event.target.value)} placeholder="entityType" />
-            <input style={inputStyle} value={entityTitle} onChange={(event) => setEntityTitle(event.target.value)} placeholder="title" />
+            <input style={inputStyle} value={entityTitle} onChange={(event) => setEntityTitle(event.target.value)} placeholder="título" />
             <input style={inputStyle} value={entityScopeKind} onChange={(event) => setEntityScopeKind(event.target.value)} placeholder="scopeKind" />
-            <input style={inputStyle} value={entityScopeId} onChange={(event) => setEntityScopeId(event.target.value)} placeholder="scopeId (optional)" />
-            <button type="submit" style={primaryButtonStyle}>Upsert entity</button>
+            <input style={inputStyle} value={entityScopeId} onChange={(event) => setEntityScopeId(event.target.value)} placeholder="scopeId (opcional)" />
+            <button type="submit" style={primaryButtonStyle}>Criar ou atualizar entidade</button>
             <JsonBlock value={entityQuery.data ?? []} />
           </form>
         </div>
       </Section>
 
-      <Section title="Events + Streams">
+      <Section title="Eventos e Streams">
         <div style={rowStyle}>
           <button
             type="button"
             style={primaryButtonStyle}
             onClick={() => {
               if (!companyId) return;
-              void emitDemoEvent({ companyId, message: "Operations Console manual event" })
+              void emitDemoEvent({ companyId, message: "Evento manual da Central de Operações" })
                 .then((next) => {
                   setResult(next);
                   overview.refresh();
@@ -1778,7 +1818,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            Record ops event
+            Registrar evento operacional
           </button>
           <button
             type="button"
@@ -1790,22 +1830,22 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            Start progress stream
+            Iniciar stream de progresso
           </button>
         </div>
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <div style={subtleCardStyle}>
-            <strong>Progress stream</strong>
+            <strong>Stream de Progresso</strong>
             <JsonBlock value={progressStream.events.slice(-8)} />
           </div>
           <div style={subtleCardStyle}>
-            <strong>Recent records</strong>
+            <strong>Registros Recentes</strong>
             <JsonBlock value={overview.data?.recentRecords ?? []} />
           </div>
         </div>
       </Section>
 
-      <Section title="HTTP + Secrets + Activity + Metrics">
+      <Section title="HTTP, Segredos, Atividade e Métricas">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <form
             style={layoutStack}
@@ -1818,7 +1858,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
           >
             <strong>HTTP</strong>
             <input style={inputStyle} value={httpUrl} onChange={(event) => setHttpUrl(event.target.value)} />
-            <button type="submit" style={buttonStyle}>Fetch URL</button>
+            <button type="submit" style={buttonStyle}>Consultar URL</button>
           </form>
           <form
             style={layoutStack}
@@ -1829,9 +1869,9 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Secrets</strong>
+            <strong>Segredos</strong>
             <input style={inputStyle} value={secretRef} onChange={(event) => setSecretRef(event.target.value)} placeholder="MY_SECRET_REF" />
-            <button type="submit" style={buttonStyle}>Resolve secret ref</button>
+            <button type="submit" style={buttonStyle}>Resolver referência</button>
           </form>
           <form
             style={layoutStack}
@@ -1843,9 +1883,9 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Activity + Metrics</strong>
-            <input style={inputStyle} value={metricName} onChange={(event) => setMetricName(event.target.value)} placeholder="metric name" />
-            <input style={inputStyle} value={metricValue} onChange={(event) => setMetricValue(event.target.value)} placeholder="metric value" />
+            <strong>Atividade e Métricas</strong>
+            <input style={inputStyle} value={metricName} onChange={(event) => setMetricName(event.target.value)} placeholder="nome da métrica" />
+            <input style={inputStyle} value={metricValue} onChange={(event) => setMetricValue(event.target.value)} placeholder="valor da métrica" />
             <div style={rowStyle}>
               <button
                 type="button"
@@ -1857,26 +1897,26 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                     .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
                 }}
               >
-                Write metric
+                Gravar métrica
               </button>
-              <button type="submit" style={buttonStyle} disabled={!companyId}>Write activity</button>
+              <button type="submit" style={buttonStyle} disabled={!companyId}>Gravar atividade</button>
             </div>
           </form>
         </div>
       </Section>
 
-      <Section title="Workspace + Diagnostics">
+      <Section title="Workspace e Diagnósticos">
         <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <div style={layoutStack}>
-            <strong>Select project/workspace</strong>
+            <strong>Selecionar projeto/workspace</strong>
             <select style={inputStyle} value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
-              <option value="">Select project</option>
+              <option value="">Selecione um projeto</option>
               {(projects.data ?? []).map((project) => (
                 <option key={project.id} value={project.id}>{project.name}</option>
               ))}
             </select>
             <select style={inputStyle} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
-              <option value="">Select workspace</option>
+              <option value="">Selecione um workspace</option>
               {(workspaceQuery.data ?? []).map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
               ))}
@@ -1899,11 +1939,11 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Workspace notes</strong>
+            <strong>Notas do Workspace</strong>
             <input style={inputStyle} value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} />
             <textarea style={{ ...inputStyle, minHeight: "88px" }} value={workspaceContent} onChange={(event) => setWorkspaceContent(event.target.value)} />
             <div style={rowStyle}>
-              <button type="submit" style={buttonStyle} disabled={!companyId || !selectedProjectId}>Write notes file</button>
+              <button type="submit" style={buttonStyle} disabled={!companyId || !selectedProjectId}>Gravar arquivo de notas</button>
               <button
                 type="button"
                 style={buttonStyle}
@@ -1919,7 +1959,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                     .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
                 }}
               >
-                Read file
+                Ler arquivo
               </button>
             </div>
           </form>
@@ -1941,38 +1981,38 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Curated diagnostics</strong>
+            <strong>Diagnósticos Controlados</strong>
             <select style={inputStyle} value={commandKey} onChange={(event) => setCommandKey(event.target.value)}>
               {SAFE_COMMANDS.map((command) => (
                 <option key={command.key} value={command.key}>{command.label}</option>
               ))}
             </select>
-            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedProjectId}>Run command</button>
-            <JsonBlock value={overview.data?.lastProcessResult ?? { note: "No process run yet." }} />
+            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedProjectId}>Executar comando</button>
+            <JsonBlock value={overview.data?.lastProcessResult ?? { note: "Nenhum processo executado ainda." }} />
           </form>
         </div>
       </Section>
 
-      <Section title="Agents + Sessions">
+      <Section title="Agentes e Sessões">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <form
             style={layoutStack}
             onSubmit={(event) => {
               event.preventDefault();
               if (!companyId || !selectedAgentId) return;
-              void invokeAgent({ companyId, agentId: selectedAgentId, prompt: "Summarize the current operational state." })
+              void invokeAgent({ companyId, agentId: selectedAgentId, prompt: "Resuma o estado operacional atual." })
                 .then((next) => setResult(next))
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Agent controls</strong>
+            <strong>Controles de Agente</strong>
             <select style={inputStyle} value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
               {(agents.data ?? []).map((agent) => (
                 <option key={agent.id} value={agent.id}>{agent.name}</option>
               ))}
             </select>
             <div style={rowStyle}>
-              <button type="submit" style={primaryButtonStyle} disabled={!companyId || !selectedAgentId}>Invoke</button>
+              <button type="submit" style={primaryButtonStyle} disabled={!companyId || !selectedAgentId}>Invocar</button>
               <button
                 type="button"
                 style={buttonStyle}
@@ -1986,7 +2026,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                     .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
                 }}
               >
-                Pause
+                Pausar
               </button>
               <button
                 type="button"
@@ -2001,7 +2041,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                     .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
                 }}
               >
-                Resume
+                Retomar
               </button>
             </div>
           </form>
@@ -2010,45 +2050,45 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
             onSubmit={(event) => {
               event.preventDefault();
               if (!companyId || !selectedAgentId) return;
-              void askAgent({ companyId, agentId: selectedAgentId, prompt: "Give a short operational summary." })
+              void askAgent({ companyId, agentId: selectedAgentId, prompt: "Dê um resumo operacional curto." })
                 .then((next) => setResult(next))
                 .catch((error) => setResult({ error: error instanceof Error ? error.message : String(error) }));
             }}
           >
-            <strong>Agent chat stream</strong>
-            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedAgentId}>Start operator chat</button>
+            <strong>Stream de Chat do Agente</strong>
+            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedAgentId}>Iniciar chat operacional</button>
             <JsonBlock value={agentStream.events.slice(-12)} />
           </form>
         </div>
       </Section>
 
-      <Section title="Automations + Intake + Tools">
+      <Section title="Automações, Intake e Ferramentas">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <div style={layoutStack}>
-            <strong>Heartbeat job</strong>
-            <button type="button" style={buttonStyle} onClick={() => void fetchJobsAndTrigger()}>Trigger heartbeat</button>
-            <JsonBlock value={jobOutput ?? overview.data?.lastJob ?? { note: "No job output yet." }} />
+            <strong>Job de Heartbeat</strong>
+            <button type="button" style={buttonStyle} onClick={() => void fetchJobsAndTrigger()}>Disparar heartbeat</button>
+            <JsonBlock value={jobOutput ?? overview.data?.lastJob ?? { note: "Ainda não há saída de job." }} />
           </div>
           <div style={layoutStack}>
-            <strong>Incident webhook</strong>
-            <button type="button" style={buttonStyle} onClick={() => void sendWebhook()}>Send incident webhook</button>
-            <JsonBlock value={webhookOutput ?? overview.data?.lastWebhookIssue ?? overview.data?.lastWebhook ?? { note: "No webhook yet." }} />
+            <strong>Webhook de Incidente</strong>
+            <button type="button" style={buttonStyle} onClick={() => void sendWebhook()}>Enviar webhook de incidente</button>
+            <JsonBlock value={webhookOutput ?? overview.data?.lastWebhookIssue ?? overview.data?.lastWebhook ?? { note: "Nenhum webhook recebido ainda." }} />
           </div>
           <div style={layoutStack}>
-            <strong>Tool dispatcher</strong>
+            <strong>Despachante de Ferramentas</strong>
             <input style={inputStyle} value={toolMessage} onChange={(event) => setToolMessage(event.target.value)} />
             <div style={rowStyle}>
-              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.echo)}>Run note echo</button>
-              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.companySummary)}>Run company summary</button>
-              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.createIssue)}>Run create issue</button>
+              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.echo)}>Executar eco de nota</button>
+              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.companySummary)}>Executar resumo da empresa</button>
+              <button type="button" style={buttonStyle} onClick={() => void executeTool(TOOL_NAMES.createIssue)}>Executar criação de issue</button>
             </div>
-            <JsonBlock value={toolOutput ?? { note: "No tool output yet." }} />
+            <JsonBlock value={toolOutput ?? { note: "Ainda não há saída de ferramenta." }} />
           </div>
         </div>
       </Section>
 
-      <Section title="Latest Result">
-        <JsonBlock value={result ?? { note: "Run an action to see results here." }} />
+      <Section title="Resultado Mais Recente">
+        <JsonBlock value={result ?? { note: "Execute uma ação para ver o resultado aqui." }} />
       </Section>
     </div>
   );
@@ -2075,43 +2115,43 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     await save(configJson);
-    setSavedMessage("Saved");
+    setSavedMessage("Salvo");
     window.setTimeout(() => setSavedMessage(null), 1500);
   }
 
   if (loading) {
-    return <div style={{ fontSize: "12px", opacity: 0.7 }}>Loading plugin config…</div>;
+    return <div style={{ fontSize: "12px", opacity: 0.7 }}>Carregando configuração do plugin…</div>;
   }
 
   return (
     <form onSubmit={onSubmit} style={{ display: "grid", gap: "18px" }}>
       <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "minmax(0, 1.8fr) minmax(220px, 1fr)" }}>
         <div style={{ display: "grid", gap: "8px" }}>
-          <strong>About</strong>
+          <strong>Sobre</strong>
           <div style={{ fontSize: "13px", lineHeight: 1.5 }}>
-            Operations Console exposes a broad Paperclip plugin surface in one internal, trusted plugin. It intentionally includes domain mutations, event handling, streams, tools, jobs, webhooks, and local workspace/process diagnostics.
+            A Central de Operações expõe uma superfície ampla de plugins do Paperclip em um único plugin interno e confiável. Ela inclui intencionalmente mutações de domínio, eventos, streams, ferramentas, jobs, webhooks e diagnósticos locais de workspace e processo.
           </div>
           <div style={{ fontSize: "12px", opacity: 0.7 }}>
-            Current company context: {context.companyId ?? "none"}
+            Contexto atual da empresa: {context.companyId ?? "nenhum"}
           </div>
         </div>
         <div style={{ display: "grid", gap: "8px" }}>
-          <strong>Danger / Trust Model</strong>
+          <strong>Risco e Modelo de Confiança</strong>
           <div style={{ fontSize: "12px", lineHeight: 1.5 }}>
-            Workspace access and local diagnostics run as trusted local code. Keep process execution off unless you explicitly want to exercise child-process behavior.
+            O acesso ao workspace e os diagnósticos locais executam como código local confiável. Mantenha a execução de processos desativada, a menos que você queira testar explicitamente o comportamento de subprocessos.
           </div>
         </div>
       </div>
 
       <div style={{ display: "grid", gap: "12px" }}>
-        <strong>Settings</strong>
+        <strong>Configurações</strong>
         <label style={rowStyle}>
           <input
             type="checkbox"
             checked={configJson.showSidebarEntry !== false}
             onChange={(event) => setField("showSidebarEntry", event.target.checked)}
           />
-          <span>Show sidebar entry</span>
+          <span>Exibir entrada na barra lateral</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2119,7 +2159,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.showSidebarPanel !== false}
             onChange={(event) => setField("showSidebarPanel", event.target.checked)}
           />
-          <span>Show sidebar panel</span>
+          <span>Exibir painel lateral</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2127,7 +2167,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.showProjectSidebarItem !== false}
             onChange={(event) => setField("showProjectSidebarItem", event.target.checked)}
           />
-          <span>Show project sidebar item</span>
+          <span>Exibir atalho lateral do projeto</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2135,7 +2175,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.showCommentAnnotation !== false}
             onChange={(event) => setField("showCommentAnnotation", event.target.checked)}
           />
-          <span>Show comment annotation</span>
+          <span>Exibir anotação de comentário</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2143,7 +2183,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.showCommentContextMenuItem !== false}
             onChange={(event) => setField("showCommentContextMenuItem", event.target.checked)}
           />
-          <span>Show comment context action</span>
+          <span>Exibir ação contextual de comentário</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2151,7 +2191,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.enableWorkspaceDemos !== false}
             onChange={(event) => setField("enableWorkspaceDemos", event.target.checked)}
           />
-          <span>Enable workspace access</span>
+          <span>Habilitar acesso ao workspace</span>
         </label>
         <label style={rowStyle}>
           <input
@@ -2159,10 +2199,10 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
             checked={configJson.enableProcessDemos === true}
             onChange={(event) => setField("enableProcessDemos", event.target.checked)}
           />
-          <span>Enable local diagnostics</span>
+          <span>Habilitar diagnósticos locais</span>
         </label>
         <label style={{ display: "grid", gap: "6px" }}>
-          <span style={{ fontSize: "12px" }}>HTTP endpoint URL</span>
+          <span style={{ fontSize: "12px" }}>URL do endpoint HTTP</span>
           <input
             style={inputStyle}
             value={String(configJson.httpDemoUrl ?? DEFAULT_CONFIG.httpDemoUrl)}
@@ -2170,7 +2210,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
           />
         </label>
         <label style={{ display: "grid", gap: "6px" }}>
-          <span style={{ fontSize: "12px" }}>Secret reference</span>
+          <span style={{ fontSize: "12px" }}>Referência de segredo</span>
           <input
             style={inputStyle}
             value={String(configJson.secretRefExample ?? "")}
@@ -2178,7 +2218,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
           />
         </label>
         <label style={{ display: "grid", gap: "6px" }}>
-          <span style={{ fontSize: "12px" }}>Workspace notes file</span>
+          <span style={{ fontSize: "12px" }}>Arquivo de notas do workspace</span>
           <input
             style={inputStyle}
             value={String(configJson.workspaceScratchFile ?? DEFAULT_CONFIG.workspaceScratchFile)}
@@ -2191,7 +2231,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
 
       <div style={rowStyle}>
         <button type="submit" style={primaryButtonStyle} disabled={saving}>
-          {saving ? "Saving…" : "Save settings"}
+          {saving ? "Salvando…" : "Salvar configurações"}
         </button>
         {savedMessage ? <span style={{ fontSize: "12px", opacity: 0.7 }}>{savedMessage}</span> : null}
       </div>
@@ -2206,19 +2246,19 @@ export function KitchenSinkDashboardWidget({ context }: PluginWidgetProps) {
   return (
     <div style={layoutStack}>
       <div style={rowStyle}>
-        <strong>Operations Console</strong>
-        <Pill label="dashboardWidget" />
+        <strong>{PLUGIN_DISPLAY_NAME}</strong>
+        <Pill label="Widget do Dashboard" />
       </div>
       <div style={{ fontSize: "12px", opacity: 0.7 }}>
-        Plugin runtime summary for the current company.
+        Resumo do runtime do plugin para a empresa atual.
       </div>
       <div style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
-        <div>Recent records: {overview.data?.recentRecords.length ?? 0}</div>
-        <div>Projects: {overview.data?.counts.projects ?? 0}</div>
+        <div>Registros recentes: {overview.data?.recentRecords.length ?? 0}</div>
+        <div>Projetos: {overview.data?.counts.projects ?? 0}</div>
         <div>Issues: {overview.data?.counts.issues ?? 0}</div>
       </div>
       <div style={rowStyle}>
-        <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Open page</a>
+        <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Abrir página</a>
         <button
           type="button"
           style={buttonStyle}
@@ -2227,7 +2267,7 @@ export function KitchenSinkDashboardWidget({ context }: PluginWidgetProps) {
             void writeMetric({ companyId: context.companyId, name: "dashboard_click", value: 1 }).catch(console.error);
           }}
         >
-          Write metric
+          Registrar métrica
         </button>
       </div>
     </div>
@@ -2260,7 +2300,7 @@ export function KitchenSinkSidebarLink({ context }: PluginSidebarProps) {
         </svg>
       </span>
       <span className="flex-1 truncate">
-        Operations Console
+        {PLUGIN_DISPLAY_NAME}
       </span>
     </a>
   );
@@ -2273,9 +2313,9 @@ export function KitchenSinkSidebarPanel() {
   if (config.data && config.data.showSidebarPanel === false) return null;
   return (
     <div style={{ ...layoutStack, ...subtleCardStyle, fontSize: "12px" }}>
-      <strong>Operations Panel</strong>
-      <div>Recent plugin records: {overview.data?.recentRecords.length ?? 0}</div>
-      <a href={pluginPagePath(context.companyPrefix)}>Open plugin page</a>
+      <strong>Painel Operacional</strong>
+      <div>Registros recentes do plugin: {overview.data?.recentRecords.length ?? 0}</div>
+      <a href={pluginPagePath(context.companyPrefix)}>Abrir página do plugin</a>
     </div>
   );
 }
@@ -2288,21 +2328,21 @@ export function KitchenSinkProjectSidebarItem({ context }: PluginProjectSidebarI
       href={hostPath(context.companyPrefix, `/projects/${context.entityId}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
       style={{ fontSize: "12px", textDecoration: "none" }}
     >
-        Operations
+      Operações
     </a>
   );
 }
 
 export function KitchenSinkProjectTab({ context }: PluginDetailTabProps) {
-  return <CompactSurfaceSummary label="Project Detail Tab" entityType="project" />;
+  return <CompactSurfaceSummary label="Aba de Detalhes do Projeto" entityType="project" />;
 }
 
 export function KitchenSinkIssueTab({ context }: PluginDetailTabProps) {
-  return <CompactSurfaceSummary label="Issue Detail Tab" entityType="issue" />;
+  return <CompactSurfaceSummary label="Aba de Detalhes da Issue" entityType="issue" />;
 }
 
 export function KitchenSinkTaskDetailView() {
-  return <CompactSurfaceSummary label="Task Detail View" entityType="issue" />;
+  return <CompactSurfaceSummary label="Visão de Detalhes da Task" entityType="issue" />;
 }
 
 export function KitchenSinkToolbarButton() {
@@ -2317,7 +2357,7 @@ export function KitchenSinkToolbarButton() {
         void startProgress({ companyId: context.companyId, steps: 3 }).catch(console.error);
       }}
     >
-      Ops Action
+      Ação Operacional
     </button>
   );
 }
@@ -2335,11 +2375,11 @@ export function KitchenSinkContextMenuItem() {
           companyId: context.companyId,
           entityType: context.entityType ?? undefined,
           entityId: context.entityId ?? undefined,
-          message: "Operations Console context action clicked",
+          message: "Ação contextual da Central de Operações acionada",
         }).catch(console.error);
       }}
     >
-      Ops Context
+      Contexto Operacional
     </button>
   );
 }
@@ -2356,9 +2396,9 @@ export function KitchenSinkCommentAnnotation({ context }: PluginCommentAnnotatio
   if (!data.data) return null;
   return (
     <div style={{ ...subtleCardStyle, fontSize: "11px" }}>
-      <strong>Operations Console</strong>
-      <div>Comment length: {data.data.length}</div>
-      <div>Copied count: {data.data.copiedCount}</div>
+      <strong>{PLUGIN_DISPLAY_NAME}</strong>
+      <div>Tamanho do comentário: {data.data.length}</div>
+      <div>Total de capturas: {data.data.copiedCount}</div>
       <div style={{ opacity: 0.75 }}>{data.data.preview}</div>
     </div>
   );
@@ -2381,11 +2421,11 @@ export function KitchenSinkCommentContextMenuItem({ context }: PluginCommentCont
             issueId: context.parentEntityId,
             commentId: context.entityId,
           })
-            .then(() => setStatus("Copied"))
+            .then(() => setStatus("Copiado"))
             .catch((error) => setStatus(error instanceof Error ? error.message : String(error)));
         }}
       >
-        Capture To Ops Console
+        Capturar para a Central
       </button>
       {status ? <span style={{ fontSize: "11px", opacity: 0.7 }}>{status}</span> : null}
     </div>
@@ -2396,11 +2436,11 @@ export function KitchenSinkLauncherModal() {
   const context = useHostContext();
   return (
     <div style={{ display: "grid", gap: "10px" }}>
-      <strong>Operations Console Modal</strong>
+      <strong>Modal da Central de Operações</strong>
       <div style={{ fontSize: "12px", opacity: 0.7 }}>
-        This export exists so launcher infrastructure has a concrete modal target.
+        Esta exportação existe para que a infraestrutura de launchers tenha um alvo concreto de modal.
       </div>
-      <JsonBlock value={context.renderEnvironment ?? { note: "No render environment metadata." }} />
+      <JsonBlock value={context.renderEnvironment ?? { note: "Nenhum metadado de ambiente de renderização disponível." }} />
     </div>
   );
 }

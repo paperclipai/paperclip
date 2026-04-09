@@ -1,8 +1,9 @@
 import type { PluginLauncherRegistration } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "paperclip-kitchen-sink-example";
-export const PLUGIN_VERSION = "0.2.0";
-export const PAGE_ROUTE = "operations-console";
+export const PLUGIN_DISPLAY_NAME = "Central de Operações";
+export const PLUGIN_VERSION = "0.4.0";
+export const PAGE_ROUTE = "central-operacoes";
 
 export const SLOT_IDS = {
   page: "kitchen-sink-page",
@@ -59,24 +60,24 @@ export const STREAM_CHANNELS = {
 export const SAFE_COMMANDS = [
   {
     key: "pwd",
-    label: "Print workspace path",
+    label: "Mostrar caminho do workspace",
     command: "pwd",
     args: [] as string[],
-    description: "Prints the current workspace directory.",
+    description: "Mostra o diretório atual do workspace.",
   },
   {
     key: "ls",
-    label: "List workspace files",
+    label: "Listar arquivos do workspace",
     command: "ls",
     args: ["-la"] as string[],
-    description: "Lists files in the selected workspace.",
+    description: "Lista os arquivos do workspace selecionado.",
   },
   {
     key: "git-status",
-    label: "Git status",
+    label: "Status do Git",
     command: "git",
     args: ["status", "--short", "--branch"] as string[],
-    description: "Shows git status for the selected workspace.",
+    description: "Mostra o status do Git no workspace selecionado.",
   },
 ] as const;
 
@@ -93,13 +94,13 @@ export const DEFAULT_CONFIG = {
   secretRefExample: "",
   httpDemoUrl: "https://httpbin.org/anything",
   allowedCommands: SAFE_COMMANDS.map((command) => command.key),
-  workspaceScratchFile: ".paperclip-ops-console.txt",
+  workspaceScratchFile: ".paperclip-central-operacoes.txt",
 } as const;
 
 export const RUNTIME_LAUNCHER: PluginLauncherRegistration = {
-  id: "kitchen-sink-runtime-launcher",
-  displayName: "Operations Console Modal",
-  description: "Quick operational overlay registered by the worker runtime.",
+  id: "central-operacoes-runtime-launcher",
+  displayName: "Modal da Central de Operações",
+  description: "Overlay operacional rápido registrado pelo runtime do worker.",
   placementZone: "toolbarButton",
   entityTypes: ["project", "issue"],
   action: {
