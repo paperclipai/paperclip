@@ -656,7 +656,11 @@ installDevIntervals();
 if (mode === "watch") {
   const maxWatchRestarts = 5;
   const watchRestartBackoffMs = 2000;
+  // Reset the crash counter once the child has been alive for this long,
+  // so intermittent crashes spread over hours/days don't accumulate.
+  const watchRestartStableMs = 60_000;
   let watchRestartCount = 0;
+  let lastChildStartedAt = Date.now();
 
   while (true) {
     const exit = await waitForChildExit();
@@ -675,11 +679,17 @@ if (mode === "watch") {
       break;
     }
 
+    // If the child ran long enough, treat it as stable and reset the counter.
+    const uptimeMs = Date.now() - lastChildStartedAt;
+    if (uptimeMs >= watchRestartStableMs) {
+      watchRestartCount = 0;
+    }
+
     // Unexpected death (SIGTERM or non-zero exit) — attempt auto-restart.
     watchRestartCount++;
     if (watchRestartCount > maxWatchRestarts) {
       console.error(
-        `[paperclip] watch mode child died ${watchRestartCount} times — giving up (last signal: ${exit.signal ?? "none"}, code: ${exit.code})`,
+        `[paperclip] watch mode child died ${watchRestartCount} times in rapid succession — giving up (last signal: ${exit.signal ?? "none"}, code: ${exit.code})`,
       );
       await removeLocalServiceRegistryRecord(devService.serviceKey);
       if (exit.signal) {
@@ -691,7 +701,7 @@ if (mode === "watch") {
 
     const backoff = watchRestartBackoffMs * watchRestartCount;
     console.log(
-      `[paperclip] watch mode child exited unexpectedly (signal: ${exit.signal ?? "none"}, code: ${exit.code}) — restarting in ${backoff}ms (attempt ${watchRestartCount}/${maxWatchRestarts})`,
+      `[paperclip] watch mode child exited unexpectedly (signal: ${exit.signal ?? "none"}, code: ${exit.code}, uptime: ${Math.round(uptimeMs / 1000)}s) — restarting in ${backoff}ms (attempt ${watchRestartCount}/${maxWatchRestarts})`,
     );
     await new Promise((r) => setTimeout(r, backoff));
 
@@ -701,6 +711,7 @@ if (mode === "watch") {
       break;
     }
 
+    lastChildStartedAt = Date.now();
     await startServerChild();
   }
 }
