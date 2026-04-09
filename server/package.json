@@ -76,6 +76,9 @@
     "sharp": "^0.34.5",
     "ws": "^8.19.0",
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^2.0.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
+    "@opentelemetry/resources": "^2.0.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
