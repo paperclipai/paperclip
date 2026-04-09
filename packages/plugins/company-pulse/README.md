@@ -21,8 +21,14 @@ Pulso da Empresa é um plugin interno de dashboard que entrega um resumo operaci
 ## Instalação local
 
 ```bash
-pnpm --filter @paperclipai/plugin-company-pulse build
+pnpm --filter @goldneuron/plugin-company-pulse build
 pnpm paperclipai plugin install ./packages/plugins/company-pulse
+```
+
+## Instalação por npm
+
+```bash
+pnpm paperclipai plugin install @goldneuron/plugin-company-pulse
 ```
 
 ## Notas

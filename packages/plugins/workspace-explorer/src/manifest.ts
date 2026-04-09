@@ -9,10 +9,10 @@ const COMMENT_OPEN_FILES_SLOT_ID = "comment-open-files";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.4.0",
+  version: "0.5.0",
   displayName: "Explorador de Workspace",
   description: "Superfície operacional para navegar workspaces, editar arquivos e abrir referências vindas de comentários.",
-  author: "Paperclip",
+  author: "Goldneuron",
   categories: ["workspace", "ui"],
   capabilities: [
     "ui.sidebar.register",

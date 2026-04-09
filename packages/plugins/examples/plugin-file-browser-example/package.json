@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-file-browser-example",
+  "name": "@goldneuron/plugin-file-browser-example",
   "version": "0.3.0",
   "description": "Project workspace explorer with browsing, editing, creation, and comment-linked navigation",
   "type": "module",

@@ -186,7 +186,7 @@ export function PluginManager() {
                 <Label htmlFor="packageName">Nome do pacote npm</Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  placeholder="@goldneuron/plugin-example"
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
@@ -221,7 +221,7 @@ export function PluginManager() {
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">Plugins internos</h2>
-          <Badge variant="outline">Paperclip</Badge>
+          <Badge variant="outline">Goldneuron</Badge>
         </div>
 
         {catalogQuery.isLoading ? (
@@ -240,8 +240,7 @@ export function PluginManager() {
                 installedByPackageName.get(entry.packageName);
               const installPending =
                 installMutation.isPending &&
-                installMutation.variables?.isLocalPath &&
-                installMutation.variables.packageName === entry.localPath;
+                installMutation.variables?.packageName === entry.packageName;
 
               return (
                 <li key={entry.pluginKey}>
@@ -289,12 +288,11 @@ export function PluginManager() {
                           disabled={installPending || installMutation.isPending}
                           onClick={() =>
                             installMutation.mutate({
-                              packageName: entry.localPath,
-                              isLocalPath: true,
+                              packageName: entry.packageName,
                             })
                           }
                         >
-                          {installPending ? "Instalando..." : "Instalar plugin"}
+                          {installPending ? "Instalando..." : "Instalar do npm"}
                         </Button>
                       )}
                     </div>

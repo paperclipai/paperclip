@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-hello-world-example",
+  "name": "@goldneuron/plugin-hello-world-example",
   "version": "0.2.0",
   "description": "Dashboard widget that summarizes current company workload, active agents, and goals",
   "type": "module",

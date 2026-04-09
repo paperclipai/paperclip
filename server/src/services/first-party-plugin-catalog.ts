@@ -19,36 +19,49 @@ export interface FirstPartyPluginCatalogEntry {
 
 type CatalogDefinition = Omit<FirstPartyPluginCatalogEntry, "localPath"> & {
   relativePath: string;
+  legacyPackageNames?: string[];
+  legacyRelativePaths?: string[];
+};
+
+type ResolvedCatalogDefinition = FirstPartyPluginCatalogEntry & {
+  legacyPackageNames: string[];
+  legacyLocalPaths: string[];
 };
 
 const FIRST_PARTY_PLUGIN_DEFINITIONS: CatalogDefinition[] = [
   {
-    packageName: "@paperclipai/plugin-company-pulse",
+    packageName: "@goldneuron/plugin-company-pulse",
     pluginKey: "paperclip.hello-world-example",
     displayName: "Pulso da Empresa",
     description: "Widget operacional de dashboard para resumir carga, issues abertas, metas e agentes ativos da empresa.",
     relativePath: "packages/plugins/company-pulse",
+    legacyPackageNames: ["@paperclipai/plugin-company-pulse"],
+    legacyRelativePaths: ["packages/plugins/examples/plugin-hello-world-example"],
     tag: "first_party",
   },
   {
-    packageName: "@paperclipai/plugin-workspace-explorer",
+    packageName: "@goldneuron/plugin-workspace-explorer",
     pluginKey: "paperclip-file-browser-example",
     displayName: "Explorador de Workspace",
     description: "Superfície operacional para navegar workspaces, editar arquivos e abrir referências vindas de comentários.",
     relativePath: "packages/plugins/workspace-explorer",
+    legacyPackageNames: ["@paperclipai/plugin-workspace-explorer"],
+    legacyRelativePaths: ["packages/plugins/examples/plugin-file-browser-example"],
     tag: "first_party",
   },
   {
-    packageName: "@paperclipai/plugin-central-operacoes",
+    packageName: "@goldneuron/plugin-central-operacoes",
     pluginKey: "paperclip-kitchen-sink-example",
     displayName: "Central de Operações",
     description: "Cockpit operacional para intake, automações, diagnósticos, follow-up, métricas e coordenação entre agentes.",
     relativePath: "packages/plugins/central-operacoes",
+    legacyPackageNames: ["@paperclipai/plugin-central-operacoes"],
+    legacyRelativePaths: ["packages/plugins/examples/plugin-kitchen-sink-example"],
     tag: "first_party",
   },
 ];
 
-export function listFirstPartyPluginCatalog(): FirstPartyPluginCatalogEntry[] {
+function resolveFirstPartyPluginCatalog(): ResolvedCatalogDefinition[] {
   return FIRST_PARTY_PLUGIN_DEFINITIONS.flatMap((definition) => {
     const localPath = path.resolve(REPO_ROOT, definition.relativePath);
     if (!existsSync(localPath)) return [];
@@ -58,36 +71,77 @@ export function listFirstPartyPluginCatalog(): FirstPartyPluginCatalogEntry[] {
       displayName: definition.displayName,
       description: definition.description,
       localPath,
+      legacyPackageNames: definition.legacyPackageNames ?? [],
+      legacyLocalPaths: (definition.legacyRelativePaths ?? []).map((relativePath) =>
+        path.resolve(REPO_ROOT, relativePath),
+      ),
       tag: "first_party" as const,
     }];
   });
 }
 
-function manifestNeedsSync(
+export function listFirstPartyPluginCatalog(): FirstPartyPluginCatalogEntry[] {
+  return resolveFirstPartyPluginCatalog().map(({ legacyPackageNames: _legacyPackageNames, legacyLocalPaths: _legacyLocalPaths, ...entry }) => entry);
+}
+
+function buildSyncUpdate(
   plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["listInstalled"]>>[number],
-  entry: FirstPartyPluginCatalogEntry,
+  entry: ResolvedCatalogDefinition,
   manifest: PaperclipPluginManifestV1,
-): boolean {
+): {
+  packageName?: string;
+  packagePath?: string | null;
+  version?: string;
+  manifest?: PaperclipPluginManifestV1;
+} | null {
   const currentPackagePath = plugin.packagePath ? path.resolve(plugin.packagePath) : null;
   const currentDisplayName =
     typeof plugin.manifestJson?.displayName === "string" ? plugin.manifestJson.displayName : null;
   const currentDescription =
     typeof plugin.manifestJson?.description === "string" ? plugin.manifestJson.description : null;
+  const isLegacyPackageName = entry.legacyPackageNames.includes(plugin.packageName);
+  const isLegacyLocalPath = currentPackagePath ? entry.legacyLocalPaths.includes(currentPackagePath) : false;
+  const isRepoManagedPath = currentPackagePath === entry.localPath;
+  const shouldTouchRecord = isLegacyPackageName || isLegacyLocalPath || isRepoManagedPath;
+  if (!shouldTouchRecord) return null;
 
-  return (
-    plugin.packageName !== entry.packageName ||
-    currentPackagePath !== entry.localPath ||
-    plugin.version !== manifest.version ||
-    currentDisplayName !== manifest.displayName ||
-    currentDescription !== manifest.description
-  );
+  const update: {
+    packageName?: string;
+    packagePath?: string | null;
+    version?: string;
+    manifest?: PaperclipPluginManifestV1;
+  } = {};
+
+  if (plugin.packageName !== entry.packageName) {
+    update.packageName = entry.packageName;
+  }
+
+  if (isLegacyLocalPath || isRepoManagedPath) {
+    const nextPackagePath = entry.localPath;
+    if (plugin.packagePath !== nextPackagePath) {
+      update.packagePath = nextPackagePath;
+    }
+  }
+
+  if (isLegacyLocalPath || isRepoManagedPath) {
+    if (
+      plugin.version !== manifest.version ||
+      currentDisplayName !== manifest.displayName ||
+      currentDescription !== manifest.description
+    ) {
+      update.version = manifest.version;
+      update.manifest = manifest;
+    }
+  }
+
+  return Object.keys(update).length > 0 ? update : null;
 }
 
 export async function syncFirstPartyPluginRecords(
   registry: ReturnType<typeof pluginRegistryService>,
   loader: PluginLoader,
 ): Promise<void> {
-  const catalog = listFirstPartyPluginCatalog();
+  const catalog = resolveFirstPartyPluginCatalog();
   if (catalog.length === 0) return;
 
   const byKey = new Map(catalog.map((entry) => [entry.pluginKey, entry]));
@@ -99,13 +153,9 @@ export async function syncFirstPartyPluginRecords(
 
     const manifest = await loader.loadManifest(catalogEntry.localPath);
     if (!manifest || manifest.id !== catalogEntry.pluginKey) continue;
-    if (!manifestNeedsSync(plugin, catalogEntry, manifest)) continue;
+    const update = buildSyncUpdate(plugin, catalogEntry, manifest);
+    if (!update) continue;
 
-    await registry.update(plugin.id, {
-      packageName: catalogEntry.packageName,
-      packagePath: catalogEntry.localPath,
-      version: manifest.version,
-      manifest,
-    });
+    await registry.update(plugin.id, update);
   }
 }

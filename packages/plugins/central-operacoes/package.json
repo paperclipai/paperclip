@@ -1,10 +1,12 @@
 {
-  "name": "@paperclipai/plugin-central-operacoes",
-  "version": "0.6.0",
+  "name": "@goldneuron/plugin-central-operacoes",
+  "version": "0.7.0",
   "description": "Cockpit operacional para intake, automações, diagnósticos, follow-up, métricas e coordenação entre agentes",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

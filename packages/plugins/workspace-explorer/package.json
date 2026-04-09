@@ -1,10 +1,12 @@
 {
-  "name": "@paperclipai/plugin-workspace-explorer",
-  "version": "0.4.0",
+  "name": "@goldneuron/plugin-workspace-explorer",
+  "version": "0.5.0",
   "description": "Superfície operacional para navegar workspaces, editar arquivos e abrir referências vindas de comentários",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

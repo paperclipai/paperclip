@@ -1,10 +1,12 @@
 {
-  "name": "@paperclipai/plugin-company-pulse",
-  "version": "0.3.0",
+  "name": "@goldneuron/plugin-company-pulse",
+  "version": "0.4.0",
   "description": "Widget operacional de dashboard para resumir carga atual, issues abertas, metas e agentes ativos",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

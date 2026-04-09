@@ -12,7 +12,7 @@ packages/plugins/central-operacoes
 
 ## Pacote real correspondente
 
-- nome: `@paperclipai/plugin-central-operacoes`
+- nome: `@goldneuron/plugin-central-operacoes`
 - caminho: `./packages/plugins/central-operacoes`
 - função: cockpit operacional para intake, follow-up, automações, diagnósticos e coordenação de agentes
 
@@ -25,7 +25,7 @@ packages/plugins/central-operacoes
 ## Instalação do plugin real
 
 ```sh
-pnpm --filter @paperclipai/plugin-central-operacoes build
+pnpm --filter @goldneuron/plugin-central-operacoes build
 pnpm paperclipai plugin install ./packages/plugins/central-operacoes
 ```
 

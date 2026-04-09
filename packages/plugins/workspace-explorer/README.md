@@ -20,8 +20,14 @@ Explorador de Workspace transforma o antigo file-browser em uma superfície real
 ## Instalação local
 
 ```bash
-pnpm --filter @paperclipai/plugin-workspace-explorer build
+pnpm --filter @goldneuron/plugin-workspace-explorer build
 pnpm paperclipai plugin install ./packages/plugins/workspace-explorer
+```
+
+## Instalação por npm
+
+```bash
+pnpm paperclipai plugin install @goldneuron/plugin-workspace-explorer
 ```
 
 ## Notas

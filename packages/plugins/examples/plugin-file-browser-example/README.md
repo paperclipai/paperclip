@@ -12,7 +12,7 @@ Se a intenção for habilitar exploração e edição de arquivos no produto, us
 
 ## Pacote real correspondente
 
-- nome: `@paperclipai/plugin-workspace-explorer`
+- nome: `@goldneuron/plugin-workspace-explorer`
 - caminho: `./packages/plugins/workspace-explorer`
 - função: navegar workspaces, editar arquivos e abrir referências vindas de comentários
 
@@ -25,7 +25,7 @@ Se a intenção for habilitar exploração e edição de arquivos no produto, us
 ## Instalação do plugin real
 
 ```bash
-pnpm --filter @paperclipai/plugin-workspace-explorer build
+pnpm --filter @goldneuron/plugin-workspace-explorer build
 pnpm paperclipai plugin install ./packages/plugins/workspace-explorer
 ```
 

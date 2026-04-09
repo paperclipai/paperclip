@@ -12,7 +12,7 @@ Se a intenção for usar o widget operacional do produto, instale o pacote real 
 
 ## Pacote real correspondente
 
-- nome: `@paperclipai/plugin-company-pulse`
+- nome: `@goldneuron/plugin-company-pulse`
 - caminho: `./packages/plugins/company-pulse`
 - função: widget operacional de dashboard com resumo da empresa
 
@@ -25,7 +25,7 @@ Se a intenção for usar o widget operacional do produto, instale o pacote real 
 ## Instalação do plugin real
 
 ```bash
-pnpm --filter @paperclipai/plugin-company-pulse build
+pnpm --filter @goldneuron/plugin-company-pulse build
 pnpm paperclipai plugin install ./packages/plugins/company-pulse
 ```
 

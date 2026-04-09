@@ -4,7 +4,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
  * Stable plugin ID used by host registration and namespacing.
  */
 const PLUGIN_ID = "paperclip.hello-world-example";
-const PLUGIN_VERSION = "0.3.0";
+const PLUGIN_VERSION = "0.4.0";
 const DASHBOARD_WIDGET_SLOT_ID = "hello-world-dashboard-widget";
 const DASHBOARD_WIDGET_EXPORT_NAME = "HelloWorldDashboardWidget";
 
@@ -17,7 +17,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Pulso da Empresa",
   description: "Widget operacional que resume a carga atual da empresa, issues abertas, metas e agentes ativos.",
-  author: "Paperclip",
+  author: "Goldneuron",
   categories: ["ui"],
   capabilities: [
     "ui.dashboardWidget.register",

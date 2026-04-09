@@ -17,7 +17,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Central de Operações",
   description: "Central operacional interna para diagnósticos, intake de issues, notas de workspace, ferramentas, streams, jobs e follow-up por webhook.",
-  author: "Paperclip",
+  author: "Goldneuron",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
     "companies.read",

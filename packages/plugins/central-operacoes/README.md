@@ -14,16 +14,22 @@ Hoje ele entrega:
 - intake e follow-up de issues via ações, ferramentas e webhooks
 - notas de workspace e diagnósticos locais controlados para projetos selecionados
 
-O pacote agora vive em `packages/plugins/central-operacoes` e usa o nome `@paperclipai/plugin-central-operacoes`. O identificador técnico do plugin continua compatível com instalações já existentes para evitar reinstalações manuais.
+O pacote agora vive em `packages/plugins/central-operacoes` e usa o nome `@goldneuron/plugin-central-operacoes`. O identificador técnico do plugin continua compatível com instalações já existentes para evitar reinstalações manuais.
 
 ## Instalação
 
 ```sh
-pnpm --filter @paperclipai/plugin-central-operacoes build
+pnpm --filter @goldneuron/plugin-central-operacoes build
 pnpm paperclipai plugin install ./packages/plugins/central-operacoes
 ```
 
-Ou instale pelo gerenciador de plugins do Paperclip como plugin interno do produto depois que este repositório estiver compilado.
+Ou instale a versão publicada por npm:
+
+```sh
+pnpm paperclipai plugin install @goldneuron/plugin-central-operacoes
+```
+
+Ou instale pelo gerenciador de plugins do produto para consumir o pacote npm da Goldneuron.
 
 ## Notas
 

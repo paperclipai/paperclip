@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-central-operacoes",
+  "name": "@goldneuron/plugin-kitchen-sink-example",
   "version": "0.4.0",
   "description": "Central operacional interna para diagnósticos, intake, ferramentas, streams, jobs e follow-up por webhook",
   "type": "module",
