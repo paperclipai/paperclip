@@ -549,10 +549,50 @@ export async function ensureAbsoluteDirectory(
   }
 }
 
+/**
+ * Resolve the Paperclip runtime skills directory for a `*-local` adapter.
+ *
+ * Priority order:
+ *   1. `PAPERCLIP_SKILLS_DIR` env var — explicit override, highest priority.
+ *      Must be an existing directory; if set but invalid (non-directory,
+ *      non-existent), a warning is logged and resolution falls through to
+ *      the module-relative candidates below.
+ *   2. Module-relative candidates (`PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES`):
+ *      - `<moduleDir>/../../skills`         (published package layout)
+ *      - `<moduleDir>/../../../../../skills` (dev / pnpm workspace layout)
+ *   3. Any `additionalCandidates` passed by the caller, resolved as-is.
+ *
+ * Returns the first existing directory, or `null` if none match.
+ *
+ * The env var is the primary production override: it makes the skill
+ * location deterministic, visible, and independent of filesystem path math
+ * against `moduleDir`. Downstream deployments (e.g. Vibe-Stack) can bind-mount
+ * a volume at the override path and enable runtime skill swapping without
+ * rebuilding the adapter image.
+ */
 export async function resolvePaperclipSkillsDir(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<string | null> {
+  const envDir = process.env.PAPERCLIP_SKILLS_DIR?.trim();
+  if (envDir) {
+    try {
+      const stat = await fs.stat(envDir);
+      if (stat.isDirectory()) {
+        return envDir;
+      }
+      console.warn(
+        { skillsDir: envDir },
+        "PAPERCLIP_SKILLS_DIR is set but not a directory; falling back to module-relative search",
+      );
+    } catch (err) {
+      console.warn(
+        { skillsDir: envDir, err: err instanceof Error ? err.message : String(err) },
+        "PAPERCLIP_SKILLS_DIR is set but not accessible; falling back to module-relative search",
+      );
+    }
+  }
+
   const candidates = [
     ...PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) => path.resolve(moduleDir, relativePath)),
     ...additionalCandidates.map((candidate) => path.resolve(candidate)),
