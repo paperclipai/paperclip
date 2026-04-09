@@ -109,8 +109,8 @@ function PropertyRow({
   valueClassName?: string;
 }) {
   return (
-    <div className={cn("flex gap-3 py-1.5", alignStart ? "items-start" : "items-center")}>
-      <div className="shrink-0 w-20">{label}</div>
+    <div className={cn("flex gap-3 py-2", alignStart ? "items-start" : "items-center")}>
+      <div className="shrink-0 w-24">{label}</div>
       <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5", valueClassName)}>
         {children}
       </div>
@@ -488,15 +488,15 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   };
 
   return (
-    <div>
-      <div className="space-y-1 pb-4">
+    <div className="space-y-6">
+      <div className="rounded-lg bg-card p-4 space-y-1">
         <PropertyRow label={<FieldLabel label="Name" state={fieldState("name")} />}>
           {onUpdate || onFieldUpdate ? (
             <DraftInput
               value={project.name}
               onCommit={(name) => commitField("name", { name })}
               immediate
-              className="w-full rounded border border-border bg-transparent px-2 py-1 text-sm outline-none"
+              className="w-full bg-transparent px-0 py-1 text-sm outline-none"
               placeholder="Project name"
             />
           ) : (
@@ -634,7 +634,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         )}
       </div>
 
-      <Separator className="my-4" />
+      </div>
+      <div className="rounded-lg bg-card p-4">
 
       <div className="space-y-1 py-4">
         <div className="space-y-2">
@@ -894,7 +895,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
         {isolatedWorkspacesEnabled ? (
           <>
-            <Separator className="my-4" />
+            </div>
+      <div className="rounded-lg bg-card p-4">
 
             <div className="py-1.5 space-y-2">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -1120,20 +1122,19 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
       </div>
 
+      </div>
+
       {onArchive && (
-        <>
-          <Separator className="my-4" />
-          <div className="space-y-4 py-4">
-            <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-              Danger Zone
-            </div>
-            <ArchiveDangerZone
-              project={project}
-              onArchive={onArchive}
-              archivePending={archivePending}
-            />
+        <div className="rounded-lg bg-destructive/5 p-4 space-y-4">
+          <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+            Danger Zone
           </div>
-        </>
+          <ArchiveDangerZone
+            project={project}
+            onArchive={onArchive}
+            archivePending={archivePending}
+          />
+        </div>
       )}
     </div>
   );
