@@ -181,9 +181,9 @@ function TeamBranch({
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
             <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="flex-1 truncate">{team.name}</span>
+            <span className="truncate">{team.name}</span>
             <ChevronRight
-              className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform", open && "rotate-90")}
+              className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform ml-2", open && "rotate-90")}
             />
           </button>
         </CollapsibleTrigger>
