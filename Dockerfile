@@ -61,9 +61,10 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-# --- Skill-pack persistence: ensure all 13 bundled skills are present in /app/skills ---
-# The .agents/skills/ directory holds 6 skills (company-creator, create-agent-adapter,
-# doc-maintenance, pr-report, release, release-changelog) not present in skills/ root.
+# --- Skill-pack persistence: ensure all 25 bundled skills are present in /app/skills ---
+# The .agents/skills/ directory holds 6 Paperclip operational skills (company-creator,
+# create-agent-adapter, doc-maintenance, pr-report, release, release-changelog).
+# The poly-weather/skills/ directory holds 12 Poly-weather reliability+wallet skills.
 # Copy them explicitly so the pi-local adapter can discover them at /app/skills/*/SKILL.md.
 COPY --chown=node:node .agents/skills/company-creator /app/skills/company-creator
 COPY --chown=node:node .agents/skills/create-agent-adapter /app/skills/create-agent-adapter
@@ -71,6 +72,18 @@ COPY --chown=node:node .agents/skills/doc-maintenance /app/skills/doc-maintenanc
 COPY --chown=node:node .agents/skills/pr-report /app/skills/pr-report
 COPY --chown=node:node .agents/skills/release /app/skills/release
 COPY --chown=node:node .agents/skills/release-changelog /app/skills/release-changelog
+COPY --chown=node:node poly-weather/skills/exit-event-integrity-check /app/skills/exit-event-integrity-check
+COPY --chown=node:node poly-weather/skills/trade-contract-validator /app/skills/trade-contract-validator
+COPY --chown=node:node poly-weather/skills/scan-invariant-monitor /app/skills/scan-invariant-monitor
+COPY --chown=node:node poly-weather/skills/config-parity-auditor /app/skills/config-parity-auditor
+COPY --chown=node:node poly-weather/skills/forecast-provenance-auditor /app/skills/forecast-provenance-auditor
+COPY --chown=node:node poly-weather/skills/probability-calibration-evaluator /app/skills/probability-calibration-evaluator
+COPY --chown=node:node poly-weather/skills/wallet-intel-resolver /app/skills/wallet-intel-resolver
+COPY --chown=node:node poly-weather/skills/wallet-strategy-profiler /app/skills/wallet-strategy-profiler
+COPY --chown=node:node poly-weather/skills/wallet-edge-attribution /app/skills/wallet-edge-attribution
+COPY --chown=node:node poly-weather/skills/wallet-cohort-monitor /app/skills/wallet-cohort-monitor
+COPY --chown=node:node poly-weather/skills/wallet-copytrade-simulator /app/skills/wallet-copytrade-simulator
+COPY --chown=node:node poly-weather/skills/wallet-anomaly-flagger /app/skills/wallet-anomaly-flagger
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 COPY scripts/verify-skills.sh /usr/local/bin/

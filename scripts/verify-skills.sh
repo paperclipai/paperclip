@@ -13,7 +13,7 @@ SKILLS_DIR="$RAW_SKILLS_DIR"
 if [ "$(basename "$SKILLS_DIR")" != "skills" ]; then
     SKILLS_DIR="$SKILLS_DIR/skills"
 fi
-REQUIRED_COUNT=13
+REQUIRED_COUNT=25
 
 if [ ! -d "$SKILLS_DIR" ]; then
     echo "[verify-skills] ERROR: skills directory $SKILLS_DIR does not exist"
