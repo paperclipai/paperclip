@@ -79,7 +79,7 @@ function TeamSubMenu({
     { to: `/teams/${team.id}/docs`, label: "Docs", Icon: FileText, forceActive: false },
   ];
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-0.5">
       {subItems.map(({ to, label, Icon, forceActive }) => (
         <NavLink
           key={to}
