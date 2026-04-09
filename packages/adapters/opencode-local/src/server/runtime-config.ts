@@ -51,11 +51,23 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   await fs.mkdir(runtimeConfigDir, { recursive: true });
   try {
+    // Copy config files only — skip node_modules to avoid EDQUOT on tmpfs when the source
+    // is on a btrfs volume with qgroups. Node_modules are symlinked from source so OpenCode
+    // can still load plugins without copying megabytes of packages on every run.
     await fs.cp(sourceConfigDir, runtimeConfigDir, {
       recursive: true,
       force: true,
       errorOnExist: false,
       dereference: false,
+      filter: (src) => {
+        const rel = path.relative(sourceConfigDir, src);
+        return rel !== "node_modules" && !rel.startsWith("node_modules" + path.sep);
+      },
+    });
+    const srcNodeModules = path.join(sourceConfigDir, "node_modules");
+    const dstNodeModules = path.join(runtimeConfigDir, "node_modules");
+    await fs.symlink(srcNodeModules, dstNodeModules).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT" && err.code !== "EEXIST") throw err;
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
