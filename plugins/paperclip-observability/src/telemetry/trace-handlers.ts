@@ -728,39 +728,9 @@ export async function handleIssueUpdatedTraces(
     ? ctx.getTracerForAgent(assigneeAgentId, assigneeAgentName)
     : ctx.tracer;
 
-  // --- Add span events for all status transitions (checkout, release, blocked, etc.) ---
-  if (previousStatus && status !== previousStatus && issueId) {
-    const issueSpan = ctx.activeIssueSpans.get(issueId);
-    if (issueSpan) {
-      issueSpan.addEvent("issue.status_transition", {
-        "paperclip.issue.id": issueId,
-        "paperclip.issue.previous_status": previousStatus,
-        "paperclip.issue.status": status,
-        "paperclip.agent.id": assigneeAgentId,
-        "paperclip.agent.name": assigneeAgentName,
-      });
-    }
-  }
-
-  // --- Add span events for assignee changes (delegation moments) ---
+  // Hoist assignee change fields needed before and after execution span creation
   const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? "");
   const previousAssigneeAgentName = String(p.previousAssigneeAgentName ?? "");
-  if (
-    assigneeAgentId !== previousAssigneeAgentId &&
-    (assigneeAgentId || previousAssigneeAgentId) &&
-    issueId
-  ) {
-    const issueSpan = ctx.activeIssueSpans.get(issueId);
-    if (issueSpan) {
-      issueSpan.addEvent("issue.assignee_changed", {
-        "paperclip.issue.id": issueId,
-        "paperclip.issue.previous_assignee_agent_id": previousAssigneeAgentId,
-        "paperclip.issue.previous_assignee_agent_name": previousAssigneeAgentName,
-        "paperclip.issue.assignee_agent_id": assigneeAgentId,
-        "paperclip.issue.assignee_agent_name": assigneeAgentName,
-      });
-    }
-  }
 
   // Start span when issue transitions to in_progress
   if (status === "in_progress" && previousStatus !== "in_progress" && issueId) {
@@ -769,22 +739,55 @@ export async function handleIssueUpdatedTraces(
     const identifier = String(p.identifier ?? "");
     const title = String(p.title ?? "");
 
-    const span = tracer.startSpan("paperclip.issue.execution", {
-      kind: SpanKind.INTERNAL,
-      attributes: {
-        "paperclip.issue.id": issueId,
-        "paperclip.issue.identifier": identifier,
-        "paperclip.issue.title": title,
-        "paperclip.issue.priority": String(p.priority ?? "medium"),
-        "paperclip.issue.status": status,
-        "paperclip.project.id": projectId,
-        "paperclip.project.name": projectName,
-        "paperclip.goal.id": String(p.goalId ?? ""),
-        "paperclip.agent.name": assigneeAgentName,
-        "gen_ai.agent.id": assigneeAgentId,
-        "gen_ai.agent.name": assigneeAgentName,
-      },
-    });
+    // End existing lifecycle span (from issue.created) before creating execution
+    // span, to avoid leaking a dangling span. Make execution span a child of the
+    // lifecycle span for proper trace continuity.
+    let executionParentCtx: ReturnType<typeof context.active> | undefined;
+    const existingSpan = ctx.activeIssueSpans.get(issueId);
+    if (existingSpan) {
+      executionParentCtx = trace.setSpan(context.active(), existingSpan);
+      existingSpan.setAttribute("paperclip.issue.status", "in_progress");
+      existingSpan.setStatus({ code: SpanStatusCode.OK });
+      existingSpan.end();
+    }
+
+    const span = executionParentCtx
+      ? tracer.startSpan(
+          "paperclip.issue.execution",
+          {
+            kind: SpanKind.INTERNAL,
+            attributes: {
+              "paperclip.issue.id": issueId,
+              "paperclip.issue.identifier": identifier,
+              "paperclip.issue.title": title,
+              "paperclip.issue.priority": String(p.priority ?? "medium"),
+              "paperclip.issue.status": status,
+              "paperclip.project.id": projectId,
+              "paperclip.project.name": projectName,
+              "paperclip.goal.id": String(p.goalId ?? ""),
+              "paperclip.agent.name": assigneeAgentName,
+              "gen_ai.agent.id": assigneeAgentId,
+              "gen_ai.agent.name": assigneeAgentName,
+            },
+          },
+          executionParentCtx,
+        )
+      : tracer.startSpan("paperclip.issue.execution", {
+          kind: SpanKind.INTERNAL,
+          attributes: {
+            "paperclip.issue.id": issueId,
+            "paperclip.issue.identifier": identifier,
+            "paperclip.issue.title": title,
+            "paperclip.issue.priority": String(p.priority ?? "medium"),
+            "paperclip.issue.status": status,
+            "paperclip.project.id": projectId,
+            "paperclip.project.name": projectName,
+            "paperclip.goal.id": String(p.goalId ?? ""),
+            "paperclip.agent.name": assigneeAgentName,
+            "gen_ai.agent.id": assigneeAgentId,
+            "gen_ai.agent.name": assigneeAgentName,
+          },
+        });
 
     // Populate agentIssueMap so run/cost spans can look up business context
     if (assigneeAgentId) {
@@ -808,6 +811,42 @@ export async function handleIssueUpdatedTraces(
         },
       )
       .catch(() => {});
+  }
+
+  // --- Add span events for all status transitions (checkout, release, blocked, etc.) ---
+  // Placed AFTER execution span creation so the first todo→in_progress transition
+  // is recorded on the newly created execution span rather than being dropped.
+  if (previousStatus && status !== previousStatus && issueId) {
+    const issueSpan = ctx.activeIssueSpans.get(issueId);
+    if (issueSpan) {
+      issueSpan.addEvent("issue.status_transition", {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.previous_status": previousStatus,
+        "paperclip.issue.status": status,
+        "paperclip.agent.id": assigneeAgentId,
+        "paperclip.agent.name": assigneeAgentName,
+      });
+    }
+  }
+
+  // --- Add span events for assignee changes (delegation moments) ---
+  // Placed AFTER execution span creation so first-checkout assignee changes
+  // are recorded on the newly created execution span.
+  if (
+    assigneeAgentId !== previousAssigneeAgentId &&
+    (assigneeAgentId || previousAssigneeAgentId) &&
+    issueId
+  ) {
+    const issueSpan = ctx.activeIssueSpans.get(issueId);
+    if (issueSpan) {
+      issueSpan.addEvent("issue.assignee_changed", {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.previous_assignee_agent_id": previousAssigneeAgentId,
+        "paperclip.issue.previous_assignee_agent_name": previousAssigneeAgentName,
+        "paperclip.issue.assignee_agent_id": assigneeAgentId,
+        "paperclip.issue.assignee_agent_name": assigneeAgentName,
+      });
+    }
   }
 
   // Detect real-time delegation: assignee changed while a run is still active.
