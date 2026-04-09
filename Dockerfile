@@ -61,8 +61,20 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+# --- Skill-pack persistence: ensure all 13 bundled skills are present in /app/skills ---
+# The .agents/skills/ directory holds 6 skills (company-creator, create-agent-adapter,
+# doc-maintenance, pr-report, release, release-changelog) not present in skills/ root.
+# Copy them explicitly so the pi-local adapter can discover them at /app/skills/*/SKILL.md.
+COPY --chown=node:node .agents/skills/company-creator /app/skills/company-creator
+COPY --chown=node:node .agents/skills/create-agent-adapter /app/skills/create-agent-adapter
+COPY --chown=node:node .agents/skills/doc-maintenance /app/skills/doc-maintenance
+COPY --chown=node:node .agents/skills/pr-report /app/skills/pr-report
+COPY --chown=node:node .agents/skills/release /app/skills/release
+COPY --chown=node:node .agents/skills/release-changelog /app/skills/release-changelog
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/verify-skills.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/verify-skills.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -81,5 +93,5 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

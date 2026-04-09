@@ -1,39 +1,37 @@
 #!/bin/sh
-set -eu
+set -e
 
-# --- Upstream: UID/GID remapping for bind-mount compatibility ---
-# Only remap UID/GID when running as root (long-running service container).
-# docker compose run may lack privileges for usermod/groupmod/gosu.
-if [ "$(id -u)" = "0" ]; then
-    PUID=${USER_UID:-1000}
-    PGID=${USER_GID:-1000}
+# Capture runtime UID/GID from environment variables, defaulting to 1000
+PUID=${USER_UID:-1000}
+PGID=${USER_GID:-1000}
 
-    changed=0
+# Adjust the node user's UID/GID if they differ from the runtime request
+# and fix volume ownership only when a remap is needed
+changed=0
 
-    if [ "$(id -u node)" -ne "$PUID" ]; then
-        echo "Updating node UID to $PUID"
-        usermod -o -u "$PUID" node
-        changed=1
-    fi
+if [ "$(id -u node)" -ne "$PUID" ]; then
+    echo "Updating node UID to $PUID"
+    usermod -o -u "$PUID" node
+    changed=1
+fi
 
-    if [ "$(id -g node)" -ne "$PGID" ]; then
-        echo "Updating node GID to $PGID"
-        groupmod -o -g "$PGID" node
-        usermod -g "$PGID" node
-        changed=1
-    fi
+if [ "$(id -g node)" -ne "$PGID" ]; then
+    echo "Updating node GID to $PGID"
+    groupmod -o -g "$PGID" node
+    usermod -g "$PGID" node
+    changed=1
+fi
 
-    if [ "$changed" = "1" ]; then
-        chown -R node:node /paperclip
-    fi
+if [ "$changed" = "1" ]; then
+    chown -R node:node /paperclip
+fi
 
-    # Add node user to the Docker socket group so hermes-bridge.sh can
-    # `docker exec` into the hermes-agent sidecar after privilege drop.
-    DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)
-    if [ -n "$DOCKER_SOCK_GID" ] && [ "$DOCKER_SOCK_GID" != "0" ]; then
-        if ! usermod -aG "$DOCKER_SOCK_GID" node 2>/dev/null; then
-            echo "Warning: Failed to add node user to Docker socket group (GID $DOCKER_SOCK_GID). hermes-bridge.sh may not be able to exec into hermes-agent sidecar." >&2
-        fi
+# Add node user to the Docker socket group so hermes-bridge.sh can
+# `docker exec` into the hermes-agent sidecar after privilege drop.
+DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)
+if [ -n "$DOCKER_SOCK_GID" ] && [ "$DOCKER_SOCK_GID" != "0" ]; then
+    if ! usermod -aG "$DOCKER_SOCK_GID" node 2>/dev/null; then
+        echo "Warning: Failed to add node user to Docker socket group (GID $DOCKER_SOCK_GID). hermes-bridge.sh may not be able to exec into hermes-agent sidecar." >&2
     fi
 fi
 
@@ -65,9 +63,10 @@ if [ -d "$gws_tools_dir" ]; then
   done
 fi
 
-# Drop to node user if running as root; otherwise exec directly.
-if [ "$(id -u)" = "0" ] && command -v gosu >/dev/null 2>&1; then
-    exec gosu node "$@"
-else
-    exec "$@"
+# --- Verify bundled skill pack is complete before starting the server ---
+if [ -x /usr/local/bin/verify-skills.sh ]; then
+    echo "[docker-entrypoint] Verifying bundled skill pack..."
+    /usr/local/bin/verify-skills.sh || echo "[docker-entrypoint] WARNING: skill verification failed — continuing anyway"
 fi
+
+exec gosu node "$@"
