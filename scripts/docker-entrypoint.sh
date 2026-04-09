@@ -35,9 +35,9 @@ else
     done
 fi
 
-# Auto-onboard on first run if no config exists
+# Auto-onboard on first run if no config exists and opt-in env var is set
 PAPERCLIP_CONFIG_FILE="${PAPERCLIP_CONFIG:-/paperclip/instances/default/config.json}"
-if [ ! -f "$PAPERCLIP_CONFIG_FILE" ]; then
+if [ ! -f "$PAPERCLIP_CONFIG_FILE" ] && [ "${PAPERCLIP_AUTO_ONBOARD:-}" = "1" ]; then
     echo "No config found at $PAPERCLIP_CONFIG_FILE — running onboard with environment defaults..."
     gosu node sh -c 'cd /app && pnpm paperclipai onboard --yes'
 fi

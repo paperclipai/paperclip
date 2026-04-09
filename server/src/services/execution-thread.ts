@@ -37,7 +37,7 @@ export function executionThreadService(db: Db) {
           INNER JOIN wave w ON i."parent_id" = w.id
           WHERE i."hidden_at" IS NULL
         )
-        SELECT * FROM wave LIMIT 200
+        SELECT * FROM wave LIMIT 201
       `) as unknown as WaveIssueRow[];
 
       if (waveRows.length === 0) {
@@ -46,9 +46,12 @@ export function executionThreadService(db: Db) {
           rootIssueIdentifier: null,
           issues: [],
           entries: [],
+          truncated: false,
         };
       }
 
+      const truncated = waveRows.length > 200;
+      if (truncated) waveRows.splice(200);
       const waveIds = waveRows.map((r) => r.id);
       const issueMap = new Map<string, WaveIssueRow>(waveRows.map((r) => [r.id, r]));
       const rootIssue = issueMap.get(rootId);
@@ -126,8 +129,10 @@ export function executionThreadService(db: Db) {
               details,
             });
           }
-          // Generic update for other fields
-          if (!("status" in details) && !("assigneeAgentId" in details) && !("assigneeUserId" in details)) {
+          // Generic update for fields not already covered above
+          const hasKnownField = "status" in details || "assigneeAgentId" in details || "assigneeUserId" in details;
+          const hasOtherFields = Object.keys(details).some((k) => !["status", "assigneeAgentId", "assigneeUserId", "_previous"].includes(k));
+          if (!hasKnownField || hasOtherFields) {
             entries.push({
               id: evt.id,
               kind: "issue_updated",
@@ -212,6 +217,7 @@ export function executionThreadService(db: Db) {
         rootIssueIdentifier: rootIssue?.identifier ?? null,
         issues: issueSummaries,
         entries,
+        truncated,
       };
     },
   };

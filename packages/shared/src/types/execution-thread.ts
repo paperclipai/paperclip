@@ -40,4 +40,5 @@ export interface ExecutionThreadResponse {
   rootIssueIdentifier: string | null;
   issues: ExecutionThreadIssueSummary[];
   entries: ExecutionThreadEntry[];
+  truncated: boolean;
 }
