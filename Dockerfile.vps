@@ -74,6 +74,21 @@ WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 ARG COMMIT_SHA=unknown
 LABEL org.opencontainers.image.revision=$COMMIT_SHA
+
+# --- Skill-pack persistence: ensure all bundled skills are present in /app/skills ---
+# The .agents/skills/ directory holds 6 skills (company-creator, create-agent-adapter,
+# doc-maintenance, pr-report, release, release-changelog) not present in skills/ root.
+# Copy them explicitly so the pi-local adapter can discover them at /app/skills/*/SKILL.md.
+COPY --chown=node:node .agents/skills/company-creator /app/skills/company-creator
+COPY --chown=node:node .agents/skills/create-agent-adapter /app/skills/create-agent-adapter
+COPY --chown=node:node .agents/skills/doc-maintenance /app/skills/doc-maintenance
+COPY --chown=node:node .agents/skills/pr-report /app/skills/pr-report
+COPY --chown=node:node .agents/skills/release /app/skills/release
+COPY --chown=node:node .agents/skills/release-changelog /app/skills/release-changelog
+
+# Copy and verify skills script for startup validation (entrypoint expects it at /usr/local/bin/).
+COPY scripts/verify-skills.sh /usr/local/bin/verify-skills.sh
+
 RUN usermod -d /paperclip node \
   && mkdir -p /usr/local/lib/paperclip \
   && mv /usr/bin/gh /usr/local/lib/paperclip/gh-real \
@@ -82,7 +97,7 @@ RUN usermod -d /paperclip node \
   && ln -sf /app/scripts/docker.sh /usr/local/bin/docker \
   && mv /usr/bin/rg /usr/local/lib/paperclip/rg-real \
   && ln -sf /app/scripts/rg.sh /usr/bin/rg \
-  && chmod +x /app/scripts/docker-entrypoint.sh /app/scripts/gh.sh /app/scripts/hermes-bridge.sh /app/scripts/docker.sh /app/scripts/rg.sh \
+  && chmod +x /app/scripts/docker-entrypoint.sh /app/scripts/gh.sh /app/scripts/hermes-bridge.sh /app/scripts/docker.sh /app/scripts/rg.sh /usr/local/bin/verify-skills.sh \
   && chmod +x /app/tools/google-workspace/*.js \
   && chown -R node:node /paperclip /opt/paperclip-opencode
 

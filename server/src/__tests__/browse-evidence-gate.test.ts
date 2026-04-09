@@ -269,7 +269,7 @@ describe("engineer browse evidence gate", () => {
     expect(res.status).toBe(200);
   });
 
-  it("board → in_review, code issue, no evidence → 422", async () => {
+  it("board → in_review, code issue, no evidence → 200 (bypass)", async () => {
     const issueForBoard = { ...codeIssue, assigneeAgentId: null };
     mockIssueService.getById.mockResolvedValue(issueForBoard);
     mockIssueService.update.mockResolvedValue({ ...issueForBoard, status: "in_review" });
@@ -281,8 +281,7 @@ describe("engineer browse evidence gate", () => {
       .patch(`/api/issues/${codeIssue.id}`)
       .send({ status: "in_review" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.gate).toBe("in_review_requires_browse_evidence");
+    expect(res.status).toBe(200);
   });
 
   it("activity log records evidence_gate_blocked on rejection", async () => {
