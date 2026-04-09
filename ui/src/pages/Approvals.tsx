@@ -83,22 +83,29 @@ export function Approvals() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
-          <PageTabBar items={[
-            { value: "pending", label: <>Pending{pendingCount > 0 && (
-              <span className={cn(
-                "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                "bg-yellow-500/20 text-yellow-500"
-              )}>
-                {pendingCount}
-              </span>
-            )}</> },
-            { value: "all", label: "All" },
-          ]} />
-        </Tabs>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Approvals</h1>
+          <p className="text-sm text-muted-foreground">
+            Review and approve agent actions, hiring proposals, and execution requests.
+          </p>
+        </div>
       </div>
+
+      <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
+        <PageTabBar align="start" value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)} items={[
+          { value: "pending", label: <>Pending{pendingCount > 0 && (
+            <span className={cn(
+              "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+              "bg-yellow-500/20 text-yellow-500"
+            )}>
+              {pendingCount}
+            </span>
+          )}</> },
+          { value: "all", label: "All" },
+        ]} />
+      </Tabs>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}

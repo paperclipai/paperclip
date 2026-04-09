@@ -35,28 +35,33 @@ export function Goals() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Goals</h1>
+          <p className="text-sm text-muted-foreground">
+            Company-wide objectives that guide team priorities and project alignment.
+          </p>
+        </div>
+        <Button onClick={() => openNewGoal()}>
+          <Plus className="mr-2 h-4 w-4" />
+          New Goal
+        </Button>
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
+          message="No goals yet. Create one to align your teams."
           action="Add Goal"
           onAction={() => openNewGoal()}
         />
       )}
 
       {goals && goals.length > 0 && (
-        <>
-          <div className="flex items-center justify-start">
-            <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              New Goal
-            </Button>
-          </div>
-          <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
-        </>
+        <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
       )}
     </div>
   );
