@@ -2996,8 +2996,8 @@ export function heartbeatService(db: Db) {
     agent: typeof agents.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
