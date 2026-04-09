@@ -78,7 +78,7 @@ function SortableProjectItem({
             if (isMobile) setSidebarOpen(false);
           }}
           className={cn(
-            "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+            "flex items-center gap-2.5 px-3 h-8 text-[13px] font-medium rounded-md transition-colors",
             activeProjectRef === routeRef || activeProjectRef === project.id
               ? "bg-accent text-foreground"
               : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
@@ -178,13 +178,7 @@ export function SidebarProjects() {
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
         <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
-              )}
-            />
+          <CollapsibleTrigger className="flex-1 min-w-0">
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
               Projects
             </span>

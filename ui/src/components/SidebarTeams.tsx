@@ -86,16 +86,15 @@ function TeamSubMenu({
           to={to}
           className={({ isActive }) =>
             cn(
-              "flex items-center gap-2 py-1 text-[12px] font-medium transition-colors",
+              "flex items-center gap-2.5 h-8 text-[13px] font-medium rounded-md transition-colors",
               isActive || forceActive
                 ? "bg-accent text-foreground"
                 : "text-foreground/70 hover:bg-accent/50 hover:text-foreground",
             )
           }
-          // indent: team row padding (12 + depth*14) + avatar column (20) + gap (4)
           style={{ paddingLeft: `${12 + depth * 14 + 24}px` }}
         >
-          <Icon className="h-3 w-3 shrink-0" />
+          <Icon className="h-4 w-4 shrink-0" />
           <span className="flex-1 truncate">{label}</span>
         </NavLink>
       ))}
@@ -180,7 +179,7 @@ function TeamBranch({
           onMouseEnter={() => onHoverPrefetch(team.id)}
           className={({ isActive }) =>
             cn(
-              "flex-1 flex items-center gap-2 pr-1 py-1.5 text-[13px] font-semibold transition-colors min-w-0",
+              "flex-1 flex items-center gap-2 pr-1 h-8 text-[13px] font-semibold rounded-md transition-colors min-w-0",
               isActive
                 ? "bg-accent text-foreground"
                 : "text-foreground/90 hover:bg-accent/50 hover:text-foreground",
@@ -289,13 +288,7 @@ export function SidebarTeams() {
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
         <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90",
-              )}
-            />
+          <CollapsibleTrigger className="flex-1 min-w-0">
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
               Teams
             </span>
