@@ -32,15 +32,16 @@
     "skills"
   ],
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
+    "preflight:workspace-links": "tsx ../scripts/ensure-workspace-package-links.ts",
+    "dev": "pnpm run preflight:workspace-links && tsx src/index.ts",
+    "dev:watch": "pnpm run preflight:workspace-links && cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
+    "build": "pnpm run preflight:workspace-links && tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
@@ -67,7 +68,7 @@
     "express": "^5.1.0",
     "hermes-paperclip-adapter": "^0.2.0",
     "jsdom": "^28.1.0",
-    "multer": "^2.0.2",
+    "multer": "^2.1.1",
     "open": "^11.0.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",

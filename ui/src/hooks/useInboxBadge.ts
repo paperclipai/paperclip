@@ -64,7 +64,16 @@ export function useReadInboxItems() {
     });
   };
 
-  return { readItems, markRead };
+  const markUnread = (id: string) => {
+    setReadItems((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      saveReadInboxItems(next);
+      return next;
+    });
+  };
+
+  return { readItems, markRead, markUnread };
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
