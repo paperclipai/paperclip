@@ -26,7 +26,7 @@ FEATURE_BRANCHES=(
   "feature/company-kill-switch"
   "feature/heartbeat-model-override"
   "feature/post-import-defaults"
-  "feature/youtube-intelligence-plugin"
+  "feature/plugin-server-fixes"
   "chore/update-issue-templates"
 )
 
@@ -149,10 +149,42 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# 6. Optionally push all branches
+# 6. Build private-release branch (master + all feature branches merged)
+#    Students/collaborators pull from this branch to get upstream + all patches.
+if [[ ${#SUCCEEDED[@]} -gt 0 ]] && [[ ${#FAILED[@]} -eq 0 ]]; then
+  info ""
+  info "=== Building private-release branch ==="
+
+  if $DRY_RUN; then
+    info "(dry-run) Would rebuild private-release from master + ${SUCCEEDED[*]}"
+  else
+    git checkout master
+    git branch -D private-release 2>/dev/null || true
+    git checkout -b private-release
+
+    MERGE_OK=true
+    for branch in "${SUCCEEDED[@]}"; do
+      info "  Merging $branch into private-release..."
+      if ! git merge --no-ff --no-edit "$branch" -m "Merge $branch into private-release"; then
+        error "  Conflict merging $branch into private-release."
+        error "  Resolve conflicts, commit, then re-run this script."
+        MERGE_OK=false
+        break
+      fi
+    done
+
+    if $MERGE_OK; then
+      info "private-release branch rebuilt with ${#SUCCEEDED[@]} feature branches"
+    fi
+
+    git checkout master
+  fi
+fi
+
+# 7. Optionally push all branches
 if ! $DRY_RUN; then
   info ""
-  read -p "Push all rebased branches to origin? (y/N) " -n 1 -r
+  read -p "Push all rebased branches + private-release to origin? (y/N) " -n 1 -r
   echo
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     info "Pushing master..."
@@ -162,8 +194,14 @@ if ! $DRY_RUN; then
       info "Pushing $branch..."
       git push origin "$branch" --force-with-lease
     done
+
+    info "Pushing private-release..."
+    git push origin private-release --force-with-lease
+
     info "All branches pushed."
   fi
 fi
 
 info "Done."
+info ""
+info "Private clone: git clone https://github.com/harperaa/paperclip.git -b private-release"
