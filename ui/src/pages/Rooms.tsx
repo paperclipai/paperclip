@@ -633,7 +633,7 @@ export function RoomDetailPage() {
                             You
                           </span>
                         </div>
-                        <div className="text-right">
+                        <div className="text-left">
                           {renderMessageBody(
                             g.messages[0],
                             agentName,
@@ -642,7 +642,7 @@ export function RoomDetailPage() {
                           )}
                         </div>
                         {g.messages.slice(1).map((m) => (
-                          <div key={m.id} className="text-right mt-0.5 group/msg">
+                          <div key={m.id} className="text-left mt-0.5 group/msg">
                             {renderMessageBody(
                               m,
                               agentName,
