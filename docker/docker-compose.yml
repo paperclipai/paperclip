@@ -16,7 +16,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
     command: server /data --console-address ":9001"
     restart: unless-stopped
     ports:
