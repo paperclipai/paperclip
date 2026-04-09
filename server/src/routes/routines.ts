@@ -54,7 +54,11 @@ export function routineRoutes(db: Db) {
   router.get("/companies/:companyId/routines", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    // Phase 5.2b — optional `?teamId=` query param filters the list to
+    // one team's routines. Used by the team Routines page.
+    const teamId = typeof req.query.teamId === "string" ? req.query.teamId : undefined;
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+    const result = await svc.list(companyId, { teamId, projectId });
     res.json(result);
   });
 

@@ -3310,7 +3310,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     for (const routine of selectedRoutineRows) {
       const taskSlug = taskSlugByRoutineId.get(routine.id)!;
-      const projectSlug = projectSlugById.get(routine.projectId) ?? null;
+      // Phase 5.2b — routines can be team-scoped now (projectId nullable).
+      // Export still uses project slug when available; team-scoped
+      // routines get a null project slug.
+      const projectSlug = routine.projectId ? projectSlugById.get(routine.projectId) ?? null : null;
       const taskPath = `tasks/${taskSlug}/TASK.md`;
       const assigneeSlug = idToSlug.get(routine.assigneeAgentId) ?? null;
       files[taskPath] = buildMarkdown(

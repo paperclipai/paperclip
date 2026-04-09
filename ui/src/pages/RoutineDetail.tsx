@@ -270,7 +270,9 @@ export function RoutineDetail() {
   const [editDraft, setEditDraft] = useState<{
     title: string;
     description: string;
-    projectId: string;
+    // Phase 5.2b — routines can be team-scoped, so projectId may be
+    // null (existing routines) or empty string (draft with no project).
+    projectId: string | null;
     assigneeAgentId: string;
     priority: string;
     concurrencyPolicy: string;
@@ -806,7 +808,7 @@ export function RoutineDetail() {
           <span>in</span>
           <InlineEntitySelector
             ref={projectSelectorRef}
-            value={editDraft.projectId}
+            value={editDraft.projectId ?? ""}
             options={projectOptions}
             placeholder="Project"
             noneLabel="No project"

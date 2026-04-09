@@ -47,23 +47,42 @@ export const routineVariableSchema = z.object({
   }
 });
 
-export const createRoutineSchema = z.object({
-  projectId: z.string().uuid(),
-  goalId: z.string().uuid().optional().nullable(),
-  parentIssueId: z.string().uuid().optional().nullable(),
-  title: z.string().trim().min(1).max(200),
-  description: z.string().optional().nullable(),
-  assigneeAgentId: z.string().uuid(),
-  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
-  status: z.enum(ROUTINE_STATUSES).optional().default("active"),
-  concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
-  catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
-  variables: z.array(routineVariableSchema).optional().default([]),
-});
+export const createRoutineSchema = z
+  .object({
+    // Phase 5.2b — routines can now be scoped to a team instead of (or
+    // in addition to) a project. At least one of projectId/teamId must
+    // be provided so the routine has a scope.
+    projectId: z.string().uuid().optional().nullable(),
+    teamId: z.string().uuid().optional().nullable(),
+    goalId: z.string().uuid().optional().nullable(),
+    parentIssueId: z.string().uuid().optional().nullable(),
+    title: z.string().trim().min(1).max(200),
+    description: z.string().optional().nullable(),
+    assigneeAgentId: z.string().uuid(),
+    priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+    status: z.enum(ROUTINE_STATUSES).optional().default("active"),
+    concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
+    catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
+    variables: z.array(routineVariableSchema).optional().default([]),
+  })
+  .refine(
+    (v) => !!v.projectId || !!v.teamId,
+    {
+      message: "Either projectId or teamId is required",
+      path: ["projectId"],
+    },
+  );
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
-export const updateRoutineSchema = createRoutineSchema.partial();
+// `.partial()` is not available on ZodEffects (refine-wrapped), so we
+// unwrap back to the base object for the update schema. The base-schema
+// projectId/teamId are already optional, so update works without the
+// "at least one required" check — the existing row provides the scope.
+const baseRoutineShape = (createRoutineSchema as unknown as {
+  _def: { schema: z.ZodObject<any> };
+})._def.schema;
+export const updateRoutineSchema = baseRoutineShape.partial();
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
 const baseTriggerSchema = z.object({

@@ -11,6 +11,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  teams,
 } from "@paperclipai/db";
 import type {
   CreateRoutine,
@@ -339,6 +340,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ?? null);
     if (!project) throw notFound("Project not found");
     if (project.companyId !== companyId) throw unprocessable("Project must belong to same company");
+  }
+
+  async function assertTeam(companyId: string, teamId: string) {
+    const team = await db
+      .select({ id: teams.id, companyId: teams.companyId, status: teams.status })
+      .from(teams)
+      .where(eq(teams.id, teamId))
+      .then((rows) => rows[0] ?? null);
+    if (!team) throw notFound("Team not found");
+    if (team.companyId !== companyId) throw unprocessable("Team must belong to same company");
+    if (team.status === "deleted") throw unprocessable("Team is deleted");
   }
 
   async function assertGoal(companyId: string, goalId: string) {
@@ -745,11 +757,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId: input.routine.projectId,
+            projectId: input.routine.projectId ?? undefined,
+            teamId: input.routine.teamId ?? undefined,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title: input.routine.title,
             description,
+            // Phase 5.2b — for team-scoped routines use the team's
+            // default workflow status (first position in the team's
+            // statuses). For backwards compat (project-scoped), keep
+            // the existing "todo" default — the issue service will
+            // still resolve it through the team's workflow.
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId: input.routine.assigneeAgentId,
@@ -873,11 +891,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     get: getRoutineById,
     getTrigger: getTriggerById,
 
-    list: async (companyId: string): Promise<RoutineListItem[]> => {
+    list: async (
+      companyId: string,
+      filter?: { teamId?: string | null; projectId?: string | null },
+    ): Promise<RoutineListItem[]> => {
+      const conds = [eq(routines.companyId, companyId)];
+      if (filter?.teamId) conds.push(eq(routines.teamId, filter.teamId));
+      if (filter?.projectId) conds.push(eq(routines.projectId, filter.projectId));
       const rows = await db
         .select()
         .from(routines)
-        .where(eq(routines.companyId, companyId))
+        .where(and(...conds))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
       const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine] = await Promise.all([
@@ -905,7 +929,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const row = await getRoutineById(id);
       if (!row) return null;
       const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
-        db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
+        row.projectId
+          ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
+          : Promise.resolve(null),
         db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
@@ -991,7 +1017,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId);
+      // Phase 5.2b — exactly one of projectId/teamId is required
+      // (validator already enforces "at least one"). Validate whichever
+      // is supplied against the company.
+      if (!input.projectId && !input.teamId) {
+        throw Object.assign(new Error("Routine must have projectId or teamId"), { status: 422 });
+      }
+      if (input.projectId) await assertProject(companyId, input.projectId);
+      if (input.teamId) await assertTeam(companyId, input.teamId);
       await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
@@ -1004,7 +1037,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .insert(routines)
         .values({
           companyId,
-          projectId: input.projectId,
+          projectId: input.projectId ?? null,
+          teamId: input.teamId ?? null,
           goalId: input.goalId ?? null,
           parentIssueId: input.parentIssueId ?? null,
           title: input.title,
@@ -1027,14 +1061,19 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
-      const nextProjectId = patch.projectId ?? existing.projectId;
+      const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
+      const nextTeamId = patch.teamId === undefined ? existing.teamId : patch.teamId;
+      if (!nextProjectId && !nextTeamId) {
+        throw unprocessable("Routine must have projectId or teamId");
+      }
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
       const nextVariables = syncRoutineVariablesWithTemplate(
         nextDescription,
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
-      if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
+      if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
+      if (patch.teamId) await assertTeam(existing.companyId, patch.teamId);
       if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
@@ -1058,6 +1097,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .update(routines)
         .set({
           projectId: nextProjectId,
+          teamId: nextTeamId,
           goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
           title: patch.title ?? existing.title,

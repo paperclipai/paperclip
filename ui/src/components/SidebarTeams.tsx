@@ -13,6 +13,7 @@ import {
   Link as LinkIcon,
   Archive,
   FileText,
+  Repeat,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { teamsApi, type Team } from "../api/teams";
@@ -76,6 +77,7 @@ function TeamSubMenu({
       forceActive: activeIssueTeamId === team.id,
     },
     { to: `/teams/${team.id}/projects`, label: "Projects", Icon: Hexagon, forceActive: false },
+    { to: `/teams/${team.id}/routines`, label: "Routines", Icon: Repeat, forceActive: false },
     { to: `/teams/${team.id}/docs`, label: "Docs", Icon: FileText, forceActive: false },
   ];
   return (

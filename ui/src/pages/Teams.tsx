@@ -8,6 +8,7 @@ import { teamDocumentsApi, type TeamDocument } from "../api/team-documents";
 import { FileText } from "lucide-react";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
@@ -249,6 +250,199 @@ export function TeamProjectsPage() {
               }
             />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Team routines — recurring work the leader + sub-agents run on a
+ * cron schedule. Shows the team's active routines with their next run
+ * time, and lets board users create a new team-scoped routine inline.
+ * Phase 5.2b: "Cycles" in the user's mental model — daily standups,
+ * weekly retros, monthly planning, etc.
+ */
+export function TeamRoutinesPage() {
+  const { teamId } = useParams<{ teamId: string }>();
+  const { selectedCompanyId } = useCompany();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+
+  const { data: team } = useQuery({
+    queryKey: ["team", selectedCompanyId, teamId],
+    queryFn: () => teamsApi.get(selectedCompanyId!, teamId!),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: routines, isLoading } = useQuery({
+    queryKey: ["team-routines", selectedCompanyId, teamId],
+    queryFn: () => routinesApi.list(selectedCompanyId!, { teamId }),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    placeholderData: keepPreviousData,
+  });
+
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [assigneeAgentId, setAssigneeAgentId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Default assignee = team lead if it exists, else first claude_local
+  useEffect(() => {
+    if (assigneeAgentId || !agents || !team) return;
+    if (team.leadAgentId) {
+      setAssigneeAgentId(team.leadAgentId);
+      return;
+    }
+    const firstLeader = agents.find((a) => a.adapterType === "claude_local");
+    if (firstLeader) setAssigneeAgentId(firstLeader.id);
+  }, [agents, team, assigneeAgentId]);
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      routinesApi.create(selectedCompanyId!, {
+        teamId,
+        title: title.trim(),
+        description: description.trim() || null,
+        assigneeAgentId,
+        priority: "medium",
+        status: "active",
+      }),
+    onSuccess: (routine) => {
+      qc.invalidateQueries({ queryKey: ["team-routines", selectedCompanyId, teamId] });
+      qc.invalidateQueries({ queryKey: ["routines"] });
+      setCreating(false);
+      setTitle("");
+      setDescription("");
+      setError(null);
+      // Drop user into the routine detail page so they can add a
+      // schedule trigger.
+      navigate(`/routines/${(routine as { id: string }).id}`);
+    },
+    onError: (err: any) => setError(err?.message ?? "Failed to create routine"),
+  });
+
+  if (isLoading && !routines) return <PageSkeleton variant="list" />;
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">Team Routines</h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            Recurring work the team runs on a schedule — daily standups,
+            weekly retros, cleanup tasks. Each run creates an issue in this
+            team assigned to the routine's owner.
+          </p>
+        </div>
+        {!creating && (
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="h-3 w-3 mr-1" /> New routine
+          </Button>
+        )}
+      </div>
+
+      {error && <div className="text-xs text-destructive">{error}</div>}
+
+      {creating && (
+        <div className="p-3 border border-border rounded bg-accent/20 space-y-2">
+          <Input
+            placeholder="Title (e.g. Daily engine standup)"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="h-8 text-sm"
+            autoFocus
+          />
+          <textarea
+            placeholder="Description — what should the assignee do each run?"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="w-full min-h-[60px] text-xs p-2 rounded border border-border bg-background resize-y"
+          />
+          <div className="flex gap-2 items-center">
+            <label className="text-[11px] text-muted-foreground">Owner</label>
+            <select
+              value={assigneeAgentId}
+              onChange={(e) => setAssigneeAgentId(e.target.value)}
+              className="h-8 text-xs rounded border border-border bg-background px-2 flex-1"
+            >
+              {(agents ?? [])
+                .filter((a) => a.status === "active")
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} {a.adapterType === "claude_local" ? "(leader)" : ""}
+                  </option>
+                ))}
+            </select>
+            <Button
+              size="sm"
+              disabled={!title.trim() || !assigneeAgentId || createMutation.isPending}
+              onClick={() => createMutation.mutate()}
+            >
+              Create
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setCreating(false);
+                setError(null);
+              }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            After creating, open the routine detail page to add a cron
+            schedule (e.g. <code>0 9 * * *</code> for every day at 9am).
+          </p>
+        </div>
+      )}
+
+      {(routines ?? []).length === 0 && !creating ? (
+        <EmptyState
+          icon={Hexagon}
+          message="No routines yet. Create one to schedule recurring team work."
+        />
+      ) : (
+        <div className="border border-border">
+          {(routines ?? []).map((routine) => {
+            const nextRun =
+              routine.triggers.find((t) => t.enabled && t.nextRunAt)?.nextRunAt ?? null;
+            const scheduleCount = routine.triggers.filter(
+              (t) => t.kind === "schedule" && t.enabled,
+            ).length;
+            return (
+              <EntityRow
+                key={routine.id}
+                title={routine.title}
+                subtitle={routine.description ?? undefined}
+                to={`/routines/${routine.id}`}
+                trailing={
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>
+                      {scheduleCount > 0
+                        ? `${scheduleCount} schedule${scheduleCount > 1 ? "s" : ""}`
+                        : "no schedule"}
+                    </span>
+                    {nextRun && (
+                      <span>next: {formatDate(String(nextRun))}</span>
+                    )}
+                    <StatusBadge status={routine.status} />
+                  </div>
+                }
+              />
+            );
+          })}
         </div>
       )}
     </div>

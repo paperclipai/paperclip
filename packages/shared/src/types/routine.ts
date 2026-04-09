@@ -39,7 +39,10 @@ export interface RoutineVariable {
 export interface Routine {
   id: string;
   companyId: string;
-  projectId: string;
+  // Phase 5.2b — routines can be scoped to a project, a team, or both.
+  // At least one must be present; both nullable here to match the DB.
+  projectId: string | null;
+  teamId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
   title: string;

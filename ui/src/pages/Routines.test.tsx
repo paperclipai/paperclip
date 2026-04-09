@@ -215,6 +215,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     id: "routine-1",
     companyId: "company-1",
     projectId: "project-1",
+    teamId: null,
     goalId: null,
     parentIssueId: null,
     title: "Routine title",
