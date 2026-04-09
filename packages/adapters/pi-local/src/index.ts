@@ -10,7 +10,7 @@ Adapter: pi_local
 Use when:
 - You want Paperclip to run Pi (the AI coding agent) locally as the agent runtime
 - You want provider/model routing in Pi format (--provider <name> --model <id>)
-- You want Pi session resume across heartbeats via --session
+- You want Pi sessions resumed on later wakes for the same task scope via --session
 - You need Pi's tool set (read, bash, edit, write, grep, find, ls)
 
 Don't use when:

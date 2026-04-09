@@ -84,8 +84,9 @@ Templates support variables like `{{agent.id}}`, `{{agent.name}}`, and run conte
 
 Paperclip stores session IDs for resumable adapters.
 
-- Next heartbeat reuses the saved session automatically.
-- This gives continuity across heartbeats.
+- If a heartbeat has task context, Paperclip saves session state for that task and later wakes in the same task scope reuse it automatically.
+- Wakes without task context do not automatically resume the last task conversation; they use adapter/runtime fallback behavior instead and may start fresh.
+- This gives continuity for ongoing task threads without making unrelated wakes share context.
 - You can reset a session if context gets stale or confused.
 
 Use session reset when:

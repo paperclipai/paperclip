@@ -52,7 +52,7 @@ Adapter: cursor
 
 Use when:
 - You want Paperclip to run Cursor Agent CLI locally as the agent runtime
-- You want Cursor chat session resume across heartbeats via --resume
+- You want Cursor chat sessions resumed on later wakes for the same task scope via --resume
 - You want structured stream output in run logs via --output-format stream-json
 
 Don't use when:

@@ -38,7 +38,7 @@ Additional context variables are set when the wake has a specific trigger:
 
 ## Session Persistence
 
-Agents maintain conversation context across heartbeats through session persistence. The adapter serializes session state (e.g. Claude Code session ID) after each run and restores it on the next wake. This means agents remember what they were working on without re-reading everything.
+Resumable adapters maintain conversation context across heartbeats through session persistence, but the saved session is normally tied to the current task scope rather than to an arbitrary future wake. After each run, the adapter serializes session state (for example a Claude Code session ID). If a later heartbeat resolves to the same task, Paperclip restores that saved session so the agent can continue without re-reading everything. Wakes that arrive without task context do not automatically revive the last task conversation and may fall back to adapter-specific runtime behavior instead.
 
 ## Agent Status
 

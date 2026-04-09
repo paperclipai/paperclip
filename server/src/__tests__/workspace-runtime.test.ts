@@ -60,6 +60,15 @@ async function runPnpm(cwd: string, args: string[]) {
   await execFileAsync("pnpm", args, { cwd });
 }
 
+async function resolveGitDirPair(cwd: string) {
+  const gitDir = (await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd })).stdout.trim();
+  const gitCommonDir = (await execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd })).stdout.trim();
+  return {
+    gitDir: path.resolve(cwd, gitDir),
+    gitCommonDir: path.resolve(cwd, gitCommonDir),
+  };
+}
+
 async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
   await runGit(repoRoot, ["init"]);
@@ -188,6 +197,86 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  it("creates and reuses an isolated git clone for an issue-scoped branch", async () => {
+    const repoRoot = await createTempRepo();
+
+    const first = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_clone",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1864",
+        title: "Provision isolated clone",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(first.strategy).toBe("git_clone");
+    expect(first.created).toBe(true);
+    expect(first.branchName).toBe("PAP-1864-provision-isolated-clone");
+    expect(first.cwd).toContain(path.join(".paperclip", "workspaces"));
+    await expect(fs.stat(path.join(first.cwd, ".git"))).resolves.toBeTruthy();
+
+    const gitDirs = await resolveGitDirPair(first.cwd);
+    expect(gitDirs.gitDir).toBe(path.join(first.cwd, ".git"));
+    expect(gitDirs.gitCommonDir).toBe(gitDirs.gitDir);
+
+    const worktrees = (await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: first.cwd }))
+      .stdout
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length));
+    expect(worktrees).toContain(first.cwd);
+    expect(worktrees).not.toContain(repoRoot);
+
+    const second = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_clone",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1864",
+        title: "Provision isolated clone",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(second.created).toBe(false);
+    expect(second.cwd).toBe(first.cwd);
+    expect(second.branchName).toBe(first.branchName);
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 

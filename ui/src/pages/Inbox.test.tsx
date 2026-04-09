@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 import { act } from "react";
 import type { ComponentProps } from "react";
@@ -115,6 +115,7 @@ describe("FailedRunInboxRow", () => {
       root.render(
         <FailedRunInboxRow
           run={run}
+          agent={null}
           issueById={new Map()}
           agentName="Agent"
           issueLinkState={null}

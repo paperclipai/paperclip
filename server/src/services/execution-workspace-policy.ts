@@ -17,7 +17,13 @@ function cloneRecord(value: Record<string, unknown> | null | undefined): Record<
 function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrategy | null {
   const parsed = parseObject(raw);
   const type = asString(parsed.type, "");
-  if (type !== "project_primary" && type !== "git_worktree" && type !== "adapter_managed" && type !== "cloud_sandbox") {
+  if (
+    type !== "project_primary" &&
+    type !== "git_clone" &&
+    type !== "git_worktree" &&
+    type !== "adapter_managed" &&
+    type !== "cloud_sandbox"
+  ) {
     return null;
   }
   return {
@@ -28,6 +34,21 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
     ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
     ...(typeof parsed.teardownCommand === "string" ? { teardownCommand: parsed.teardownCommand } : {}),
   };
+}
+
+function normalizeIsolatedWorkspaceStrategy(
+  strategy: ExecutionWorkspaceStrategy | null,
+): ExecutionWorkspaceStrategy {
+  if (!strategy) {
+    return { type: "git_clone" };
+  }
+  if (strategy.type === "project_primary" || strategy.type === "git_worktree") {
+    return {
+      ...strategy,
+      type: "git_clone",
+    };
+  }
+  return strategy;
 }
 
 export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecutionWorkspacePolicy | null {
@@ -182,15 +203,20 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     input.issueSettings?.workspaceStrategy ||
     input.issueSettings?.workspaceRuntime,
   );
-  const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
+  const hasWorkspaceControl =
+    projectHasPolicy ||
+    issueHasWorkspaceOverrides ||
+    input.legacyUseProjectWorkspace === false ||
+    input.mode !== "shared_workspace";
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
+      const strategy = normalizeIsolatedWorkspaceStrategy(
         input.issueSettings?.workspaceStrategy ??
         input.projectPolicy?.workspaceStrategy ??
         parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+        null,
+      );
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;

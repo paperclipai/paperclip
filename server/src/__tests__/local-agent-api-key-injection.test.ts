@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
@@ -11,8 +13,12 @@ import {
   companies,
   createDb,
   ensurePostgresDatabase,
+  issueComments,
   issues,
+  projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 
 const CAPTURE_KEYS = [
@@ -24,6 +30,13 @@ const CAPTURE_KEYS = [
   "PAPERCLIP_TASK_ID",
   "PAPERCLIP_WAKE_COMMENT_ID",
   "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_HEAD",
 ] as const;
 
 type CaptureKey = (typeof CAPTURE_KEYS)[number];
@@ -33,6 +46,41 @@ type CapturePayload = {
   prompt: string;
   env: Partial<Record<CaptureKey, string>>;
 };
+
+const execFileAsync = promisify(execFile);
+
+async function runGit(cwd: string, args: string[]) {
+  await execFileAsync("git", args, { cwd, encoding: "utf8" });
+}
+
+async function gitStdout(cwd: string, args: string[]) {
+  return (await execFileAsync("git", args, { cwd, encoding: "utf8" })).stdout.trim();
+}
+
+async function createGitWorkspaceAt(repoRoot: string) {
+  await mkdir(repoRoot, { recursive: true });
+  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip-tests@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Tests"]);
+  await runGit(repoRoot, ["checkout", "-b", "main"]);
+  await writeFile(join(repoRoot, "README.md"), "# workspace\n", "utf8");
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "initial"]);
+  await runGit(repoRoot, ["checkout", "-b", "feature/live-checkout"]);
+  await writeFile(join(repoRoot, "feature.txt"), "live checkout\n", "utf8");
+  await runGit(repoRoot, ["add", "feature.txt"]);
+  await runGit(repoRoot, ["commit", "-m", "feature"]);
+
+  return {
+    repoRoot,
+    branchName: "feature/live-checkout",
+    headSha: await gitStdout(repoRoot, ["rev-parse", "HEAD"]),
+  };
+}
+
+async function createGitWorkspace(root: string) {
+  return createGitWorkspaceAt(join(root, "project-workspace"));
+}
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -52,6 +100,13 @@ const payload = {
       "PAPERCLIP_TASK_ID",
       "PAPERCLIP_WAKE_COMMENT_ID",
       "PAPERCLIP_WAKE_REASON",
+      "PAPERCLIP_WORKSPACE_CWD",
+      "PAPERCLIP_WORKSPACE_ID",
+      "PAPERCLIP_WORKSPACE_SOURCE",
+      "PAPERCLIP_WORKSPACE_REPO_REF",
+      "PAPERCLIP_WORKSPACE_BRANCH",
+      "PAPERCLIP_WORKSPACE_OBSERVED_BRANCH",
+      "PAPERCLIP_WORKSPACE_OBSERVED_HEAD",
     ]
       .filter((key) => typeof process.env[key] === "string" && process.env[key].length > 0)
       .map((key) => [key, process.env[key]]),
@@ -96,6 +151,13 @@ const payload = {
       "PAPERCLIP_TASK_ID",
       "PAPERCLIP_WAKE_COMMENT_ID",
       "PAPERCLIP_WAKE_REASON",
+      "PAPERCLIP_WORKSPACE_CWD",
+      "PAPERCLIP_WORKSPACE_ID",
+      "PAPERCLIP_WORKSPACE_SOURCE",
+      "PAPERCLIP_WORKSPACE_REPO_REF",
+      "PAPERCLIP_WORKSPACE_BRANCH",
+      "PAPERCLIP_WORKSPACE_OBSERVED_BRANCH",
+      "PAPERCLIP_WORKSPACE_OBSERVED_HEAD",
     ]
       .filter((key) => typeof process.env[key] === "string" && process.env[key].length > 0)
       .map((key) => [key, process.env[key]]),
@@ -221,7 +283,10 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     await rm(databaseDir, { recursive: true, force: true });
   }, 120_000);
 
-  async function seedIssue(agentId: string) {
+  async function seedIssue(
+    agentId: string,
+    opts?: { projectId?: string | null; projectWorkspaceId?: string | null },
+  ) {
     const issueId = randomUUID();
     const currentIssueNumber = issueNumber;
     issueNumber += 1;
@@ -232,6 +297,8 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       title: `Wake Issue ${currentIssueNumber}`,
       status: "todo",
       priority: "high",
+      projectId: opts?.projectId ?? null,
+      projectWorkspaceId: opts?.projectWorkspaceId ?? null,
       assigneeAgentId: agentId,
       createdByAgentId: agentId,
       issueNumber: currentIssueNumber,
@@ -255,6 +322,16 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
           triggerDetail: "system";
           reason: "issue_comment_mentioned";
         };
+    projectWorkspace?: {
+      cwd: string;
+      repoRef?: string | null;
+    };
+    afterSetup?: (context: {
+      agentId: string;
+      issueId: string | null;
+      projectId: string | null;
+      projectWorkspaceId: string | null;
+    }) => Promise<void>;
   }) {
     const root = await mkdtemp(join(tmpdir(), `paperclip-${input.adapterType}-wake-`));
     const workspace = join(root, "workspace");
@@ -291,8 +368,52 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     });
 
     let issueId: string | null = null;
+    let projectId: string | null = null;
+    let projectWorkspaceId: string | null = null;
+    let wakeCommentId: string | null = null;
+    if (input.projectWorkspace) {
+      projectId = randomUUID();
+      projectWorkspaceId = randomUUID();
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: `Workspace Project ${projectId.slice(0, 8)}`,
+        status: "active",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary Workspace",
+        sourceType: "local_path",
+        cwd: input.projectWorkspace.cwd,
+        repoRef: input.projectWorkspace.repoRef ?? null,
+        isPrimary: true,
+      });
+    }
     if (input.wake.source !== "timer") {
-      issueId = await seedIssue(agentId);
+      issueId = await seedIssue(agentId, {
+        projectId,
+        projectWorkspaceId,
+      });
+      if (input.wake.reason === "issue_comment_mentioned") {
+        wakeCommentId = randomUUID();
+        await db.insert(issueComments).values({
+          id: wakeCommentId,
+          companyId,
+          issueId,
+          authorUserId: "local-board",
+          body: "@agent please take a look",
+        });
+      }
+    }
+    if (input.afterSetup) {
+      await input.afterSetup({
+        agentId,
+        issueId,
+        projectId,
+        projectWorkspaceId,
+      });
     }
 
     const wakeup =
@@ -313,7 +434,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
               source: "automation",
               triggerDetail: "system",
               reason: "issue_comment_mentioned",
-              payload: { issueId, commentId: "comment-1" },
+              payload: { issueId, commentId: wakeCommentId },
               contextSnapshot: { issueId, source: "comment.mention" },
             });
 
@@ -321,7 +442,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       expect(wakeup).not.toBeNull();
       const run = await waitForRun(heartbeat(), wakeup!.id);
       const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
-      return { capture, run, issueId };
+      return { capture, run, issueId, projectId, projectWorkspaceId, wakeCommentId };
     } finally {
       if (input.adapterType === "codex_local") {
         if (previousCodexHome === undefined) {
@@ -368,7 +489,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       });
 
       it("injects PAPERCLIP_API_KEY and comment wake context on mention wakes", async () => {
-        const { capture, run, issueId } = await runWakeCase({
+        const { capture, run, issueId, wakeCommentId } = await runWakeCase({
           adapterType,
           wake: {
             source: "automation",
@@ -381,7 +502,161 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         expect(capture.env.PAPERCLIP_API_KEY).toMatch(/\S+/);
         expect(capture.env.PAPERCLIP_TASK_ID).toBe(issueId);
         expect(capture.env.PAPERCLIP_WAKE_REASON).toBe("issue_comment_mentioned");
-        expect(capture.env.PAPERCLIP_WAKE_COMMENT_ID).toBe("comment-1");
+        expect(capture.env.PAPERCLIP_WAKE_COMMENT_ID).toBe(wakeCommentId);
+      });
+
+      it("captures observed git provenance for shared project workspaces", async () => {
+        const root = await mkdtemp(join(tmpdir(), `paperclip-${adapterType}-workspace-provenance-`));
+        try {
+          const workspaceRepo = await createGitWorkspace(root);
+          const { capture, run } = await runWakeCase({
+            adapterType,
+            wake: {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_assigned",
+            },
+            projectWorkspace: {
+              cwd: workspaceRepo.repoRoot,
+              repoRef: "main",
+            },
+          });
+
+          expect(run.status).toBe("succeeded");
+          expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(workspaceRepo.repoRoot);
+          expect(capture.env.PAPERCLIP_WORKSPACE_SOURCE).toBe("project_primary");
+          expect(capture.env.PAPERCLIP_WORKSPACE_REPO_REF).toBe("main");
+          expect(capture.env.PAPERCLIP_WORKSPACE_BRANCH).toBeUndefined();
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH).toBe(workspaceRepo.branchName);
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD).toBe(workspaceRepo.headSha);
+
+          const contextSnapshot =
+            typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+              ? run.contextSnapshot as Record<string, unknown>
+              : null;
+          const paperclipWorkspace =
+            contextSnapshot && typeof contextSnapshot.paperclipWorkspace === "object" && contextSnapshot.paperclipWorkspace !== null
+              ? contextSnapshot.paperclipWorkspace as Record<string, unknown>
+              : null;
+
+          expect(paperclipWorkspace).toMatchObject({
+            cwd: workspaceRepo.repoRoot,
+            source: "project_primary",
+            repoRef: "main",
+            branchName: null,
+            observedBranchName: workspaceRepo.branchName,
+            observedHeadSha: workspaceRepo.headSha,
+          });
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+
+      it("recovers workspace env metadata from persisted manifests when project cwd is stale", async () => {
+        const root = await mkdtemp(join(tmpdir(), `paperclip-${adapterType}-manifest-recovery-`));
+        const paperclipHome = await mkdtemp(join(tmpdir(), `paperclip-home-${adapterType}-`));
+        const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+        const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+        process.env.PAPERCLIP_HOME = paperclipHome;
+        process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+        try {
+          const missingWorkspaceCwd = join(root, "missing-workspace");
+          const manifestOwnerAgentId = randomUUID();
+          let manifestRepoRoot = "";
+          let manifestHeadSha = "";
+          const manifestBranchName = "feature/live-checkout";
+
+          const { capture, run, projectWorkspaceId } = await runWakeCase({
+            adapterType,
+            wake: {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_assigned",
+            },
+            projectWorkspace: {
+              cwd: missingWorkspaceCwd,
+              repoRef: "main",
+            },
+            afterSetup: async ({ issueId, projectId, projectWorkspaceId: seededWorkspaceId }) => {
+              if (!issueId || !projectId || !seededWorkspaceId) {
+                throw new Error("Expected seeded issue and workspace ids for manifest recovery test.");
+              }
+
+              const manifestDir = join(
+                resolveDefaultAgentWorkspaceDir(manifestOwnerAgentId),
+                "project-workspaces",
+                projectId.slice(0, 32),
+                `${issueId.slice(0, 32)}-managed`,
+                seededWorkspaceId.slice(0, 32),
+              );
+              const repo = await createGitWorkspaceAt(join(manifestDir, "repo"));
+              manifestRepoRoot = repo.repoRoot;
+              manifestHeadSha = repo.headSha;
+
+              await writeFile(
+                join(manifestDir, "paperclip-workspace.json"),
+                JSON.stringify(
+                  {
+                    mode: "git_worktree",
+                    agentId: manifestOwnerAgentId,
+                    projectId,
+                    taskKey: issueId,
+                    workspaceId: seededWorkspaceId,
+                    relativeCwd: null,
+                    repoUrl: "https://github.com/ryjm/tabula",
+                    repoRef: "main",
+                    branchName: "paperclip/test/manifest-recovery",
+                  },
+                  null,
+                  2,
+                ),
+                "utf8",
+              );
+            },
+          });
+
+          expect(run.status).toBe("succeeded");
+          expect(projectWorkspaceId).toMatch(/\S+/);
+          expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(manifestRepoRoot);
+          expect(capture.env.PAPERCLIP_WORKSPACE_ID).toBe(projectWorkspaceId);
+          expect(capture.env.PAPERCLIP_WORKSPACE_SOURCE).toBe("project_primary");
+          expect(capture.env.PAPERCLIP_WORKSPACE_REPO_REF).toBe("main");
+          expect(capture.env.PAPERCLIP_WORKSPACE_BRANCH).toBeUndefined();
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH).toBe(manifestBranchName);
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD).toBe(manifestHeadSha);
+
+          const contextSnapshot =
+            typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+              ? run.contextSnapshot as Record<string, unknown>
+              : null;
+          const paperclipWorkspace =
+            contextSnapshot && typeof contextSnapshot.paperclipWorkspace === "object" && contextSnapshot.paperclipWorkspace !== null
+              ? contextSnapshot.paperclipWorkspace as Record<string, unknown>
+              : null;
+
+          expect(paperclipWorkspace).toMatchObject({
+            cwd: manifestRepoRoot,
+            source: "project_primary",
+            workspaceId: projectWorkspaceId,
+            repoRef: "main",
+            observedBranchName: manifestBranchName,
+            observedHeadSha: manifestHeadSha,
+          });
+        } finally {
+          if (previousPaperclipHome === undefined) {
+            delete process.env.PAPERCLIP_HOME;
+          } else {
+            process.env.PAPERCLIP_HOME = previousPaperclipHome;
+          }
+          if (previousPaperclipInstanceId === undefined) {
+            delete process.env.PAPERCLIP_INSTANCE_ID;
+          } else {
+            process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+          }
+          await rm(root, { recursive: true, force: true });
+          await rm(paperclipHome, { recursive: true, force: true });
+        }
       });
     });
   }

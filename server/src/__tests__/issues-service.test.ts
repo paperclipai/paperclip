@@ -9,6 +9,7 @@ import {
   createDb,
   executionWorkspaces,
   instanceSettings,
+  heartbeatRuns,
   issueComments,
   issueInboxArchives,
   issueRelations,
@@ -48,6 +49,56 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+async function seedCompanyAndAgent(db: ReturnType<typeof createDb>) {
+  const companyId = randomUUID();
+  const agentId = randomUUID();
+  const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Paperclip",
+    issuePrefix,
+    requireBoardApprovalForNewAgents: false,
+  });
+
+  await db.insert(agents).values({
+    id: agentId,
+    companyId,
+    name: "CodexCoder",
+    role: "engineer",
+    status: "active",
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    permissions: {},
+  });
+
+  return { companyId, agentId, issuePrefix };
+}
+
+async function insertHeartbeatRun(
+  db: ReturnType<typeof createDb>,
+  input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    status: string;
+  },
+) {
+  const now = new Date("2026-04-01T00:00:00.000Z");
+  await db.insert(heartbeatRuns).values({
+    id: input.runId,
+    companyId: input.companyId,
+    agentId: input.agentId,
+    invocationSource: "assignment",
+    triggerDetail: "test",
+    status: input.status,
+    startedAt: now,
+    finishedAt: input.status === "queued" || input.status === "running" ? null : now,
+    updatedAt: now,
+  });
+}
+
 describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
@@ -66,6 +117,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -623,6 +675,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -878,6 +931,202 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
+    });
+  });
+
+  it("reconciles stale execution locks in list results before building inbox data", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
+
+    await insertHeartbeatRun(db, {
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "failed",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Inbox drift issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: lockedAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const result = await svc.list(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.executionRunId).toBeNull();
+    expect(result[0]?.activeRun).toBeNull();
+
+    const persisted = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("reconciles stale execution locks in raw issue reads", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
+
+    await insertHeartbeatRun(db, {
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "succeeded",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Raw issue drift",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: lockedAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const issue = await svc.getById(issueId);
+
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
+
+    const persisted = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("clears stale execution locks before retrying checkout", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const staleRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun(db, {
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "failed",
+    });
+    await insertHeartbeatRun(db, {
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout should recover",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "in_progress"], currentRunId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const persisted = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("releases checkout and execution lock state together", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent(db);
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun(db, {
+      companyId,
+      agentId,
+      runId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release should clear lock state",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
     });
   });
 });

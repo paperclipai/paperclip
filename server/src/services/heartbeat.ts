@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { AgentWakeCooldown, BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
@@ -31,7 +32,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  resolveDefaultAgentWorkspaceDir,
+  resolveManagedProjectWorkspaceDir,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
@@ -355,6 +360,251 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+type ProjectWorkspaceManifest = {
+  agentId: string | null;
+  projectId: string | null;
+  taskKey: string | null;
+  workspaceId: string | null;
+  relativeCwd: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+};
+
+export type RecoveredProjectWorkspaceFromManifest = {
+  cwd: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+  manifestPath: string;
+};
+
+const PROJECT_WORKSPACE_MANIFEST_FILENAME = "paperclip-workspace.json";
+const PROJECT_WORKSPACE_REPO_DIRNAME = "repo";
+
+async function isDirectory(dir: string | null | undefined) {
+  if (!dir) return false;
+  return fs
+    .stat(dir)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false);
+}
+
+async function listDirectories(dir: string) {
+  const entries = await fs
+    .readdir(dir, { withFileTypes: true })
+    .catch(() => [] as Array<{ isDirectory(): boolean; name: string }>);
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+}
+
+function matchesTruncatedPathSegment(segment: string, identifier: string | null) {
+  if (!identifier) return false;
+  return segment === identifier || identifier.startsWith(segment);
+}
+
+function parseProjectWorkspaceManifest(raw: string): ProjectWorkspaceManifest | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  const record = parseObject(parsed);
+  const workspaceId = readNonEmptyString(record.workspaceId);
+  if (!workspaceId) return null;
+  return {
+    agentId: readNonEmptyString(record.agentId),
+    projectId: readNonEmptyString(record.projectId),
+    taskKey: readNonEmptyString(record.taskKey),
+    workspaceId,
+    relativeCwd: readNonEmptyString(record.relativeCwd),
+    repoUrl: readNonEmptyString(record.repoUrl),
+    repoRef: readNonEmptyString(record.repoRef),
+  };
+}
+
+async function resolveRecoveredManifestWorkspaceCwd(
+  manifestPath: string,
+  relativeCwd: string | null,
+) {
+  const manifestDir = path.dirname(manifestPath);
+  const repoDir = path.resolve(manifestDir, PROJECT_WORKSPACE_REPO_DIRNAME);
+  if (!(await isDirectory(repoDir))) {
+    return null;
+  }
+  if (!relativeCwd) {
+    return repoDir;
+  }
+
+  const candidate = path.resolve(repoDir, relativeCwd);
+  if (candidate !== repoDir && !candidate.startsWith(`${repoDir}${path.sep}`)) {
+    return null;
+  }
+  if (!(await isDirectory(candidate))) {
+    return null;
+  }
+  return candidate;
+}
+
+export async function recoverProjectWorkspaceFromManifest(input: {
+  preferredAgentId?: string | null;
+  projectId: string | null;
+  taskKey: string | null;
+  workspaceIds: string[];
+}): Promise<RecoveredProjectWorkspaceFromManifest | null> {
+  if (!input.projectId) return null;
+
+  const workspacesRoot = path.join(resolvePaperclipInstanceRoot(), "workspaces");
+  const agentWorkspaceDirs = prioritizeProjectWorkspaceCandidatesForRun(
+    (await listDirectories(workspacesRoot)).map((dir) => ({
+      id: path.basename(dir),
+      dir,
+    })),
+    input.preferredAgentId,
+  ).map((entry) => entry.dir);
+  if (agentWorkspaceDirs.length === 0) {
+    return null;
+  }
+
+  const trackedWorkspaceIds = new Set(
+    input.workspaceIds.filter((workspaceId) => workspaceId.trim().length > 0),
+  );
+  let bestCandidate: (RecoveredProjectWorkspaceFromManifest & { score: number }) | null = null;
+
+  for (const agentWorkspaceDir of agentWorkspaceDirs) {
+    const projectWorkspacesRoot = path.join(agentWorkspaceDir, "project-workspaces");
+    const projectDirs = (await listDirectories(projectWorkspacesRoot)).filter((dir) =>
+      matchesTruncatedPathSegment(path.basename(dir), input.projectId),
+    );
+    for (const projectDir of projectDirs) {
+      const taskDirs = await listDirectories(projectDir);
+      for (const taskDir of taskDirs) {
+        const workspaceDirs = (await listDirectories(taskDir)).filter((dir) => {
+          if (trackedWorkspaceIds.size === 0) return true;
+          return [...trackedWorkspaceIds].some((workspaceId) =>
+            matchesTruncatedPathSegment(path.basename(dir), workspaceId),
+          );
+        });
+        for (const workspaceDir of workspaceDirs) {
+          const manifestPath = path.join(workspaceDir, PROJECT_WORKSPACE_MANIFEST_FILENAME);
+          const manifestRaw = await fs.readFile(manifestPath, "utf8").catch(() => null);
+          if (!manifestRaw) continue;
+
+          const manifest = parseProjectWorkspaceManifest(manifestRaw);
+          if (!manifest || manifest.projectId !== input.projectId) continue;
+          if (input.taskKey && manifest.taskKey && manifest.taskKey !== input.taskKey) continue;
+          if (
+            trackedWorkspaceIds.size > 0 &&
+            (!manifest.workspaceId || !trackedWorkspaceIds.has(manifest.workspaceId))
+          ) {
+            continue;
+          }
+
+          const recoveredCwd = await resolveRecoveredManifestWorkspaceCwd(
+            manifestPath,
+            manifest.relativeCwd,
+          );
+          if (!recoveredCwd) continue;
+
+          const score =
+            (manifest.workspaceId && trackedWorkspaceIds.has(manifest.workspaceId) ? 4 : 0) +
+            (input.taskKey && manifest.taskKey === input.taskKey ? 2 : 0) +
+            (input.preferredAgentId && manifest.agentId === input.preferredAgentId ? 1 : 0);
+          if (bestCandidate && bestCandidate.score >= score) continue;
+
+          bestCandidate = {
+            cwd: recoveredCwd,
+            workspaceId: manifest.workspaceId,
+            repoUrl: manifest.repoUrl,
+            repoRef: manifest.repoRef,
+            manifestPath,
+            score,
+          };
+        }
+      }
+    }
+  }
+
+  if (!bestCandidate) return null;
+  return {
+    cwd: bestCandidate.cwd,
+    workspaceId: bestCandidate.workspaceId,
+    repoUrl: bestCandidate.repoUrl,
+    repoRef: bestCandidate.repoRef,
+    manifestPath: bestCandidate.manifestPath,
+  };
+}
+
+type ObservedWorkspaceGitProvenance = {
+  repoRoot: string | null;
+  branchName: string | null;
+  headSha: string | null;
+};
+
+async function readGitOutput(cwd: string, args: string[]) {
+  try {
+    const { stdout } = await execFile("git", ["-C", cwd, ...args], { cwd });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function observeWorkspaceGitProvenance(cwd: string): Promise<ObservedWorkspaceGitProvenance> {
+  const repoRoot = await readGitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!repoRoot) {
+    return {
+      repoRoot: null,
+      branchName: null,
+      headSha: null,
+    };
+  }
+
+  const [branchName, headSha] = await Promise.all([
+    readGitOutput(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    readGitOutput(cwd, ["rev-parse", "--verify", "HEAD"]),
+  ]);
+
+  return {
+    repoRoot: path.resolve(repoRoot),
+    branchName: readNonEmptyString(branchName),
+    headSha: readNonEmptyString(headSha),
+  };
+}
+
+type TimerWakeIssueSummary = {
+  id: string;
+  status: string;
+  latestActivityId: string | null;
+  latestActivityAction: string | null;
+  latestActivityAgentId: string | null;
+};
+
+export function shouldSuppressTimerWakeForAssignedIssues(
+  agentId: string,
+  assignedIssues: TimerWakeIssueSummary[],
+) {
+  if (assignedIssues.length === 0) return false;
+  return assignedIssues.every(
+    (issue) =>
+      issue.status === "blocked" &&
+      issue.latestActivityAction === "issue.comment_added" &&
+      issue.latestActivityAgentId === agentId,
+  );
+}
+
+export function getTimerWakeSuppressionStateKey(
+  agentId: string,
+  assignedIssues: TimerWakeIssueSummary[],
+) {
+  if (!shouldSuppressTimerWakeForAssignedIssues(agentId, assignedIssues)) return null;
+  return assignedIssues
+    .map((issue) => `${issue.id}:${issue.latestActivityId ?? "missing"}`)
+    .sort()
+    .join("|");
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -1474,6 +1724,7 @@ export function heartbeatService(db: Db) {
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
+    const taskKey = deriveTaskKey(context, null);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
     const issueProjectRef = issueId
@@ -1573,6 +1824,55 @@ export function heartbeatService(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
+      const recoveredWorkspace = await recoverProjectWorkspaceFromManifest({
+        preferredAgentId: agent.id,
+        projectId: resolvedProjectId,
+        taskKey,
+        workspaceIds: projectWorkspaceRows.map((workspace) => workspace.id),
+      });
+      if (recoveredWorkspace) {
+        const recoveredWorkspaceRow = recoveredWorkspace.workspaceId
+          ? projectWorkspaceRows.find((workspace) => workspace.id === recoveredWorkspace.workspaceId) ?? null
+          : null;
+        const recoveredHints = workspaceHints.map((workspace) =>
+          workspace.workspaceId === recoveredWorkspace.workspaceId
+            ? {
+                ...workspace,
+                cwd: recoveredWorkspace.cwd,
+                repoUrl: recoveredWorkspace.repoUrl ?? workspace.repoUrl,
+                repoRef: recoveredWorkspace.repoRef ?? workspace.repoRef,
+              }
+            : workspace,
+        );
+        const recoveryPrefix =
+          missingProjectCwds.length > 0
+            ? (() => {
+                const firstMissing = missingProjectCwds[0]!;
+                const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
+                return extraMissingCount > 0
+                  ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet.`
+                  : `Project workspace path "${firstMissing}" is not available yet.`;
+              })()
+            : !hasConfiguredProjectCwd
+              ? "Project workspace has no local cwd configured."
+              : null;
+        return {
+          cwd: recoveredWorkspace.cwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: recoveredWorkspace.workspaceId ?? projectWorkspaceRows[0]?.id ?? null,
+          repoUrl: recoveredWorkspace.repoUrl ?? recoveredWorkspaceRow?.repoUrl ?? null,
+          repoRef: recoveredWorkspace.repoRef ?? recoveredWorkspaceRow?.repoRef ?? null,
+          workspaceHints: recoveredHints,
+          warnings: [
+            ...(preferredWorkspaceWarning ? [preferredWorkspaceWarning] : []),
+            recoveryPrefix
+              ? `${recoveryPrefix} Recovered managed workspace "${recoveredWorkspace.cwd}" from manifest "${recoveredWorkspace.manifestPath}" for this run.`
+              : `Recovered managed workspace "${recoveredWorkspace.cwd}" from manifest "${recoveredWorkspace.manifestPath}" for this run.`,
+          ],
+        };
+      }
+
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
@@ -1605,6 +1905,36 @@ export function heartbeatService(db: Db) {
     }
 
     if (workspaceProjectId) {
+      const recoveredWorkspace = await recoverProjectWorkspaceFromManifest({
+        preferredAgentId: agent.id,
+        projectId: resolvedProjectId,
+        taskKey,
+        workspaceIds: preferredProjectWorkspaceId ? [preferredProjectWorkspaceId] : [],
+      });
+      if (recoveredWorkspace) {
+        return {
+          cwd: recoveredWorkspace.cwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: recoveredWorkspace.workspaceId ?? preferredProjectWorkspaceId ?? null,
+          repoUrl: recoveredWorkspace.repoUrl,
+          repoRef: recoveredWorkspace.repoRef,
+          workspaceHints: recoveredWorkspace.workspaceId
+            ? [
+                {
+                  workspaceId: recoveredWorkspace.workspaceId,
+                  cwd: recoveredWorkspace.cwd,
+                  repoUrl: recoveredWorkspace.repoUrl,
+                  repoRef: recoveredWorkspace.repoRef,
+                },
+              ]
+            : workspaceHints,
+          warnings: [
+            `Recovered managed workspace "${recoveredWorkspace.cwd}" from manifest "${recoveredWorkspace.manifestPath}" for this run.`,
+          ],
+        };
+      }
+
       const managedWorkspace = await ensureManagedProjectWorkspace({
         companyId: agent.companyId,
         projectId: workspaceProjectId,
@@ -2019,6 +2349,89 @@ export function heartbeatService(db: Db) {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
+  }
+
+  async function shouldSuppressTimerWakeForAgent(agent: typeof agents.$inferSelect) {
+    const assignedIssues = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["todo", "in_progress", "blocked"]),
+          isNull(issues.hiddenAt),
+        ),
+      );
+
+    if (assignedIssues.length === 0) return false;
+    if (assignedIssues.some((issue) => issue.status !== "blocked")) return false;
+
+    const latestActivityRows = await db
+      .selectDistinctOn([activityLog.entityId], {
+        issueId: activityLog.entityId,
+        activityId: activityLog.id,
+        action: activityLog.action,
+        agentId: activityLog.agentId,
+      })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, agent.companyId),
+          eq(activityLog.entityType, "issue"),
+          inArray(activityLog.entityId, assignedIssues.map((issue) => issue.id)),
+        ),
+      )
+      .orderBy(activityLog.entityId, desc(activityLog.createdAt));
+
+    const latestActivityByIssueId = new Map(
+      latestActivityRows.map((row) => [row.issueId, row] as const),
+    );
+
+    const timerWakeSuppressionStateKey = getTimerWakeSuppressionStateKey(
+      agent.id,
+      assignedIssues.map((issue) => {
+        const latestActivity = latestActivityByIssueId.get(issue.id) ?? null;
+        return {
+          id: issue.id,
+          status: issue.status,
+          latestActivityId: latestActivity?.activityId ?? null,
+          latestActivityAction: latestActivity?.action ?? null,
+          latestActivityAgentId: latestActivity?.agentId ?? null,
+        };
+      }),
+    );
+
+    if (!timerWakeSuppressionStateKey) return null;
+
+    const latestSuppressionRequest = await db
+      .select({
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          eq(agentWakeupRequests.source, "timer"),
+          eq(agentWakeupRequests.status, "skipped"),
+          eq(agentWakeupRequests.reason, "heartbeat.blocked_only_inbox"),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const latestSuppressionPayload = parseObject(latestSuppressionRequest?.payload);
+    const latestSuppressionStateKey = readNonEmptyString(latestSuppressionPayload.suppressionStateKey);
+
+    return {
+      alreadyRecorded: latestSuppressionStateKey === timerWakeSuppressionStateKey,
+      stateKey: timerWakeSuppressionStateKey,
+    };
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -2553,6 +2966,12 @@ export function heartbeatService(db: Db) {
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+    const persistedStrategyType =
+      executionWorkspace.strategy === "git_worktree" || executionWorkspace.strategy === "git_clone"
+        ? executionWorkspace.strategy
+        : "project_primary";
+    const persistedProviderType =
+      executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs";
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadataBase = {
       ...(existingExecutionWorkspace?.metadata ?? {}),
@@ -2571,7 +2990,8 @@ export function heartbeatService(db: Db) {
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
             branchName: executionWorkspace.branchName,
-            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+            strategyType: persistedStrategyType,
+            providerType: persistedProviderType,
             providerRef: executionWorkspace.worktreePath,
             status: "active",
             lastUsedAt: new Date(),
@@ -2591,14 +3011,14 @@ export function heartbeatService(db: Db) {
                     : requestedExecutionWorkspaceMode === "agent_default"
                       ? "adapter_managed"
                       : "shared_workspace",
-              strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+              strategyType: persistedStrategyType,
               name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
               status: "active",
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: executionWorkspace.branchName,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedProviderType,
               providerRef: executionWorkspace.worktreePath,
               lastUsedAt: new Date(),
               openedAt: new Date(),
@@ -2612,7 +3032,7 @@ export function heartbeatService(db: Db) {
             workspace: {
               id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
               cwd: executionWorkspace.cwd,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedProviderType,
               providerRef: executionWorkspace.worktreePath,
               branchName: executionWorkspace.branchName,
               repoUrl: executionWorkspace.repoUrl,
@@ -2714,6 +3134,7 @@ export function heartbeatService(db: Db) {
           ]
         : []),
     ];
+    const observedWorkspaceGit = await observeWorkspaceGitProvenance(executionWorkspace.cwd);
     context.paperclipWorkspace = {
       cwd: executionWorkspace.cwd,
       source: executionWorkspace.source,
@@ -2724,6 +3145,9 @@ export function heartbeatService(db: Db) {
       repoUrl: executionWorkspace.repoUrl,
       repoRef: executionWorkspace.repoRef,
       branchName: executionWorkspace.branchName,
+      observedRepoRoot: observedWorkspaceGit.repoRoot,
+      observedBranchName: observedWorkspaceGit.branchName,
+      observedHeadSha: observedWorkspaceGit.headSha,
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
         const home = resolveDefaultAgentWorkspaceDir(agent.id);
@@ -3561,6 +3985,18 @@ export function heartbeatService(db: Db) {
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
+      return null;
+    }
+    const timerWakeSuppression =
+      source === "timer" ? await shouldSuppressTimerWakeForAgent(agent) : null;
+    if (timerWakeSuppression) {
+      if (timerWakeSuppression.alreadyRecorded) {
+        return null;
+      }
+      await writeSkippedRequest("heartbeat.blocked_only_inbox", {
+        ...(payload ?? {}),
+        suppressionStateKey: timerWakeSuppression.stateKey,
+      });
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {

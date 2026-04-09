@@ -24,7 +24,9 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 ## Session Persistence
 
-Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
+Codex uses `previous_response_id` for session continuity. When a heartbeat has task context, Paperclip saves that state for the current task and later wakes in the same task scope restore it so the agent can continue the conversation.
+
+Wakes without task context do not automatically reopen the last task conversation. In those cases, Paperclip uses runtime fallback behavior instead, which may resume a non-task session or start fresh depending on the saved workspace/session state.
 
 ## Skills Injection
 

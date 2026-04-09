@@ -17,7 +17,7 @@ Adapter: gemini_local
 
 Use when:
 - You want Paperclip to run the Gemini CLI locally on the host machine
-- You want Gemini chat sessions resumed across heartbeats with --resume
+- You want Gemini chat sessions resumed on later wakes for the same task scope with --resume
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:

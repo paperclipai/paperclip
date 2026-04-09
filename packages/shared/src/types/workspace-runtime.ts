@@ -1,5 +1,6 @@
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
+  | "git_clone"
   | "git_worktree"
   | "adapter_managed"
   | "cloud_sandbox";

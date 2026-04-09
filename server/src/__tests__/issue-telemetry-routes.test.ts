@@ -20,6 +20,7 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
+  trackErrorHandlerCrash: vi.fn(),
 }));
 
 vi.mock("../telemetry.js", () => ({
@@ -39,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
+    cancelNonActionableIssueAssignmentWork: vi.fn(async () => 0),
   }),
   instanceSettingsService: () => ({}),
   issueApprovalService: () => ({}),

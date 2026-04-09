@@ -76,12 +76,29 @@ describe("execution workspace policy helpers", () => {
     });
 
     expect(result.workspaceStrategy).toEqual({
-      type: "git_worktree",
+      type: "git_clone",
       baseRef: "origin/main",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
     });
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "web", command: "pnpm dev" }],
+    });
+  });
+
+  it("normalizes legacy local isolation strategies onto git_clone", () => {
+    expect(
+      buildExecutionWorkspaceAdapterConfig({
+        agentConfig: {
+          workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
+        },
+        projectPolicy: null,
+        issueSettings: null,
+        mode: "isolated_workspace",
+        legacyUseProjectWorkspace: null,
+      }).workspaceStrategy,
+    ).toEqual({
+      type: "git_clone",
+      branchTemplate: "{{issue.identifier}}",
     });
   });
 
@@ -118,7 +135,7 @@ describe("execution workspace policy helpers", () => {
         enabled: true,
         defaultMode: "isolated",
         workspaceStrategy: {
-          type: "git_worktree",
+          type: "git_clone",
           worktreeParentDir: ".paperclip/worktrees",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           teardownCommand: "bash ./scripts/teardown-worktree.sh",
@@ -128,7 +145,7 @@ describe("execution workspace policy helpers", () => {
       enabled: true,
       defaultMode: "isolated_workspace",
       workspaceStrategy: {
-        type: "git_worktree",
+        type: "git_clone",
         worktreeParentDir: ".paperclip/worktrees",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",

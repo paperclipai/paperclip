@@ -18,7 +18,7 @@ Adapter: opencode_local
 Use when:
 - You want Paperclip to run OpenCode locally as the agent runtime
 - You want provider/model routing in OpenCode format (provider/model)
-- You want OpenCode session resume across heartbeats via --session
+- You want OpenCode sessions resumed on later wakes for the same task scope via --session
 
 Don't use when:
 - You need webhook-style external invocation (use openclaw_gateway or http)

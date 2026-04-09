@@ -1118,8 +1118,8 @@ export function Inbox() {
       }
       if (item.kind === "failed_run") {
         const run = item.run;
-        const name = agentById.get(run.agentId);
-        if (name?.toLowerCase().includes(q)) return true;
+        const agent = agentById.get(run.agentId);
+        if (agent?.name.toLowerCase().includes(q)) return true;
         const msg = runFailureMessage(run);
         if (msg.toLowerCase().includes(q)) return true;
         const issueId = readIssueIdFromRun(run);

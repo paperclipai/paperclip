@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
@@ -12,6 +15,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  recoverProjectWorkspaceFromManifest,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -56,6 +60,24 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     createdAt: new Date(),
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
+}
+
+async function withTempPaperclipHome(fn: () => Promise<void>) {
+  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+  const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-manifest-"));
+  process.env.PAPERCLIP_HOME = tempHome;
+  delete process.env.PAPERCLIP_INSTANCE_ID;
+
+  try {
+    await fn();
+  } finally {
+    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
 }
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
@@ -263,6 +285,143 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
     });
     expect(input.workspaceRuntime).toEqual({
       services: [{ name: "web" }],
+    });
+  });
+});
+
+describe("recoverProjectWorkspaceFromManifest", () => {
+  it("recovers managed workspace cwd and metadata from another agent's persisted manifest", async () => {
+    await withTempPaperclipHome(async () => {
+      const preferredAgentId = "agent-123";
+      const manifestAgentId = "agent-456";
+      const projectId = "3b01eb46-f0c5-4a09-80ea-46e634278706";
+      const workspaceId = "0e79ea49-9a34-4777-9285-debd4acade93";
+      const taskKey = "910d0062-299e-49b5-9bb5-c2580a2c6a3d";
+      const manifestDir = path.join(
+        resolveDefaultAgentWorkspaceDir(manifestAgentId),
+        "project-workspaces",
+        projectId.slice(0, 32),
+        `${taskKey.slice(0, 32)}-managed`,
+        workspaceId.slice(0, 32),
+      );
+      const repoDir = path.join(manifestDir, "repo");
+
+      await fs.mkdir(repoDir, { recursive: true });
+      await fs.writeFile(
+        path.join(manifestDir, "paperclip-workspace.json"),
+        JSON.stringify({
+          mode: "git_worktree",
+          agentId: manifestAgentId,
+          projectId,
+          taskKey,
+          workspaceId,
+          relativeCwd: null,
+          repoUrl: "https://github.com/ryjm/tabula",
+          repoRef: "main",
+        }),
+        "utf8",
+      );
+
+      const recovered = await recoverProjectWorkspaceFromManifest({
+        preferredAgentId,
+        projectId,
+        taskKey,
+        workspaceIds: [workspaceId],
+      });
+
+      expect(recovered).toMatchObject({
+        cwd: repoDir,
+        workspaceId,
+        repoUrl: "https://github.com/ryjm/tabula",
+        repoRef: "main",
+      });
+    });
+  });
+
+  it("uses relativeCwd from the persisted manifest when present", async () => {
+    await withTempPaperclipHome(async () => {
+      const preferredAgentId = "agent-123";
+      const manifestAgentId = "agent-456";
+      const projectId = "3b01eb46-f0c5-4a09-80ea-46e634278706";
+      const workspaceId = "0e79ea49-9a34-4777-9285-debd4acade93";
+      const taskKey = "910d0062-299e-49b5-9bb5-c2580a2c6a3d";
+      const manifestDir = path.join(
+        resolveDefaultAgentWorkspaceDir(manifestAgentId),
+        "project-workspaces",
+        projectId.slice(0, 32),
+        `${taskKey.slice(0, 32)}-managed`,
+        workspaceId.slice(0, 32),
+      );
+      const repoDir = path.join(manifestDir, "repo");
+      const relativeCwd = path.join("packages", "server");
+      const nestedCwd = path.join(repoDir, relativeCwd);
+
+      await fs.mkdir(nestedCwd, { recursive: true });
+      await fs.writeFile(
+        path.join(manifestDir, "paperclip-workspace.json"),
+        JSON.stringify({
+          mode: "git_worktree",
+          agentId: manifestAgentId,
+          projectId,
+          taskKey,
+          workspaceId,
+          relativeCwd,
+          repoUrl: "https://github.com/ryjm/tabula",
+          repoRef: null,
+        }),
+        "utf8",
+      );
+
+      const recovered = await recoverProjectWorkspaceFromManifest({
+        preferredAgentId,
+        projectId,
+        taskKey,
+        workspaceIds: [workspaceId],
+      });
+
+      expect(recovered?.cwd).toBe(nestedCwd);
+    });
+  });
+
+  it("ignores manifests that do not match a tracked workspace id", async () => {
+    await withTempPaperclipHome(async () => {
+      const preferredAgentId = "agent-123";
+      const manifestAgentId = "agent-456";
+      const projectId = "3b01eb46-f0c5-4a09-80ea-46e634278706";
+      const taskKey = "910d0062-299e-49b5-9bb5-c2580a2c6a3d";
+      const manifestWorkspaceId = "0e79ea49-9a34-4777-9285-debd4acade93";
+      const trackedWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const manifestDir = path.join(
+        resolveDefaultAgentWorkspaceDir(manifestAgentId),
+        "project-workspaces",
+        projectId.slice(0, 32),
+        `${taskKey.slice(0, 32)}-managed`,
+        manifestWorkspaceId.slice(0, 32),
+      );
+
+      await fs.mkdir(path.join(manifestDir, "repo"), { recursive: true });
+      await fs.writeFile(
+        path.join(manifestDir, "paperclip-workspace.json"),
+        JSON.stringify({
+          agentId: manifestAgentId,
+          projectId,
+          taskKey,
+          workspaceId: manifestWorkspaceId,
+          relativeCwd: null,
+          repoUrl: "https://github.com/ryjm/tabula",
+          repoRef: null,
+        }),
+        "utf8",
+      );
+
+      const recovered = await recoverProjectWorkspaceFromManifest({
+        preferredAgentId,
+        projectId,
+        taskKey,
+        workspaceIds: [trackedWorkspaceId],
+      });
+
+      expect(recovered).toBeNull();
     });
   });
 });

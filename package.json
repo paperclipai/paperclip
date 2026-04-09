@@ -41,6 +41,7 @@
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "happy-dom": "20.8.9",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },

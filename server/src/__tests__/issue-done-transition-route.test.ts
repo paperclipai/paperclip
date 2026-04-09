@@ -12,6 +12,10 @@ import { issueService } from "../services/issues.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 
+async function flushIssueRouteWakeups() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("issue done transition route", () => {
   let databaseDir = "";
   let storageDir = "";
@@ -74,6 +78,7 @@ describe("issue done transition route", () => {
   }, 120000);
 
   afterAll(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.$client.end({ timeout: 0 });
     await embeddedPostgres.stop();
     await rm(databaseDir, { recursive: true, force: true });
@@ -112,6 +117,7 @@ describe("issue done transition route", () => {
     const res = await request(app)
       .patch(`/api/issues/${issue.id}`)
       .send({ status: "done", labelIds: [] });
+    await flushIssueRouteWakeups();
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
@@ -134,6 +140,7 @@ describe("issue done transition route", () => {
           status: "done",
           comment: "Done in https://github.com/acme/paperclip/commit/deadbeef1234567",
         });
+      await flushIssueRouteWakeups();
 
       expect(res.status).toBe(422);
       expect(res.body.error).toContain("not reachable on the remote repository");
@@ -157,6 +164,7 @@ describe("issue done transition route", () => {
     const res = await request(app)
       .patch(`/api/issues/${issue.id}`)
       .send({ status: "done" });
+    await flushIssueRouteWakeups();
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");

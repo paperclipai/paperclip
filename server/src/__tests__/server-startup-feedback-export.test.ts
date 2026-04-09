@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  cleanupLegacyManagedProjectWorkspacesMock,
   createAppMock,
   createDbMock,
   detectPortMock,
@@ -8,6 +9,10 @@ const {
   feedbackServiceFactoryMock,
   fakeServer,
 } = vi.hoisted(() => {
+  const cleanupLegacyManagedProjectWorkspacesMock = vi.fn(async () => ({
+    removedWorkspaces: 0,
+    warnings: [],
+  }));
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
@@ -26,6 +31,7 @@ const {
   };
 
   return {
+    cleanupLegacyManagedProjectWorkspacesMock,
     createAppMock,
     createDbMock,
     detectPortMock,
@@ -113,6 +119,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  cleanupLegacyManagedProjectWorkspaces: cleanupLegacyManagedProjectWorkspacesMock,
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
