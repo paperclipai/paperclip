@@ -224,19 +224,18 @@ export function executionThreadService(db: Db) {
 }
 
 async function findRoot(db: Db, issueId: string): Promise<string> {
-  let currentId: string | null = issueId;
-  const visited = new Set<string>();
+  const rows = await db.execute(sql`
+    WITH RECURSIVE ancestors AS (
+      SELECT id, "parent_id" AS parent_id
+      FROM issues
+      WHERE id = ${issueId}
+      UNION ALL
+      SELECT i.id, i."parent_id" AS parent_id
+      FROM issues i
+      INNER JOIN ancestors a ON i.id = a.parent_id
+    )
+    SELECT id FROM ancestors WHERE parent_id IS NULL LIMIT 1
+  `) as unknown as Array<{ id: string }>;
 
-  while (currentId && !visited.has(currentId) && visited.size < 50) {
-    visited.add(currentId);
-    const [row] = await db
-      .select({ id: issues.id, parentId: issues.parentId })
-      .from(issues)
-      .where(eq(issues.id, currentId));
-    if (!row) break;
-    if (!row.parentId) return row.id;
-    currentId = row.parentId;
-  }
-
-  return issueId;
+  return rows[0]?.id ?? issueId;
 }
