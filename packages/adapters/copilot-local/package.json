@@ -46,8 +46,6 @@
     "skills"
   ],
   "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "clean": "rm -rf dist"
   }
 }
