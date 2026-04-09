@@ -3,8 +3,8 @@
  * reachable on the remote repository, not just a locally-constructed URL
  * pointing at an unpushed commit.
  *
- * PR links are inherently remote-visible (you cannot create a PR without
- * pushing), so only commit links require verification.
+ * The validator checks both commit links and PR links because dependency-
+ * sensitive tasks need landed evidence, not just remote-visible evidence.
  */
 
 import { logger } from "../middleware/logger.js";
@@ -12,16 +12,277 @@ import { logger } from "../middleware/logger.js";
 const GITHUB_COMMIT_URL_CAPTURE_RE =
   /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/commit\/([0-9a-fA-F]{7,40})/g;
 
+const GITHUB_PR_URL_CAPTURE_RE =
+  /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)/g;
+
 const GITHUB_PR_LINK_RE =
   /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 
 const VERIFY_TIMEOUT_MS = 10_000;
+
+export interface GitHubRepoRef {
+  owner: string;
+  repo: string;
+}
 
 export interface GitHubCommitRef {
   owner: string;
   repo: string;
   sha: string;
   url: string;
+}
+
+export interface GitHubPullRequestRef {
+  owner: string;
+  repo: string;
+  number: number;
+  url: string;
+}
+
+export interface GitHubEvidenceTarget extends GitHubRepoRef {
+  baseRef: string | null;
+}
+
+type GitHubRepoMetadata = {
+  accessible: boolean;
+  softPass: boolean;
+  defaultBranch: string | null;
+  error?: string;
+};
+
+type CommitVerificationResult = {
+  exists: boolean;
+  softPass: boolean;
+  error?: string;
+};
+
+type CommitLandingResult = {
+  landed: boolean;
+  softPass: boolean;
+  error?: string;
+};
+
+type PullRequestVerificationResult = {
+  merged: boolean;
+  softPass: boolean;
+  error?: string;
+};
+
+function buildGitHubHeaders() {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "Paperclip-Evidence-Validator",
+  };
+  const token = process.env.GITHUB_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function normalizeGitHubRepoSegment(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function sameGitHubRepo(left: GitHubRepoRef, right: GitHubRepoRef) {
+  return (
+    normalizeGitHubRepoSegment(left.owner) === normalizeGitHubRepoSegment(right.owner) &&
+    normalizeGitHubRepoSegment(left.repo) === normalizeGitHubRepoSegment(right.repo)
+  );
+}
+
+function cacheKeyForRepo(ref: GitHubRepoRef) {
+  return `${normalizeGitHubRepoSegment(ref.owner)}/${normalizeGitHubRepoSegment(ref.repo)}`;
+}
+
+function readNonEmptyString(value: unknown) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function fetchGitHub(
+  url: string,
+  headers: Record<string, string>,
+): Promise<
+  | {
+      response: Response;
+      networkError?: never;
+    }
+  | {
+      response?: never;
+      networkError: string;
+    }
+> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+    });
+    return { response };
+  } catch (err) {
+    return {
+      networkError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function readRepoMetadata(
+  ref: GitHubRepoRef,
+  headers: Record<string, string>,
+  cache: Map<string, GitHubRepoMetadata>,
+): Promise<GitHubRepoMetadata> {
+  const key = cacheKeyForRepo(ref);
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const token = process.env.GITHUB_TOKEN;
+  const repoUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}`;
+  const result = await fetchGitHub(repoUrl, headers);
+  if ("networkError" in result) {
+    const metadata: GitHubRepoMetadata = {
+      accessible: false,
+      softPass: true,
+      defaultBranch: null,
+      error: `Network error checking repo visibility: ${result.networkError}`,
+    };
+    logger.warn({ ref, error: result.networkError }, "Failed to check repo visibility, soft-passing");
+    cache.set(key, metadata);
+    return metadata;
+  }
+
+  const repoResponse = result.response;
+  if (repoResponse.ok) {
+    let defaultBranch: string | null = null;
+    try {
+      const payload = (await repoResponse.json()) as { default_branch?: unknown };
+      defaultBranch = readNonEmptyString(payload?.default_branch);
+    } catch {
+      defaultBranch = null;
+    }
+    const metadata: GitHubRepoMetadata = {
+      accessible: true,
+      softPass: false,
+      defaultBranch,
+    };
+    cache.set(key, metadata);
+    return metadata;
+  }
+
+  if (repoResponse.status === 403 || repoResponse.status === 429) {
+    const metadata: GitHubRepoMetadata = {
+      accessible: false,
+      softPass: true,
+      defaultBranch: null,
+      error: "GitHub API rate limited",
+    };
+    logger.warn(
+      { ref, status: repoResponse.status },
+      "GitHub API rate limited while checking repo metadata, soft-passing",
+    );
+    cache.set(key, metadata);
+    return metadata;
+  }
+
+  if (repoResponse.status === 404) {
+    const metadata: GitHubRepoMetadata = token
+      ? {
+          accessible: false,
+          softPass: false,
+          defaultBranch: null,
+          error: `Tracked GitHub repo github.com/${ref.owner}/${ref.repo} was not found`,
+        }
+      : {
+          accessible: false,
+          softPass: true,
+          defaultBranch: null,
+          error: `Cannot verify tracked repo github.com/${ref.owner}/${ref.repo} — set GITHUB_TOKEN for private repo verification`,
+        };
+    cache.set(key, metadata);
+    return metadata;
+  }
+
+  if (repoResponse.status >= 500) {
+    const metadata: GitHubRepoMetadata = {
+      accessible: false,
+      softPass: true,
+      defaultBranch: null,
+      error: `GitHub API returned ${repoResponse.status}`,
+    };
+    logger.warn(
+      { ref, status: repoResponse.status },
+      "GitHub API error while checking repo metadata, soft-passing",
+    );
+    cache.set(key, metadata);
+    return metadata;
+  }
+
+  const metadata: GitHubRepoMetadata = {
+    accessible: false,
+    softPass: false,
+    defaultBranch: null,
+    error: `GitHub API returned ${repoResponse.status} for github.com/${ref.owner}/${ref.repo}`,
+  };
+  cache.set(key, metadata);
+  return metadata;
+}
+
+async function resolveTrackedBaseRef(
+  target: GitHubEvidenceTarget,
+  headers: Record<string, string>,
+  cache: Map<string, GitHubRepoMetadata>,
+): Promise<{ baseRef: string | null; softPass: boolean; error?: string }> {
+  const explicitBaseRef = readNonEmptyString(target.baseRef);
+  if (explicitBaseRef) {
+    return { baseRef: explicitBaseRef, softPass: false };
+  }
+
+  const metadata = await readRepoMetadata(target, headers, cache);
+  if (metadata.accessible) {
+    return {
+      baseRef: metadata.defaultBranch,
+      softPass: false,
+      error:
+        metadata.defaultBranch == null
+          ? `Tracked GitHub repo github.com/${target.owner}/${target.repo} does not report a default branch`
+          : undefined,
+    };
+  }
+
+  return {
+    baseRef: null,
+    softPass: metadata.softPass,
+    error: metadata.error,
+  };
+}
+
+export function parseGitHubRepoIdentityFromRepoUrl(repoUrl: string | null | undefined): GitHubRepoRef | null {
+  const raw = readNonEmptyString(repoUrl);
+  if (!raw) return null;
+
+  const scpMatch = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i.exec(raw);
+  if (scpMatch) {
+    return {
+      owner: scpMatch[1]!,
+      repo: scpMatch[2]!,
+    };
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+      return null;
+    }
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function extractGitHubCommitRefs(body: string): GitHubCommitRef[] {
@@ -32,6 +293,19 @@ export function extractGitHubCommitRefs(body: string): GitHubCommitRef[] {
       repo: match[2],
       sha: match[3],
       url: match[0],
+    });
+  }
+  return refs;
+}
+
+export function extractGitHubPullRequestRefs(body: string): GitHubPullRequestRef[] {
+  const refs: GitHubPullRequestRef[] = [];
+  for (const match of body.matchAll(GITHUB_PR_URL_CAPTURE_RE)) {
+    refs.push({
+      owner: match[1]!,
+      repo: match[2]!,
+      number: Number.parseInt(match[3]!, 10),
+      url: match[0]!,
     });
   }
   return refs;
@@ -50,6 +324,8 @@ export interface VerifyResult {
   unreachableRefs?: GitHubCommitRef[];
   /** true when verification was skipped due to network/auth issues */
   softPass?: boolean;
+  /** coarse failure kind for route-level error shaping */
+  failureKind?: "unreachable" | "not_landed";
 }
 
 /**
@@ -63,35 +339,21 @@ export interface VerifyResult {
  * - 403/429 (rate limit) → soft-pass
  * - network/timeout → soft-pass
  */
-async function verifyCommitRef(ref: GitHubCommitRef): Promise<{
-  exists: boolean;
-  softPass: boolean;
-  error?: string;
-}> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github.v3+json",
-    "User-Agent": "Paperclip-Evidence-Validator",
-  };
+async function verifyCommitRef(
+  ref: GitHubCommitRef,
+  headers: Record<string, string>,
+  repoCache: Map<string, GitHubRepoMetadata>,
+): Promise<CommitVerificationResult> {
   const token = process.env.GITHUB_TOKEN;
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
   const commitUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}/commits/${ref.sha}`;
 
-  let commitResponse: Response;
-  try {
-    commitResponse = await fetch(commitUrl, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ ref, error: msg }, "GitHub commit verification network error, soft-passing");
-    return { exists: false, softPass: true, error: `Network error verifying commit: ${msg}` };
+  const result = await fetchGitHub(commitUrl, headers);
+  if ("networkError" in result) {
+    logger.warn({ ref, error: result.networkError }, "GitHub commit verification network error, soft-passing");
+    return { exists: false, softPass: true, error: `Network error verifying commit: ${result.networkError}` };
   }
 
+  const commitResponse = result.response;
   if (commitResponse.ok) {
     return { exists: true, softPass: false };
   }
@@ -115,38 +377,25 @@ async function verifyCommitRef(ref: GitHubCommitRef): Promise<{
     }
 
     // Without auth, 404 could mean private repo — check repo visibility
-    try {
-      const repoUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}`;
-      const repoResponse = await fetch(repoUrl, {
-        method: "GET",
-        headers,
-        signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
-      });
-
-      if (repoResponse.ok) {
-        // Repo is public → commit definitively doesn't exist
-        return {
-          exists: false,
-          softPass: false,
-          error: `Commit ${ref.sha.slice(0, 7)} not found on github.com/${ref.owner}/${ref.repo} (public repo)`,
-        };
-      }
-
-      // Repo not accessible → could be private, soft-pass
-      logger.warn(
-        { ref, repoStatus: repoResponse.status },
-        "Cannot verify commit on inaccessible repo, soft-passing (set GITHUB_TOKEN for private repos)",
-      );
+    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    if (metadata.accessible) {
       return {
         exists: false,
-        softPass: true,
-        error: `Cannot verify commit on inaccessible repo github.com/${ref.owner}/${ref.repo} — set GITHUB_TOKEN for private repo verification`,
+        softPass: false,
+        error: `Commit ${ref.sha.slice(0, 7)} not found on github.com/${ref.owner}/${ref.repo} (public repo)`,
       };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ ref, error: msg }, "Failed to check repo visibility, soft-passing");
-      return { exists: false, softPass: true, error: `Network error checking repo visibility: ${msg}` };
     }
+    logger.warn(
+      { ref, error: metadata.error },
+      "Cannot verify commit on inaccessible repo, soft-passing (set GITHUB_TOKEN for private repos)",
+    );
+    return {
+      exists: false,
+      softPass: true,
+      error:
+        metadata.error ??
+        `Cannot verify commit on inaccessible repo github.com/${ref.owner}/${ref.repo} — set GITHUB_TOKEN for private repo verification`,
+    };
   }
 
   // Other status codes (422 for malformed sha, 5xx, etc.)
@@ -162,16 +411,235 @@ async function verifyCommitRef(ref: GitHubCommitRef): Promise<{
   };
 }
 
-/**
- * Verify that all GitHub commit evidence in a comment body is reachable
- * on the remote. PR links are accepted without verification since they
- * are inherently remote-visible.
- */
-export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): Promise<VerifyResult> {
-  const commitRefs = extractGitHubCommitRefs(commentBody);
+async function verifyCommitLandedOnBaseRef(
+  ref: GitHubCommitRef,
+  baseRef: string,
+  headers: Record<string, string>,
+  repoCache: Map<string, GitHubRepoMetadata>,
+): Promise<CommitLandingResult> {
+  const compareUrl =
+    `https://api.github.com/repos/${ref.owner}/${ref.repo}/compare/` +
+    `${encodeURIComponent(ref.sha)}...${encodeURIComponent(baseRef)}`;
+  const result = await fetchGitHub(compareUrl, headers);
+  if ("networkError" in result) {
+    logger.warn(
+      { ref, baseRef, error: result.networkError },
+      "GitHub compare failed while checking landed commit evidence, soft-passing",
+    );
+    return {
+      landed: false,
+      softPass: true,
+      error: `Network error verifying landed commit evidence: ${result.networkError}`,
+    };
+  }
 
-  // If the comment only has PR links (no commit refs), it's valid — PRs are inherently remote
-  if (commitRefs.length === 0) {
+  const compareResponse = result.response;
+  if (compareResponse.ok) {
+    let status: string | null = null;
+    try {
+      const payload = (await compareResponse.json()) as { status?: unknown };
+      status = readNonEmptyString(payload?.status);
+    } catch {
+      status = null;
+    }
+
+    if (status === "behind" || status === "identical") {
+      return { landed: true, softPass: false };
+    }
+
+    if (status === "ahead" || status === "diverged") {
+      return {
+        landed: false,
+        softPass: false,
+        error:
+          `Commit ${ref.sha.slice(0, 7)} is not landed on github.com/${ref.owner}/${ref.repo}@${baseRef}. ` +
+          `Paperclip only closes dependency-sensitive code tasks once their evidence is reachable from the tracked base branch.`,
+      };
+    }
+
+    return {
+      landed: false,
+      softPass: false,
+      error: `Could not determine whether commit ${ref.sha.slice(0, 7)} is landed on ${baseRef}`,
+    };
+  }
+
+  if (compareResponse.status === 403 || compareResponse.status === 429) {
+    logger.warn(
+      { ref, baseRef, status: compareResponse.status },
+      "GitHub compare rate limited while checking landed commit evidence, soft-passing",
+    );
+    return { landed: false, softPass: true, error: "GitHub API rate limited" };
+  }
+
+  if (compareResponse.status === 404) {
+    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    if (!metadata.accessible && metadata.softPass) {
+      return {
+        landed: false,
+        softPass: true,
+        error: metadata.error,
+      };
+    }
+    return {
+      landed: false,
+      softPass: false,
+      error: `Tracked base branch ${baseRef} was not found on github.com/${ref.owner}/${ref.repo}`,
+    };
+  }
+
+  if (compareResponse.status >= 500) {
+    logger.warn(
+      { ref, baseRef, status: compareResponse.status },
+      "GitHub compare failed with 5xx while checking landed commit evidence, soft-passing",
+    );
+    return { landed: false, softPass: true, error: `GitHub API returned ${compareResponse.status}` };
+  }
+
+  return {
+    landed: false,
+    softPass: false,
+    error: `GitHub API returned ${compareResponse.status} while checking whether commit ${ref.sha.slice(0, 7)} is landed`,
+  };
+}
+
+async function verifyPullRequestRef(
+  ref: GitHubPullRequestRef,
+  trackedBaseRef: string | null,
+  headers: Record<string, string>,
+  repoCache: Map<string, GitHubRepoMetadata>,
+): Promise<PullRequestVerificationResult> {
+  const prUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
+  const result = await fetchGitHub(prUrl, headers);
+  if ("networkError" in result) {
+    logger.warn(
+      { ref, error: result.networkError },
+      "GitHub pull request verification network error, soft-passing",
+    );
+    return {
+      merged: false,
+      softPass: true,
+      error: `Network error verifying pull request: ${result.networkError}`,
+    };
+  }
+
+  const prResponse = result.response;
+  if (prResponse.ok) {
+    let payload: {
+      merged?: unknown;
+      merged_at?: unknown;
+      draft?: unknown;
+      state?: unknown;
+      base?: { ref?: unknown } | null;
+    };
+    try {
+      payload = (await prResponse.json()) as typeof payload;
+    } catch {
+      return {
+        merged: false,
+        softPass: false,
+        error: `Could not read pull request #${ref.number} metadata from github.com/${ref.owner}/${ref.repo}`,
+      };
+    }
+
+    const merged = payload?.merged === true || readNonEmptyString(payload?.merged_at) !== null;
+    const draft = payload?.draft === true;
+    const state = readNonEmptyString(payload?.state) ?? "unknown";
+    const baseRef = readNonEmptyString(payload?.base?.ref);
+
+    if (!merged) {
+      if (draft || state === "open") {
+        return {
+          merged: false,
+          softPass: false,
+          error: `Pull request #${ref.number} on github.com/${ref.owner}/${ref.repo} is not merged yet`,
+        };
+      }
+      return {
+        merged: false,
+        softPass: false,
+        error: `Pull request #${ref.number} on github.com/${ref.owner}/${ref.repo} was closed without merging`,
+      };
+    }
+
+    if (trackedBaseRef && baseRef && baseRef !== trackedBaseRef) {
+      return {
+        merged: false,
+        softPass: false,
+        error:
+          `Pull request #${ref.number} on github.com/${ref.owner}/${ref.repo} merged into ${baseRef}, ` +
+          `not the tracked base branch ${trackedBaseRef}`,
+      };
+    }
+
+    return { merged: true, softPass: false };
+  }
+
+  if (prResponse.status === 403 || prResponse.status === 429) {
+    logger.warn(
+      { ref, status: prResponse.status },
+      "GitHub PR verification rate limited, soft-passing",
+    );
+    return { merged: false, softPass: true, error: "GitHub API rate limited" };
+  }
+
+  if (prResponse.status === 404) {
+    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    if (!metadata.accessible && metadata.softPass) {
+      return {
+        merged: false,
+        softPass: true,
+        error: metadata.error,
+      };
+    }
+    return {
+      merged: false,
+      softPass: false,
+      error: `Pull request #${ref.number} was not found on github.com/${ref.owner}/${ref.repo}`,
+    };
+  }
+
+  if (prResponse.status >= 500) {
+    logger.warn({ ref, status: prResponse.status }, "GitHub PR API error, soft-passing");
+    return { merged: false, softPass: true, error: `GitHub API returned ${prResponse.status}` };
+  }
+
+  return {
+    merged: false,
+    softPass: false,
+    error: `GitHub API returned ${prResponse.status} for pull request #${ref.number}`,
+  };
+}
+
+/**
+ * Verify that all GitHub evidence in a comment body is reachable on the remote.
+ * When a tracked target is supplied, Paperclip also verifies that the cited
+ * evidence is landed on that tracked base branch.
+ */
+export async function verifyGitHubEvidenceIsRemoteVisible(
+  commentBody: string,
+  options?: { trackedTarget?: GitHubEvidenceTarget | null },
+): Promise<VerifyResult> {
+  const headers = buildGitHubHeaders();
+  const repoCache = new Map<string, GitHubRepoMetadata>();
+  const commitRefs = extractGitHubCommitRefs(commentBody);
+  const prRefs = extractGitHubPullRequestRefs(commentBody);
+  const trackedTarget = options?.trackedTarget ?? null;
+  let trackedBaseRef: string | null = trackedTarget?.baseRef ?? null;
+
+  if (trackedTarget) {
+    const baseRefResult = await resolveTrackedBaseRef(trackedTarget, headers, repoCache);
+    if (baseRefResult.baseRef) trackedBaseRef = baseRefResult.baseRef;
+    else if (!baseRefResult.softPass && baseRefResult.error) {
+      return {
+        valid: false,
+        failureKind: "not_landed",
+        error: baseRefResult.error,
+      };
+    }
+  }
+
+  if (commitRefs.length === 0 && prRefs.length === 0) {
     return { valid: true };
   }
 
@@ -179,12 +647,32 @@ export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): 
   let allSoftPass = true;
 
   for (const ref of commitRefs) {
-    const result = await verifyCommitRef(ref);
+    if (trackedTarget && !sameGitHubRepo(ref, trackedTarget)) {
+      return {
+        valid: false,
+        failureKind: "not_landed",
+        error:
+          `GitHub evidence points at github.com/${ref.owner}/${ref.repo}, ` +
+          `but the tracked repository is github.com/${trackedTarget.owner}/${trackedTarget.repo}`,
+      };
+    }
+
+    const result = await verifyCommitRef(ref, headers, repoCache);
     if (!result.exists && !result.softPass) {
       unreachable.push(ref);
       allSoftPass = false;
     } else if (result.exists) {
       allSoftPass = false;
+      if (trackedBaseRef) {
+        const landed = await verifyCommitLandedOnBaseRef(ref, trackedBaseRef, headers, repoCache);
+        if (!landed.landed && !landed.softPass) {
+          return {
+            valid: false,
+            failureKind: "not_landed",
+            error: landed.error,
+          };
+        }
+      }
     }
   }
 
@@ -194,13 +682,41 @@ export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): 
       .join(", ");
     return {
       valid: false,
+      failureKind: "unreachable",
       error: `Commit evidence is not reachable on the remote: ${details}. Push the commit(s) before marking the issue done.`,
       unreachableRefs: unreachable,
     };
   }
 
+  for (const ref of prRefs) {
+    if (trackedTarget && !sameGitHubRepo(ref, trackedTarget)) {
+      return {
+        valid: false,
+        failureKind: "not_landed",
+        error:
+          `GitHub evidence points at github.com/${ref.owner}/${ref.repo}, ` +
+          `but the tracked repository is github.com/${trackedTarget.owner}/${trackedTarget.repo}`,
+      };
+    }
+
+    const result = await verifyPullRequestRef(ref, trackedBaseRef, headers, repoCache);
+    if (!result.merged && !result.softPass) {
+      return {
+        valid: false,
+        failureKind: "not_landed",
+        error: result.error,
+      };
+    }
+    if (result.merged) {
+      allSoftPass = false;
+    }
+  }
+
   if (allSoftPass) {
-    logger.warn({ commitRefs }, "All commit evidence verifications soft-passed (could not reach GitHub API)");
+    logger.warn(
+      { commitRefs, prRefs },
+      "All GitHub evidence verifications soft-passed (could not reach GitHub API)",
+    );
     return { valid: true, softPass: true };
   }
 
