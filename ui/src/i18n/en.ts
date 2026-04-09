@@ -116,11 +116,107 @@ export const en = {
   "project.linkTeam": "Link Team",
   "project.addMember": "Add Member",
 
+  // Issue detail
+  "issue.properties": "Properties",
+  "issue.showProperties": "Show properties",
+  "issue.copyMarkdown": "Copy issue as markdown",
+  "issue.addDescription": "Add a description...",
+  "issue.deleteAttachment": "Delete attachment",
+  "issue.uploading": "Uploading...",
+  "issue.workProducts": "Work Products",
+  "issue.subIssues": "Sub-Issues",
+  "issue.relations": "Relations",
+  "issue.timeline": "Timeline",
+
+  // Comments
+  "comment.leaveComment": "Leave a comment...",
+  "comment.posting": "Posting...",
+  "comment.attachImage": "Attach image",
+  "comment.copyMarkdown": "Copy as markdown",
+  "comment.interrupt": "Interrupt",
+  "comment.interrupting": "Interrupting...",
+  "comment.board": "Board",
+  "comment.system": "System",
+
+  // Agent detail
+  "agentDetail.status": "Status",
+  "agentDetail.role": "Role",
+  "agentDetail.title": "Title",
+  "agentDetail.adapter": "Adapter",
+  "agentDetail.session": "Session",
+  "agentDetail.lastError": "Last error",
+  "agentDetail.lastHeartbeat": "Last Heartbeat",
+  "agentDetail.reportsTo": "Reports To",
+  "agentDetail.created": "Created",
+  "agentDetail.teams": "Teams",
+  "agentDetail.dashboard": "Dashboard",
+  "agentDetail.instructions": "Instructions",
+  "agentDetail.skills": "Skills",
+  "agentDetail.configuration": "Configuration",
+  "agentDetail.runs": "Runs",
+  "agentDetail.budget": "Budget",
+
+  // Routine detail
+  "routine.title": "Routine title",
+  "routine.assignee": "Assignee",
+  "routine.noAssignee": "No assignee",
+  "routine.project": "Project",
+  "routine.noProject": "No project",
+  "routine.pause": "Pause",
+  "routine.enable": "Enable",
+  "routine.restore": "Restore",
+  "routine.archive": "Archive",
+  "routine.creating": "Creating...",
+  "routine.addInstructions": "Add instructions...",
+  "routine.triggers": "Triggers",
+  "routine.runNow": "Run Now",
+  "routine.schedule": "Schedule",
+
+  // Documents
+  "doc.documentKey": "Document key",
+  "doc.markdownBody": "Markdown body",
+  "doc.optionalTitle": "Optional title",
+  "doc.saving": "Saving...",
+  "doc.deleting": "Deleting...",
+  "doc.restoring": "Restoring...",
+  "doc.createDocument": "Create document",
+  "doc.overwriteRemote": "Overwrite remote",
+  "doc.hideRemote": "Hide remote",
+  "doc.documentActions": "Document actions",
+  "doc.docs": "Docs",
+
+  // Recruiting
+  "recruiting.proposeAgent": "Propose new agent",
+  "recruiting.pendingHires": "Pending Hires",
+  "recruiting.recentlyDecided": "Recently Decided",
+  "recruiting.submitForApproval": "Submit for approval",
+  "recruiting.agentName": "Agent name",
+  "recruiting.agentRole": "Role",
+  "recruiting.whatDoes": "What does this agent do?",
+
+  // Auth
+  "auth.signIn": "Sign In",
+  "auth.signInTitle": "Sign in to Paperclip",
+  "auth.createAccount": "Create your Paperclip account",
+  "auth.needAccount": "Need an account?",
+  "auth.createOne": "Create one",
+  "auth.emailPassword": "Use your email and password to sign in.",
+
+  // Instance settings
+  "instanceSettings.title": "Instance Settings",
+  "instanceSettings.heartbeats": "Heartbeats",
+  "instanceSettings.disableTimer": "Disable Timer Heartbeat",
+  "instanceSettings.enableTimer": "Enable Timer Heartbeat",
+
   // Misc
   "misc.beta": "Beta",
   "misc.filter": "Filter",
   "misc.search": "Search",
   "misc.noData": "No data",
+  "misc.loading": "Loading...",
+  "misc.saving": "Saving...",
+  "misc.noAssignee": "No assignee",
+  "misc.assignee": "Assignee",
 
   // Dialogs
   "dialog.newRoom": "New Room",

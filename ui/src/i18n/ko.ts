@@ -118,11 +118,107 @@ export const ko: Record<TranslationKey, string> = {
   "project.linkTeam": "팀 연결",
   "project.addMember": "멤버 추가",
 
+  // Issue detail
+  "issue.properties": "속성",
+  "issue.showProperties": "속성 보기",
+  "issue.copyMarkdown": "마크다운으로 복사",
+  "issue.addDescription": "설명을 추가하세요...",
+  "issue.deleteAttachment": "첨부파일 삭제",
+  "issue.uploading": "업로드 중...",
+  "issue.workProducts": "작업 산출물",
+  "issue.subIssues": "하위 이슈",
+  "issue.relations": "관계",
+  "issue.timeline": "타임라인",
+
+  // Comments
+  "comment.leaveComment": "코멘트를 남기세요...",
+  "comment.posting": "게시 중...",
+  "comment.attachImage": "이미지 첨부",
+  "comment.copyMarkdown": "마크다운으로 복사",
+  "comment.interrupt": "중단",
+  "comment.interrupting": "중단 중...",
+  "comment.board": "보드",
+  "comment.system": "시스템",
+
+  // Agent detail
+  "agentDetail.status": "상태",
+  "agentDetail.role": "역할",
+  "agentDetail.title": "직함",
+  "agentDetail.adapter": "어댑터",
+  "agentDetail.session": "세션",
+  "agentDetail.lastError": "마지막 오류",
+  "agentDetail.lastHeartbeat": "마지막 하트비트",
+  "agentDetail.reportsTo": "상급자",
+  "agentDetail.created": "생성일",
+  "agentDetail.teams": "팀",
+  "agentDetail.dashboard": "대시보드",
+  "agentDetail.instructions": "지시사항",
+  "agentDetail.skills": "스킬",
+  "agentDetail.configuration": "설정",
+  "agentDetail.runs": "실행",
+  "agentDetail.budget": "예산",
+
+  // Routine detail
+  "routine.title": "루틴 제목",
+  "routine.assignee": "담당자",
+  "routine.noAssignee": "담당자 없음",
+  "routine.project": "프로젝트",
+  "routine.noProject": "프로젝트 없음",
+  "routine.pause": "일시중지",
+  "routine.enable": "활성화",
+  "routine.restore": "복원",
+  "routine.archive": "보관",
+  "routine.creating": "생성 중...",
+  "routine.addInstructions": "지시사항 추가...",
+  "routine.triggers": "트리거",
+  "routine.runNow": "지금 실행",
+  "routine.schedule": "스케줄",
+
+  // Documents
+  "doc.documentKey": "문서 키",
+  "doc.markdownBody": "마크다운 본문",
+  "doc.optionalTitle": "제목 (선택)",
+  "doc.saving": "저장 중...",
+  "doc.deleting": "삭제 중...",
+  "doc.restoring": "복원 중...",
+  "doc.createDocument": "문서 생성",
+  "doc.overwriteRemote": "원격 덮어쓰기",
+  "doc.hideRemote": "원격 숨기기",
+  "doc.documentActions": "문서 작업",
+  "doc.docs": "문서",
+
+  // Recruiting
+  "recruiting.proposeAgent": "에이전트 제안",
+  "recruiting.pendingHires": "대기 중인 채용",
+  "recruiting.recentlyDecided": "최근 결정",
+  "recruiting.submitForApproval": "승인 요청",
+  "recruiting.agentName": "에이전트 이름",
+  "recruiting.agentRole": "역할",
+  "recruiting.whatDoes": "이 에이전트의 역할은?",
+
+  // Auth
+  "auth.signIn": "로그인",
+  "auth.signInTitle": "Paperclip 로그인",
+  "auth.createAccount": "Paperclip 계정 만들기",
+  "auth.needAccount": "계정이 없나요?",
+  "auth.createOne": "만들기",
+  "auth.emailPassword": "이메일과 비밀번호로 로그인하세요.",
+
+  // Instance settings
+  "instanceSettings.title": "인스턴스 설정",
+  "instanceSettings.heartbeats": "하트비트",
+  "instanceSettings.disableTimer": "타이머 하트비트 비활성화",
+  "instanceSettings.enableTimer": "타이머 하트비트 활성화",
+
   // Misc
   "misc.beta": "베타",
   "misc.filter": "필터",
   "misc.search": "검색",
   "misc.noData": "데이터 없음",
+  "misc.loading": "로딩 중...",
+  "misc.saving": "저장 중...",
+  "misc.noAssignee": "담당자 없음",
+  "misc.assignee": "담당자",
 
   // Dialogs
   "dialog.newRoom": "새 룸",
