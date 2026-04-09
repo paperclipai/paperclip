@@ -713,7 +713,7 @@ export function IssuesList({
               </div>
             )}
             <CollapsibleContent>
-              <div className="rounded-lg bg-card shadow-sm overflow-hidden">
+              <div className="rounded-lg bg-card overflow-hidden">
               {(() => {
                 const { roots, childMap } = buildIssueTree(group.items);
 

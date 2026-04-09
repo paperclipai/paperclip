@@ -302,7 +302,7 @@ export function Dashboard() {
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="rounded-lg bg-card p-4"
           />
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -312,7 +312,7 @@ export function Dashboard() {
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                   Recent Activity
                 </h3>
-                <div className="bg-card shadow-sm rounded-lg overflow-hidden">
+                <div className="bg-card rounded-lg overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -333,11 +333,11 @@ export function Dashboard() {
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
-                <div className="bg-card shadow-sm rounded-lg p-4">
+                <div className="bg-card rounded-lg p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </div>
               ) : (
-                <div className="bg-card shadow-sm rounded-lg overflow-hidden">
+                <div className="bg-card rounded-lg overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
