@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { Dirent } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -136,6 +136,19 @@ async function ensureGeminiSkillsInjected(
   }
 }
 
+function resolveCommandForPlatform(command: string): string {
+  if (process.platform === "win32") return command;
+
+  const lower = command.toLowerCase();
+  if (lower.endsWith(".cmd")) {
+    const withoutExt = command.slice(0, -4);
+    // Prefer the extensionless shim if it exists (tests create it on Linux)
+    if (existsSync(withoutExt)) return withoutExt;
+  }
+
+  return command;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
@@ -143,7 +156,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const command = asString(config.command, "gemini");
+  const command = resolveCommandForPlatform(asString(config.command, "gemini"));
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
 
