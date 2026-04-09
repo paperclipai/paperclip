@@ -1736,11 +1736,11 @@ export function IssueChatThread({
     while (el) {
       const style = getComputedStyle(el);
       if (style.overflowY === "auto" || style.overflowY === "scroll") {
-        scrollContainerRef.current = el;
-        const scrollEl = el;
-        scrollEl.addEventListener("scroll", handleScroll, { passive: true });
+        const foundEl = el;
+        scrollContainerRef.current = foundEl;
+        foundEl.addEventListener("scroll", handleScroll, { passive: true });
         return () => {
-          scrollEl.removeEventListener("scroll", handleScroll);
+          foundEl.removeEventListener("scroll", handleScroll);
         };
       }
       el = el.parentElement;
@@ -1750,8 +1750,11 @@ export function IssueChatThread({
   useEffect(() => {
     if (variant !== "embedded") return;
     if (userScrolledUpRef.current) return;
+    // Don't override an intentional hash-based scroll on first render
+    const hash = location.hash;
+    if (!hasScrolledRef.current && (hash.startsWith("#comment-") || hash.startsWith("#activity-") || hash.startsWith("#run-"))) return;
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [variant, messages]);
+  }, [variant, messages, location.hash]);
 
   function handleJumpToLatest() {
     userScrolledUpRef.current = false;
