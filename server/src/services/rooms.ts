@@ -101,30 +101,93 @@ export async function assertRoomParticipant(
 }
 
 /**
- * Parse `@mention` tokens out of a message body. Returns lowercased
+ * Hard caps on parseMentions to bound pathological inputs. A 1 MB body
+ * full of "@a" tokens would otherwise allocate ~300k match objects
+ * before the dedup Set helps. We cap the body slice we scan and break
+ * the match loop once dedup has seen enough distinct tokens.
+ */
+const MENTION_BODY_SCAN_CAP = 16 * 1024; // 16 KB of body is more than enough
+const MENTION_MAX_DISTINCT = 64;
+
+/**
+ * Normalize a string for mention comparison: NFKC (collapses Unicode
+ * compatibility forms, strips most zero-width tricks) + lowercase.
+ * Identical normalization is applied to both the parsed mention token
+ * and the agent name so a Cyrillic "Сyrus" won't match the Latin
+ * leader "Cyrus" (they are genuinely different code points), BUT a
+ * message that uses the leader's real non-ASCII name like `@한국` or
+ * `@Léon` will correctly route to that leader.
+ */
+function normalizeMentionToken(s: string): string {
+  return s.normalize("NFKC").toLowerCase();
+}
+
+/**
+ * Parse `@mention` tokens out of a message body. Returns normalized
  * tokens in first-seen order. Used by the message fanout to decide
  * which leaders in a multi-leader room should receive the event.
  *
  * Rules:
+ *   - Token class is Unicode letters/digits/`_`/`-` (`\p{L}`, `\p{N}`)
+ *     so non-Latin agent names (`한국`, `Léon`, `тест`) work. Reviewed
+ *     as Phase 5.2a P0: ASCII-only routing was a bypass — a leader
+ *     with a non-matchable name was invisible to `@mention` and only
+ *     received broadcast fanout, leaking unaddressed messages.
  *   - `@Hana`, `@hana`, `@Hana.` all yield "hana"
  *   - `user@example.com` does NOT match — we require start-of-string
- *     or whitespace/punctuation before the `@`
- *   - Accepts letters, digits, underscore, hyphen (1-64 chars)
- *   - Deduplicates while preserving first-seen order
+ *     or a non-word/non-`@` character before the `@`
+ *   - `@Cyrus@Hana` yields BOTH tokens (reviewed P1: consecutive
+ *     mentions without whitespace previously dropped the second one)
+ *   - Markdown links `[text](@name)` do NOT match: we strip
+ *     `](...)` URL spans before scanning so attackers can't smuggle a
+ *     wake-up inside an href
+ *   - Hard-caps: only the first 16 KB of the body is scanned; the
+ *     parser stops after 64 distinct tokens
  *
  * Exported for unit testing.
  */
 export function parseMentions(body: string | null | undefined): string[] {
   if (!body) return [];
+  // Truncate pathologically-large bodies before any regex work.
+  let scan = body.length > MENTION_BODY_SCAN_CAP ? body.slice(0, MENTION_BODY_SCAN_CAP) : body;
+  // Strip markdown link URL spans so `[label](@hana)` cannot smuggle
+  // a mention. We replace the URL with empty parens, preserving the
+  // label's own position so `[@hana](url)` still matches `hana`.
+  scan = scan.replace(/\]\([^)]*\)/g, "]()");
+
   const out: string[] = [];
   const seen = new Set<string>();
-  const pattern = /(?:^|[\s.,;:!?()[\]{}"'`])@([A-Za-z0-9_\-]{1,64})/g;
-  for (const match of body.matchAll(pattern)) {
-    const tok = match[1]?.toLowerCase();
-    if (!tok) continue;
-    if (seen.has(tok)) continue;
-    seen.add(tok);
-    out.push(tok);
+  const tokenRe = /^[\p{L}\p{N}_\-]{1,64}/u;
+  const isWordChar = (ch: string): boolean => /[\p{L}\p{N}_]/u.test(ch);
+
+  // Manual scan. Using matchAll with a lookbehind cannot handle
+  // `@Cyrus@Hana` because position 6's preceding char is `s` (a word
+  // character) even though the second `@` is clearly the start of a
+  // new mention. We track the end of the last consumed mention so the
+  // very next character can also be a valid leading boundary.
+  let i = 0;
+  let justConsumedEnd = -1;
+  while (i < scan.length) {
+    const at = scan.indexOf("@", i);
+    if (at < 0) break;
+    const okLeading =
+      at === 0 || at === justConsumedEnd || !isWordChar(scan[at - 1]);
+    if (okLeading) {
+      const rest = scan.slice(at + 1);
+      const m = rest.match(tokenRe);
+      if (m) {
+        const tok = normalizeMentionToken(m[0]);
+        if (tok && !seen.has(tok)) {
+          seen.add(tok);
+          out.push(tok);
+          if (seen.size >= MENTION_MAX_DISTINCT) break;
+        }
+        justConsumedEnd = at + 1 + m[0].length;
+        i = justConsumedEnd;
+        continue;
+      }
+    }
+    i = at + 1;
   }
   return out;
 }
@@ -136,23 +199,35 @@ export function parseMentions(body: string | null | undefined): string[] {
  * double-answer messages not addressed to it.
  *
  * Algorithm:
- *   1. Fetch all participants of the room, joined with agents so we
- *      have each one's `adapterType` and `name`.
+ *   1. Fetch all participants of the room, joined with agents. The
+ *      query ANDs on the room's own `companyId` — defence-in-depth
+ *      against orphaned cross-tenant rows (Phase 5.2a P1 finding).
  *   2. Split participants into two sets:
  *        - leaders  = agents where adapterType === "claude_local"
  *        - others   = agents with any other adapter type (sub-agents)
  *                     Non-agent rows (users) are not routed through the
  *                     agent bus at all — the existing UI/WS path keeps
  *                     delivering to them.
- *   3. Parse @mentions from the message body.
- *   4. If mentions ∩ leader names is non-empty → deliver to THAT
- *      subset of leaders only. Otherwise → deliver to ALL leaders
- *      (original behaviour preserved for unaddressed messages).
- *   5. Always deliver to every non-leader agent in the room. Sub-agents
- *      rarely subscribe to rooms today, but if any do we must not
- *      silently drop their events.
- *   6. NEVER deliver to the sender agent — the self-loop guard lives
+ *   3. **Action target override** — if the message carries an explicit
+ *      `actionTargetAgentId`, only that agent is delivered (regardless
+ *      of mentions or leader/other split).
+ *   4. **Empty body short-circuit** — if the body is empty/whitespace
+ *      and no action target, deliver to NOBODY. There is nothing for
+ *      Claude to read, so waking every leader is pure noise. (Phase
+ *      5.2a P1 finding.)
+ *   5. Otherwise parse @mentions from the body and:
+ *        - If mentions ∩ leader-names is non-empty → deliver to THAT
+ *          subset of leaders only.
+ *        - Otherwise → deliver to ALL leaders (original broadcast
+ *          behaviour for unaddressed messages).
+ *   6. Always deliver to every non-leader agent in the room.
+ *   7. NEVER deliver to the sender agent — the self-loop guard lives
  *      both here (cheap) and in the bridge (defence in depth).
+ *
+ * Returns both the authoritative delivery list (`deliveredLeaderIds`
+ * + `others`) AND the full candidate `allLeaders` / `allOthers` lists
+ * for logging/audit. Callers MUST use the delivered lists for fanout;
+ * the "all" fields are explicitly marked as candidates.
  *
  * Exported for unit testing.
  */
@@ -163,13 +238,43 @@ export async function resolveMessageAudience(
   senderAgentId: string | null | undefined,
   actionTargetAgentId?: string | null,
 ): Promise<{
-  leaders: Array<{ agentId: string; name: string }>;
-  others: Array<{ agentId: string; name: string }>;
+  /** All leaders in the room (minus sender), before any filtering. */
+  allLeaders: Array<{ agentId: string; name: string }>;
+  /** All non-leader agents in the room (minus sender), before filtering. */
+  allOthers: Array<{ agentId: string; name: string }>;
+  /** Parsed mentions from the body (normalized, deduped). */
   mentioned: string[];
+  /** Leaders that should actually receive the event. Use this. */
   deliveredLeaderIds: string[];
+  /** Sub-agents that should actually receive the event. Use this. */
+  deliveredOtherIds: string[];
+  /** True if at least one mention matched a leader. */
   mentionHit: boolean;
+  /** True if an action target override was applied. */
   actionTargeted: boolean;
 }> {
+  // Fetch the room's companyId first so we can AND it into the
+  // participant/agent join below. This closes the defence-in-depth gap
+  // where an orphaned cross-tenant row in room_participants (which
+  // shouldn't exist, but could from a migration bug) would otherwise
+  // leak events to a foreign-company agent.
+  const [roomRow] = await db
+    .select({ companyId: rooms.companyId })
+    .from(rooms)
+    .where(eq(rooms.id, roomId))
+    .limit(1);
+  if (!roomRow) {
+    return {
+      allLeaders: [],
+      allOthers: [],
+      mentioned: [],
+      deliveredLeaderIds: [],
+      deliveredOtherIds: [],
+      mentionHit: false,
+      actionTargeted: false,
+    };
+  }
+
   const rows = await db
     .select({
       agentId: roomParticipants.agentId,
@@ -178,69 +283,92 @@ export async function resolveMessageAudience(
     })
     .from(roomParticipants)
     .innerJoin(agents, eq(roomParticipants.agentId, agents.id))
-    .where(eq(roomParticipants.roomId, roomId));
+    .where(
+      and(
+        eq(roomParticipants.roomId, roomId),
+        eq(roomParticipants.companyId, roomRow.companyId),
+        eq(agents.companyId, roomRow.companyId),
+      ),
+    );
 
-  const leaders: Array<{ agentId: string; name: string }> = [];
-  const others: Array<{ agentId: string; name: string }> = [];
+  const allLeaders: Array<{ agentId: string; name: string }> = [];
+  const allOthers: Array<{ agentId: string; name: string }> = [];
   for (const r of rows) {
     if (!r.agentId) continue;
     if (senderAgentId && r.agentId === senderAgentId) continue; // self-loop guard
     if (r.adapterType === "claude_local") {
-      leaders.push({ agentId: r.agentId, name: r.name });
+      allLeaders.push({ agentId: r.agentId, name: r.name });
     } else {
-      others.push({ agentId: r.agentId, name: r.name });
+      allOthers.push({ agentId: r.agentId, name: r.name });
     }
   }
+
+  // Parse mentions once — used both by the action-targeted return
+  // (logged/audited) and by the main routing path.
+  const mentions = parseMentions(body);
 
   // Action messages with a concrete target agent override mentions.
   // The sender has explicitly said "this task goes to this agent" and
   // every other leader should stay quiet. We still deliver to the
-  // target even if they are a sub-agent (non-leader) — the bus carries
-  // events for all agent kinds; whether the agent is listening is the
-  // subscriber's problem.
+  // target even if they are a sub-agent (non-leader).
   if (actionTargetAgentId && actionTargetAgentId !== senderAgentId) {
-    const targetLeader = leaders.find((l) => l.agentId === actionTargetAgentId);
-    const targetOther = others.find((o) => o.agentId === actionTargetAgentId);
-    const deliveredLeaderIds = targetLeader ? [targetLeader.agentId] : [];
-    // Overwrite `others` to contain only the target if it's a sub-agent,
-    // so the caller's fanout loop delivers there and nowhere else.
-    const actionOthers = targetOther ? [targetOther] : [];
+    const targetLeader = allLeaders.find((l) => l.agentId === actionTargetAgentId);
+    const targetOther = allOthers.find((o) => o.agentId === actionTargetAgentId);
     return {
-      leaders,
-      others: actionOthers,
-      mentioned: [],
-      deliveredLeaderIds,
+      allLeaders,
+      allOthers,
+      mentioned: mentions, // still reported — audit trail preserves intent
+      deliveredLeaderIds: targetLeader ? [targetLeader.agentId] : [],
+      deliveredOtherIds: targetOther ? [targetOther.agentId] : [],
       mentionHit: false,
       actionTargeted: true,
     };
   }
 
-  const mentions = parseMentions(body);
-  // Index leader names lowercased for O(1) lookup; keep ids too since
-  // humans sometimes @<uuid> to disambiguate.
-  const leaderByName = new Map<string, string>();
-  for (const l of leaders) {
-    leaderByName.set(l.name.toLowerCase(), l.agentId);
+  // Empty/whitespace-only body has nothing for Claude to read. Waking
+  // every leader on such a message is pure noise (and a small DoS
+  // vector — an attacker could POST 10k empty messages and flood every
+  // CLI with no-op notifications). Short-circuit.
+  const isBodyEmpty = !body || body.trim().length === 0;
+  if (isBodyEmpty) {
+    return {
+      allLeaders,
+      allOthers,
+      mentioned: [],
+      deliveredLeaderIds: [],
+      deliveredOtherIds: [],
+      mentionHit: false,
+      actionTargeted: false,
+    };
   }
-  const leaderIdSet = new Set(leaders.map((l) => l.agentId));
+
+  // Index leader names (normalized same as parseMentions) for O(1)
+  // lookup. UUIDs are also accepted so humans can @<uuid> to
+  // disambiguate agents with identical names.
+  const leaderByNormalizedName = new Map<string, string>();
+  for (const l of allLeaders) {
+    leaderByNormalizedName.set(normalizeMentionToken(l.name), l.agentId);
+  }
+  const leaderIdSet = new Set(allLeaders.map((l) => l.agentId));
 
   const hitIds = new Set<string>();
   for (const tok of mentions) {
-    const byName = leaderByName.get(tok);
+    const byName = leaderByNormalizedName.get(tok);
     if (byName) hitIds.add(byName);
     else if (leaderIdSet.has(tok)) hitIds.add(tok);
   }
 
   const mentionHit = hitIds.size > 0;
   const deliveredLeaders = mentionHit
-    ? leaders.filter((l) => hitIds.has(l.agentId))
-    : leaders;
+    ? allLeaders.filter((l) => hitIds.has(l.agentId))
+    : allLeaders;
 
   return {
-    leaders,
-    others,
+    allLeaders,
+    allOthers,
     mentioned: mentions,
     deliveredLeaderIds: deliveredLeaders.map((l) => l.agentId),
+    deliveredOtherIds: allOthers.map((o) => o.agentId),
     mentionHit,
     actionTargeted: false,
   };
@@ -283,7 +411,7 @@ async function fanoutMessageEvent(
     );
     const targets = new Set<string>([
       ...audience.deliveredLeaderIds,
-      ...audience.others.map((o) => o.agentId),
+      ...audience.deliveredOtherIds,
     ]);
     for (const agentId of targets) {
       buses.agent.publish(agentId, { type: eventKind, roomId, message });
