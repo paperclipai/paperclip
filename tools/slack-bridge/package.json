@@ -1,0 +1,12 @@
+{
+  "name": "slack-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.9.0"
+  }
+}
