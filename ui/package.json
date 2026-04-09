@@ -26,11 +26,11 @@
     "access": "public"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.12.23",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@lexical/link": "0.35.0",
-    "lexical": "0.35.0",
     "@mdxeditor/editor": "^3.52.4",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -47,6 +47,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "hermes-paperclip-adapter": "^0.2.0",
+    "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.12.0",
     "radix-ui": "^1.4.3",

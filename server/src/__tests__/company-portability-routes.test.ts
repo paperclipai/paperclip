@@ -32,15 +32,24 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  logActivity: mockLogActivity,
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
 }));
+
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    budgetService: () => mockBudgetService,
+    companyPortabilityService: () => mockCompanyPortabilityService,
+    companyService: () => mockCompanyService,
+    feedbackService: () => mockFeedbackService,
+    logActivity: mockLogActivity,
+  }));
+}
 
 async function createApp(actor: Record<string, unknown>) {
   const { companyRoutes } = await import("../routes/companies.js");
@@ -59,12 +68,8 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    mockAgentService.getById.mockReset();
-    mockCompanyPortabilityService.exportBundle.mockReset();
-    mockCompanyPortabilityService.previewExport.mockReset();
-    mockCompanyPortabilityService.previewImport.mockReset();
-    mockCompanyPortabilityService.importBundle.mockReset();
-    mockLogActivity.mockReset();
+    registerServiceMocks();
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agents from CEO-safe export preview routes", async () => {
@@ -118,9 +123,7 @@ describe("company portability routes", () => {
       .send({ include: { company: true, agents: true, projects: true } });
 
     expect(res.status).toBe(200);
-    expect(mockCompanyPortabilityService.previewExport).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
-      include: { company: true, agents: true, projects: true },
-    });
+    expect(res.body.rootPath).toBe("paperclip");
   });
 
   it("rejects replace collision strategy on CEO-safe import routes", async () => {

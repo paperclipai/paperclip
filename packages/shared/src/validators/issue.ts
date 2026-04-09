@@ -1,5 +1,21 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import {
+  ISSUE_EXECUTION_DECISION_OUTCOMES,
+  ISSUE_EXECUTION_POLICY_MODES,
+  ISSUE_EXECUTION_STAGE_TYPES,
+  ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_PRIORITIES,
+  ISSUE_STATUSES,
+} from "../constants.js";
+
+export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
+  "inherit",
+  "shared_workspace",
+  "isolated_workspace",
+  "operator_branch",
+  "reuse_existing",
+  "agent_default",
+] as const;
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -14,7 +30,7 @@ const executionWorkspaceStrategySchema = z
 
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
-    mode: z.enum(["inherit", "shared_workspace", "isolated_workspace", "operator_branch", "reuse_existing", "agent_default"]).optional(),
+    mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
   })
@@ -27,11 +43,83 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
+const issueExecutionStagePrincipalBaseSchema = z.object({
+  type: z.enum(["agent", "user"]),
+  agentId: z.string().uuid().optional().nullable(),
+  userId: z.string().optional().nullable(),
+});
+
+export const issueExecutionStagePrincipalSchema = issueExecutionStagePrincipalBaseSchema
+  .superRefine((value, ctx) => {
+    if (value.type === "agent") {
+      if (!value.agentId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants require agentId", path: ["agentId"] });
+      }
+      if (value.userId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants cannot set userId", path: ["userId"] });
+      }
+      return;
+    }
+    if (!value.userId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants require userId", path: ["userId"] });
+    }
+    if (value.agentId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants cannot set agentId", path: ["agentId"] });
+    }
+  });
+
+export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipalBaseSchema.extend({
+  id: z.string().uuid().optional(),
+}).superRefine((value, ctx) => {
+  if (value.type === "agent") {
+    if (!value.agentId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants require agentId", path: ["agentId"] });
+    }
+    if (value.userId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants cannot set userId", path: ["userId"] });
+    }
+    return;
+  }
+  if (!value.userId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants require userId", path: ["userId"] });
+  }
+  if (value.agentId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants cannot set agentId", path: ["agentId"] });
+  }
+});
+
+export const issueExecutionStageSchema = z.object({
+  id: z.string().uuid().optional(),
+  type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+  approvalsNeeded: z.literal(1).optional().default(1),
+  participants: z.array(issueExecutionStageParticipantSchema).default([]),
+});
+
+export const issueExecutionPolicySchema = z.object({
+  mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
+  commentRequired: z.boolean().optional().default(true),
+  stages: z.array(issueExecutionStageSchema).default([]),
+});
+
+export const issueExecutionStateSchema = z.object({
+  status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
+  currentStageId: z.string().uuid().nullable(),
+  currentStageIndex: z.number().int().nonnegative().nullable(),
+  currentStageType: z.enum(ISSUE_EXECUTION_STAGE_TYPES).nullable(),
+  currentParticipant: issueExecutionStagePrincipalSchema.nullable(),
+  returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
+  completedStageIds: z.array(z.string().uuid()).default([]),
+  lastDecisionId: z.string().uuid().nullable(),
+  lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
+});
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  blockedByIssueIds: z.array(z.string().uuid()).optional(),
+  inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
@@ -41,15 +129,9 @@ export const createIssueSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
-  executionWorkspacePreference: z.enum([
-    "inherit",
-    "shared_workspace",
-    "isolated_workspace",
-    "operator_branch",
-    "reuse_existing",
-    "agent_default",
-  ]).optional().nullable(),
+  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
@@ -66,6 +148,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 
@@ -118,5 +201,8 @@ export const upsertIssueDocumentSchema = z.object({
   baseRevisionId: z.string().uuid().nullable().optional(),
 });
 
+export const restoreIssueDocumentRevisionSchema = z.object({});
+
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
+export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
