@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -79,10 +79,61 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    /**
+     * List approvals in a company, optionally filtered by status and/or
+     * by the team that owns the linked issue. Phase 5.2c — lets the
+     * team-scoped Approvals sub-page show only approvals relevant to
+     * that team.
+     *
+     * When `teamId` is supplied the query joins through `issue_approvals
+     * → issues` to find approvals linked to any issue belonging to the
+     * team. DISTINCT is applied because a single approval can be linked
+     * to multiple issues (potentially across teams). Ordered by
+     * updatedAt desc so newest sign-off requests surface first.
+     */
+    list: (
+      companyId: string,
+      filter: { status?: string; teamId?: string } | string | undefined = {},
+    ) => {
+      // Backwards compat: the old signature was `list(companyId, status?)`.
+      // Accept a plain string as the status shortcut so existing callers
+      // don't need to change.
+      const f =
+        typeof filter === "string"
+          ? { status: filter, teamId: undefined as string | undefined }
+          : filter ?? {};
+
       const conditions = [eq(approvals.companyId, companyId)];
-      if (status) conditions.push(eq(approvals.status, status));
-      return db.select().from(approvals).where(and(...conditions));
+      if (f.status) conditions.push(eq(approvals.status, f.status));
+
+      if (f.teamId) {
+        return db
+          .selectDistinct({
+            id: approvals.id,
+            companyId: approvals.companyId,
+            type: approvals.type,
+            requestedByAgentId: approvals.requestedByAgentId,
+            requestedByUserId: approvals.requestedByUserId,
+            status: approvals.status,
+            payload: approvals.payload,
+            decisionNote: approvals.decisionNote,
+            decidedByUserId: approvals.decidedByUserId,
+            decidedAt: approvals.decidedAt,
+            createdAt: approvals.createdAt,
+            updatedAt: approvals.updatedAt,
+          })
+          .from(approvals)
+          .innerJoin(issueApprovals, eq(issueApprovals.approvalId, approvals.id))
+          .innerJoin(issues, eq(issues.id, issueApprovals.issueId))
+          .where(and(...conditions, eq(issues.teamId, f.teamId)))
+          .orderBy(desc(approvals.updatedAt));
+      }
+
+      return db
+        .select()
+        .from(approvals)
+        .where(and(...conditions))
+        .orderBy(desc(approvals.updatedAt));
     },
 
     getById: (id: string) =>

@@ -38,7 +38,11 @@ export function approvalRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    // Phase 5.2c — optional teamId filter. Joins issue_approvals →
+    // issues → team_id so the team sub-page only shows approvals
+    // linked to that team's issues.
+    const teamId = typeof req.query.teamId === "string" ? req.query.teamId : undefined;
+    const result = await svc.list(companyId, { status, teamId });
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 

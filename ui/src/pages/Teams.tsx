@@ -9,7 +9,10 @@ import { FileText } from "lucide-react";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { routinesApi } from "../api/routines";
+import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
+import { ApprovalCard } from "../components/ApprovalCard";
+import { ShieldCheck } from "lucide-react";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -452,6 +455,159 @@ export function TeamRoutinesPage() {
               />
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Team approvals — sign-off queue filtered to the team. An approval
+ * enters this view when it is linked (via `issue_approvals`) to ANY
+ * issue belonging to this team. A single approval can span multiple
+ * teams; it will show up in each team's queue.
+ *
+ * Reuses `ApprovalCard` + the approve/reject mutations from the global
+ * Approvals page so behaviour stays consistent.
+ */
+export function TeamApprovalsPage() {
+  const { teamId } = useParams<{ teamId: string }>();
+  const { selectedCompanyId } = useCompany();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"pending" | "all">("pending");
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["team-approvals", selectedCompanyId, teamId],
+    queryFn: () => approvalsApi.list(selectedCompanyId!, { teamId }),
+    enabled: !!selectedCompanyId && !!teamId,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (id: string) => approvalsApi.approve(id),
+    onSuccess: (_approval, id) => {
+      setActionError(null);
+      qc.invalidateQueries({ queryKey: ["team-approvals", selectedCompanyId, teamId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      navigate(`/approvals/${id}?resolved=approved`);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (id: string) => approvalsApi.reject(id),
+    onSuccess: () => {
+      setActionError(null);
+      qc.invalidateQueries({ queryKey: ["team-approvals", selectedCompanyId, teamId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    },
+  });
+
+  const filtered = (data ?? [])
+    .filter(
+      (a) =>
+        statusFilter === "all" ||
+        a.status === "pending" ||
+        a.status === "revision_requested",
+    )
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const pendingCount = (data ?? []).filter(
+    (a) => a.status === "pending" || a.status === "revision_requested",
+  ).length;
+
+  if (isLoading && !data) return <PageSkeleton variant="approvals" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5" /> Team Approvals
+          </h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            Sign-off queue for work linked to this team's issues.
+          </p>
+        </div>
+        <div className="flex gap-1 text-xs">
+          <button
+            type="button"
+            onClick={() => setStatusFilter("pending")}
+            className={`px-2 py-1 rounded ${
+              statusFilter === "pending"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50"
+            }`}
+          >
+            Pending{pendingCount > 0 && (
+              <span className="ml-1 rounded-full bg-yellow-500/20 text-yellow-500 px-1.5 py-0.5 text-[10px] font-medium">
+                {pendingCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className={`px-2 py-1 rounded ${
+              statusFilter === "all"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50"
+            }`}
+          >
+            All
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
+          <p className="text-sm text-muted-foreground">
+            {statusFilter === "pending"
+              ? "No pending approvals for this team."
+              : "No approvals for this team yet."}
+          </p>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {filtered.map((approval) => (
+            <ApprovalCard
+              key={approval.id}
+              approval={approval}
+              requesterAgent={
+                approval.requestedByAgentId
+                  ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null
+                  : null
+              }
+              onApprove={() => approveMutation.mutate(approval.id)}
+              onReject={() => rejectMutation.mutate(approval.id)}
+              detailLink={`/approvals/${approval.id}`}
+              isPending={approveMutation.isPending || rejectMutation.isPending}
+              pendingAction={
+                approveMutation.isPending
+                  ? "approve"
+                  : rejectMutation.isPending
+                  ? "reject"
+                  : null
+              }
+            />
+          ))}
         </div>
       )}
     </div>

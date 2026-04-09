@@ -24,6 +24,7 @@ import {
   TeamIssuesPage,
   TeamProjectsPage,
   TeamRoutinesPage,
+  TeamApprovalsPage,
   TeamSettingsPage,
   TeamDocsPage,
   TeamDocDetailPage,
@@ -178,6 +179,7 @@ function boardRoutes() {
       <Route path="teams/:teamId/issues" element={<TeamIssuesPage />} />
       <Route path="teams/:teamId/projects" element={<TeamProjectsPage />} />
       <Route path="teams/:teamId/routines" element={<TeamRoutinesPage />} />
+      <Route path="teams/:teamId/approvals" element={<TeamApprovalsPage />} />
       <Route path="teams/:teamId/docs" element={<TeamDocsPage />} />
       <Route path="teams/:teamId/docs/:key" element={<TeamDocDetailPage />} />
       <Route path="teams/:teamId/settings" element={<TeamSettingsPage />} />
@@ -373,6 +375,7 @@ export function App() {
           <Route path="teams/:teamId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/projects" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/routines" element={<UnprefixedBoardRedirect />} />
+          <Route path="teams/:teamId/approvals" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/docs" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/docs/:key" element={<UnprefixedBoardRedirect />} />
           <Route path="teams/:teamId/settings" element={<UnprefixedBoardRedirect />} />
