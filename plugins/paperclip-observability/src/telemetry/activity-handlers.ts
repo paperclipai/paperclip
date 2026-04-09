@@ -2,13 +2,14 @@
  * Activity event handlers — agent work pattern and tool usage telemetry.
  *
  * Handles activity.logged events to produce:
- *   - Span events as children of active run spans (trace correlation)
+ *   - Child spans for tool invocations (with duration, input summary, result status)
+ *   - Span events for non-tool activities (lightweight, avoids span explosion)
  *   - Activity count metrics by action and entity type
  *   - Structured logs for activity audit trail
- *   - gen_ai.tool.name attributes following OTel semantic conventions
+ *   - gen_ai.tool.name / gen_ai.tool.call.id attributes following OTel semantic conventions
  */
 
-import { SpanKind, trace, context } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, trace, context } from "@opentelemetry/api";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import type { TelemetryContext } from "./router.js";
@@ -27,6 +28,42 @@ function resolveToolName(action: string, entityType: string): string | null {
   if (entityType === "file" || entityType === "api_call") {
     return `${entityType}.${action}`;
   }
+  return null;
+}
+
+/** Determine if this activity represents a tool invocation that warrants a child span. */
+function isToolActivity(action: string, entityType: string): boolean {
+  return resolveToolName(action, entityType) !== null;
+}
+
+/** Extract duration from event details if available (milliseconds). */
+function extractDurationMs(details: Record<string, unknown> | null): number | null {
+  if (!details) return null;
+  const d = details.durationMs ?? details.duration_ms ?? details.duration;
+  if (typeof d === "number" && d >= 0) return d;
+  return null;
+}
+
+/** Extract a compact input summary from event details. */
+function extractInputSummary(details: Record<string, unknown> | null): string | null {
+  if (!details) return null;
+  const input = details.input ?? details.inputSummary ?? details.input_summary ?? details.args;
+  if (typeof input === "string") return input.slice(0, 256);
+  if (input != null) {
+    try {
+      return JSON.stringify(input).slice(0, 256);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Extract result status from event details. */
+function extractResultStatus(details: Record<string, unknown> | null): string | null {
+  if (!details) return null;
+  const s = details.resultStatus ?? details.result_status ?? details.status ?? details.result;
+  if (typeof s === "string") return s;
   return null;
 }
 
@@ -96,7 +133,7 @@ export async function handleActivityMetrics(
 }
 
 // ---------------------------------------------------------------------------
-// activity.logged — traces: span events as children of active run spans
+// activity.logged — traces: child spans for tools, span events for the rest
 // ---------------------------------------------------------------------------
 
 export async function handleActivityTraces(
@@ -111,9 +148,13 @@ export async function handleActivityTraces(
   const entityType = String(p.entityType ?? "unknown");
   const entityId = String(p.entityId ?? "");
   const companyId = String(p.companyId ?? event.companyId ?? "");
+  const details = (p.details as Record<string, unknown> | null) ?? null;
+
+  const toolName = resolveToolName(action, entityType);
+  const isTool = isToolActivity(action, entityType);
 
   // Try to find the active run span for this activity
-  let parentSpan = runId ? ctx.activeRunSpans.get(runId) : undefined;
+  const parentSpan = runId ? ctx.activeRunSpans.get(runId) : undefined;
 
   // Fallback: restore from plugin state if not in memory
   let parentCtx = parentSpan
@@ -140,28 +181,93 @@ export async function handleActivityTraces(
     }
   }
 
-  // If we have a parent run context, add a span event to it for correlation.
-  // Otherwise create a standalone span.
-  if (parentSpan) {
-    // Add as a span event on the active run span (lightweight, preserves trace tree)
-    const toolName = resolveToolName(action, entityType);
+  // -----------------------------------------------------------------------
+  // Tool invocations → proper child spans with duration
+  // -----------------------------------------------------------------------
+  if (isTool && (parentSpan || parentCtx)) {
+    const tracer = agentId
+      ? ctx.getTracerForAgent(agentId, agentName)
+      : ctx.tracer;
+
+    const durationMs = extractDurationMs(details);
+    const inputSummary = extractInputSummary(details);
+    const resultStatus = extractResultStatus(details);
+    const toolCallId = details?.toolCallId ?? details?.tool_call_id ?? entityId;
+
+    const spanAttrs: Record<string, string | number | boolean> = {
+      "gen_ai.tool.name": toolName!,
+      "gen_ai.operation.name": "tool_call",
+      "paperclip.activity.action": action,
+      "paperclip.activity.entity_type": entityType,
+      "paperclip.activity.entity_id": entityId,
+      "paperclip.agent.id": agentId,
+      "paperclip.agent.name": agentName,
+      "paperclip.company.id": companyId,
+      "paperclip.run.id": runId,
+    };
+
+    if (toolCallId) {
+      spanAttrs["gen_ai.tool.call.id"] = String(toolCallId);
+    }
+    if (inputSummary) {
+      spanAttrs["gen_ai.tool.call.input"] = inputSummary;
+    }
+    if (resultStatus) {
+      spanAttrs["gen_ai.tool.call.result_status"] = resultStatus;
+    }
+    if (durationMs !== null) {
+      spanAttrs["paperclip.tool.duration_ms"] = durationMs;
+    }
+
+    // Compute start time: if we have duration, backdate the start
+    const endTimeMs = Date.now();
+    const startTimeMs = durationMs !== null ? endTimeMs - durationMs : endTimeMs;
+
+    const spanContext = parentSpan
+      ? trace.setSpan(context.active(), parentSpan)
+      : parentCtx!;
+
+    const span = tracer.startSpan(
+      toolName!,
+      {
+        kind: SpanKind.INTERNAL,
+        attributes: spanAttrs,
+        startTime: startTimeMs,
+      },
+      spanContext,
+    );
+
+    // Set span status based on result
+    if (resultStatus === "error" || resultStatus === "failed") {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: resultStatus });
+    } else {
+      span.setStatus({ code: SpanStatusCode.OK });
+    }
+
+    span.end(endTimeMs);
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // Non-tool activities with an in-memory parent → lightweight span events
+  // -----------------------------------------------------------------------
+  if (parentSpan && !isTool) {
     parentSpan.addEvent("activity.logged", {
       "paperclip.activity.action": action,
       "paperclip.activity.entity_type": entityType,
       "paperclip.activity.entity_id": entityId,
       "paperclip.agent.id": agentId,
       "paperclip.company.id": companyId,
-      ...(toolName ? { "gen_ai.tool.name": toolName } : {}),
     });
     return;
   }
 
-  // Create a child span when we have restored parent context, or a root span otherwise
+  // -----------------------------------------------------------------------
+  // Fallback: standalone span (no parent context available)
+  // -----------------------------------------------------------------------
   const tracer = agentId
     ? ctx.getTracerForAgent(agentId, agentName)
     : ctx.tracer;
-
-  const toolName = resolveToolName(action, entityType);
 
   const spanAttrs: Record<string, string | number | boolean> = {
     "paperclip.activity.action": action,
@@ -176,18 +282,41 @@ export async function handleActivityTraces(
       : {}),
   };
 
-  const span = parentCtx
-    ? tracer.startSpan(
-        `activity ${action}`,
-        { kind: SpanKind.INTERNAL, attributes: spanAttrs },
-        parentCtx,
-      )
-    : tracer.startSpan(`activity ${action}`, {
-        kind: SpanKind.INTERNAL,
-        attributes: spanAttrs,
-      });
+  // For tool activities without parent context, still create a richer span
+  if (isTool && toolName) {
+    const durationMs = extractDurationMs(details);
+    const inputSummary = extractInputSummary(details);
+    const resultStatus = extractResultStatus(details);
+    const toolCallId = details?.toolCallId ?? details?.tool_call_id ?? entityId;
 
-  span.end();
+    if (toolCallId) spanAttrs["gen_ai.tool.call.id"] = String(toolCallId);
+    if (inputSummary) spanAttrs["gen_ai.tool.call.input"] = inputSummary;
+    if (resultStatus) spanAttrs["gen_ai.tool.call.result_status"] = resultStatus;
+    if (durationMs !== null) spanAttrs["paperclip.tool.duration_ms"] = durationMs;
+
+    const endTimeMs = Date.now();
+    const startTimeMs = durationMs !== null ? endTimeMs - durationMs : endTimeMs;
+
+    const span = tracer.startSpan(toolName, {
+      kind: SpanKind.INTERNAL,
+      attributes: spanAttrs,
+      startTime: startTimeMs,
+    });
+
+    if (resultStatus === "error" || resultStatus === "failed") {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: resultStatus });
+    } else {
+      span.setStatus({ code: SpanStatusCode.OK });
+    }
+
+    span.end(endTimeMs);
+  } else {
+    const span = tracer.startSpan(`activity ${action}`, {
+      kind: SpanKind.INTERNAL,
+      attributes: spanAttrs,
+    });
+    span.end();
+  }
 }
 
 // ---------------------------------------------------------------------------
