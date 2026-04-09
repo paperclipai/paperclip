@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname, extname, basename } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import type {
   MemoryAdapter,
   MemoryAdapterCapabilities,
@@ -186,11 +189,11 @@ function walkFiles(dir: string, maxDepth = 5): string[] {
 let qmdChecked = false;
 let qmdAvailable = false;
 
-function isQmdAvailable(): boolean {
+async function isQmdAvailable(): Promise<boolean> {
   if (qmdChecked) return qmdAvailable;
   qmdChecked = true;
   try {
-    execFileSync("qmd", ["--version"], { stdio: "pipe", timeout: 3000 });
+    await execFileAsync("qmd", ["--version"], { timeout: 3000 });
     qmdAvailable = true;
   } catch {
     qmdAvailable = false;
@@ -216,7 +219,11 @@ export function createParaMemoryAdapter(config: ParaAdapterConfig): MemoryAdapte
   }
 
   function toAbsolutePath(relPath: string): string {
-    return resolve(basePath, relPath);
+    const abs = resolve(basePath, relPath);
+    if (!abs.startsWith(basePath + "/") && abs !== basePath) {
+      throw new Error(`Path traversal detected: ${relPath}`);
+    }
+    return abs;
   }
 
   function toRelativePath(absPath: string): string {
@@ -346,15 +353,15 @@ export function createParaMemoryAdapter(config: ParaAdapterConfig): MemoryAdapte
     const snippets: MemorySnippet[] = [];
 
     // Try qmd first for semantic search
-    if (isQmdAvailable()) {
+    if (await isQmdAvailable()) {
       try {
         const subcommand = req.intent === "browse" ? "vsearch" : "query";
-        const raw = execFileSync(
+        const { stdout: raw } = await execFileAsync(
           "qmd",
           [subcommand, req.query, "--limit", String(topK), "--json"],
-          { cwd: basePath, stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 },
+          { cwd: basePath, timeout: 10_000 },
         );
-        const results = JSON.parse(raw.toString("utf8"));
+        const results = JSON.parse(raw);
         if (Array.isArray(results)) {
           for (const r of results.slice(0, topK)) {
             const filePath = r.file ?? r.path ?? "";

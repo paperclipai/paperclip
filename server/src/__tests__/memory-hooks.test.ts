@@ -271,7 +271,7 @@ describe("memoryHooksService", () => {
       expect(adapter.query).not.toHaveBeenCalled();
     });
 
-    it("queries adapter with agent_preamble intent and returns snippets", async () => {
+    it("queries adapter with task summary and returns snippets", async () => {
       const adapter = createFakeAdapter("mempalace");
       mockGetMemoryAdapter.mockReturnValue(adapter);
 
