@@ -8,7 +8,11 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- `ANTHROPIC_API_KEY` set in the environment or agent config
+- One of:
+  - Claude Code logged in via OAuth (`claude login`) for subscription-based auth (recommended), **or**
+  - `ANTHROPIC_API_KEY` set in the environment or agent config for API-key auth
+
+> **Note:** If `ANTHROPIC_API_KEY` is present in the server environment, Claude Code will use API-key auth even if OAuth credentials exist. To use subscription auth, ensure the key is not set in the process environment. A common gotcha is process managers like PM2 — they capture environment variables at daemon startup and pass them to child processes indefinitely. If you remove the key from your shell but the PM2 daemon was started while it was set, restart the daemon (`pm2 kill && pm2 start ...`) to clear the stale variable.
 
 ## Configuration Fields
 

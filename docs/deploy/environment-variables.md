@@ -50,5 +50,5 @@ These are set automatically by the server when invoking agents:
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter). Optional if Claude Code is logged in via OAuth subscription credentials. When set, overrides subscription auth. |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
