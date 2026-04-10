@@ -115,6 +115,26 @@ describe("external MCP config", () => {
     ])).toBe(merged);
   });
 
+  it("renders Codex header tables for authenticated MCP servers", () => {
+    const merged = mergeCodexConfigToml("", [
+      {
+        name: "rube",
+        type: "http",
+        url: "https://backend.composio.dev/tool_router/trs_test/mcp",
+        headers: {
+          "x-api-key": "ak_test",
+          Authorization: "Bearer test",
+        },
+      },
+    ]);
+
+    expect(merged).toContain('[mcp_servers.rube]');
+    expect(merged).toContain('url = "https://backend.composio.dev/tool_router/trs_test/mcp"');
+    expect(merged).toContain('[mcp_servers.rube.headers]');
+    expect(merged).toContain('"Authorization" = "Bearer test"');
+    expect(merged).toContain('"x-api-key" = "ak_test"');
+  });
+
   it("writes shared Claude and Codex config files during startup sync", async () => {
     const root = await makeTempDir("paperclip-external-mcp-");
     cleanupDirs.add(root);

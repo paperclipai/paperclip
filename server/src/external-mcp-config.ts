@@ -123,12 +123,19 @@ export function mergeClaudeMcpServersJson(
 }
 
 function buildCodexHttpServerBlock(server: ExternalMcpServer): string {
-  return [
+  const lines = [
     `[mcp_servers.${server.name}]`,
     `type = "${escapeTomlString(server.type)}"`,
     `url = "${escapeTomlString(server.url)}"`,
-    "",
-  ].join("\n");
+  ];
+  if (server.headers && Object.keys(server.headers).length > 0) {
+    lines.push(`[mcp_servers.${server.name}.headers]`);
+    for (const [key, value] of Object.entries(server.headers).sort(([left], [right]) => left.localeCompare(right))) {
+      lines.push(`"${escapeTomlString(key)}" = "${escapeTomlString(value)}"`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function mergeCodexConfigToml(
