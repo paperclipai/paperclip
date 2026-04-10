@@ -2021,6 +2021,17 @@ export function heartbeatService(db: Db) {
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
 
+    // Respect wakeOnAutomation: skip comment retry if the agent opted out of automation wakes (#1241)
+    const agentHeartbeat = parseObject(parseObject(agent.runtimeConfig).heartbeat);
+    const wakeOnAutomation = asBoolean(agentHeartbeat.wakeOnAutomation, true);
+    if (!wakeOnAutomation) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
     if (queuedRun) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
