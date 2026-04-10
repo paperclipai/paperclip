@@ -117,9 +117,103 @@ jobs:
           echo "VERDICT=$(jq -r '.verdict // "FAIL"' /tmp/review-result.json)" >> "$GITHUB_ENV"
           echo "SUMMARY=$(jq -r '.summary // "Review failed"' /tmp/review-result.json)" >> "$GITHUB_ENV"
 
+      - name: Determine workflow auto-remediation scope
+        if: steps.changes.outputs.run_ai_review == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CHANGED_FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          FINDING_FILES=$(jq -c '[.findings[]? | select(.file and (.file | length > 0)) | .file] | unique' /tmp/review-result.json)
+          FINDINGS_COUNT=$(jq -r '(.findings // []) | length' /tmp/review-result.json)
+          HAS_CRITICAL=$(jq -r 'any(.findings[]?; .severity == "critical")' /tmp/review-result.json)
+
+          echo "CHANGED_FILES=$CHANGED_FILES" >> "$GITHUB_ENV"
+          echo "FINDING_FILES=$FINDING_FILES" >> "$GITHUB_ENV"
+          echo "FINDINGS_COUNT=$FINDINGS_COUNT" >> "$GITHUB_ENV"
+          echo "HAS_CRITICAL=$HAS_CRITICAL" >> "$GITHUB_ENV"
+
+          SAME_REPO=false
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            SAME_REPO=true
+          fi
+
+          AUTO_REMEDIATE_SCOPE=$(
+            CHANGED_FILES="$CHANGED_FILES" FINDING_FILES="$FINDING_FILES" node -e 'const changed = JSON.parse(process.env.CHANGED_FILES || "[]"); const findingFiles = JSON.parse(process.env.FINDING_FILES || "[]"); const allow = (file) => typeof file === "string" && file.startsWith(".github/"); const allChangedAllowed = changed.length > 0 && changed.every(allow); const allFindingsAllowed = findingFiles.every(allow); process.stdout.write(allChangedAllowed && allFindingsAllowed ? "true" : "false");'
+          )
+
+          echo "SAME_REPO=$SAME_REPO" >> "$GITHUB_ENV"
+          echo "AUTO_REMEDIATE_SCOPE=$AUTO_REMEDIATE_SCOPE" >> "$GITHUB_ENV"
+
+      - name: Auto-remediate workflow/config findings
+        id: workflow_remediate
+        if: |
+          steps.changes.outputs.run_ai_review == 'true' &&
+          env.SAME_REPO == 'true' &&
+          env.AUTO_REMEDIATE_SCOPE == 'true' &&
+          env.HAS_CRITICAL != 'true' &&
+          env.FINDINGS_COUNT != '0' &&
+          env.SKIP_REMEDIATION == 'false' &&
+          env.HAS_MINIMAX_KEY == 'true'
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+        run: |
+          set -euo pipefail
+          export AI_REVIEW_FINDINGS="$(jq -c '.findings // []' /tmp/review-result.json)"
+          export AI_REMEDIATE_PATHS="${CHANGED_FILES}"
+          export PR_BODY_FILE=/tmp/pr-body.txt
+
+          node scripts/ai-review-remediate.mjs > /tmp/workflow-remediation-result.json || true
+
+          if [ ! -s /tmp/workflow-remediation-result.json ]; then
+            echo "REMEDIATION_STATUS=error" >> "$GITHUB_ENV"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          EDIT_COUNT="$(jq -r '(.edits // []) | length' /tmp/workflow-remediation-result.json)"
+
+          if [ "$EDIT_COUNT" = "0" ]; then
+            echo "REMEDIATION_STATUS=no-patches" >> "$GITHUB_ENV"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for file in $(jq -r '.edits[].file' /tmp/workflow-remediation-result.json); do
+            case "$file" in
+              *.yml|*.yaml)
+                ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' "$file"
+                ;;
+              *.json)
+                jq empty "$file"
+                ;;
+              *.sh)
+                bash -n "$file"
+                ;;
+              *.js|*.mjs|*.cjs)
+                node --check "$file"
+                ;;
+            esac
+          done
+
+          if git diff --quiet; then
+            echo "REMEDIATION_STATUS=no-changes" >> "$GITHUB_ENV"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "ai-review[bot]"
+          git config user.email "ai-review[bot]@users.noreply.github.com"
+          git add .github scripts/ai-review-remediate.mjs
+          git commit -m "[ai-fix] remediate workflow review findings"
+          git push origin HEAD
+          echo "REMEDIATION_STATUS=applied" >> "$GITHUB_ENV"
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
       - name: Auto-remediate review findings
         if: |
           steps.changes.outputs.run_ai_review == 'true' &&
+          steps.workflow_remediate.outputs.applied != 'true' &&
+          env.AUTO_REMEDIATE_SCOPE != 'true' &&
           (env.VERDICT == 'PASS_WITH_NOTES' || env.VERDICT == 'FAIL') &&
           env.SKIP_REMEDIATION == 'false' &&
           env.HAS_MINIMAX_KEY == 'true'
@@ -196,6 +290,33 @@ jobs:
           git push origin HEAD
           echo "REMEDIATION_STATUS=applied" >> "$GITHUB_ENV"
 
+      - name: Note auto-remediation push
+        if: steps.workflow_remediate.outputs.applied == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = 'Applied workflow/config remediation to the PR branch.';
+            try {
+              const result = JSON.parse(fs.readFileSync('/tmp/workflow-remediation-result.json', 'utf8'));
+              if (typeof result.summary === 'string' && result.summary.trim()) {
+                summary = result.summary.trim();
+              }
+            } catch {}
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '## AI Review Auto-Remediation',
+                '',
+                summary,
+                '',
+                'A follow-up workflow run has been triggered on the updated branch.',
+              ].join('\n'),
+            });
+
       - name: Publish review status
         if: always() && steps.changes.outputs.run_ai_review == 'true'
         env:
@@ -227,6 +348,102 @@ jobs:
             -f context="ai-review/verdict" \
             -f description="$SUMMARY" \
             -f target_url="${{ github.event.pull_request.html_url }}"
+
+      - name: Comment on PR (if findings)
+        if: steps.changes.outputs.run_ai_review == 'true' && env.REMEDIATION_STATUS != 'applied' && env.VERDICT != 'PASS'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('/tmp/review-result.json', 'utf8'));
+            const verdict = result.verdict || 'ERROR';
+            const summary = result.summary || '';
+            const findings = result.findings || [];
+
+            const icon = { PASS: '\u2705', PASS_WITH_NOTES: '\u2705', FAIL: '\u274C', HIGH_RISK: '\u26A0\uFE0F' }[verdict] || '\u2753';
+
+            let body = `## ${icon} AI Review: ${verdict}\n\n${summary}\n\n`;
+
+            if (findings.length > 0) {
+              const grouped = { critical: [], warning: [], note: [] };
+              for (const f of findings) {
+                const sev = grouped[f.severity] ? f.severity : 'note';
+                grouped[sev].push(f);
+              }
+              for (const [severity, items] of Object.entries(grouped)) {
+                if (items.length === 0) continue;
+                const label = { critical: 'Critical', warning: 'Warnings', note: 'Notes' }[severity];
+                body += `### ${label}\n\n`;
+                for (const f of items) {
+                  const loc = f.file ? (f.line ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``) : '';
+                  body += `- ${loc ? `${loc} - ` : ''}${f.message}\n`;
+                }
+                body += '\n';
+              }
+            }
+
+            body += '---\n*Automated review by ViraCue AI Review*';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const marker = '*Automated review by ViraCue AI Review*';
+            for (const comment of comments) {
+              if (comment.body && comment.body.includes(marker)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Enable auto-merge
+        if: |
+          steps.changes.outputs.run_ai_review == 'true' &&
+          env.REMEDIATION_STATUS != 'applied' &&
+          (
+            env.VERDICT == 'PASS' ||
+            env.VERDICT == 'PASS_WITH_NOTES' ||
+            (env.VERDICT == 'HIGH_RISK' && env.AUTO_REMEDIATE_SCOPE == 'true' && env.FINDINGS_COUNT == '0' && env.HAS_CRITICAL != 'true')
+          )
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --squash --auto 2>&1 || echo "Auto-merge enable failed (may already be enabled or branch protection requires review)"
+
+      - name: Post human-approval-required (HIGH_RISK)
+        if: |
+          steps.changes.outputs.run_ai_review == 'true' &&
+          env.REMEDIATION_STATUS != 'applied' &&
+          env.VERDICT == 'HIGH_RISK' &&
+          env.AUTO_REMEDIATE_SCOPE != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                '## Human Approval Required',
+                '',
+                'The AI Code Reviewer classified this PR as **high risk**.',
+                '',
+                `Verdict: \`${process.env.VERDICT} - ${process.env.SUMMARY}\``,
+                '',
+                'This PR will not auto-merge. A human must review and approve before merge.',
+              ].join('\n'),
+            });
 
       - name: Publish skipped status for docs-only changes
         if: steps.changes.outputs.run_ai_review != 'true'

@@ -26,33 +26,26 @@ jobs:
 
     steps:
       - name: Evaluate merge conditions
+        id: evaluate
         uses: actions/github-script@v7
         with:
           script: |
-            // Resolve SHA from either event type
             const sha = context.eventName === 'status'
               ? context.payload.commit.sha
               : context.payload.check_run.head_sha;
 
-            console.log(`Triggered by ${context.eventName} event for SHA ${sha}`);
-
-            // Find associated open PRs
             const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
               commit_sha: sha,
             });
 
-            const openPRs = prs.filter(pr => pr.state === 'open');
-            if (openPRs.length === 0) {
-              console.log('No open PR found for this commit, skipping.');
+            const pr = prs.find((candidate) => candidate.state === 'open');
+            if (!pr) {
+              console.log('No open PR found for this commit.');
               return;
             }
 
-            const pr = openPRs[0];
-            console.log(`PR #${pr.number}: ${pr.title}`);
-
-            // Collect all statuses for this commit
             const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -64,35 +57,28 @@ jobs:
               statusMap[s.context] = s.state;
             }
 
-            // Check ai-review/verdict — must be success with PASS or HIGH_RISK
             const verdictStatus = combined.statuses.find(s => s.context === 'ai-review/verdict');
             if (!verdictStatus || verdictStatus.state !== 'success') {
-              console.log('ai-review/verdict not yet successful, skipping.');
+              console.log('ai-review/verdict not yet successful.');
               return;
             }
 
             const description = verdictStatus.description || '';
-            console.log(`ai-review/verdict: state=${verdictStatus.state}, description="${description}"`);
-
-            // --- HIGH_RISK: block merge, require human review ---
             if (description.includes('HIGH_RISK') || description.includes('HUMAN_REQUIRED')) {
-              console.log('Verdict is HIGH_RISK — auto-merge blocked, human review required.');
+              console.log('AI review requires manual merge.');
               return;
             }
 
-            // --- FAIL: blockers found ---
             if (description.includes('FAIL')) {
-              console.log('Verdict is FAIL — auto-merge blocked until issues are resolved.');
+              console.log('AI review failed.');
               return;
             }
 
-            // --- PASS / PASS_WITH_NOTES / HIGH_RISK: check remaining conditions ---
-            if (!description.includes('PASS') && !description.includes('HIGH_RISK')) {
-              console.log(`Unexpected verdict "${description}", skipping.`);
+            if (!description.includes('PASS')) {
+              console.log(`Unexpected ai-review/verdict description: ${description}`);
               return;
             }
 
-            // Also check GitHub Actions check runs (verify, policy are check runs)
             const { data: checkRuns } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -105,66 +91,52 @@ jobs:
               }
             }
 
-            // Required CI checks
             const requiredChecks = ['verify', 'policy'];
-            const missing = requiredChecks.filter(c => statusMap[c] !== 'success');
-
+            const missing = requiredChecks.filter((check) => statusMap[check] !== 'success');
             if (missing.length > 0) {
-              console.log(`CI checks not yet passing: ${missing.join(', ')}. Auto-merge deferred.`);
+              console.log(`Missing required checks: ${missing.join(', ')}`);
               return;
             }
 
-            // All conditions met — attempt merge (with branch update if behind)
-            console.log('All merge conditions satisfied. Merging...');
-            try {
-              await github.rest.pulls.merge({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number,
-                merge_method: 'squash',
-                commit_title: `${pr.title} (#${pr.number})`,
-              });
-              console.log(`PR #${pr.number} merged successfully.`);
-            } catch (error) {
-              // If merge failed because branch is behind, update it and let
-              // the next CI cycle re-trigger this workflow via a new ai-review status.
-              if (error.message && error.message.includes('not in a mergeable state')) {
-                console.log('PR is behind base branch. Attempting branch update...');
-                try {
-                  await github.rest.pulls.updateBranch({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: pr.number,
-                  });
-                  console.log(`PR #${pr.number} branch updated. Will re-evaluate after CI.`);
-                } catch (updateError) {
-                  console.log(`Branch update failed: ${updateError.message}`);
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: pr.number,
-                    body: [
-                      '## Merge Automation',
-                      '',
-                      `Auto-merge failed and branch update failed: \`${updateError.message}\``,
-                      '',
-                      'This likely means the branch has merge conflicts. Manual rebase required.',
-                    ].join('\n'),
-                  });
-                }
-              } else {
-                console.log(`Merge failed: ${error.message}`);
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  body: [
-                    '## Merge Automation',
-                    '',
-                    `Auto-merge conditions were met but merge failed: \`${error.message}\``,
-                    '',
-                    'Manual merge may be required.',
-                  ].join('\n'),
-                });
-              }
+            const { data: fullPr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('node_id', fullPr.node_id);
+            core.setOutput('mergeable_state', String(fullPr.mergeable_state || 'unknown'));
+            core.setOutput('has_auto_merge', fullPr.auto_merge ? 'true' : 'false');
+
+      - name: Update behind branch
+        if: steps.evaluate.outputs.pr_number != '' && steps.evaluate.outputs.mergeable_state == 'behind'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.updateBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number('${{ steps.evaluate.outputs.pr_number }}'),
+            });
+            console.log('Requested branch update for behind PR.');
+
+      - name: Enable auto-merge
+        if: steps.evaluate.outputs.pr_number != '' && steps.evaluate.outputs.mergeable_state != 'behind' && steps.evaluate.outputs.mergeable_state != 'dirty' && steps.evaluate.outputs.mergeable_state != 'blocked' && steps.evaluate.outputs.mergeable_state != 'unknown' && steps.evaluate.outputs.has_auto_merge != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNodeId = '${{ steps.evaluate.outputs.node_id }}';
+            if (!prNodeId) {
+              core.setFailed('Missing pull request node id.');
+              return;
             }
+            await github.graphql(
+              `mutation EnableAutoMerge($pullRequestId: ID!) {
+                enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }) {
+                  pullRequest { number }
+                }
+              }`,
+              { pullRequestId: prNodeId },
+            );
+            console.log(`Enabled auto-merge for PR #${{ steps.evaluate.outputs.pr_number }}`);
