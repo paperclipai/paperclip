@@ -43,7 +43,7 @@ function buildDistillationMarkdown(input: {
   const metadata = input.event.metadata ?? {};
   const approvedBody = extractApprovedContent(input.rawArtifactContent);
   const summary = firstParagraph(approvedBody)
-    ?? `Approved Paperclip snapshot for ${typeof metadata.issueIdentifier === "string" ? metadata.issueIdentifier : input.event.sourceId}.`;
+    ?? `Approved Paperclip document snapshot for ${typeof metadata.issueIdentifier === "string" ? metadata.issueIdentifier : input.event.sourceId}.`;
   const bulletLines = extractBullets(approvedBody).slice(0, 5);
   const actionItems = extractActionItems(approvedBody).slice(0, 5);
   const title = typeof metadata.issueTitle === "string" ? metadata.issueTitle : input.event.sourceId;
@@ -52,10 +52,10 @@ function buildDistillationMarkdown(input: {
 
   const keyDecisions = bulletLines.length > 0
     ? bulletLines
-    : ["See the raw approved artifact for the exact frozen content."];
+    : ["See the raw approved document snapshot for the exact frozen content."];
   const actionableInsights = actionItems.length > 0
     ? actionItems
-    : ["Review the approved snapshot and decide whether to merge it into a canonical research page manually."];
+    : ["Review the approved document snapshot and decide whether to merge it into a canonical research page manually."];
 
   return [
     "---",
@@ -78,8 +78,8 @@ function buildDistillationMarkdown(input: {
     ...actionableInsights.map((line) => `- ${line}`),
     "",
     "## Relevance to Transcendiverse Research",
-    `- This note was derived from an approved Paperclip artifact for ${typeof metadata.issueIdentifier === "string" ? metadata.issueIdentifier : input.event.sourceId}.`,
-    "- Treat the linked raw artifact as the frozen source of truth for future synthesis work.",
+    `- This note was derived from an approved Paperclip document snapshot for ${typeof metadata.issueIdentifier === "string" ? metadata.issueIdentifier : input.event.sourceId}.`,
+    "- Treat the linked raw document snapshot as the frozen source of truth for future synthesis work.",
     "",
     "## Follow-up Links",
     `- [[${input.rawWikiLink}]]`,

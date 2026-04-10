@@ -12,7 +12,7 @@ const HANDLER_ID = "transcendiverse-vault-sync";
 
 function shouldHandleArtifact(event: ArtifactCreatedEvent) {
   if (event.status !== "approved") return false;
-  return event.sourceType === "issue_document" || event.sourceType === "issue_legacy_plan";
+  return event.sourceType === "issue_document";
 }
 
 export function registerTranscendiverseApprovedArtifactHandler(_db: Db) {
@@ -20,13 +20,13 @@ export function registerTranscendiverseApprovedArtifactHandler(_db: Db) {
 
   if (!config.enabled) {
     removeArtifactCreatedHandler(HANDLER_ID);
-    logger.info("Transcendiverse approved artifact sync disabled");
+    logger.info("Transcendiverse approved document vault sync disabled");
     return;
   }
 
   if (!config.vaultRoot) {
     removeArtifactCreatedHandler(HANDLER_ID);
-    logger.warn("Transcendiverse approved artifact sync enabled but vault root is missing");
+    logger.warn("Transcendiverse approved document vault sync enabled but vault root is missing");
     return;
   }
 
@@ -57,5 +57,5 @@ export function registerTranscendiverseApprovedArtifactHandler(_db: Db) {
     }
   });
 
-  logger.info({ vaultRoot: config.vaultRoot }, "Registered Transcendiverse approved artifact sync handler");
+  logger.info({ vaultRoot: config.vaultRoot }, "Registered Transcendiverse approved document vault sync handler");
 }

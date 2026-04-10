@@ -10,7 +10,7 @@ import { registerTranscendiverseApprovedArtifactHandler } from "../extensions/tr
 
 const ORIGINAL_ENV = { ...process.env };
 
-describe("Transcendiverse approved artifact sync", () => {
+describe("Transcendiverse approved document vault sync", () => {
   let tempRoot = "";
   let vaultRoot = "";
   let sourceArtifactPath = "";
@@ -86,7 +86,7 @@ describe("Transcendiverse approved artifact sync", () => {
     };
   }
 
-  it("writes both the raw approved artifact and the distilled companion note into the vault", async () => {
+  it("writes both the raw approved document snapshot and the distilled companion note into the vault", async () => {
     registerTranscendiverseApprovedArtifactHandler({} as never);
 
     const event = createEvent();
@@ -105,12 +105,12 @@ describe("Transcendiverse approved artifact sync", () => {
     expect(distilled).toContain("[[wiki/sources/internal/paperclip/2026/tra-6-review-approved-v001]]");
   });
 
-  it("ignores unsupported artifact source types", async () => {
+  it("ignores non-document artifact source types", async () => {
     registerTranscendiverseApprovedArtifactHandler({} as never);
 
     const event = createEvent({
-      sourceType: "approval_snapshot",
-      sourceId: "approval-1",
+      sourceType: "issue_legacy_plan",
+      sourceId: "issue-1",
     });
 
     await emitArtifactCreated(event);

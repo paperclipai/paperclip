@@ -14,11 +14,18 @@ Generic additions live in Paperclip core and stay domain-neutral:
 Core behavior:
 
 - detect approval-complete transitions from existing approval and issue execution paths
-- freeze issue documents into immutable markdown artifacts
-- version approved artifacts by source and content hash
+- freeze approved issue documents into immutable markdown artifacts
+- version approved document artifacts by source and content hash
 - persist generic artifact metadata
 - emit a generic `artifact.created` event
 - expose approved artifacts through read/list API routes
+
+Conceptual model:
+
+- issue/task = workflow container
+- document = durable knowledge candidate
+- comment = review and discussion metadata
+- vault sync = approved document snapshot only
 
 ## Transcendiverse Extension
 
@@ -27,8 +34,8 @@ All vault behavior is isolated under `server/src/extensions/transcendiverse/`.
 That module is responsible for:
 
 - loading extension config
-- mapping approved artifacts into vault paths
-- writing raw approved artifacts into the vault
+- mapping approved document snapshots into vault paths
+- writing raw approved document snapshots into the vault
 - writing a distilled companion markdown note
 - intentionally avoiding canonical page mutation in v1
 
@@ -66,7 +73,7 @@ Environment overrides are also supported:
 
 - Keep new approval consumers attached to `artifact.created` instead of editing approval routes directly.
 - Keep mission-specific export logic under `server/src/extensions/` so upstream approval, issue, and document changes are easier to rebase.
-- The current core snapshot source coverage is `issue_document` first, with `issue_legacy_plan` fallback when no issue documents exist.
+- The current approved snapshot flow is document-only: if an issue has no issue documents, no vault-exportable artifact is produced.
 - Artifact dedupe is content-based. Re-approving the same frozen revision noops; approving changed content creates the next version.
 - Canonical vault page mutation is intentionally out of scope for v1.
 

@@ -2,9 +2,16 @@
 
 ## Goal
 
-Freeze only approved Paperclip review artifacts and sync those immutable outputs into the Transcendiverse Research vault.
+Freeze only approved Paperclip document snapshots and sync those immutable outputs into the Transcendiverse Research vault.
 
-This keeps live review documents editable inside Paperclip while ensuring the vault only ingests approved snapshots.
+This keeps live review documents editable inside Paperclip while ensuring the vault only ingests approved document snapshots.
+
+## Unit Model
+
+- Issue or task: workflow container for planning, assignment, approval routing, and execution state.
+- Document: durable knowledge candidate that can be revised, reviewed, approved, frozen, and exported.
+- Comment: review and discussion metadata that can inform decisions but is not itself a vault-sync unit.
+- Vault sync: approved document snapshot only.
 
 ## Flow
 
@@ -13,7 +20,7 @@ This keeps live review documents editable inside Paperclip while ensuring the va
 3. Paperclip stores the snapshot as an immutable artifact under the Paperclip instance root.
 4. Paperclip emits `artifact.created`.
 5. The Transcendiverse extension reads the artifact and writes:
-   - a raw approved artifact into the vault import area
+   - a raw approved document snapshot into the vault import area
    - a distilled companion note into the vault synthesis area
 
 ## Core Hook Points
@@ -44,10 +51,16 @@ Artifacts are stored in the `artifacts` table with generic fields:
 - `createdById`
 - `metadata`
 
-Current approved snapshot sources:
+Current approved snapshot source:
 
 - `issue_document`
-- `issue_legacy_plan`
+
+Explicitly not vault-sync units:
+
+- issues or tasks by themselves
+- issue descriptions or legacy plan text by themselves
+- issue comments
+- approval records by themselves
 
 ## Storage Layout
 
@@ -66,7 +79,7 @@ wiki/syntheses/paperclip/{slug}-synthesis.md
 
 ## Snapshot Format
 
-The raw approved snapshot is self-describing markdown:
+The raw approved document snapshot is self-describing markdown:
 
 - frontmatter with artifact metadata
 - source section
@@ -83,7 +96,7 @@ The Transcendiverse extension writes a second markdown note with:
 - key decisions
 - actionable insights
 - Transcendiverse research relevance
-- follow-up link back to the raw approved artifact
+- follow-up link back to the raw approved document snapshot
 
 The current distillation is deterministic and file-based. It does not mutate canonical doctrine pages.
 
@@ -138,19 +151,21 @@ Safe day-to-day workflow:
 1. Keep the live Paperclip issue document in `in_review` while drafting and editing.
 2. When the content is ready to freeze, create or use a linked board approval for that issue.
 3. Approve the linked issue.
-4. Paperclip writes an immutable approved artifact under the instance artifact store.
+4. Paperclip writes an immutable approved document snapshot under the instance artifact store.
 5. The Transcendiverse extension writes:
-   - the raw approved artifact into the configured vault import directory
+   - the raw approved document snapshot into the configured vault import directory
    - the deterministic synthesis note into the configured vault synthesis directory
-6. Keep editing the live in-review document if needed. Later live edits do not mutate the already approved artifacts.
+6. Keep editing the live in-review document if needed. Later live edits do not mutate the already approved document snapshots.
 7. Re-approve unchanged content only when you need a fresh approval event; it should dedupe and not create a new artifact version.
 8. Approve changed content when you want a new frozen version; it should create the next artifact version and a new raw + synthesis vault pair.
+
+If an issue reaches approval without any issue documents, Paperclip does not create a vault-exportable artifact for that issue.
 
 ## Upgrade Safety
 
 - Core code stays generic and emits a reusable artifact event seam.
 - Transcendiverse logic is isolated under `server/src/extensions/transcendiverse/`.
-- Approval routes only contain the minimum call needed to create an approved artifact.
+- Approval routes only contain the minimum call needed to create an approved document artifact.
 - No upstream plugin-system redesign was introduced.
 
 ## Repeatable Smoke Test
@@ -164,10 +179,10 @@ pnpm smoke:transcendiverse-approved-artifacts
 What it verifies:
 
 - a live issue document can still be edited while the issue remains `in_review`
-- the first approval creates approved artifact `v1`
+- the first approval creates approved document snapshot `v1`
 - unchanged re-approval dedupes and does not create `v2`
 - approving changed content creates `v2`
-- later live edits do not mutate frozen approved artifacts
+- later live edits do not mutate frozen approved document snapshots
 - only the expected raw + synthesis vault files are created
 
 What the smoke command does:
@@ -199,6 +214,7 @@ Operational note:
 Coverage added for:
 
 - approved document snapshot creation
+- approval without documents produces no vault-exportable artifact
 - content-hash dedupe for repeated approval of the same revision
 - version increment when the approved revision changes
 - Transcendiverse raw and distilled vault writes
@@ -210,7 +226,7 @@ Intentionally not done in v1:
 
 - no canonical Transcendiverse doctrine page mutation
 - no canonical merge automation
-- no mutation of previously approved artifacts
+- no mutation of previously approved document snapshots
 - no attempt to make the live in-review document immutable
 
 ## Startup Notes

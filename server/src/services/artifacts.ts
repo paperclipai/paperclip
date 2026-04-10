@@ -13,7 +13,7 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logActivity } from "./activity-log.js";
 import { emitArtifactCreated } from "./artifact-events.js";
-import { documentService, extractLegacyPlanBody } from "./documents.js";
+import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 
 type DbLike = Pick<Db, "select" | "insert" | "transaction">;
@@ -359,6 +359,9 @@ export function artifactService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const documentRecords = await documentsSvc.listIssueDocuments(issue.id);
 
+      // Only durable issue documents are eligible to become immutable approved document artifacts.
+      // The issue container and its comments can provide review context, but they are not
+      // exported units and do not produce vault-syncable artifacts on their own.
       const sources: SnapshotSource[] = documentRecords
         .filter((doc): doc is typeof doc & { body: string } => typeof doc.body === "string")
         .map((doc) => ({
@@ -385,36 +388,6 @@ export function artifactService(db: Db) {
             reviewState: "approved",
           },
         }));
-
-      if (sources.length === 0) {
-        const legacyPlanBody = extractLegacyPlanBody(issue.description);
-        if (legacyPlanBody) {
-          sources.push({
-            sourceType: "issue_legacy_plan",
-            sourceId: issue.id,
-            title: `${issue.title} (plan)`,
-            body: legacyPlanBody,
-            metadata: {
-              issueId: issue.id,
-              issueIdentifier: issue.identifier ?? null,
-              issueTitle: issue.title,
-              approvalId: input.context.approvalId ?? null,
-              executionDecisionId: input.context.executionDecisionId ?? null,
-              executionDecisionStageType: input.context.executionDecisionStageType ?? null,
-              origin: input.context.origin,
-              originRoute: input.context.originRoute ?? null,
-              approvedAt: input.context.approvedAt.toISOString(),
-              approvedByType: input.context.approvedBy.type,
-              approvedById: input.context.approvedBy.id,
-              documentKey: "plan",
-              documentRevisionId: null,
-              documentRevisionNumber: null,
-              reviewState: "approved",
-              source: "issue_description",
-            },
-          });
-        }
-      }
 
       const results: Array<{ artifact: Artifact; created: boolean }> = [];
       for (const source of sources) {

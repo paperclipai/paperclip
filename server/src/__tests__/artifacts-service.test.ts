@@ -140,6 +140,36 @@ describeEmbeddedPostgres("artifactService.ensureApprovedSnapshotsForIssueDocumen
     return { companyId, issueId, documentId };
   }
 
+  async function seedIssueWithoutDocuments(description: string) {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date("2026-04-10T00:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Artifacts Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      title: "Approval with no documents",
+      description,
+      status: "in_review",
+      priority: "medium",
+      createdByUserId: "user-1",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { companyId, issueId };
+  }
+
   function createApprovalContext(input?: {
     approvalId?: string;
     approvedAt?: Date;
@@ -252,5 +282,21 @@ describeEmbeddedPostgres("artifactService.ensureApprovedSnapshotsForIssueDocumen
 
     const snapshot = await fs.promises.readFile(second[0]!.artifact.storagePath, "utf8");
     expect(snapshot).toContain("- Revised approved decision");
+  });
+
+  it("does not create vault-exportable artifacts when an issue has no durable documents", async () => {
+    const { companyId, issueId } = await seedIssueWithoutDocuments(`## Plan
+
+- This issue body is workflow context only.
+- It must not become a vault-exportable artifact.`);
+
+    const results = await svc.ensureApprovedSnapshotsForIssueDocuments({
+      issueId,
+      context: createApprovalContext({ approvalId: "approval-1" }),
+    });
+
+    expect(results).toEqual([]);
+    const stored = await svc.list(companyId);
+    expect(stored).toEqual([]);
   });
 });

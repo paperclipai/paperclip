@@ -444,7 +444,7 @@ async function main() {
 
   const issue = await apiRequest("POST", baseUrl, `/companies/${company.id}/issues`, headers, {
     title: issueTitle,
-    description: "Smoke-test fixture for approved artifact snapshot + Transcendiverse vault sync.",
+    description: "Smoke-test fixture for approved document snapshot + Transcendiverse vault sync.",
     status: "in_review",
     priority: "low",
   });
@@ -484,7 +484,7 @@ This smoke doc changed after the first approval and should create version two.
 `;
 
   const body4 = `# ${marker} Draft
-This live review draft changed again after approval and must not mutate frozen approved artifacts.
+This live review draft changed again after approval and must not mutate frozen approved document snapshots.
 
 - Decision: freeze approved content into immutable artifacts.
 - Scope: sync raw and distilled vault files.
@@ -493,7 +493,7 @@ This live review draft changed again after approval and must not mutate frozen a
 - Independence: the live in-review doc keeps changing after approval.
 
 - [ ] Manual canonical merge remains out of scope for v1.
-- [ ] Live review edits remain independent of approved artifacts.
+- [ ] Live review edits remain independent of approved document snapshots.
 `;
 
   const doc1 = await apiRequest("PUT", baseUrl, `/issues/${issue.id}/documents/review`, headers, {
@@ -517,7 +517,7 @@ This live review draft changed again after approval and must not mutate frozen a
   const approval1 = await createApproval(baseUrl, headers, company.id, issue.id, marker, "first-approval");
   await approveApproval(baseUrl, headers, approval1.id, "Approve version one for smoke validation.");
   const artifactsAfterV1 = await listArtifacts(baseUrl, headers, company.id, doc2.id);
-  assert(artifactsAfterV1.length === 1, "Expected one approved artifact after first approval", artifactsAfterV1);
+  assert(artifactsAfterV1.length === 1, "Expected one approved document artifact after first approval", artifactsAfterV1);
 
   const artifactV1 = artifactsAfterV1[0];
   const expectedV1VaultPaths = expectedVaultPaths(smokeConfig.extension, artifactV1);
@@ -543,7 +543,7 @@ This live review draft changed again after approval and must not mutate frozen a
   assert(
     distillationV1Content.includes(`rawArtifact: "${expectedV1VaultPaths.rawWikiLink}"`) &&
       distillationV1Content.includes(`[[${expectedV1VaultPaths.rawWikiLink}]]`),
-    "Distillation note does not link back to the raw approved artifact",
+    "Distillation note does not link back to the raw approved document snapshot",
     { distillationPath: expectedV1VaultPaths.distillation, rawWikiLink: expectedV1VaultPaths.rawWikiLink },
   );
 
@@ -572,7 +572,7 @@ This live review draft changed again after approval and must not mutate frozen a
   const approval3 = await createApproval(baseUrl, headers, company.id, issue.id, marker, "changed-reapproval");
   await approveApproval(baseUrl, headers, approval3.id, "Approve changed content to create version two.");
   const artifactsAfterV2 = await listArtifacts(baseUrl, headers, company.id, doc3.id);
-  assert(artifactsAfterV2.length === 2, "Expected two approved artifact versions after changed approval", artifactsAfterV2);
+  assert(artifactsAfterV2.length === 2, "Expected two approved document artifact versions after changed approval", artifactsAfterV2);
 
   const artifactV2 = artifactsAfterV2.find((artifact) => artifact.version === 2);
   assert(artifactV2, "Missing artifact version two after changed approval", artifactsAfterV2);
@@ -600,7 +600,7 @@ This live review draft changed again after approval and must not mutate frozen a
   assert(
     distillationV2Content.includes(`rawArtifact: "${expectedV2VaultPaths.rawWikiLink}"`) &&
       distillationV2Content.includes(`[[${expectedV2VaultPaths.rawWikiLink}]]`),
-    "Version two distillation note does not link back to the raw approved artifact",
+    "Version two distillation note does not link back to the raw approved document snapshot",
     { distillationPath: expectedV2VaultPaths.distillation, rawWikiLink: expectedV2VaultPaths.rawWikiLink },
   );
 
@@ -626,9 +626,9 @@ This live review draft changed again after approval and must not mutate frozen a
   assert(artifactV1HashAfterFinalEdit === artifactV1HashBeforeLaterEdits, "Final live edit mutated artifact version one");
   assert(artifactV2HashAfterFinalEdit === artifactV2HashBeforeFinalEdit, "Final live edit mutated artifact version two");
   assert(vaultDiffFinalEdit.added.length === 0 && vaultDiffFinalEdit.changed.length === 0 && vaultDiffFinalEdit.removed.length === 0, "Final live edit mutated vault files without approval", vaultDiffFinalEdit);
-  assert(liveDocAfterFinalEdit.body.includes("must not mutate frozen approved artifacts"), "Final live doc did not persist the post-approval edit");
-  assert(!artifactV1Content.includes("must not mutate frozen approved artifacts"), "Artifact version one contains post-approval live edits");
-  assert(!artifactV2Content.includes("must not mutate frozen approved artifacts"), "Artifact version two contains post-approval live edits");
+  assert(liveDocAfterFinalEdit.body.includes("must not mutate frozen approved document snapshots"), "Final live doc did not persist the post-approval edit");
+  assert(!artifactV1Content.includes("must not mutate frozen approved document snapshots"), "Artifact version one contains post-approval live edits");
+  assert(!artifactV2Content.includes("must not mutate frozen approved document snapshots"), "Artifact version two contains post-approval live edits");
 
   const createdVaultFiles = [expectedV1VaultPaths.raw, expectedV1VaultPaths.distillation, expectedV2VaultPaths.raw, expectedV2VaultPaths.distillation];
   if (args.cleanupVault) {
@@ -693,7 +693,7 @@ This live review draft changed again after approval and must not mutate frozen a
   }
 
   console.log("");
-  console.log("Approved artifact smoke test passed.");
+  console.log("Approved document snapshot smoke test passed.");
   console.log(`Company: ${company.name} (${company.id})`);
   console.log(`Issue: ${issue.identifier} (${issue.id})`);
   console.log(`Artifact v1: ${artifactV1.storagePath}`);
