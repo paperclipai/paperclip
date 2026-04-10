@@ -10,24 +10,33 @@ import {
   PayloadTemplateJsonField,
   RuntimeServicesJsonField,
 } from "../runtime-json-fields";
+import {
+  DEFAULT_OPENCLAW_GATEWAY_WAIT_TIMEOUT_MS,
+} from "@paperclipai/adapter-openclaw-gateway/ui";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+
+/** Same storage for create and edit: plain JSON on the agent, not secrets vault normalization. */
+const OPENCLAW_GATEWAY_TOKEN_STORAGE_HINT =
+  "Stored as adapterConfig.headers['x-openclaw-token'] (plain JSON in the agent record). Not moved into Paperclip's secrets vault—readable via API, DB, and backups. Use env or external vault if you need stronger handling.";
 
 function SecretField({
   label,
   value,
   onCommit,
   placeholder,
+  hint,
 }: {
   label: string;
   value: string;
   onCommit: (v: string) => void;
   placeholder?: string;
+  hint?: string;
 }) {
   const [visible, setVisible] = useState(false);
   return (
-    <Field label={label}>
+    <Field label={label} hint={hint}>
       <div className="relative">
         <button
           type="button"
@@ -132,6 +141,16 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
+      {isCreate && set && (
+        <SecretField
+          label="Gateway auth token (x-openclaw-token)"
+          hint={OPENCLAW_GATEWAY_TOKEN_STORAGE_HINT}
+          value={values!.openclawGatewayToken ?? ""}
+          onCommit={(v) => set({ openclawGatewayToken: v.trim() })}
+          placeholder="From gateway.token or openclaw.json → gateway.auth.token"
+        />
+      )}
+
       {!isCreate && (
         <>
           <Field label="Paperclip API URL override">
@@ -186,6 +205,7 @@ export function OpenClawGatewayConfigFields({
 
           <SecretField
             label="Gateway auth token (x-openclaw-token)"
+            hint={OPENCLAW_GATEWAY_TOKEN_STORAGE_HINT}
             value={effectiveGatewayToken}
             onCommit={commitGatewayToken}
             placeholder="OpenClaw gateway token"
@@ -219,7 +239,11 @@ export function OpenClawGatewayConfigFields({
 
           <Field label="Wait timeout (ms)">
             <DraftInput
-              value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "120000"))}
+              value={eff(
+                "adapterConfig",
+                "waitTimeoutMs",
+                String(config.waitTimeoutMs ?? String(DEFAULT_OPENCLAW_GATEWAY_WAIT_TIMEOUT_MS)),
+              )}
               onCommit={(v) => {
                 const parsed = Number.parseInt(v.trim(), 10);
                 mark(
@@ -230,7 +254,7 @@ export function OpenClawGatewayConfigFields({
               }}
               immediate
               className={inputClass}
-              placeholder="120000"
+              placeholder={String(DEFAULT_OPENCLAW_GATEWAY_WAIT_TIMEOUT_MS)}
             />
           </Field>
 

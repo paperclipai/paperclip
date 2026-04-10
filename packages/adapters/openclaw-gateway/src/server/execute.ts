@@ -11,8 +11,13 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import { readFileSync } from "node:fs";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import {
+  DEFAULT_OPENCLAW_GATEWAY_TIMEOUT_SEC,
+  DEFAULT_OPENCLAW_GATEWAY_WS_URL,
+} from "../defaults.js";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
 
@@ -362,8 +367,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  claimedApiKeyPath: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1042,16 +1047,7 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const urlValue = asString(ctx.config.url, "").trim();
-  if (!urlValue) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorMessage: "OpenClaw gateway adapter missing url",
-      errorCode: "openclaw_gateway_url_missing",
-    };
-  }
+  const urlValue = asString(ctx.config.url, "").trim() || DEFAULT_OPENCLAW_GATEWAY_WS_URL;
 
   const parsedUrl = normalizeUrl(urlValue);
   if (!parsedUrl) {
@@ -1074,7 +1070,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
+  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, DEFAULT_OPENCLAW_GATEWAY_TIMEOUT_SEC)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
@@ -1083,7 +1079,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
 
   const headers = toStringRecord(ctx.config.headers);
-  const authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  let authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  if (!authToken) {
+    authToken =
+      nonEmpty(process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN) ??
+      nonEmpty(process.env.OPENCLAW_GATEWAY_TOKEN);
+  }
+  if (!authToken) {
+    const tokenFile = process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN_FILE?.trim();
+    if (tokenFile) {
+      try {
+        authToken = nonEmpty(readFileSync(tokenFile, "utf8"));
+      } catch {
+        // ignore missing/unreadable file
+      }
+    }
+  }
   const password = nonEmpty(ctx.config.password);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
@@ -1109,6 +1120,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1132,15 +1144,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // OpenClaw gateway agent params schema uses additionalProperties: false — no root `paperclip`.
+  delete agentParams.paperclip;
+  const paperclipContextBlock = [
+    "## Paperclip context",
+    "",
+    "```json",
+    JSON.stringify(paperclipPayload, null, 2),
+    "```",
+  ].join("\n");
+  const existingExtra = nonEmpty(agentParams.extraSystemPrompt);
+  agentParams.extraSystemPrompt = existingExtra
+    ? `${existingExtra}\n\n${paperclipContextBlock}`
+    : paperclipContextBlock;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
 
+  // OpenClaw treats `agent` param `timeout` as whole seconds (not ms); subagent spawns use the same field.
   if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = waitTimeoutMs;
+    const runTimeoutSeconds =
+      timeoutSec > 0 ? timeoutSec : Math.max(1, Math.floor(waitTimeoutMs / 1000));
+    agentParams.timeout = runTimeoutSeconds;
   }
 
   if (ctx.onMeta) {

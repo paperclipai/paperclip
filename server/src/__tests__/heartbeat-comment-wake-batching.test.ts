@@ -409,12 +409,11 @@ describe("heartbeat comment wake batching", () => {
       }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          commentIds: [comment2.id, comment3.id],
-          latestCommentId: comment3.id,
-        },
-      });
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondExtra = String(secondPayload.extraSystemPrompt ?? "");
+      expect(secondExtra).toContain("## Paperclip context");
+      expect(secondExtra).toContain(comment2.id);
+      expect(secondExtra).toContain(comment3.id);
       expect(String(secondPayload.message ?? "")).toContain("Second comment");
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
       expect(String(secondPayload.message ?? "")).not.toContain("First comment");
@@ -489,19 +488,13 @@ describe("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_assigned",
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Require a comment",
-            status: "todo",
-            priority: "medium",
-          },
-          commentIds: [],
-        },
-      });
+      expect(firstPayload.paperclip).toBeUndefined();
+      const firstExtra = String(firstPayload.extraSystemPrompt ?? "");
+      expect(firstExtra).toContain("## Paperclip context");
+      expect(firstExtra).toContain("issue_assigned");
+      expect(firstExtra).toContain(issueId);
+      expect(firstExtra).toContain("Require a comment");
+      expect(firstExtra).toContain(`${issuePrefix}-1`);
       expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
       expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);

@@ -15,8 +15,13 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { detectClaudeLoginRequired, isClaudeRateLimitedOutput, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
+import {
+  CLAUDE_ROOT_HEADLESS_ALLOWED_TOOLS,
+  resolveDangerouslySkipPermissions,
+  shouldInjectRootHeadlessAllowedTools,
+} from "./process-defaults.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -154,7 +159,7 @@ export async function testEnvironment(
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-      const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      const dangerouslySkipPermissions = resolveDangerouslySkipPermissions(config.dangerouslySkipPermissions);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -162,6 +167,9 @@ export async function testEnvironment(
       })();
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (shouldInjectRootHeadlessAllowedTools(dangerouslySkipPermissions, extraArgs)) {
+        args.push("--allowed-tools", CLAUDE_ROOT_HEADLESS_ALLOWED_TOOLS);
+      }
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
@@ -212,22 +220,36 @@ export async function testEnvironment(
             ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
             : "Run `claude login` in this environment, then retry the probe.",
         });
-      } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsedStream.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Claude hello probe succeeded."
-            : "Claude probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
-                hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
-              }),
-        });
+      } else if (parsedStream.resultJson != null || probe.exitCode === 0) {
+        // Claude exits 1 when the final stream `result` has is_error (e.g. subscription rate limits) even though JSON is valid.
+        if (isClaudeRateLimitedOutput(probe.stdout, parsedStream.resultJson)) {
+          const summary = parsedStream.summary.trim();
+          checks.push({
+            code: "claude_hello_probe_rate_limited",
+            level: "warn",
+            message:
+              "Claude CLI ran but reported a usage limit, so the hello probe could not get a normal model reply.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            ...(detail && !summary ? { detail } : {}),
+            hint: "Wait for the limit to reset, set ANTHROPIC_API_KEY if you use API billing, or try again later. Installation and auth are fine.",
+          });
+        } else {
+          const summary = parsedStream.summary.trim();
+          const hasHello = /\bhello\b/i.test(summary);
+          checks.push({
+            code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
+            level: hasHello ? "info" : "warn",
+            message: hasHello
+              ? "Claude hello probe succeeded."
+              : "Claude probe ran but did not return `hello` as expected.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            ...(hasHello
+              ? {}
+              : {
+                  hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
+                }),
+          });
+        }
       } else {
         checks.push({
           code: "claude_hello_probe_failed",

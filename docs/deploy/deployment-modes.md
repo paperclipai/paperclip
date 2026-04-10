@@ -83,3 +83,15 @@ Runtime override via environment variable:
 ```sh
 PAPERCLIP_DEPLOYMENT_MODE=authenticated pnpm paperclipai run
 ```
+
+## Process user: root vs non-root
+
+Paperclip is normally run as an unprivileged user (including in containers). Some bare-metal or systemd installs run the server as **root** for simplicity.
+
+| Aspect | Non-root (recommended) | Root (`uid=0`) |
+| --- | --- | --- |
+| Embedded PostgreSQL | Standard startup | `createPostgresUser` is enabled so the embedded cluster can initialize |
+| `claude_local` | `--dangerously-skip-permissions` works as configured (default on) | Claude rejects that flag; Paperclip injects a **default** `--allowed-tools` list so `--print` probes and runs can proceed without interactive approval |
+| Security | Least privilege | Broader process privileges; review deployment exposure (`local_trusted` vs `authenticated`) and firewalling |
+
+At startup, when `uid=0`, the server logs a warning summarizing embedded Postgres and the Claude allowlist behavior. Prefer Docker or a dedicated service user when you can; use root only when you accept the trade-offs and have reviewed tool allowlists and network exposure.

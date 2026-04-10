@@ -379,6 +379,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  /** OpenClaw gateway shared token (create flow → adapterConfig.headers.x-openclaw-token). */
+  openclawGatewayToken?: string;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;

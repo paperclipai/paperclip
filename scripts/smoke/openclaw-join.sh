@@ -203,7 +203,8 @@ JOIN_PAYLOAD="$(jq -nc \
       url: $url,
       headers: { "x-openclaw-token": $token },
       sessionKeyStrategy: "issue",
-      waitTimeoutMs: 120000
+      timeoutSec: 900,
+      waitTimeoutMs: 900000
     }
   }')"
 api_request "POST" "/invites/${INVITE_TOKEN}/accept" "$JOIN_PAYLOAD"
