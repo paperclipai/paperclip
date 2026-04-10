@@ -178,13 +178,27 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   );
 }
 
+function stdoutStreamJsonIndicatesRateLimit(stdout: string): boolean {
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let ev: unknown;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof ev !== "object" || ev === null || Array.isArray(ev)) continue;
+    const rec = ev as Record<string, unknown>;
+    if (rec.type === "rate_limit_event") return true;
+    if (rec.error === "rate_limit") return true;
+  }
+  return false;
+}
+
 /** True when stream-json shows a rate/quota limit (Claude often exits 1 with is_error despite valid output). */
 export function isClaudeRateLimitedOutput(stdout: string, resultJson: Record<string, unknown> | null): boolean {
-  // Only match structured / protocol markers in raw stdout — avoid assistant narrative
-  // that might mention "limit" in unrelated text.
-  if (/rate_limit_event|"error"\s*:\s*"rate_limit"/i.test(stdout)) {
-    return true;
-  }
+  if (stdoutStreamJsonIndicatesRateLimit(stdout)) return true;
   if (!resultJson) return false;
   if (asString(resultJson.error, "") === "rate_limit") return true;
   if (!asBoolean(resultJson.is_error, false)) return false;
