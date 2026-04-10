@@ -72,14 +72,53 @@ export function Activity() {
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
     for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
     for (const g of goals ?? []) map.set(`goal:${g.id}`, g.title);
+
+    // Extract names from event data for entity types not covered by
+    // the separate API queries above.
+    const approvalTypeLabels: Record<string, string> = {
+      hire_agent: "Hire Agent",
+      approve_ceo_strategy: "CEO Strategy",
+      budget_override_required: "Budget Override",
+      tool_use: "Tool Use",
+      request_board_approval: "Board Approval",
+    };
+    for (const event of data ?? []) {
+      const key = `${event.entityType}:${event.entityId}`;
+      if (map.has(key)) continue;
+      const d = event.details as Record<string, unknown> | null;
+      let name: string | undefined;
+      if (event.entityType === "issue") {
+        // Use server-joined identifier, fall back to details
+        name = event.issueIdentifier ?? undefined;
+      } else if (event.entityType === "plugin") {
+        name = (typeof d?.pluginKey === "string" && d.pluginKey) || undefined;
+      } else if (event.entityType === "approval") {
+        const approvalType = typeof d?.type === "string" ? d.type : undefined;
+        name = approvalType ? (approvalTypeLabels[approvalType] ?? approvalType) : undefined;
+      } else if (event.entityType === "routine_run") {
+        name = (typeof d?.routineTitle === "string" && d.routineTitle) || undefined;
+      } else if (d) {
+        name =
+          (typeof d.name === "string" && d.name) ||
+          (typeof d.title === "string" && d.title) ||
+          undefined;
+      }
+      if (name) map.set(key, name);
+    }
     return map;
-  }, [issues, agents, projects, goals]);
+  }, [issues, agents, projects, goals, data]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    // Fill in titles from server-joined data for issues not in the list
+    for (const event of data ?? []) {
+      if (event.entityType !== "issue" || !event.issueTitle) continue;
+      const key = `issue:${event.entityId}`;
+      if (!map.has(key)) map.set(key, event.issueTitle);
+    }
     return map;
-  }, [issues]);
+  }, [issues, data]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={History} message="Select a company to view activity." />;
