@@ -1261,6 +1261,13 @@ export const ko: Record<TranslationKey, string> = {
   "agents.stopFailed": "중지 실패: {error}",
   "agents.restartResult": "리더: {ok}개 시작, {fail}개 실패",
   "agents.restartSuccess": "리더: {ok}개 시작",
+  "agents.contextMenu.runHistory": "실행 이력",
+  "agents.runHistory.title": "{name} — 실행 이력",
+  "agents.runHistory.empty": "아직 실행 이력이 없습니다.",
+  "agents.runHistory.calledBy": "호출자:",
+  "agents.runStatus.started": "실행 중",
+  "agents.runStatus.completed": "완료",
+  "agents.runStatus.failed": "실패",
 
   // Issue Properties
   "issueProps.status": "상태",

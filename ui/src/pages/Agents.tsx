@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { leaderProcessesApi, type LeaderProcessRow } from "../api/leader-processes";
+import { subAgentRunsApi, type SubAgentRun } from "../api/sub-agent-runs";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -26,7 +27,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Bot, Plus, List, GitBranch, SlidersHorizontal, MoreHorizontal, Play, RotateCw, Square, Terminal, RefreshCw } from "lucide-react";
+import { Bot, Plus, List, GitBranch, SlidersHorizontal, MoreHorizontal, Play, RotateCw, Square, Terminal, RefreshCw, ThumbsUp, ThumbsDown, Clock } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -516,7 +517,7 @@ function RestartAllLeadersButton({
   );
 }
 
-/** Context menu for individual agent actions */
+/** Context menu for individual agent actions (leader + sub-agent) */
 function AgentContextMenu({
   agent,
   companyId,
@@ -528,6 +529,7 @@ function AgentContextMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [runsOpen, setRunsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -560,7 +562,6 @@ function AgentContextMenu({
 
   const isMutating = startMutation.isPending || restartMutation.isPending || stopMutation.isPending;
 
-  // Close menu on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -569,8 +570,6 @@ function AgentContextMenu({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
-
-  if (!isLeader) return null;
 
   return (
     <>
@@ -582,54 +581,67 @@ function AgentContextMenu({
           <MoreHorizontal className="h-4 w-4" />
         </button>
         {open && (
-          <div className="absolute right-0 top-full mt-1 z-50 w-44 border border-border bg-popover shadow-lg rounded-md py-1">
-            {!cliAlive ? (
+          <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-lg rounded-md py-1">
+            {/* Leader-only: Start/Restart/Stop */}
+            {isLeader && (
+              <>
+                {!cliAlive ? (
+                  <button
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
+                    disabled={isMutating}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); startMutation.mutate(); setOpen(false); }}
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    {startMutation.isPending ? t("agents.contextMenu.starting") : t("agents.contextMenu.start")}
+                  </button>
+                ) : (
+                  <button
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
+                    disabled={isMutating}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); restartMutation.mutate(); setOpen(false); }}
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                    {restartMutation.isPending ? t("agents.contextMenu.restarting") : t("agents.contextMenu.restart")}
+                  </button>
+                )}
+                {cliAlive && (
+                  <button
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 text-destructive disabled:opacity-50"
+                    disabled={isMutating}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); stopMutation.mutate(); setOpen(false); }}
+                  >
+                    <Square className="h-3.5 w-3.5" />
+                    {stopMutation.isPending ? t("agents.contextMenu.stopping") : t("agents.contextMenu.stop")}
+                  </button>
+                )}
+                <div className="border-t border-border my-1" />
+                <button
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setLogOpen(true); setOpen(false); }}
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                  {t("agents.contextMenu.logs")}
+                </button>
+              </>
+            )}
+            {/* Sub-agent: run history */}
+            {!isLeader && (
               <button
-                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
-                disabled={isMutating}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); startMutation.mutate(); setOpen(false); }}
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setRunsOpen(true); setOpen(false); }}
               >
-                <Play className="h-3.5 w-3.5" />
-                {startMutation.isPending ? t("agents.contextMenu.starting") : t("agents.contextMenu.start")}
-              </button>
-            ) : (
-              <button
-                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
-                disabled={isMutating}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); restartMutation.mutate(); setOpen(false); }}
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-                {restartMutation.isPending ? t("agents.contextMenu.restarting") : t("agents.contextMenu.restart")}
+                <List className="h-3.5 w-3.5" />
+                {t("agents.contextMenu.runHistory")}
               </button>
             )}
-            {cliAlive && (
-              <button
-                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 text-destructive disabled:opacity-50"
-                disabled={isMutating}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); stopMutation.mutate(); setOpen(false); }}
-              >
-                <Square className="h-3.5 w-3.5" />
-                {stopMutation.isPending ? t("agents.contextMenu.stopping") : t("agents.contextMenu.stop")}
-              </button>
-            )}
-            <div className="border-t border-border my-1" />
-            <button
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setLogOpen(true); setOpen(false); }}
-            >
-              <Terminal className="h-3.5 w-3.5" />
-              {t("agents.contextMenu.logs")}
-            </button>
           </div>
         )}
       </div>
       {logOpen && (
-        <AgentLogModal
-          companyId={companyId}
-          agent={agent}
-          open={logOpen}
-          onClose={() => setLogOpen(false)}
-        />
+        <AgentLogModal companyId={companyId} agent={agent} open={logOpen} onClose={() => setLogOpen(false)} />
+      )}
+      {runsOpen && (
+        <SubAgentRunsModal companyId={companyId} agent={agent} open={runsOpen} onClose={() => setRunsOpen(false)} />
       )}
     </>
   );
@@ -708,6 +720,125 @@ function AgentLogModal({
             </div>
           ))}
           <div ref={logEndRef} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Modal showing sub-agent execution history with thumbs rating */
+function SubAgentRunsModal({
+  companyId,
+  agent,
+  open,
+  onClose,
+}: {
+  companyId: string;
+  agent: Agent;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useT();
+  const queryClient = useQueryClient();
+
+  const { data: runs, isLoading } = useQuery({
+    queryKey: ["sub-agent-runs", agent.id],
+    queryFn: () => subAgentRunsApi.listForAgent(agent.id),
+    enabled: open,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: open,
+  });
+
+  const agentName = (id: string) => agents?.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+
+  const rateMutation = useMutation({
+    mutationFn: ({ id, rating }: { id: string; rating: "thumbs_up" | "thumbs_down" }) =>
+      subAgentRunsApi.rate(id, rating),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sub-agent-runs", agent.id] });
+    },
+  });
+
+  const statusLabel = (s: string) => {
+    if (s === "started") return t("agents.runStatus.started");
+    if (s === "completed") return t("agents.runStatus.completed");
+    if (s === "failed") return t("agents.runStatus.failed");
+    return s;
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            {t("agents.runHistory.title").replace("{name}", agent.name)}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 overflow-auto">
+          {isLoading && <p className="text-sm text-muted-foreground p-4">{t("agents.logs.loading")}</p>}
+          {runs && runs.length === 0 && (
+            <p className="text-sm text-muted-foreground p-4 text-center">{t("agents.runHistory.empty")}</p>
+          )}
+          {runs && runs.length > 0 && (
+            <div className="divide-y divide-border">
+              {runs.map((run) => (
+                <div key={run.id} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className={cn(
+                      "text-xs font-medium px-1.5 py-0.5 rounded",
+                      run.status === "completed" ? "bg-emerald-500/10 text-emerald-500" :
+                      run.status === "failed" ? "bg-destructive/10 text-destructive" :
+                      "bg-amber-500/10 text-amber-500",
+                    )}>
+                      {statusLabel(run.status)}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {t("agents.runHistory.calledBy")} <strong>{agentName(run.leaderAgentId)}</strong>
+                    </span>
+                    {run.durationMs != null && (
+                      <span className="text-xs text-muted-foreground ml-auto">
+                        {(run.durationMs / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(run.startedAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="text-sm">{run.task}</p>
+                  {run.result && (
+                    <p className="text-xs text-muted-foreground bg-accent/30 rounded px-2 py-1.5">{run.result}</p>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={cn(
+                        "p-1 rounded transition-colors",
+                        run.rating === "thumbs_up" ? "text-emerald-500 bg-emerald-500/10" : "text-muted-foreground hover:text-emerald-500 hover:bg-emerald-500/10",
+                      )}
+                      onClick={() => rateMutation.mutate({ id: run.id, rating: "thumbs_up" })}
+                      disabled={rateMutation.isPending}
+                    >
+                      <ThumbsUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      className={cn(
+                        "p-1 rounded transition-colors",
+                        run.rating === "thumbs_down" ? "text-destructive bg-destructive/10" : "text-muted-foreground hover:text-destructive hover:bg-destructive/10",
+                      )}
+                      onClick={() => rateMutation.mutate({ id: run.id, rating: "thumbs_down" })}
+                      disabled={rateMutation.isPending}
+                    >
+                      <ThumbsDown className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

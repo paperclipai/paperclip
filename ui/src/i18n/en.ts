@@ -1259,6 +1259,13 @@ export const en = {
   "agents.stopFailed": "Stop failed: {error}",
   "agents.restartResult": "Leaders: {ok} started, {fail} failed",
   "agents.restartSuccess": "Leaders: {ok} started",
+  "agents.contextMenu.runHistory": "Run History",
+  "agents.runHistory.title": "{name} — Run History",
+  "agents.runHistory.empty": "No execution history yet.",
+  "agents.runHistory.calledBy": "Called by",
+  "agents.runStatus.started": "Running",
+  "agents.runStatus.completed": "Completed",
+  "agents.runStatus.failed": "Failed",
 
   // Issue Properties
   "issueProps.status": "Status",
