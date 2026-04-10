@@ -62,10 +62,21 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  parseHeartbeatPolicy,
+  normalizeMaxConcurrentRuns,
+  checkAgentStatusGate,
+  checkHeartbeatPolicyGate,
+  checkConcurrentRunGate,
+  checkIntervalGate,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_MAX,
+  type HeartbeatPolicy,
+} from "./heartbeat-wake-gating.js";
+import { createBudgetContract, type BudgetContract } from "./heartbeat-budget-contract.js";
+import { HeartbeatCircuitBreaker } from "./heartbeat-circuit-breaker.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
@@ -270,11 +281,7 @@ function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
-function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
-}
+
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
@@ -1082,6 +1089,8 @@ export function heartbeatService(db: Db) {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const budgetContract = createBudgetContract(db, budgetHooks);
+  const circuitBreaker = new HeartbeatCircuitBreaker();
 
   async function getAgent(agentId: string) {
     return db
@@ -1908,18 +1917,6 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
-  function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
-
-    return {
-      enabled: asBoolean(heartbeat.enabled, true),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
-    };
-  }
-
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -1935,18 +1932,20 @@ export function heartbeatService(db: Db) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+
+    const statusGate = checkAgentStatusGate(agent);
+    if (!statusGate.allowed) {
       await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
       return null;
     }
 
     const context = parseObject(run.contextSnapshot);
-    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+    const budgetResult = await budgetContract.checkInvocation(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
     });
-    if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+    if (budgetResult.blocked) {
+      await cancelRunInternal(run.id, budgetResult.reason!);
       return null;
     }
 
@@ -3410,34 +3409,34 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0]?.projectId ?? null);
     }
 
-    const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
+    const budgetResult = await budgetContract.checkInvocation(agent.companyId, agentId, {
       issueId,
       projectId,
     });
-    if (budgetBlock) {
+    if (budgetResult.blocked) {
       await writeSkippedRequest("budget.blocked");
-      throw conflict(budgetBlock.reason, {
-        scopeType: budgetBlock.scopeType,
-        scopeId: budgetBlock.scopeId,
+      throw conflict(budgetResult.reason!, {
+        scopeType: budgetResult.scopeType,
+        scopeId: budgetResult.scopeId,
       });
     }
 
-    if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
-    ) {
-      throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    const agentGate = checkAgentStatusGate(agent);
+    if (!agentGate.allowed) {
+      throw conflict(agentGate.reason!, { status: agent.status });
     }
 
     const policy = parseHeartbeatPolicy(agent);
 
-    if (source === "timer" && !policy.enabled) {
-      await writeSkippedRequest("heartbeat.disabled");
+    const policyGate = checkHeartbeatPolicyGate(policy, source);
+    if (!policyGate.allowed) {
+      await writeSkippedRequest(policyGate.reason!);
       return null;
     }
-    if (source !== "timer" && !policy.wakeOnDemand) {
-      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+
+    const circuitGate = circuitBreaker.canExecute(agentId);
+    if (!circuitGate.allowed) {
+      await writeSkippedRequest("circuit_breaker.open");
       return null;
     }
 
@@ -4182,14 +4181,16 @@ export function heartbeatService(db: Db) {
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        const statusGate = checkAgentStatusGate(agent);
+        if (!statusGate.allowed) continue;
+
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        const intervalGate = checkIntervalGate(agent.lastHeartbeatAt, agent.createdAt, policy.intervalSec, now);
+        if (!intervalGate.allowed) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
