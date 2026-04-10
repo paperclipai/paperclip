@@ -81,8 +81,16 @@ function renderApiAccessNote(env: Record<string, string>): string {
 async function readInstructionFileIfPresent(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw err;
   }
 }
 
@@ -265,6 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const instructionsEntryFile = instructionsFilePath ? path.basename(instructionsFilePath) : "";
   let instructionsPrefix = "";
   const loadedInstructionFiles: string[] = [];
   if (instructionsFilePath) {
@@ -277,7 +286,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `Resolve any relative file references from ${instructionsDir}.\n`,
       ];
 
-      if (path.basename(instructionsFilePath) === "AGENTS.md") {
+      if (instructionsEntryFile === "AGENTS.md") {
         for (const relativeName of GEMINI_COMPANION_INSTRUCTION_FILES) {
           const companionPath = path.join(path.dirname(instructionsFilePath), relativeName);
           const companionContents = await readInstructionFileIfPresent(companionPath);
@@ -310,7 +319,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Loaded agent instructions from ${instructionsFilePath}`,
         loadedInstructionFiles.length > 1
           ? `Loaded companion instruction files: ${loadedInstructionFiles.slice(1).join(", ")}`
-          : "No companion instruction files were loaded.",
+          : instructionsEntryFile === "AGENTS.md"
+            ? "No companion instruction files were found."
+            : `Loaded entry instruction file ${instructionsEntryFile} without companion files.`,
         `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
       );
       return notes;

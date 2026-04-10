@@ -209,6 +209,65 @@ describe("gemini execute", () => {
     }
   });
 
+  it("notes non-AGENTS instruction files without claiming companions were missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-instructions-note-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const instructionsRoot = path.join(root, "instructions");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(instructionsRoot, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+    const instructionsFilePath = path.join(instructionsRoot, "SOUL.md");
+    await fs.writeFile(instructionsFilePath, "# SOUL\n\nPrimary guidance.\n", "utf8");
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      let commandNotes: string[] = [];
+      await execute({
+        runId: "run-instructions-note",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          instructionsFilePath,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          commandNotes = meta.commandNotes ?? [];
+        },
+      });
+
+      expect(commandNotes).toContain(`Loaded agent instructions from ${instructionsFilePath}`);
+      expect(commandNotes).toContain("Loaded entry instruction file SOUL.md without companion files.");
+      expect(commandNotes).not.toContain("No companion instruction files were loaded.");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
