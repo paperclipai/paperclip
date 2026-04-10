@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import { isCodexContextWindowOverflowError, isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
@@ -30,6 +30,13 @@ describe("codex_local stale session detection", () => {
       "2026-02-19T19:58:53.281939Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c775d-967c-7ef1-acc7-e396dc2c87cc";
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
+  });
+
+  it("treats context-window exhaustion as a fresh-session recovery condition", () => {
+    const stderr =
+      "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+
+    expect(isCodexContextWindowOverflowError("", stderr)).toBe(true);
   });
 });
 

@@ -41,6 +41,83 @@ type LogEntry = {
 };
 
 describe("codex execute", () => {
+  it("retries once without resume when Codex reports context window exhaustion", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-overflow-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const attemptsPath = path.join(root, "attempts.json");
+    await fs.mkdir(workspace, { recursive: true });
+
+    const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const attemptsPath = process.env.PAPERCLIP_TEST_ATTEMPTS_PATH;
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+const state = attemptsPath && fs.existsSync(attemptsPath)
+  ? JSON.parse(fs.readFileSync(attemptsPath, "utf8"))
+  : { count: 0, argv: [] };
+state.count += 1;
+state.argv.push(argv);
+if (attemptsPath) fs.writeFileSync(attemptsPath, JSON.stringify(state), "utf8");
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify({ argv, prompt: fs.readFileSync(0, "utf8") }), "utf8");
+}
+if (argv[2] === "resume") {
+  console.error("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.");
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-fresh" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello after retry" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const result = await execute({
+      runId: "run-overflow",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Codex Coder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "thread-existing",
+        sessionParams: { sessionId: "thread-existing", cwd: workspace },
+        sessionDisplayId: "thread-existing",
+        taskKey: null,
+      },
+      config: {
+        command: commandPath,
+        cwd: workspace,
+        env: {
+          PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          PAPERCLIP_TEST_ATTEMPTS_PATH: attemptsPath,
+        },
+        promptTemplate: "Follow the paperclip heartbeat.",
+      },
+      context: {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+    expect(result.sessionId).toBe("codex-session-fresh");
+
+    const attempts = JSON.parse(await fs.readFile(attemptsPath, "utf8")) as {
+      count: number;
+      argv: string[][];
+    };
+    expect(attempts.count).toBe(2);
+    expect(attempts.argv[0]).toEqual(expect.arrayContaining(["resume", "thread-existing", "-"]));
+    expect(attempts.argv[1]).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");
