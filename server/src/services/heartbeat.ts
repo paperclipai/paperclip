@@ -73,6 +73,11 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const ACTIVE_RELAY_STATUSES = ["todo", "in_progress", "blocked", "in_review"] as const;
+const RESOLVED_RELAY_TARGET_STATUSES = new Set(["in_review", "done", "cancelled"]);
+const ISSUE_IDENTIFIER_RE = /\b[A-Z]+-\d+\b/g;
+const RELAY_TITLE_HINT_RE = /\b(relay|escalation|task_bound_scope|routing|handoff|lock|retrigger|gov-patch|patch)\b/i;
+const RELAY_CANCEL_HINT_RE = /\b(escalation|task_bound_scope|lock|retrigger|double-gate)\b/i;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -85,6 +90,16 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+function extractRelayTargetIdentifiers(title: string, selfIdentifier: string | null): string[] {
+  if (!RELAY_TITLE_HINT_RE.test(title)) return [];
+  const matches = title.match(ISSUE_IDENTIFIER_RE) ?? [];
+  return [...new Set(matches.filter((identifier) => identifier !== selfIdentifier))];
+}
+
+function classifyRelayRetirementStatus(title: string): "done" | "cancelled" {
+  return RELAY_CANCEL_HINT_RE.test(title) ? "cancelled" : "done";
+}
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
@@ -4499,6 +4514,133 @@ export function heartbeatService(db: Db) {
       }
       logger.info({ count: staleRuns.length }, "cancelled queued runs for terminal issues");
       return { cancelled: staleRuns.length };
+    },
+
+    async retireResolvedRelayIssues() {
+      const candidates = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(inArray(issues.status, [...ACTIVE_RELAY_STATUSES]));
+
+      const candidateTargets = new Map<string, string[]>();
+      const targetIdentifiers = new Set<string>();
+
+      for (const issue of candidates) {
+        const targetIds = extractRelayTargetIdentifiers(issue.title, issue.identifier);
+        if (targetIds.length === 0) continue;
+        candidateTargets.set(issue.id, targetIds);
+        for (const targetId of targetIds) {
+          targetIdentifiers.add(targetId);
+        }
+      }
+
+      if (targetIdentifiers.size === 0) return { retired: 0, done: 0, cancelled: 0 };
+
+      const targetIssues = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(inArray(issues.identifier, [...targetIdentifiers]));
+
+      const targetByCompanyAndIdentifier = new Map<string, { id: string; identifier: string | null; status: string }>();
+      for (const target of targetIssues) {
+        if (!target.identifier) continue;
+        targetByCompanyAndIdentifier.set(`${target.companyId}:${target.identifier}`, target);
+      }
+
+      let retired = 0;
+      let done = 0;
+      let cancelled = 0;
+
+      for (const issue of candidates) {
+        const targetIds = candidateTargets.get(issue.id);
+        if (!targetIds || targetIds.length === 0) continue;
+
+        const resolvedTarget = targetIds
+          .map((identifier) => targetByCompanyAndIdentifier.get(`${issue.companyId}:${identifier}`) ?? null)
+          .find((target) => target && RESOLVED_RELAY_TARGET_STATUSES.has(target.status));
+        if (!resolvedTarget) continue;
+
+        const nextStatus = classifyRelayRetirementStatus(issue.title);
+        const now = new Date();
+        const commentBody = nextStatus === "done"
+          ? `## Auto-retired relay\n\nClosing as done. This relay references ${resolvedTarget.identifier}, which is already ${resolvedTarget.status}, so the requested handoff/workaround no longer has executable work.`
+          : `## Auto-retired relay\n\nClosing as cancelled. This workaround/escalation references ${resolvedTarget.identifier}, which is already ${resolvedTarget.status}, so the relay is obsolete.`;
+
+        await db.transaction(async (tx) => {
+          const current = await tx
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+            })
+            .from(issues)
+            .where(eq(issues.id, issue.id))
+            .then((rows) => rows[0] ?? null);
+          if (!current || !ACTIVE_RELAY_STATUSES.includes(current.status as (typeof ACTIVE_RELAY_STATUSES)[number])) {
+            return;
+          }
+
+          await tx
+            .update(issues)
+            .set({
+              status: nextStatus,
+              completedAt: nextStatus === "done" ? now : null,
+              cancelledAt: nextStatus === "cancelled" ? now : null,
+              checkoutRunId: null,
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              gateBlockCount: 0,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, current.id));
+
+          await tx.insert(issueComments).values({
+            companyId: current.companyId,
+            issueId: current.id,
+            body: commentBody,
+          });
+
+          await tx.insert(activityLog).values({
+            companyId: current.companyId,
+            actorType: "system",
+            actorId: "relay-retirement-sweep",
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: current.id,
+            details: {
+              status: nextStatus,
+              identifier: current.identifier,
+              source: "relay_retirement_sweep",
+              retiredAgainst: resolvedTarget.identifier,
+              retiredAgainstStatus: resolvedTarget.status,
+              _previous: { status: current.status },
+            },
+          });
+        });
+
+        retired += 1;
+        if (nextStatus === "done") done += 1;
+        else cancelled += 1;
+      }
+
+      if (retired > 0) {
+        logger.info({ retired, done, cancelled }, "auto-retired resolved relay issues");
+      }
+      return { retired, done, cancelled };
     },
 
     async enqueueProcessLostRetries() {

@@ -647,6 +647,18 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "terminal issue queued run sweep failed");
         });
 
+      // Retire workaround relays once their target lane has already advanced.
+      void heartbeat
+        .retireResolvedRelayIssues()
+        .then((result) => {
+          if (result.retired > 0) {
+            logger.info({ ...result }, "retired resolved relay issues");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "resolved relay retirement sweep failed");
+        });
+
       // Retrigger unpicked assignments past the SLA window.
       void heartbeat
         .sweepUnpickedAssignments()
