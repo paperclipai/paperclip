@@ -167,6 +167,22 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+const RATE_LIMIT_RE = /api\s+error[:\s]+429|rate[-_]?limit(?:ed)?|too\s+many\s+requests|temporarily\s+rate[-_]?limited|provider\s+returned\s+error.*429/i;
+
+export function isClaudeRateLimitError(input: {
+  parsed: Record<string, unknown> | null;
+  summary: string;
+  stdout: string;
+}): boolean {
+  const candidates = [
+    input.summary,
+    asString(input.parsed?.result, ""),
+    ...extractClaudeErrorMessages(input.parsed ?? {}),
+    input.stdout,
+  ];
+  return candidates.some((t) => RATE_LIMIT_RE.test(t));
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
