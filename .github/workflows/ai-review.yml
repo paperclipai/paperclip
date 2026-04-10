@@ -83,12 +83,20 @@ jobs:
           echo "$PR_JSON" | jq -r '.body // ""' > /tmp/pr-body.txt
           gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt || true
 
+          # Fetch inline review comments and top-level reviews for context
+          gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments \
+            | jq -s 'add | map({path, line, side, body, author: .user.login})' > /tmp/pr-review-comments.json 2>/dev/null || echo '[]' > /tmp/pr-review-comments.json
+          gh pr view ${{ github.event.pull_request.number }} --json reviews \
+            | jq '[.reviews[] | {author: .author.login, state, submittedAt, body, commit: (.commit.oid // "")}]' > /tmp/pr-reviews.json 2>/dev/null || echo '[]' > /tmp/pr-reviews.json
+
       - name: Run AI review
         if: steps.changes.outputs.run_ai_review == 'true'
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           PR_BODY_FILE: /tmp/pr-body.txt
           PR_DIFF_FILE: /tmp/pr-diff.txt
+          PR_REVIEW_COMMENTS_FILE: /tmp/pr-review-comments.json
+          PR_REVIEWS_FILE: /tmp/pr-reviews.json
         run: |
           if [ -z "${MINIMAX_API_KEY:-}" ]; then
             echo "HAS_MINIMAX_KEY=false" >> "$GITHUB_ENV"

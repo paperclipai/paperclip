@@ -1,9 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues } from "@paperclipai/db";
+import { activityLog, agents, issues } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -431,7 +431,7 @@ export function issueRoutes(
    */
   async function assertEngineerBrowseEvidence(
     req: Request,
-    issue: { id: string; projectId: string | null; executionWorkspaceId: string | null; updatedAt: Date | string },
+    issue: { id: string; companyId: string; projectId: string | null; executionWorkspaceId: string | null; updatedAt: Date | string },
     targetStatus: string,
     comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
     attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
@@ -441,29 +441,42 @@ export function issueRoutes(
     if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
     const actorAgentId = req.actor.agentId ?? null;
-    const actorUserId = null;
-    const sinceDate = issue.updatedAt;
 
-    // Check persisted comments AND the inline PATCH comment (which hasn't been saved yet).
-    // The inline comment avoids a timing race where comment.createdAt can be slightly before
-    // issue.updatedAt when the comment insert itself triggers the updatedAt bump.
-    // Actor check is unnecessary for the inline path: the PATCH actor IS the commenter (authenticated via req.actor).
-    const hasBrowseText = actorHasBrowseEvidence(comments, actorAgentId, actorUserId, sinceDate)
-      || (req.body.comment && BROWSE_EVIDENCE_PATTERN.test(req.body.comment));
-    const hasImage = actorHasImageAttachment(attachments, actorAgentId, actorUserId, sinceDate);
+    // Check for image attachments from the transitioning agent without a time window.
+    // The previous approach used issue.updatedAt as the time anchor, but every failed
+    // gate attempt bumps updatedAt — eventually invalidating all prior evidence and
+    // trapping the issue. If the same agent uploaded screenshots to this issue, that's
+    // sufficient evidence of interactive testing (matches QA evidence gate approach).
+    const hasBrowseText = comments.some(c => {
+      const isActor = actorAgentId && c.authorAgentId === actorAgentId;
+      return isActor && BROWSE_EVIDENCE_PATTERN.test(c.body);
+    }) || (req.body.comment && BROWSE_EVIDENCE_PATTERN.test(req.body.comment));
+    const hasImage = attachments.some(a => {
+      const isActor = actorAgentId && a.createdByAgentId === actorAgentId;
+      return isActor && a.contentType?.startsWith("image/");
+    });
 
     // No-browser-surface exemption: if the actor declared this issue has no browser
     // surface (e.g. Python backend, CLI tool), accept without screenshot evidence.
-    const noBrowserSince = new Date(sinceDate).getTime() - EVIDENCE_TIMING_TOLERANCE_MS;
     const hasNoBrowserSurface = comments.some(c => {
-      if (new Date(c.createdAt).getTime() < noBrowserSince) return false;
-      const isActor =
-        (actorAgentId && c.authorAgentId === actorAgentId) ||
-        (actorUserId && c.authorUserId === actorUserId);
-      return isActor && NO_BROWSER_SURFACE_PATTERN.test(c.body);
+      return (actorAgentId && c.authorAgentId === actorAgentId) && NO_BROWSER_SURFACE_PATTERN.test(c.body);
     }) || (req.body.comment && NO_BROWSER_SURFACE_PATTERN.test(req.body.comment));
 
-    if (hasNoBrowserSurface) return null;
+    if (hasNoBrowserSurface) {
+      const exemptionText = req.body.comment && NO_BROWSER_SURFACE_PATTERN.test(req.body.comment)
+        ? req.body.comment
+        : comments.find(c => (actorAgentId && c.authorAgentId === actorAgentId) && NO_BROWSER_SURFACE_PATTERN.test(c.body))?.body;
+      void logActivity(db, {
+        companyId: issue.companyId,
+        action: "issue.browse_evidence_exemption",
+        actorType: "agent",
+        actorId: req.actor.agentId ?? "unknown",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { gate: "in_review_requires_browse_evidence", exemptionText: exemptionText?.slice(0, 500) },
+      });
+      return null;
+    }
 
     // Image attachment is the primary evidence. Browse text is a supporting signal.
     // If the actor uploaded screenshots, accept even without matching browse text —
@@ -488,7 +501,7 @@ export function issueRoutes(
    */
   async function assertQABrowseEvidence(
     req: Request,
-    issue: { id: string; projectId: string | null; executionWorkspaceId: string | null; assigneeAgentId: string | null; updatedAt: Date | string },
+    issue: { id: string; companyId: string; projectId: string | null; executionWorkspaceId: string | null; assigneeAgentId: string | null; updatedAt: Date | string },
     comments: Array<{ body: string; authorAgentId: string | null; authorUserId: string | null; createdAt: Date | string }>,
     attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
   ): Promise<{ gate: string; reason: string } | null> {
@@ -529,7 +542,22 @@ export function issueRoutes(
       return isQA && NO_BROWSER_SURFACE_PATTERN.test(c.body);
     });
 
-    if (qaHasNoBrowserSurface) return null;
+    if (qaHasNoBrowserSurface) {
+      const exemptionComment = comments.find(c => {
+        const isQA = (qaAgentId && c.authorAgentId === qaAgentId) || (qaUserId && c.authorUserId === qaUserId);
+        return isQA && NO_BROWSER_SURFACE_PATTERN.test(c.body);
+      });
+      void logActivity(db, {
+        companyId: issue.companyId,
+        action: "issue.browse_evidence_exemption",
+        actorType: "agent",
+        actorId: qaAgentId ?? qaUserId ?? "unknown",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { gate: "done_requires_qa_browse_evidence", exemptionText: exemptionComment?.body?.slice(0, 500) },
+      });
+      return null;
+    }
 
     if (!hasImage) {
       return {
@@ -1587,6 +1615,36 @@ export function issueRoutes(
       }
     }
 
+    // Relay-duplication blocker: if an agent is creating an issue with the same
+    // parentId and a similar title to an existing open issue, reject with 409.
+    if (actor.actorType === "agent" && req.body.parentId && req.body.title) {
+      const normalizeTitle = (t: string) =>
+        t.replace(/^[A-Z]+-\d+\s*/, "").toLowerCase().trim().slice(0, 40);
+      const newNorm = normalizeTitle(req.body.title);
+      if (newNorm.length > 5) {
+        const siblings = await db
+          .select({ id: issues.id, title: issues.title, status: issues.status, identifier: issues.identifier })
+          .from(issues)
+          .where(and(eq(issues.parentId, req.body.parentId), eq(issues.companyId, companyId)));
+        const duplicate = siblings.find(
+          s =>
+            s.status !== "done" &&
+            s.status !== "cancelled" &&
+            normalizeTitle(s.title) === newNorm,
+        );
+        if (duplicate) {
+          res.status(409).json({
+            error: "relay_duplicate",
+            gate: "relay_duplication_blocker",
+            existingIssueId: duplicate.id,
+            existingIdentifier: duplicate.identifier,
+            message: `An open issue with a similar title already exists under the same parent (${duplicate.identifier}). Post a comment on the existing issue instead of creating a duplicate.`,
+          });
+          return;
+        }
+      }
+    }
+
     let issue;
     try {
       issue = await svc.create(companyId, {
@@ -2415,6 +2473,82 @@ export function issueRoutes(
       entityType: "issue",
       entityId: released.id,
     });
+
+    // QA FAIL auto-reassign: if a QA agent releases an issue after posting a
+    // FAIL verdict and the issue has no assignee, find the previous engineer
+    // and reassign to them. This prevents orphaned issues from QA drops.
+    if (req.actor.type === "agent" && !released.assigneeAgentId) {
+      const QA_FAIL_PATTERN = /\bqa[\s:]+fail\b/i;
+      const recentComments = await svc.listComments(released.id, { limit: 3, order: "desc" });
+      const hasQAFail = recentComments.some(
+        c => c.authorAgentId === req.actor.agentId && QA_FAIL_PATTERN.test(c.body),
+      );
+      if (hasQAFail) {
+        const checkoutHistory = await db
+          .select({ actorId: activityLog.actorId })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.entityId, released.id),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.action, "issue.checked_out"),
+              ne(activityLog.actorId, req.actor.agentId ?? ""),
+            ),
+          )
+          .orderBy(desc(activityLog.createdAt))
+          .limit(1);
+
+        const previousEngineerId = checkoutHistory[0]?.actorId;
+        if (previousEngineerId) {
+          const [prevAgent] = await db
+            .select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason })
+            .from(agents)
+            .where(eq(agents.id, previousEngineerId))
+            .limit(1);
+
+          if (prevAgent && isDispatchableAgent(prevAgent)) {
+            await db
+              .update(issues)
+              .set({
+                assigneeAgentId: previousEngineerId,
+                status: "in_progress",
+                activationRetriggerCount: 0,
+                updatedAt: new Date(),
+              })
+              .where(eq(issues.id, released.id));
+
+            await logActivity(db, {
+              companyId: released.companyId,
+              actorType: "system",
+              actorId: "qa_fail_auto_reassign",
+              action: "issue.qa_fail_auto_reassigned",
+              entityType: "issue",
+              entityId: released.id,
+              details: {
+                fromAgentId: req.actor.agentId,
+                toAgentId: previousEngineerId,
+                reason: "QA FAIL with release left issue unassigned — auto-reassigning to previous engineer",
+              },
+            });
+
+            void queueIssueAssignmentWakeup({
+              heartbeat,
+              issue: { ...released, assigneeAgentId: previousEngineerId, status: "in_progress" },
+              reason: "qa_fail_auto_reassign",
+              mutation: "update",
+              contextSource: "issue.release.qa_fail_auto_reassign",
+              requestedByActorType: "system",
+              requestedByActorId: "qa_fail_auto_reassign",
+            });
+
+            logger.info(
+              { issueId: released.id, fromAgent: req.actor.agentId, toAgent: previousEngineerId },
+              "auto-reassigned issue to previous engineer after QA FAIL release",
+            );
+          }
+        }
+      }
+    }
 
     res.json(released);
   });

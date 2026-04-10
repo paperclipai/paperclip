@@ -603,7 +603,16 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+    // Tiered sweeper frequencies: not all sweepers need to run every tick.
+    // Start at -1 so the first increment gives 0, which satisfies all modulo
+    // conditions (0 % N === 0). This ensures every sweeper fires on the first
+    // tick after startup — important because process-lost recovery needs to run
+    // immediately after a deploy restart.
+    let sweepTickCount = -1;
+
     setInterval(() => {
+      sweepTickCount++;
+
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
@@ -625,9 +634,9 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+
+      // --- Every tick (30s) — critical path ---
+
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
@@ -635,7 +644,6 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
 
-      // Sweep stale execution locks from issues whose runs have terminated.
       void heartbeat
         .expireTerminatedRunLocks()
         .then((result) => {
@@ -647,7 +655,6 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "stale execution lock sweep failed");
         });
 
-      // Cancel queued runs whose target issue is done or cancelled.
       void heartbeat
         .cancelQueuedRunsForTerminalIssues()
         .then((result) => {
@@ -659,7 +666,6 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "terminal issue queued run sweep failed");
         });
 
-      // Retire workaround relays once their target lane has already advanced.
       void heartbeat
         .retireResolvedRelayIssues()
         .then((result) => {
@@ -671,53 +677,84 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "resolved relay retirement sweep failed");
         });
 
-      // Retrigger unpicked assignments past the SLA window.
-      void heartbeat
-        .sweepUnpickedAssignments()
-        .then((result) => {
-          if (result.retriggered > 0) {
-            logger.info({ ...result }, "retriggered unpicked assignments");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "unpicked assignment sweep failed");
-        });
+      // --- Every 4 ticks (~2m) — medium urgency ---
+      if (sweepTickCount % 4 === 0) {
+        void heartbeat
+          .enqueueProcessLostRetries()
+          .catch((err) => {
+            logger.error({ err }, "process_lost retry enqueue failed");
+          });
 
-      // Auto-recover agents stuck in error state from process_lost (deploy restarts).
-      void heartbeat
-        .recoverProcessLostAgents()
-        .then((result) => {
-          if (result.recovered > 0) {
-            logger.info({ ...result }, "auto-recovered process_lost agents");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "process_lost agent recovery sweep failed");
-        });
+        void heartbeat
+          .recoverProcessLostAgents()
+          .then((result) => {
+            if (result.recovered > 0) {
+              logger.info({ ...result }, "auto-recovered process_lost agents");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "process_lost agent recovery sweep failed");
+          });
 
-      // Expire stale agent sessions to prevent echo-chamber behavior.
-      void heartbeat
-        .expireStaleAgentSessions()
-        .then((result) => {
-          if (result.runtimeSessionsCleared > 0 || result.taskSessionsPruned > 0) {
-            logger.info({ ...result }, "stale agent session sweep completed");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "stale agent session sweep failed");
-        });
+        void heartbeat
+          .autoPromoteReviewReady()
+          .then((result) => {
+            if (result.promoted > 0) {
+              logger.info({ ...result }, "auto-promoted review-ready issues");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "auto-promote review-ready sweep failed");
+          });
+      }
 
-      // Detect issues closed via direct DB UPDATE (bypassing API gates).
-      void heartbeat
-        .detectDirectDbClosures()
-        .then((result) => {
-          if (result.detected > 0) {
-            logger.warn({ ...result }, "db-bypass closure detection sweep completed");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "db-bypass closure detection sweep failed");
-        });
+      // --- Every 10 ticks (~5m) — lower urgency ---
+      if (sweepTickCount % 10 === 0) {
+        void heartbeat
+          .sweepUnpickedAssignments()
+          .then((result) => {
+            if (result.retriggered > 0) {
+              logger.info({ ...result }, "retriggered unpicked assignments");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "unpicked assignment sweep failed");
+          });
+
+        void heartbeat
+          .detectDirectDbClosures()
+          .then((result) => {
+            if (result.detected > 0) {
+              logger.warn({ ...result }, "db-bypass closure detection sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "db-bypass closure detection sweep failed");
+          });
+      }
+
+      // --- Every 20 ticks (~10m) — owner liveness SLA ---
+      if (sweepTickCount % 20 === 0) {
+        void heartbeat
+          .sweepIdleOwnerIssues()
+          .catch((err) => {
+            logger.error({ err }, "idle owner SLA sweep failed");
+          });
+      }
+
+      // --- Every 60 ticks (~30m) — housekeeping ---
+      if (sweepTickCount % 60 === 0) {
+        void heartbeat
+          .expireStaleAgentSessions()
+          .then((result) => {
+            if (result.runtimeSessionsCleared > 0 || result.taskSessionsPruned > 0) {
+              logger.info({ ...result }, "stale agent session sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "stale agent session sweep failed");
+          });
+      }
     }, config.heartbeatSchedulerIntervalMs);
   }
   

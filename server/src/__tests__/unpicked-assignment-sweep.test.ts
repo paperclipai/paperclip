@@ -215,7 +215,7 @@ describe("sweepUnpickedAssignments", () => {
   });
 
   it("skips an issue that has reached max retrigger count", async () => {
-    await seedIssueFixture({ activationRetriggerCount: 3 });
+    await seedIssueFixture({ activationRetriggerCount: 5 });
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.sweepUnpickedAssignments();

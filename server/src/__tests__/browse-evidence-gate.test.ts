@@ -316,8 +316,12 @@ describe("engineer browse evidence gate", () => {
     );
   });
 
-  it("agent → in_review, stale evidence (before updatedAt) → 422", async () => {
+  it("agent → in_review, evidence uploaded before updatedAt → 200 (no time window)", async () => {
+    // Previously this returned 422 because evidence was anchored to issue.updatedAt.
+    // The time window was removed to prevent gate traps where repeated failed attempts
+    // bump updatedAt and progressively invalidate all prior evidence.
     mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "in_review" });
     mockIssueService.listComments.mockResolvedValue([
       {
         body: "browser-test headless http://localhost:3000 — screenshot saved",
@@ -340,8 +344,7 @@ describe("engineer browse evidence gate", () => {
       .patch(`/api/issues/${codeIssue.id}`)
       .send({ status: "in_review", comment: "Ready for review" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.gate).toBe("in_review_requires_browse_evidence");
+    expect(res.status).toBe(200);
   });
 
   it("agent → in_review, browse evidence in inline PATCH comment + image → 200", async () => {

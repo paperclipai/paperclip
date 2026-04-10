@@ -3632,15 +3632,22 @@ export function heartbeatService(db: Db) {
         // on status or assignee changes.
         // Board user wakeups bypass backoff — a human comment is an explicit instruction
         // that should always reach the agent regardless of prior gate failures.
-        const GATE_BLOCK_THRESHOLD = 3;
+        // Exponential backoff: after threshold, skip 2^(blocks - threshold) ticks
+        // before retrying (capped at 16 = ~8 min at 30s intervals).
+        const GATE_BLOCK_THRESHOLD = 2;
+        const GATE_BLOCK_MAX_SKIP = 16;
         const isBoardUserWake = opts.requestedByActorType === "user";
         if (issue.gateBlockCount >= GATE_BLOCK_THRESHOLD && !isBoardUserWake) {
+          const skipTicks = Math.min(
+            Math.pow(2, issue.gateBlockCount - GATE_BLOCK_THRESHOLD),
+            GATE_BLOCK_MAX_SKIP,
+          );
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
             source,
             triggerDetail,
-            reason: `gate_block_backoff: ${issue.gateBlockCount} consecutive blocks`,
+            reason: `gate_block_backoff: ${issue.gateBlockCount} consecutive blocks (skip ${skipTicks} ticks)`,
             payload,
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -4425,6 +4432,7 @@ export function heartbeatService(db: Db) {
       // Find issues with an active execution lock whose run has already reached a terminal state
       // OR whose run has been stuck in "queued" status past a staleness threshold.
       const STALE_QUEUED_LOCK_MS = 5 * 60 * 1000; // 5 minutes — matches reapOrphanedRuns threshold
+      const FORCE_EXPIRE_LOCK_MS = 15 * 60 * 1000; // 15 minutes — time-based self-heal fallback
       const now = new Date();
 
       const lockedIssues = await db
@@ -4432,6 +4440,7 @@ export function heartbeatService(db: Db) {
           issueId: issues.id,
           companyId: issues.companyId,
           executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
         })
         .from(issues)
         .where(isNotNull(issues.executionRunId));
@@ -4452,14 +4461,29 @@ export function heartbeatService(db: Db) {
           run.createdAt &&
           now.getTime() - new Date(run.createdAt).getTime() > STALE_QUEUED_LOCK_MS;
 
-        if (!isTerminal && !isStaleQueued) continue;
+        // Time-based self-heal: if the lock has persisted for >15 minutes regardless
+        // of run status, force-clear it. This catches edge cases where the run record
+        // is in a weird state (e.g. stuck "running" with no active process) that the
+        // normal terminal/stale-queued checks don't cover.
+        const isForceExpired =
+          !isTerminal &&
+          !isStaleQueued &&
+          row.executionLockedAt &&
+          now.getTime() - new Date(row.executionLockedAt).getTime() > FORCE_EXPIRE_LOCK_MS;
+
+        if (!isTerminal && !isStaleQueued && !isForceExpired) continue;
 
         await db
           .update(issues)
           .set({ executionLockedAt: null, executionRunId: null, executionAgentNameKey: null, updatedAt: now })
           .where(and(eq(issues.id, row.issueId), isNull(issues.checkoutRunId)));
 
-        if (isStaleQueued) {
+        if (isForceExpired) {
+          logger.warn(
+            { issueId: row.issueId, executionRunId: row.executionRunId, lockedAt: row.executionLockedAt, runStatus: run?.status },
+            "force-expired stale execution lock after 15m (run-lock self-heal)",
+          );
+        } else if (isStaleQueued) {
           // Also cancel the stale queued run so it doesn't re-lock on resumeQueuedRuns
           await db
             .update(heartbeatRuns)
@@ -4673,15 +4697,18 @@ export function heartbeatService(db: Db) {
 
     async sweepUnpickedAssignments() {
       const UNPICKED_SLA_MS = 8 * 60 * 1000; // 8 minutes
-      const MAX_RETRIGGERS = 3;
+      const MAX_RETRIGGERS = 5;
+      const RETRIGGER_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes — auto-reset after this
       const now = new Date();
       const cutoff = new Date(now.getTime() - UNPICKED_SLA_MS);
+      const cooldownCutoff = new Date(now.getTime() - RETRIGGER_COOLDOWN_MS);
 
       const candidates = await db
         .select({
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           activationRetriggerCount: issues.activationRetriggerCount,
+          updatedAt: issues.updatedAt,
         })
         .from(issues)
         .where(
@@ -4698,6 +4725,28 @@ export function heartbeatService(db: Db) {
       const retriggered: string[] = [];
       for (const issue of candidates) {
         if (!issue.assigneeAgentId) continue;
+
+        // Auto-reset: if the counter maxed out but the issue has been stale for
+        // 30+ minutes, reset to 0 and let the sweeper try again. This prevents
+        // permanent orphaning when agents take longer than expected between runs
+        // or when process_lost burns through retriggers during deploy restarts.
+        if (
+          issue.activationRetriggerCount >= MAX_RETRIGGERS &&
+          new Date(issue.updatedAt).getTime() <= cooldownCutoff.getTime()
+        ) {
+          await db
+            .update(issues)
+            .set({ activationRetriggerCount: 0, updatedAt: now })
+            .where(eq(issues.id, issue.id));
+          logger.info(
+            { issueId: issue.id, previousCount: issue.activationRetriggerCount },
+            "auto-reset maxed retrigger counter after 30m cooldown",
+          );
+          // Don't retrigger in the same tick — let the next sweep cycle pick it up
+          // with a fresh counter so the agent gets a clean dispatch window.
+          continue;
+        }
+
         if (issue.activationRetriggerCount >= MAX_RETRIGGERS) continue;
 
         const [agent] = await db
@@ -4802,6 +4851,13 @@ export function heartbeatService(db: Db) {
           .update(agents)
           .set({ status: "idle", updatedAt: new Date() })
           .where(eq(agents.id, agent.id));
+
+        // Clear stale session so the recovered agent starts fresh instead of
+        // resuming a half-finished LLM conversation from the crashed run.
+        await db
+          .update(agentRuntimeState)
+          .set({ sessionId: null, updatedAt: new Date() })
+          .where(eq(agentRuntimeState.agentId, agent.id));
 
         recovered.push(agent.name ?? agent.id);
 
@@ -5011,6 +5067,206 @@ export function heartbeatService(db: Db) {
         );
       }
       return { detected: bypassed.length, reverted: reverted.length };
+    },
+
+    /**
+     * Auto-promote issues stuck in `in_progress` that already have QA PASS evidence.
+     *
+     * When an agent tries to go directly from in_progress→done, the
+     * `done_requires_review_cycle` gate blocks because the issue never reached
+     * `in_review`. This sweeper detects that pattern and auto-transitions through
+     * in_progress→in_review→done, logging the promotion in the activity feed.
+     *
+     * Only fires for code issues (with executionWorkspaceId) that have been in
+     * in_progress for >5 minutes (debounce) and have a QA: PASS comment from
+     * a non-assignee agent.
+     */
+    async autoPromoteReviewReady() {
+      const QA_PASS_PATTERN = /\bqa[\s:]+pass(ed)?\b/i;
+      const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - DEBOUNCE_MS);
+
+      // Find code issues in in_progress that have been idle past the debounce window
+      const candidates = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          executionWorkspaceId: issues.executionWorkspaceId,
+          gateBlockCount: issues.gateBlockCount,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.status, "in_progress"),
+            isNotNull(issues.executionWorkspaceId),
+            isNotNull(issues.assigneeAgentId),
+            lte(issues.updatedAt, cutoff),
+            // Only consider issues that have hit gate blocks (signal they tried to skip review)
+            gt(issues.gateBlockCount, 0),
+          ),
+        );
+
+      const promoted: string[] = [];
+      for (const issue of candidates) {
+        // Check for QA: PASS from a non-assignee
+        const comments = await db
+          .select({
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issue.id));
+
+        const hasQAPass = comments.some(
+          c =>
+            (c.authorAgentId || c.authorUserId) &&
+            c.authorAgentId !== issue.assigneeAgentId &&
+            QA_PASS_PATTERN.test(c.body),
+        );
+
+        if (!hasQAPass) continue;
+
+        // Auto-promote: in_progress → in_review (system-level, bypasses gates intentionally).
+        // This is safe because: (1) the issue already has QA PASS from a non-assignee,
+        // (2) the only gate that matters here is the review cycle gate which this
+        // transition satisfies, (3) evidence/delivery gates apply on the subsequent
+        // in_review→done transition which goes through the normal PATCH handler.
+        // We do NOT attempt the done transition here — the next agent heartbeat
+        // will attempt it with all gates evaluated.
+        await db
+          .update(issues)
+          .set({ status: "in_review", gateBlockCount: 0, updatedAt: now })
+          .where(eq(issues.id, issue.id));
+
+        await logActivity(db, {
+          companyId: issue.companyId,
+          action: "issue.auto_review_cycle_promoted",
+          actorType: "system",
+          actorId: "auto_review_cycle_sweeper",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            from: "in_progress",
+            to: "in_review",
+            reason: "QA PASS exists but issue never reached in_review — auto-promoting to satisfy review cycle gate",
+          },
+        });
+
+        promoted.push(issue.id);
+      }
+
+      if (promoted.length > 0) {
+        logger.info(
+          { count: promoted.length, issueIds: promoted },
+          "auto-promoted issues with QA PASS from in_progress to in_review",
+        );
+      }
+      return { promoted: promoted.length };
+    },
+
+    /**
+     * Owner-liveness SLA: detect non-terminal issues idle with their assigned
+     * agent for too long and escalate.
+     *
+     * - 4h idle: post a warning comment on the issue mentioning the assigned agent
+     * - 8h idle: escalate to CTO via a comment (does not reassign — CTO can decide)
+     *
+     * Uses the activity log to track escalation state so no migration is needed.
+     * Skips `blocked` status issues (explicitly parked by the agent).
+     */
+    async sweepIdleOwnerIssues() {
+      const WARNING_MS = 4 * 60 * 60 * 1000; // 4 hours
+      const ESCALATION_MS = 8 * 60 * 60 * 1000; // 8 hours
+      const now = new Date();
+      const warningCutoff = new Date(now.getTime() - WARNING_MS);
+      const escalationCutoff = new Date(now.getTime() - ESCALATION_MS);
+
+      const candidates = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            isNotNull(issues.assigneeAgentId),
+            lte(issues.updatedAt, warningCutoff),
+          ),
+        );
+
+      let warned = 0;
+      let escalated = 0;
+
+      for (const issue of candidates) {
+        if (!issue.assigneeAgentId) continue;
+
+        // Check if we've already warned/escalated (avoid spamming).
+        // Use a 24h lookback window to prevent duplicate actions even if the issue
+        // remains idle across multiple sweep cycles. The warningCutoff (4h) is too
+        // short — prior actions would fall outside the window and re-trigger.
+        const dedupCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const priorActions = await db
+          .select({ action: activityLog.action })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.entityId, issue.id),
+              eq(activityLog.entityType, "issue"),
+              inArray(activityLog.action, ["issue.idle_owner_warning", "issue.idle_owner_escalation"]),
+              gte(activityLog.createdAt, dedupCutoff),
+            ),
+          );
+
+        const hasWarned = priorActions.some(a => a.action === "issue.idle_owner_warning");
+        const hasEscalated = priorActions.some(a => a.action === "issue.idle_owner_escalation");
+
+        const isEscalationDue =
+          new Date(issue.updatedAt).getTime() <= escalationCutoff.getTime();
+
+        if (isEscalationDue && !hasEscalated) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            action: "issue.idle_owner_escalation",
+            actorType: "system",
+            actorId: "idle_owner_sweeper",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              assigneeAgentId: issue.assigneeAgentId,
+              idleHours: Math.round((now.getTime() - new Date(issue.updatedAt).getTime()) / 3600000),
+              reason: "Issue idle for 8+ hours — escalating to management",
+            },
+          });
+          escalated++;
+        } else if (!hasWarned) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            action: "issue.idle_owner_warning",
+            actorType: "system",
+            actorId: "idle_owner_sweeper",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              assigneeAgentId: issue.assigneeAgentId,
+              idleHours: Math.round((now.getTime() - new Date(issue.updatedAt).getTime()) / 3600000),
+              reason: "Issue idle for 4+ hours — please update status or escalate",
+            },
+          });
+          warned++;
+        }
+      }
+
+      if (warned > 0 || escalated > 0) {
+        logger.info({ warned, escalated }, "idle owner SLA sweep completed");
+      }
+      return { warned, escalated };
     },
   };
 }

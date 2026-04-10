@@ -174,8 +174,23 @@ describe("gate-block backoff", () => {
     expect(skipped!.status).toBe("skipped");
   });
 
-  it("allows issue-specific wakeup when gateBlockCount < 3", async () => {
+  it("skips issue-specific wakeup at exact threshold boundary (gateBlockCount = 2)", async () => {
     const { agentId, issueId } = await seedIssueWithGateBlocks({ gateBlockCount: 2 });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "test",
+      reason: "assignment",
+      contextSnapshot: { issueId },
+    });
+
+    // gateBlockCount of 2 === threshold, should be skipped
+    expect(result).toBeNull();
+  });
+
+  it("allows issue-specific wakeup when gateBlockCount < 2", async () => {
+    const { agentId, issueId } = await seedIssueWithGateBlocks({ gateBlockCount: 1 });
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.wakeup(agentId, {

@@ -57,13 +57,21 @@ export function prepareDiff(rawDiff, maxBytes = MAX_DIFF_BYTES) {
   };
 }
 
-export function buildUserPrompt({ title, body, filesChanged, additions, deletions, diff, truncated }) {
+function formatStructuredContext(label, raw) {
+  const text = String(raw || "").trim();
+  if (!text || text === "[]") return "";
+  return `### ${label}\n\`\`\`json\n${text}\n\`\`\``;
+}
+
+export function buildUserPrompt({ title, body, filesChanged, additions, deletions, diff, truncated, reviewComments, reviews }) {
   return [
     `PR: ${title}`,
     body ? `Description:\n${body}` : "",
     `Files changed: ${filesChanged}`,
     `Additions: ${additions}`,
     `Deletions: ${deletions}`,
+    formatStructuredContext("Inline Review Comments", reviewComments),
+    formatStructuredContext("Top-Level Reviews", reviews),
     truncated ? "Diff was truncated." : "",
     "Diff:",
     "```diff",
@@ -179,10 +187,10 @@ export function parseVerdict(raw) {
   }
 }
 
-export async function runReview({ apiKey, diff: rawDiff, title, body, filesChanged, additions, deletions }) {
+export async function runReview({ apiKey, diff: rawDiff, title, body, filesChanged, additions, deletions, reviewComments, reviews }) {
   if (!apiKey) throw new Error("MINIMAX_API_KEY is required");
   const { diff, truncated } = prepareDiff(rawDiff);
-  const userPrompt = buildUserPrompt({ title, body, filesChanged, additions, deletions, diff, truncated });
+  const userPrompt = buildUserPrompt({ title, body, filesChanged, additions, deletions, diff, truncated, reviewComments, reviews });
   const responseText = await callMiniMax(apiKey, SYSTEM_PROMPT, userPrompt);
   const result = parseVerdict(responseText);
 
@@ -212,6 +220,8 @@ async function main() {
       filesChanged: process.env.PR_FILES_CHANGED || "",
       additions: process.env.PR_ADDITIONS || "",
       deletions: process.env.PR_DELETIONS || "",
+      reviewComments: readInput("PR_REVIEW_COMMENTS"),
+      reviews: readInput("PR_REVIEWS"),
     });
     console.log(JSON.stringify(result));
   } catch (error) {
