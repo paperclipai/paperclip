@@ -53,3 +53,5 @@ Or update it later:
 ```sh
 pnpm paperclipai configure --section server
 ```
+
+Maintaining a Chinese enterprise fork? See [zh-enterprise upstream sync](/deploy/zh-enterprise-upstream-sync).

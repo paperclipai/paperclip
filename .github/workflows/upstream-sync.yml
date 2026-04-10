@@ -1,0 +1,172 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run upstream sync in dry-run mode without pushing a bot branch or opening a PR.
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: upstream-sync-zh-enterprise
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BASE_BRANCH: zh-enterprise
+      MAINTENANCE_REF: origin/zh-enterprise
+      UPSTREAM_REF: upstream/master
+      LLM_API_BASE: ${{ vars.LLM_API_BASE }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/paperclip-ai/paperclip.git
+          else
+            git remote add upstream https://github.com/paperclip-ai/paperclip.git
+          fi
+
+      - name: Fetch sync refs
+        run: |
+          git fetch --no-tags upstream master:refs/remotes/upstream/master
+          git fetch --no-tags origin zh-enterprise:refs/remotes/origin/zh-enterprise
+
+      - name: Run upstream sync
+        id: sync
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            pnpm sync:upstream -- --dry-run
+          else
+            pnpm sync:upstream
+          fi
+
+      - name: Upload upstream sync artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-sync-artifacts
+          path: |
+            ${{ steps.sync.outputs.report_path }}
+            ${{ steps.sync.outputs.pr_body_path }}
+            ${{ steps.sync.outputs.validation_log_path }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Configure git identity
+        if: steps.sync.outputs.ready_for_pr == 'true'
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
+
+      - name: Commit low-risk translation edits
+        if: steps.sync.outputs.ready_for_pr == 'true'
+        run: |
+          git add -A
+          git reset -- reports >/dev/null 2>&1 || true
+
+          if git diff --cached --quiet; then
+            echo "No additional working-tree changes to commit before push."
+            exit 0
+          fi
+
+          git commit -m "chore(i18n): apply low-risk upstream sync edits"
+
+      - name: Push bot branch
+        if: steps.sync.outputs.ready_for_pr == 'true'
+        env:
+          BRANCH_NAME: ${{ steps.sync.outputs.branch_name }}
+        run: |
+          git fetch --no-tags origin "$BRANCH_NAME:refs/remotes/origin/$BRANCH_NAME" || true
+          git push --force-with-lease origin "$BRANCH_NAME"
+
+      - name: Create or update pull request
+        id: upsert-pr
+        if: steps.sync.outputs.ready_for_pr == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          BRANCH_NAME: ${{ steps.sync.outputs.branch_name }}
+          PR_BODY_PATH: ${{ steps.sync.outputs.pr_body_path }}
+        run: |
+          upstream_sha="${BRANCH_NAME#bot-upgrade/}"
+          pr_title="chore(upstream): sync ${upstream_sha} into zh-enterprise"
+
+          pr_url="$({
+            gh pr list --state open --base zh-enterprise --head "$BRANCH_NAME" --json url,headRepositoryOwner \
+              --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url"
+          } | head -n 1)"
+
+          if [ -n "$pr_url" ]; then
+            gh pr edit "$pr_url" --title "$pr_title" --body-file "$PR_BODY_PATH"
+            echo "Reused existing PR: $pr_url"
+          else
+            pr_url="$(gh pr create \
+              --base zh-enterprise \
+              --head "$BRANCH_NAME" \
+              --title "$pr_title" \
+              --body-file "$PR_BODY_PATH")"
+            echo "Created new PR: $pr_url"
+          fi
+
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Fail when sync needs maintainer action
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.status }}
+          VALIDATION_STATUS: ${{ steps.sync.outputs.validation_status }}
+          STEP_OUTCOME: ${{ steps.sync.outcome }}
+        run: |
+          echo "upstream-sync step outcome: $STEP_OUTCOME"
+          echo "status: ${STATUS:-<empty>}"
+          echo "validation_status: ${VALIDATION_STATUS:-<empty>}"
+
+          case "$STATUS" in
+            no-op|dry-run)
+              exit 0
+              ;;
+            replayed)
+              if [ "$VALIDATION_STATUS" = "passed" ]; then
+                exit 0
+              fi
+              ;;
+          esac
+
+          echo "Upstream sync requires maintainer follow-up. See uploaded artifacts for details."
+          exit 1

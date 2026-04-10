@@ -86,7 +86,8 @@
               "deploy/database",
               "deploy/secrets",
               "deploy/storage",
-              "deploy/environment-variables"
+              "deploy/environment-variables",
+              "deploy/zh-enterprise-upstream-sync"
             ]
           }
         ]

@@ -1,0 +1,85 @@
+name: Upstream Sync PR
+
+on:
+  pull_request:
+    branches:
+      - zh-enterprise
+
+concurrency:
+  group: upstream-sync-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: startsWith(github.head_ref, 'bot-upgrade/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      BASE_BRANCH: zh-enterprise
+      MAINTENANCE_REF: HEAD
+      UPSTREAM_REF: upstream/master
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/paperclip-ai/paperclip.git
+          else
+            git remote add upstream https://github.com/paperclip-ai/paperclip.git
+          fi
+
+      - name: Fetch sync refs
+        run: |
+          git fetch --no-tags upstream master:refs/remotes/upstream/master
+          git fetch --no-tags origin zh-enterprise:refs/remotes/origin/zh-enterprise
+
+      - name: Regenerate upstream sync report artifacts
+        continue-on-error: true
+        run: pnpm sync:upstream -- --dry-run --maintenance-ref HEAD
+
+      - name: Run upstream sync PR validation suite
+        run: |
+          node --input-type=module <<'NODE'
+          import { runValidationSuite } from './scripts/upstream-sync/lib/validation.mjs';
+
+          const summary = await runValidationSuite({
+            artifactPath: 'reports/upstream-sync-validation-log.json',
+          });
+
+          console.log(`validation status: ${summary.status}`);
+          process.exitCode = summary.status === 'passed' ? 0 : 1;
+          NODE
+
+      - name: Upload upstream sync PR artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-sync-pr-artifacts
+          path: |
+            reports/upstream-sync-report.json
+            reports/upstream-sync-pr-body.md
+            reports/upstream-sync-validation-log.json
+          if-no-files-found: warn
+          retention-days: 14
