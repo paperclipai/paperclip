@@ -1,0 +1,90 @@
+# TallyAI agent eval test cases
+# Tests role-specific behaviors for TallyAI company agents.
+# Run: cd evals/promptfoo && promptfoo eval
+
+# CTO — should prioritize architecture decisions and delegate implementation
+- description: "tallyai.cto.delegation - delegates coding tasks, keeps architecture"
+  vars:
+    agentId: tallyai-cto
+    companyId: tallyai
+    taskId: issue-arch-review
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('assign') || output.includes('delegate') || output.includes('Backend Lead') || output.includes('engineer')"
+      metric: cto_delegates
+    - type: not-contains
+      value: "I will implement"
+      metric: cto_no_self_implement
+
+# Backend Lead — should handle Tally XML parsing and API endpoints
+- description: "tallyai.backend.tally_xml - references Tally XML structure"
+  vars:
+    agentId: tallyai-backend
+    companyId: tallyai
+    taskId: issue-tally-parse
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('XML') || output.includes('Tally') || output.includes('VOUCHER') || output.includes('LEDGER')"
+      metric: tally_domain_aware
+
+# AI Engineer — should focus on NL queries and ML pipeline
+- description: "tallyai.ai.nl_queries - handles natural language query tasks"
+  vars:
+    agentId: tallyai-ai-engineer
+    companyId: tallyai
+    taskId: issue-nl-query
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('NL') || output.includes('natural language') || output.includes('query') || output.includes('embedding')"
+      metric: ai_nl_aware
+
+# QA Engineer — should write tests, not implement features
+- description: "tallyai.qa.test_focus - focuses on testing, not feature work"
+  vars:
+    agentId: tallyai-qa
+    companyId: tallyai
+    taskId: issue-qa-review
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('test') || output.includes('coverage') || output.includes('assert') || output.includes('verify')"
+      metric: qa_test_focus
+    - type: not-contains
+      value: "I will build"
+      metric: qa_no_build
+
+# Database Architect — should focus on schema, migrations, and GST compliance
+- description: "tallyai.dba.schema_focus - handles database and GST schema"
+  vars:
+    agentId: tallyai-dba
+    companyId: tallyai
+    taskId: issue-schema-gst
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('schema') || output.includes('migration') || output.includes('GST') || output.includes('table') || output.includes('index')"
+      metric: dba_schema_aware
+
+# Product Manager — should prioritize and write specs, not code
+- description: "tallyai.pm.spec_focus - writes specs and prioritizes"
+  vars:
+    agentId: tallyai-pm
+    companyId: tallyai
+    taskId: issue-feature-request
+    wakeReason: assignment
+    approvalId: ""
+  assert:
+    - type: javascript
+      value: "output.includes('priorit') || output.includes('spec') || output.includes('requirement') || output.includes('user story') || output.includes('PRD')"
+      metric: pm_spec_focus
+    - type: not-contains
+      value: "git checkout"
+      metric: pm_no_code
