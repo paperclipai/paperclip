@@ -200,6 +200,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.mkdir(expectedPackageDir, { recursive: true });
     await fs.mkdir(stalePackageDir, { recursive: true });
     await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links\n", "utf8");
     await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
     await fs.writeFile(
       path.join(repoRoot, "server", "package.json"),
@@ -235,6 +236,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
     await fs.mkdir(expectedPackageDir, { recursive: true });
     await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links-current\n", "utf8");
     await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
     await fs.writeFile(
       path.join(repoRoot, "server", "package.json"),
@@ -254,6 +256,45 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
 
     await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+  });
+
+  it("skips relinking outside linked git worktrees", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-stale-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+    const stalePackageDir = path.join(staleRoot, "db");
+
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(stalePackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(stalePackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+    expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(stalePackageDir));
   });
 });
 

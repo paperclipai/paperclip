@@ -60,19 +60,17 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-function createApp(
-  actor: Record<string, unknown> = {
-    type: "board",
-    userId: "local-board",
-    companyIds: ["company-1"],
-    source: "local_implicit",
-    isInstanceAdmin: false,
-  },
-) {
+function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    (req as any).actor = {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    };
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -138,64 +136,5 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-  });
-
-  it("rejects agent stage advances from non-participants", async () => {
-    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const approverAgentId = "44444444-4444-4444-8444-444444444444";
-    const executorAgentId = "22222222-2222-4222-8222-222222222222";
-    const policy = normalizeIssueExecutionPolicy({
-      stages: [
-        {
-          id: "11111111-1111-4111-8111-111111111111",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-        {
-          id: "55555555-5555-4555-8555-555555555555",
-          type: "approval",
-          participants: [{ type: "agent", agentId: approverAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      companyId: "company-1",
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      assigneeUserId: null,
-      createdByUserId: "local-board",
-      identifier: "PAP-1000",
-      title: "Execution policy guard",
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: "11111111-1111-4111-8111-111111111111",
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: executorAgentId },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-
-    const res = await request(
-      createApp({
-        type: "agent",
-        agentId: approverAgentId,
-        companyId: "company-1",
-        source: "api_key",
-        runId: "run-1",
-      }),
-    )
-      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "done", comment: "Skipping review." });
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("active review participant");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

@@ -707,6 +707,18 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+function shouldRequireIssueCommentForWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  return (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  );
+}
+
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
@@ -2011,18 +2023,6 @@ export function heartbeatService(db: Db) {
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
-    const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
-    if (wakeReason === "issue_commented" || wakeReason === "issue_comment_mentioned" || wakeReason === "issue_reopened_via_comment") {
-      if (run.issueCommentStatus !== "not_applicable") {
-        await patchRunIssueCommentStatus(run.id, {
-          issueCommentStatus: "not_applicable",
-          issueCommentSatisfiedByCommentId: null,
-          issueCommentRetryQueuedAt: null,
-        });
-      }
-      return { outcome: "not_applicable" as const, queuedRun: null };
-    }
-
     const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
     if (postedComment) {
       await patchRunIssueCommentStatus(run.id, {
@@ -2045,6 +2045,17 @@ export function heartbeatService(db: Db) {
         message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
+    }
+
+    if (!shouldRequireIssueCommentForWake(contextSnapshot)) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
     const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);

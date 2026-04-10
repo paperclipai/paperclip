@@ -222,6 +222,18 @@ async function flush() {
   });
 }
 
+async function waitForValue<T>(getValue: () => T | null | undefined, attempts = 10): Promise<T> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const value = getValue();
+    if (value != null) {
+      return value;
+    }
+    await flush();
+  }
+
+  throw new Error("Timed out waiting for value");
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -372,6 +384,24 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the mobile dialog bounded with an internal flexible scroll region", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+    );
+    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("overflow-hidden");
+
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
+    const descriptionScrollRegion = descriptionInput?.parentElement?.parentElement;
+    expect(descriptionScrollRegion?.className).toContain("flex-1");
+    expect(descriptionScrollRegion?.className).toContain("overflow-y-auto");
+
+    act(() => root.unmount());
+  });
+
   it("warns when a sub-issue stops matching the parent workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -418,16 +448,17 @@ describe("NewIssueDialog", () => {
 
     const { root } = renderDialog(container);
     await flush();
+    await flush();
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
 
-    const selects = Array.from(container.querySelectorAll("select"));
-    const modeSelect = selects[0] as HTMLSelectElement | undefined;
-    expect(modeSelect).not.toBeUndefined();
+    const modeSelect = await waitForValue(
+      () => container.querySelector("select") as HTMLSelectElement | null,
+    );
 
     await act(async () => {
-      modeSelect!.value = "shared_workspace";
-      modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+      modeSelect.value = "shared_workspace";
+      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
 

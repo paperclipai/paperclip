@@ -14,23 +14,27 @@ import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
+  filterInboxIssues,
   getAvailableInboxIssueColumns,
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
+  groupInboxWorkItems,
   isInboxEntityDismissed,
   isMineInboxTab,
   loadInboxIssueColumns,
   loadLastInboxTab,
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
+  resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
   saveInboxIssueColumns,
   saveLastInboxTab,
   shouldShowInboxSection,
+  type InboxWorkItem,
 } from "./inbox";
 
 const storage = new Map<string, string>();
@@ -335,7 +339,6 @@ describe("inbox helpers", () => {
     });
 
     expect(result.mineIssues).toBe(1);
-    // inbox = mineIssues(1) + agent-error alert(1) + budget alert(1)
     expect(result.inbox).toBe(3);
   });
 
@@ -492,7 +495,7 @@ describe("inbox helpers", () => {
       approvals: [],
     });
 
-    expect(items.map((i) => (i.kind === "issue" ? i.issue.id : ""))).toEqual([
+    expect(items.map((item) => (item.kind === "issue" ? item.issue.id : ""))).toEqual([
       "recent",
       "older",
     ]);
@@ -550,6 +553,19 @@ describe("inbox helpers", () => {
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
+  });
+
+  it("keeps nesting enabled on desktop when the saved preference is on", () => {
+    expect(resolveInboxNestingEnabled(true, false)).toBe(true);
+  });
+
+  it("forces nesting off on mobile even when the saved preference is on", () => {
+    expect(resolveInboxNestingEnabled(true, true)).toBe(false);
+  });
+
+  it("keeps nesting off when the saved preference is off", () => {
+    expect(resolveInboxNestingEnabled(false, false)).toBe(false);
+    expect(resolveInboxNestingEnabled(false, true)).toBe(false);
   });
 
   it("defaults issue columns to the current inbox layout", () => {
@@ -686,5 +702,31 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(-1, 3, "previous")).toBe(0);
     expect(getInboxKeyboardSelectionIndex(0, 3, "next")).toBe(1);
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
+  });
+
+  it("hides routine execution issues until the toggle is enabled", () => {
+    const manualIssue = { ...makeIssue("manual", true), originKind: "manual" as const };
+    const routineIssue = { ...makeIssue("routine", true), originKind: "routine_execution" as const };
+
+    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue]);
+    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue, routineIssue]);
+  });
+
+  it("groups mixed inbox items by type while preserving item order within each group", () => {
+    const items: InboxWorkItem[] = [
+      { kind: "approval", timestamp: 4, approval: makeApproval("pending") },
+      { kind: "issue", timestamp: 3, issue: makeIssue("1", true) },
+      { kind: "issue", timestamp: 2, issue: makeIssue("2", false) },
+      { kind: "failed_run", timestamp: 1, run: makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z") },
+      { kind: "join_request", timestamp: 0, joinRequest: makeJoinRequest("join-1") },
+    ];
+
+    expect(groupInboxWorkItems(items, "none")).toEqual([{ key: "__all", label: null, items }]);
+    expect(groupInboxWorkItems(items, "type")).toEqual([
+      { key: "issue", label: "Issues", items: [items[1], items[2]] },
+      { key: "approval", label: "Approvals", items: [items[0]] },
+      { key: "failed_run", label: "Failed runs", items: [items[3]] },
+      { key: "join_request", label: "Join requests", items: [items[4]] },
+    ]);
   });
 });

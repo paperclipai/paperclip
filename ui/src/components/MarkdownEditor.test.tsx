@@ -3,7 +3,16 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { computeMentionMenuPosition, findMentionMatch, MarkdownEditor } from "./MarkdownEditor";
+import { buildSkillMentionHref } from "@paperclipai/shared";
+import {
+  computeMentionMenuPosition,
+  findClosestAutocompleteAnchor,
+  findMentionMatch,
+  isSameAutocompleteSession,
+  MarkdownEditor,
+  placeCaretAfterMentionAnchor,
+  shouldAcceptAutocompleteKey,
+} from "./MarkdownEditor";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -212,5 +221,95 @@ describe("MarkdownEditor", () => {
 
   it("still rejects slash commands once spaces are typed", () => {
     expect(findMentionMatch("/open issue", "/open issue".length)).toBeNull();
+  });
+
+  it("does not treat Enter as skill autocomplete accept", () => {
+    expect(shouldAcceptAutocompleteKey("Enter", "skill")).toBe(false);
+    expect(shouldAcceptAutocompleteKey("Enter", "skill", true)).toBe(true);
+    expect(shouldAcceptAutocompleteKey("Enter", "mention")).toBe(true);
+    expect(shouldAcceptAutocompleteKey("Tab", "skill")).toBe(true);
+  });
+
+  it("keeps the same autocomplete session active while the slash query is unchanged", () => {
+    const textNode = document.createTextNode("/agent");
+    expect(isSameAutocompleteSession(
+      {
+        trigger: "skill",
+        marker: "/",
+        query: "agent",
+        textNode,
+        atPos: 0,
+        endPos: 6,
+      },
+      {
+        trigger: "skill",
+        marker: "/",
+        query: "agent",
+        textNode,
+        atPos: 0,
+        endPos: 6,
+      },
+    )).toBe(true);
+
+    expect(isSameAutocompleteSession(
+      {
+        trigger: "skill",
+        marker: "/",
+        query: "agent",
+        textNode,
+        atPos: 0,
+        endPos: 6,
+      },
+      {
+        trigger: "skill",
+        marker: "/",
+        query: "agent-browser",
+        textNode,
+        atPos: 0,
+        endPos: 14,
+      },
+    )).toBe(false);
+  });
+
+  it("finds skill anchors by mention metadata instead of visible text", () => {
+    const editable = document.createElement("div");
+    const skillLink = document.createElement("a");
+    skillLink.setAttribute("href", buildSkillMentionHref("skill-123", "agent-browser"));
+    skillLink.textContent = "/agent-browser ";
+    editable.appendChild(skillLink);
+
+    const found = findClosestAutocompleteAnchor(editable, {
+      id: "skill:skill-123",
+      kind: "skill",
+      skillId: "skill-123",
+      key: "agent-browser",
+      name: "Agent Browser",
+      slug: "agent-browser",
+      description: null,
+      href: buildSkillMentionHref("skill-123", "agent-browser"),
+      aliases: ["agent-browser", "Agent Browser"],
+    });
+
+    expect(found).toBe(skillLink);
+  });
+
+  it("places the caret after the mention's trailing space when present", () => {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    document.body.appendChild(editable);
+
+    const skillLink = document.createElement("a");
+    skillLink.setAttribute("href", buildSkillMentionHref("skill-123", "agent-browser"));
+    skillLink.textContent = "/agent-browser";
+    const trailingSpace = document.createTextNode(" ");
+    editable.append(skillLink, trailingSpace);
+
+    expect(placeCaretAfterMentionAnchor(skillLink)).toBe(true);
+
+    const selection = window.getSelection();
+    expect(selection?.anchorNode).toBe(trailingSpace);
+    expect(selection?.anchorOffset).toBe(1);
+
+    editable.remove();
   });
 });

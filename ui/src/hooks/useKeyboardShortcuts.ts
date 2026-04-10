@@ -6,6 +6,7 @@ interface ShortcutHandlers {
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
+  onShowShortcuts?: () => void;
 }
 
 export function useKeyboardShortcuts({
@@ -13,13 +14,25 @@ export function useKeyboardShortcuts({
   onNewIssue,
   onToggleSidebar,
   onTogglePanel,
+  onShowShortcuts,
 }: ShortcutHandlers) {
   useEffect(() => {
     if (!enabled) return;
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) {
+        return;
+      }
+
       // Don't fire shortcuts when typing in inputs
       if (isKeyboardShortcutTextInputTarget(e.target)) {
+        return;
+      }
+
+      // ? → Show keyboard shortcuts cheatsheet
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        onShowShortcuts?.();
         return;
       }
 
@@ -44,5 +57,5 @@ export function useKeyboardShortcuts({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [enabled, onNewIssue, onToggleSidebar, onTogglePanel]);
+  }, [enabled, onNewIssue, onToggleSidebar, onTogglePanel, onShowShortcuts]);
 }

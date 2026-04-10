@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -157,6 +157,16 @@ function findWorkspaceRoot(startCwd: string) {
   }
 }
 
+function isLinkedGitWorktreeCheckout(rootDir: string) {
+  const gitMetadataPath = path.join(rootDir, ".git");
+  if (!existsSync(gitMetadataPath)) return false;
+
+  const stat = lstatSync(gitMetadataPath);
+  if (!stat.isFile()) return false;
+
+  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
+}
+
 function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   const packagePaths = new Map<string, string>();
   const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
@@ -228,6 +238,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 ) {
   const workspaceRoot = findWorkspaceRoot(startCwd);
   if (!workspaceRoot) return;
+  if (!isLinkedGitWorktreeCheckout(workspaceRoot)) return;
 
   const mismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
   if (mismatches.length === 0) return;
