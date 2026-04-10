@@ -254,7 +254,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
     }
 
     const logResult = await api.get<{ content: string; nextOffset?: number }>(
-      `/api/heartbeat-runs/${activeRunId}/log?offset=${logOffset}&limitBytes=16384`,
+      `/heartbeat-runs/${activeRunId}/log?offset=${logOffset}&limitBytes=16384`,
       { ignoreNotFound: true },
     );
     if (logResult && logResult.content) {

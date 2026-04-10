@@ -13,6 +13,7 @@ tmp-*
 cli/tmp/
 
 # Scratch/seed scripts (but not scripts/ dir)
+run-*.sh
 check-*.mjs
 !scripts/check-*.mjs
 new-agent*.json
