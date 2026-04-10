@@ -410,8 +410,51 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+/**
+ * Anthropic API-equivalent pricing per million tokens (USD).
+ * Used to impute a dollar cost for subscription-included runs so the UI
+ * shows what the usage *would* cost at standard API rates.
+ */
+const ANTHROPIC_PRICING_PER_MTOK: Record<string, { input: number; cachedInput: number; output: number }> = {
+  "claude-opus-4-6":           { input: 15,  cachedInput: 1.50, output: 75 },
+  "claude-sonnet-4-6":         { input: 3,   cachedInput: 0.30, output: 15 },
+  "claude-haiku-4-6":          { input: 0.80, cachedInput: 0.08, output: 4 },
+  "claude-sonnet-4-5-20250929": { input: 3,   cachedInput: 0.30, output: 15 },
+  "claude-haiku-4-5-20251001":  { input: 0.80, cachedInput: 0.08, output: 4 },
+};
+
+function estimateCostCentsFromTokens(
+  model: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  const pricing = ANTHROPIC_PRICING_PER_MTOK[model];
+  if (!pricing) return 0;
+  const cost =
+    (inputTokens / 1_000_000) * pricing.input +
+    (cachedInputTokens / 1_000_000) * pricing.cachedInput +
+    (outputTokens / 1_000_000) * pricing.output;
+  return Math.max(0, Math.round(cost * 100));
+}
+
+function normalizeBilledCostCents(
+  costUsd: number | null | undefined,
+  billingType: BillingType,
+  tokenEstimate?: { model: string; inputTokens: number; cachedInputTokens: number; outputTokens: number },
+): number {
+  if (billingType === "subscription_included") {
+    // Impute API-equivalent cost from token counts so the UI shows real usage cost
+    if (tokenEstimate) {
+      return estimateCostCentsFromTokens(
+        tokenEstimate.model,
+        tokenEstimate.inputTokens,
+        tokenEstimate.cachedInputTokens,
+        tokenEstimate.outputTokens,
+      );
+    }
+    return 0;
+  }
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
@@ -2455,7 +2498,13 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const model = result.model ?? "unknown";
+    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType, {
+      model,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    });
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -2487,7 +2536,7 @@ export function heartbeatService(db: Db) {
         provider,
         biller,
         billingType,
-        model: result.model ?? "unknown",
+        model,
         inputTokens,
         cachedInputTokens,
         outputTokens,
