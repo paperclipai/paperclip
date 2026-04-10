@@ -36,6 +36,7 @@ test('runUpstreamSync dry-run prepares a bot branch name without replaying commi
   const previousCwd = process.cwd();
   process.chdir(sandbox);
 
+  let validationCallCount = 0;
   const { calls, run } = createRunMock({
     '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
     '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c3\nc2\nc1\n',
@@ -57,19 +58,35 @@ test('runUpstreamSync dry-run prepares a bot branch name without replaying commi
         llmModel: undefined,
       },
       run,
+      runValidation: async () => {
+        validationCallCount += 1;
+        return {
+          status: 'passed',
+          uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+          serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+          checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+          checks: [],
+          logPath: 'reports/upstream-sync-validation-log.json',
+        };
+      },
     });
 
     assert.equal(result.status, 'dry-run');
     assert.equal(result.branchName, 'bot-upgrade/abc123def456');
+    assert.equal(result.validationStatus, 'passed');
+    assert.equal(result.readyForPr, false);
+    assert.equal(result.validationLogPath, 'reports/upstream-sync-validation-log.json');
     assert.deepEqual(result.commits, ['c3', 'c2', 'c1']);
     assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
     assert.equal(result.reportPath, 'reports/upstream-sync-report.json');
     assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
     const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
     assert.equal(report.branchName, 'bot-upgrade/abc123def456');
-    assert.equal(report.validationSummary.status, 'not-run');
-    assert.equal(report.validationSummary.checkI18n.status, 'not-run');
-    assert.match(fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8'), /bot-upgrade\/abc123def456/);
+    assert.equal(report.validationSummary.status, 'passed');
+    assert.equal(report.readyForPr, false);
+    assert.equal(report.validationLogPath, 'reports/upstream-sync-validation-log.json');
+    assert.match(fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8'), /ui typecheck: `passed`/);
+    assert.equal(validationCallCount, 1);
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
       { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
@@ -86,6 +103,7 @@ test('runUpstreamSync replays commits when not in dry-run mode', async () => {
   const previousCwd = process.cwd();
   process.chdir(sandbox);
 
+  let validationCallCount = 0;
   const { calls, run } = createRunMock({
     '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
     '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\nc2\n',
@@ -110,13 +128,32 @@ test('runUpstreamSync replays commits when not in dry-run mode', async () => {
         llmModel: undefined,
       },
       run,
+      runValidation: async () => {
+        validationCallCount += 1;
+        return {
+          status: 'passed',
+          uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+          serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+          checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+          checks: [],
+          logPath: 'reports/upstream-sync-validation-log.json',
+        };
+      },
     });
 
     assert.equal(result.status, 'replayed');
+    assert.equal(result.validationStatus, 'passed');
+    assert.equal(result.readyForPr, true);
+    assert.equal(result.validationLogPath, 'reports/upstream-sync-validation-log.json');
     assert.deepEqual(result.commits, ['c1', 'c2']);
     assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
     assert.equal(result.reportPath, 'reports/upstream-sync-report.json');
     assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.validationSummary.status, 'passed');
+    assert.equal(report.readyForPr, true);
+    assert.match(fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8'), /server typecheck: `passed`/);
+    assert.equal(validationCallCount, 1);
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
       { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
@@ -136,6 +173,7 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
   const previousCwd = process.cwd();
   process.chdir(sandbox);
 
+  let validationCallCount = 0;
   const { calls, run } = createRunMock({
     '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
     '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\nc2\n',
@@ -163,6 +201,17 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
         llmModel: undefined,
       },
       run,
+      runValidation: async () => {
+        validationCallCount += 1;
+        return {
+          status: 'passed',
+          uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+          serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+          checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+          checks: [],
+          logPath: 'reports/upstream-sync-validation-log.json',
+        };
+      },
     });
 
     assert.equal(result.status, 'conflict');
@@ -175,12 +224,16 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
     assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
     const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
     assert.equal(report.status, 'conflict');
+    assert.equal(report.validationSummary.status, 'not-run');
+    assert.equal(report.validationSummary.reason, 'replay-conflict');
+    assert.equal(report.readyForPr, false);
     assert.deepEqual(report.conflictDiagnostics, {
       failingCommit: 'c2',
       status: 'UU scripts/upstream-sync/lib/orchestrator.mjs\n',
       conflicts: ['scripts/upstream-sync/lib/orchestrator.mjs'],
       failingCommitSummary: 'c2 conflict commit summary\n',
     });
+    assert.equal(validationCallCount, 0);
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
       { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
@@ -242,6 +295,61 @@ test('runUpstreamSync rethrows non-conflict replay failures', async () => {
       { command: 'git', args: ['cherry-pick', 'c2'] },
       { command: 'git', args: ['diff', '--name-only', '--diff-filter=U'] },
     ]);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('runUpstreamSync writes validation failures to report artifacts without throwing', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`validation-report-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const { run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+    '{"command":"git","args":["cherry-pick","c1"]}': '',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      runValidation: async () => ({
+        status: 'failed',
+        uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+        serverTypecheck: { status: 'failed', summary: 'Server typecheck failed with exit code 1.', exitCode: 1 },
+        checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+        checks: [],
+        logPath: 'reports/upstream-sync-validation-log.json',
+      }),
+    });
+
+    assert.equal(result.status, 'replayed');
+    assert.equal(result.validationStatus, 'failed');
+    assert.equal(result.readyForPr, false);
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.validationSummary.status, 'failed');
+    assert.equal(report.readyForPr, false);
+    const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
+    assert.match(prBody, /overall: `failed`/);
+    assert.match(prBody, /server typecheck: `failed`/);
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(sandboxRoot, { recursive: true, force: true });

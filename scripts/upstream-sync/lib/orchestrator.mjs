@@ -12,6 +12,7 @@ import {
 } from './git-ops.mjs';
 import { renderPrBody } from './pr-body.mjs';
 import { scanAndMaybeTranslateLowRisk } from './translate-low-risk.mjs';
+import { createSkippedValidationSummary, runValidationSuite, VALIDATION_LOG_PATH } from './validation.mjs';
 
 const execFile = promisify(execFileCallback);
 const REPORT_PATH = 'reports/upstream-sync-report.json';
@@ -54,16 +55,6 @@ async function resolveBotBranchName({ run, branchPrefix, upstreamRef }) {
   return `${branchPrefix}/${shortSha}`;
 }
 
-function createValidationSummary() {
-  return {
-    status: 'not-run',
-    checkI18n: {
-      status: 'not-run',
-      summary: 'Task 5 will populate check:i18n results.',
-    },
-  };
-}
-
 function createSkippedLocalizationSummary(reason) {
   return {
     localizationSummary: {
@@ -91,17 +82,22 @@ function buildReport({
   diagnostics,
   localizationResult,
   validationSummary,
+  readyForPr,
+  validationLogPath,
 }) {
   return {
     branchName,
     status,
     commits,
+    dryRun: config.dryRun,
+    readyForPr,
     upstreamRef: config.upstreamRef,
     maintenanceRef: config.maintenanceRef,
     conflictDiagnostics: diagnostics ?? null,
     localizationSummary: localizationResult.localizationSummary,
     translationSummary: localizationResult.translationSummary,
     validationSummary,
+    validationLogPath,
   };
 }
 
@@ -109,6 +105,7 @@ export async function runUpstreamSync({
   config,
   run = createGitRunner(),
   scanLocalization = scanAndMaybeTranslateLowRisk,
+  runValidation = runValidationSuite,
   renderPrBodyContent = renderPrBody,
 } = {}) {
   const commits = await listMaintenanceCommits({
@@ -156,10 +153,15 @@ export async function runUpstreamSync({
     }
   }
 
-  const validationSummary = createValidationSummary();
   const localizationResult = status === 'conflict'
     ? createSkippedLocalizationSummary('replay-conflict')
     : await scanLocalization({ config, run });
+  const validationSummary = status === 'conflict'
+    ? createSkippedValidationSummary('replay-conflict')
+    : await runValidation({ artifactPath: VALIDATION_LOG_PATH });
+  const validationStatus = validationSummary.status;
+  const validationLogPath = validationSummary.logPath ?? '';
+  const readyForPr = !config.dryRun && status !== 'conflict' && validationStatus === 'passed';
 
   const report = buildReport({
     config,
@@ -169,6 +171,8 @@ export async function runUpstreamSync({
     diagnostics,
     localizationResult,
     validationSummary,
+    readyForPr,
+    validationLogPath,
   });
 
   const reportPath = REPORT_PATH;
@@ -183,6 +187,9 @@ export async function runUpstreamSync({
     reportPath,
     prBodyPath,
     status,
+    validationStatus,
+    validationLogPath,
+    readyForPr,
     diagnostics,
     report,
   };

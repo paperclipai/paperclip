@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { renderPrBody } from './pr-body.mjs';
 
-test('renderPrBody includes replay status, translated files, validation placeholder, and manual review items', () => {
+test('renderPrBody includes replay status, translated files, validation results, and manual review items', () => {
   const body = renderPrBody({
     branchName: 'bot-upgrade/abc123def456',
     status: 'replayed',
@@ -19,10 +19,18 @@ test('renderPrBody includes replay status, translated files, validation placehol
       translatedEntryCount: 2,
     },
     validationSummary: {
-      status: 'not-run',
+      status: 'failed',
+      uiTypecheck: {
+        status: 'passed',
+        summary: 'UI typecheck passed.',
+      },
+      serverTypecheck: {
+        status: 'failed',
+        summary: 'Server typecheck failed with exit code 1.',
+      },
       checkI18n: {
-        status: 'not-run',
-        summary: 'Task 5 will populate check:i18n results.',
+        status: 'passed',
+        summary: 'check:i18n passed.',
       },
     },
     localizationSummary: {
@@ -51,7 +59,10 @@ test('renderPrBody includes replay status, translated files, validation placehol
   assert.match(body, /## Auto-translated files/);
   assert.match(body, /ui\/src\/lib\/inbox-copy\.ts/);
   assert.match(body, /## Validation/);
-  assert.match(body, /check:i18n: `not-run` — Task 5 will populate check:i18n results\./);
+  assert.match(body, /overall: `failed`/);
+  assert.match(body, /ui typecheck: `passed` — UI typecheck passed\./);
+  assert.match(body, /server typecheck: `failed` — Server typecheck failed with exit code 1\./);
+  assert.match(body, /check:i18n: `passed` — check:i18n passed\./);
   assert.match(body, /## Manual review items/);
   assert.match(body, /docs\/start\/quickstart-zh-cn\.md/);
   assert.match(body, /legacyCta/);

@@ -27,6 +27,10 @@ function formatManualReviewItem(item) {
   return `- review: \`${item.path}\``;
 }
 
+function formatValidationLine(label, check, fallbackSummary) {
+  return `- ${label}: \`${check?.status ?? 'not-run'}\` — ${check?.summary ?? fallbackSummary}`;
+}
+
 export function renderPrBody({
   branchName,
   status,
@@ -40,7 +44,11 @@ export function renderPrBody({
 }) {
   const translatedFiles = translationSummary.translatedFiles ?? [];
   const manualReviewItems = localizationSummary.manualReviewItems ?? [];
-  const checkI18n = validationSummary.checkI18n ?? { status: 'not-run', summary: 'Task 5 will populate check:i18n results.' };
+  const uiTypecheck = validationSummary.uiTypecheck ?? { status: 'not-run', summary: 'UI typecheck not run.' };
+  const serverTypecheck = validationSummary.serverTypecheck ?? { status: 'not-run', summary: 'Server typecheck not run.' };
+  const checkI18n = validationSummary.checkI18n ?? { status: 'not-run', summary: 'check:i18n not run.' };
+  const validationReason = validationSummary.reason ? `- reason: \`${validationSummary.reason}\`` : null;
+  const validationLogLine = validationSummary.logPath ? `- log artifact: \`${validationSummary.logPath}\`` : null;
 
   return [
     '# Upstream sync',
@@ -61,7 +69,11 @@ export function renderPrBody({
     '',
     '## Validation',
     `- overall: \`${validationSummary.status ?? 'not-run'}\``,
-    `- check:i18n: \`${checkI18n.status ?? 'not-run'}\` — ${checkI18n.summary ?? 'Task 5 will populate check:i18n results.'}`,
+    ...(validationReason ? [validationReason] : []),
+    ...(validationLogLine ? [validationLogLine] : []),
+    formatValidationLine('ui typecheck', uiTypecheck, 'UI typecheck not run.'),
+    formatValidationLine('server typecheck', serverTypecheck, 'Server typecheck not run.'),
+    formatValidationLine('check:i18n', checkI18n, 'check:i18n not run.'),
     '',
     '## Manual review items',
     ...(manualReviewItems.length > 0 ? manualReviewItems.map(formatManualReviewItem) : ['- none']),
