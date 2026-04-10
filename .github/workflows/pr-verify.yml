@@ -17,35 +17,89 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect verification scope
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          changed_files="$(git diff --name-only "$base_sha" "$head_sha")"
+
+          run_full_verify=false
+          run_docker_verify=false
+
+          if [ -z "$changed_files" ]; then
+            run_full_verify=true
+            run_docker_verify=true
+          else
+            while IFS= read -r path; do
+              [ -z "$path" ] && continue
+
+              case "$path" in
+                Dockerfile|Dockerfile.*|docker/*|deploy/*|server/*|ui/*|packages/*|scripts/*|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.npmrc|tsconfig*.json)
+                  run_full_verify=true
+                  run_docker_verify=true
+                  ;;
+                .github/workflows/*|.github/actions/*|doc/*|docs/*|README.md|claude.md|AGENTS.md|.gitignore|.cursor/*|skills/*)
+                  ;;
+                *)
+                  run_full_verify=true
+                  ;;
+              esac
+            done <<< "$changed_files"
+          fi
+
+          {
+            echo "run_full_verify=$run_full_verify"
+            echo "run_docker_verify=$run_docker_verify"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
+        if: steps.changes.outputs.run_full_verify == 'true'
         uses: pnpm/action-setup@v4
         with:
           version: 9.15.4
 
       - name: Setup Node.js
+        if: steps.changes.outputs.run_full_verify == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
+        if: steps.changes.outputs.run_full_verify == 'true'
         run: pnpm install --no-frozen-lockfile
 
       - name: Typecheck
+        if: steps.changes.outputs.run_full_verify == 'true'
         run: pnpm -r typecheck
 
       - name: Run tests
+        if: steps.changes.outputs.run_full_verify == 'true'
         run: pnpm test:run
 
       - name: Build
+        if: steps.changes.outputs.run_full_verify == 'true'
         run: pnpm build
 
       - name: Verify Dockerfile.vps workspace coverage
+        if: steps.changes.outputs.run_docker_verify == 'true'
         run: node scripts/check-dockerfile-vps-coverage.mjs
 
       - name: Set up Docker Buildx
+        if: steps.changes.outputs.run_docker_verify == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Verify Dockerfile.vps build
+        if: steps.changes.outputs.run_docker_verify == 'true'
         run: docker build --load -f Dockerfile.vps -t paperclip-vps-verify .
+
+      - name: Skip heavy verification for non-runtime changes
+        if: steps.changes.outputs.run_full_verify != 'true'
+        run: echo "No runtime-affecting changes detected; skipping install, test, build, and Docker verification."
