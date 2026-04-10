@@ -81,4 +81,33 @@ describe("RunTranscriptView", () => {
       text: "Working on the task.",
     });
   });
+
+  it("renders successful result summaries as markdown in nice mode", () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          density="compact"
+          entries={[
+            {
+              kind: "result",
+              ts: "2026-03-12T00:00:02.000Z",
+              text: "## Summary\n\n- fixed deploy config\n- posted issue update",
+              inputTokens: 10,
+              outputTokens: 20,
+              cachedTokens: 0,
+              costUsd: 0,
+              subtype: "success",
+              isError: false,
+              errors: [],
+            },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("<h2>Summary</h2>");
+    expect(html).toContain("<li>fixed deploy config</li>");
+    expect(html).toContain("<li>posted issue update</li>");
+    expect(html).not.toContain("result");
+  });
 });
