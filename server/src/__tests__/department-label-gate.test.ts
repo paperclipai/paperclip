@@ -1,8 +1,12 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+
+const DEPT_ENG_LABEL_ID = "d0000000-0000-4000-8000-000000000001";
+const DEPT_QA_LABEL_ID = "d0000000-0000-4000-8000-000000000002";
+const NON_DEPT_LABEL_ID = "d0000000-0000-4000-8000-000000000099";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -35,8 +39,8 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(async () => ({
       id: "agent-1",
       companyId: "company-1",
-      role: "ceo",
-      permissions: { canCreateAgents: true },
+      role: "engineer",
+      permissions: { canCreateAgents: false },
     })),
   }),
   documentService: () => ({
@@ -74,7 +78,7 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
 const createdIssue = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   companyId: "company-1",
-  identifier: "PAP-999",
+  identifier: "PAP-500",
   title: "Test issue",
   description: null,
   status: "backlog",
@@ -87,10 +91,10 @@ const createdIssue = {
   createdByAgentId: "agent-1",
   createdByUserId: null,
   executionWorkspaceId: null,
-  labels: [],
-  labelIds: [],
+  labels: [{ id: DEPT_ENG_LABEL_ID, companyId: "company-1", name: "dept:engineering", color: "#3B82F6", createdAt: new Date(), updatedAt: new Date() }],
+  labelIds: [DEPT_ENG_LABEL_ID],
   hiddenAt: null,
-  updatedAt: new Date("2026-04-03T12:00:00Z"),
+  updatedAt: new Date("2026-04-10T12:00:00Z"),
 };
 
 function createAgentApp() {
@@ -128,90 +132,105 @@ function createBoardApp() {
   return app;
 }
 
-const DEPT_LABEL_ID = "d0000000-0000-4000-8000-000000000001";
-
-describe("issue creation rate limit", () => {
+describe("department label gate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.AGENT_ISSUE_CREATION_RATE_LIMIT;
-    mockIssueService.getDepartmentLabelIds.mockResolvedValue(new Set([DEPT_LABEL_ID]));
+    mockIssueService.countRecentByAgent.mockResolvedValue(0);
+    mockIssueService.getDepartmentLabelIds.mockResolvedValue(
+      new Set([DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID]),
+    );
   });
 
-  afterEach(() => {
-    delete process.env.AGENT_ISSUE_CREATION_RATE_LIMIT;
-  });
-
-  it("returns 429 when agent exceeds rate limit", async () => {
-    mockIssueService.countRecentByAgent.mockResolvedValue(50);
-
+  it("agent creating issue without dept label → 422", async () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Spam issue" });
+      .send({ title: "Missing dept label" });
 
-    expect(res.status).toBe(429);
-    expect(res.body.error).toBe("rate_limited");
-    expect(res.body.gate).toBe("issue_creation_rate_limit");
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("department_label_required");
+    expect(res.body.error).toBe("department_label_required");
+    expect(res.body.availableDeptLabelIds).toEqual(
+      expect.arrayContaining([DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID]),
+    );
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
-  it("allows creation when under rate limit", async () => {
-    mockIssueService.countRecentByAgent.mockResolvedValue(49);
+  it("agent creating issue with non-dept label only → 422", async () => {
+    const app = createAgentApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Wrong label type", labelIds: [NON_DEPT_LABEL_ID] });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("department_label_required");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("agent creating issue with one dept label → 201", async () => {
     mockIssueService.create.mockResolvedValue(createdIssue);
 
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Test issue", labelIds: [DEPT_LABEL_ID] });
+      .send({ title: "Good issue", labelIds: [DEPT_ENG_LABEL_ID] });
 
     expect(res.status).toBe(201);
-    expect(res.body.identifier).toBe("PAP-999");
     expect(mockIssueService.create).toHaveBeenCalled();
   });
 
-  it("bypasses rate limit for board users", async () => {
+  it("agent creating issue with dept label + other label → 201", async () => {
     mockIssueService.create.mockResolvedValue(createdIssue);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Mixed labels", labelIds: [DEPT_ENG_LABEL_ID, NON_DEPT_LABEL_ID] });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalled();
+  });
+
+  it("agent creating issue with multiple dept labels → 422", async () => {
+    const app = createAgentApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Two depts", labelIds: [DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID] });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("department_label_required");
+    expect(res.body.error).toBe("multiple_department_labels");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("board user creating issue without dept label → 201 (bypass)", async () => {
+    mockIssueService.create.mockResolvedValue({
+      ...createdIssue,
+      labels: [],
+      labelIds: [],
+    });
 
     const app = createBoardApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Board issue" });
+      .send({ title: "Board bypass" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.countRecentByAgent).not.toHaveBeenCalled();
-  });
-
-  it("respects AGENT_ISSUE_CREATION_RATE_LIMIT env override", async () => {
-    process.env.AGENT_ISSUE_CREATION_RATE_LIMIT = "10";
-    mockIssueService.countRecentByAgent.mockResolvedValue(9);
-    mockIssueService.create.mockResolvedValue(createdIssue);
-
-    const app = createAgentApp();
-    const res = await request(app)
-      .post("/api/companies/company-1/issues")
-      .send({ title: "Test issue", labelIds: [DEPT_LABEL_ID] });
-
-    expect(res.status).toBe(201);
+    expect(mockIssueService.getDepartmentLabelIds).not.toHaveBeenCalled();
     expect(mockIssueService.create).toHaveBeenCalled();
   });
 
-  it("logs rate limit events to activity log", async () => {
-    mockIssueService.countRecentByAgent.mockResolvedValue(50);
-
+  it("logs activity when agent is blocked by gate", async () => {
     const app = createAgentApp();
     await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Spam issue" });
+      .send({ title: "No dept label" });
 
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        action: "issue.creation_rate_limited",
-        details: expect.objectContaining({
-          count: 50,
-          limit: 50,
-          window: "1h",
-        }),
+        action: "issue.department_label_gate_blocked",
+        agentId: "agent-1",
       }),
     );
   });

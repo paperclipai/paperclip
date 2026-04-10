@@ -1368,3 +1368,90 @@ cd /opt/hermes && docker compose up -d
 If hermes-agent is missing after a VPS reboot or Docker prune, restart it manually. The `unless-stopped` policy handles normal Docker daemon restarts but not container removal.
 
 **Do NOT SSH from inside the server container to manage hermes.** The adapter uses `docker exec` via the mounted socket — that's the correct path.
+
+---
+
+## Department labels and filtering (2026-04-10)
+
+Every issue must have exactly one `dept:*` label. This is enforced by a server-side gate on `POST /api/companies/:companyId/issues` for agent actors (board users bypass).
+
+### Label inventory
+
+| Label | Color | ID |
+|-------|-------|----|
+| `dept:design` | `#A855F7` | `0e316ff2-d755-4c36-abd8-747e36010ee7` |
+| `dept:engineering` | `#3B82F6` | `106ed196-084a-419c-8c2a-b5a7e0260043` |
+| `dept:leadership` | `#6366F1` | `334412f7-431f-4f52-a7f2-cc71eaf08377` |
+| `dept:marketing` | `#EC4899` | `ad2a7494-f742-4fe0-a210-165bc8cbbe46` |
+| `dept:ops` | `#F97316` | `16f04d7b-f668-4f6c-a587-dcf6df01848a` |
+| `dept:platform` | `#10B981` | `3f6fa3c2-988f-4e20-8e61-42677e947b06` |
+| `dept:product` | `#8B5CF6` | `6f617a6a-5bc1-4075-b434-ae5818e830b7` |
+| `dept:qa` | `#F59E0B` | `c898b5f3-292c-41ad-9531-0d8212bf9944` |
+| `dept:research` | `#14B8A6` | `fa9773f5-1011-42de-892b-44d29f9382a5` |
+
+### Role → department mapping
+
+| Agent role | Department label |
+|------------|-----------------|
+| `ceo`, `cto` | `dept:leadership` |
+| `engineer` | `dept:engineering` |
+| `devops` | `dept:platform` |
+| `qa` | `dept:qa` |
+| `cmo` | `dept:marketing` |
+| `pm` | `dept:product` |
+| `researcher` | `dept:research` |
+| `general`, `hermes` | `dept:ops` |
+| `designer` | `dept:design` |
+
+### Gate behavior
+
+- **Gate name**: `department_label_required`
+- **Trigger**: Agent creates issue without exactly one `dept:*` label in `labelIds`
+- **Response**: 422 with `availableDeptLabelIds` array
+- **Multiple dept labels**: Also rejected (422, `error: "multiple_department_labels"`)
+- **Board users**: Bypass entirely
+- **Activity log action**: `issue.department_label_gate_blocked`
+
+### Department filter query pack (board use)
+
+Filter issues by department using the `labelId` query parameter on the issues list endpoint:
+
+```bash
+# All engineering issues
+GET /api/companies/{companyId}/issues?labelId=106ed196-084a-419c-8c2a-b5a7e0260043
+
+# All platform/devops issues
+GET /api/companies/{companyId}/issues?labelId=3f6fa3c2-988f-4e20-8e61-42677e947b06
+
+# All QA issues
+GET /api/companies/{companyId}/issues?labelId=c898b5f3-292c-41ad-9531-0d8212bf9944
+
+# All marketing issues
+GET /api/companies/{companyId}/issues?labelId=ad2a7494-f742-4fe0-a210-165bc8cbbe46
+
+# All leadership issues
+GET /api/companies/{companyId}/issues?labelId=334412f7-431f-4f52-a7f2-cc71eaf08377
+
+# All product issues
+GET /api/companies/{companyId}/issues?labelId=6f617a6a-5bc1-4075-b434-ae5818e830b7
+
+# All research issues
+GET /api/companies/{companyId}/issues?labelId=fa9773f5-1011-42de-892b-44d29f9382a5
+
+# All ops issues
+GET /api/companies/{companyId}/issues?labelId=16f04d7b-f668-4f6c-a587-dcf6df01848a
+
+# All design issues
+GET /api/companies/{companyId}/issues?labelId=0e316ff2-d755-4c36-abd8-747e36010ee7
+```
+
+Combine with other filters: `?labelId=...&status=in_progress` or `?labelId=...&q=search+term`.
+
+**UI usage**: The board can filter by clicking any `dept:*` label in the issue list. Labels appear as colored badges on issues.
+
+### Key files
+
+- `server/src/routes/issues.ts` — department label gate (in POST `/companies/:companyId/issues` handler)
+- `server/src/services/issues.ts` — `getDepartmentLabelIds()` service method
+- `server/src/__tests__/department-label-gate.test.ts` — 7 gate tests
+- `server/src/onboarding-assets/default/AGENTS.md` — Department Label Requirement section

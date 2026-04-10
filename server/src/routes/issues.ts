@@ -1645,6 +1645,59 @@ export function issueRoutes(
       }
     }
 
+    // Department label gate: every new issue must have exactly one dept:* label.
+    // Board users bypass this gate.
+    if (actor.actorType === "agent") {
+      const deptLabelIds = await svc.getDepartmentLabelIds(companyId);
+      const providedLabelIds: string[] = req.body.labelIds ?? [];
+      const hasDeptLabel = providedLabelIds.some((id: string) => deptLabelIds.has(id));
+      if (!hasDeptLabel) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.department_label_gate_blocked",
+          entityType: "issue",
+          // No issue exists yet — use agent ID as the entity for audit trail
+          entityId: actor.agentId!,
+          details: { providedLabelIds, availableDeptLabels: [...deptLabelIds] },
+        });
+        res.status(422).json({
+          error: "department_label_required",
+          gate: "department_label_required",
+          message:
+            "Issues must include exactly one dept:* label (e.g. dept:engineering, dept:qa). " +
+            "Fetch available labels from GET /api/companies/{companyId}/labels and include one dept:* labelId.",
+          availableDeptLabelIds: [...deptLabelIds],
+        });
+        return;
+      }
+      const deptCount = providedLabelIds.filter((id: string) => deptLabelIds.has(id)).length;
+      if (deptCount > 1) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.department_label_gate_blocked",
+          entityType: "issue",
+          // No issue exists yet — use agent ID as the entity for audit trail
+          entityId: actor.agentId!,
+          details: { reason: "multiple_department_labels", providedLabelIds },
+        });
+        res.status(422).json({
+          error: "multiple_department_labels",
+          gate: "department_label_required",
+          message: "Issues must have exactly one dept:* label, not multiple.",
+          availableDeptLabelIds: [...deptLabelIds],
+        });
+        return;
+      }
+    }
+
     let issue;
     try {
       issue = await svc.create(companyId, {

@@ -1610,6 +1610,14 @@ export function issueService(db: Db) {
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 
+    getDepartmentLabelIds: async (companyId: string): Promise<Set<string>> => {
+      const rows = await db
+        .select({ id: labels.id })
+        .from(labels)
+        .where(and(eq(labels.companyId, companyId), sql`${labels.name} LIKE 'dept:%'`));
+      return new Set(rows.map((r) => r.id));
+    },
+
     getLabelById: (id: string) =>
       db
         .select()
