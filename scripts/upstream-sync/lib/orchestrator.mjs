@@ -12,7 +12,12 @@ import {
 } from './git-ops.mjs';
 import { renderPrBody } from './pr-body.mjs';
 import { scanAndMaybeTranslateLowRisk } from './translate-low-risk.mjs';
-import { createSkippedValidationSummary, runValidationSuite, VALIDATION_LOG_PATH } from './validation.mjs';
+import {
+  createSkippedValidationSummary,
+  runValidationSuite,
+  VALIDATION_LOG_PATH,
+  writeValidationArtifact,
+} from './validation.mjs';
 
 const execFile = promisify(execFileCallback);
 const REPORT_PATH = 'reports/upstream-sync-report.json';
@@ -101,6 +106,22 @@ function buildReport({
   };
 }
 
+async function resolveValidationSummary({ config, runValidation, status }) {
+  if (status === 'conflict') {
+    const summary = createSkippedValidationSummary('replay-conflict', VALIDATION_LOG_PATH);
+    await writeValidationArtifact(VALIDATION_LOG_PATH, summary);
+    return summary;
+  }
+
+  if (config.dryRun) {
+    const summary = createSkippedValidationSummary('dry-run', VALIDATION_LOG_PATH);
+    await writeValidationArtifact(VALIDATION_LOG_PATH, summary);
+    return summary;
+  }
+
+  return runValidation({ artifactPath: VALIDATION_LOG_PATH });
+}
+
 export async function runUpstreamSync({
   config,
   run = createGitRunner(),
@@ -156,9 +177,11 @@ export async function runUpstreamSync({
   const localizationResult = status === 'conflict'
     ? createSkippedLocalizationSummary('replay-conflict')
     : await scanLocalization({ config, run });
-  const validationSummary = status === 'conflict'
-    ? createSkippedValidationSummary('replay-conflict')
-    : await runValidation({ artifactPath: VALIDATION_LOG_PATH });
+  const validationSummary = await resolveValidationSummary({
+    config,
+    runValidation,
+    status,
+  });
   const validationStatus = validationSummary.status;
   const validationLogPath = validationSummary.logPath ?? '';
   const readyForPr = !config.dryRun && status !== 'conflict' && validationStatus === 'passed';

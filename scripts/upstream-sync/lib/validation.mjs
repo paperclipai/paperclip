@@ -115,7 +115,7 @@ function createCheckResult(check, result) {
   };
 }
 
-async function writeValidationArtifact(artifactPath, summary) {
+export async function writeValidationArtifact(artifactPath, summary) {
   await mkdir(path.dirname(artifactPath), { recursive: true });
   await writeFile(artifactPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
 }
@@ -136,7 +136,7 @@ function buildSummary({ checks, logPath, reason }) {
   };
 }
 
-export function createSkippedValidationSummary(reason) {
+export function createSkippedValidationSummary(reason, artifactPath = VALIDATION_LOG_PATH) {
   const checks = VALIDATION_CHECKS.map((check) => createCheckResult(check, {
     status: 'not-run',
     stdout: '',
@@ -147,7 +147,7 @@ export function createSkippedValidationSummary(reason) {
 
   return buildSummary({
     checks,
-    logPath: '',
+    logPath: artifactPath,
     reason,
   });
 }
