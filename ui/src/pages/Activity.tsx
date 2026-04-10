@@ -94,8 +94,8 @@ export function Activity() {
       ? data.filter((e) => e.entityType === filter)
       : data;
 
-  const entityTypes = visible
-    ? [...new Set(visible.map((e) => e.entityType))].sort()
+  const entityTypes = data
+    ? [...new Set(data.map((e) => e.entityType))].sort()
     : [];
 
   return (
