@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import detectPort from "detect-port";
@@ -18,6 +18,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
 
@@ -246,6 +247,23 @@ async function waitForRun(
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for heartbeat run ${runId}`);
+}
+
+function expectTaskScopedWorkspaceCwd(input: {
+  cwd: string | undefined;
+  agentId: string;
+  workspaceId: string | null | undefined;
+  leafDir: "repo" | "copy";
+}) {
+  expect(input.cwd).toMatch(/\S+/);
+  const workspaceCwd = input.cwd!;
+  const expectedRoot = join(resolveDefaultAgentWorkspaceDir(input.agentId), "project-workspaces");
+
+  expect(workspaceCwd.startsWith(`${expectedRoot}${sep}`)).toBe(true);
+  expect(workspaceCwd.endsWith(`${sep}${input.leafDir}`)).toBe(true);
+  if (input.workspaceId) {
+    expect(basename(dirname(workspaceCwd))).toBe(input.workspaceId.slice(0, 32));
+  }
 }
 
 describe("local agent PAPERCLIP_API_KEY injection", () => {
@@ -522,7 +540,16 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         expect(wakeup).not.toBeNull();
         const run = await waitForRun(heartbeat(), wakeup!.id);
         const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
-        return { capture, run, issueId, projectId, projectWorkspaceId, mentionedProjectId, mentionedProjectWorkspaceId };
+        return {
+          agentId,
+          capture,
+          run,
+          issueId,
+          projectId,
+          projectWorkspaceId,
+          mentionedProjectId,
+          mentionedProjectWorkspaceId,
+        };
       });
     } finally {
       if (input.adapterType === "codex_local") {
@@ -590,7 +617,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         const root = await mkdtemp(join(tmpdir(), `paperclip-${adapterType}-workspace-provenance-`));
         try {
           const workspaceRepo = await createGitWorkspace(root);
-          const { capture, run } = await runWakeCase({
+          const { agentId, capture, run, projectWorkspaceId } = await runWakeCase({
             adapterType,
             wake: {
               source: "assignment",
@@ -604,11 +631,18 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
           });
 
           expect(run.status).toBe("succeeded");
-          expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(workspaceRepo.repoRoot);
+          expectTaskScopedWorkspaceCwd({
+            cwd: capture.env.PAPERCLIP_WORKSPACE_CWD,
+            agentId,
+            workspaceId: projectWorkspaceId,
+            leafDir: "repo",
+          });
+          expect(capture.env.PAPERCLIP_WORKSPACE_CWD).not.toBe(workspaceRepo.repoRoot);
           expect(capture.env.PAPERCLIP_WORKSPACE_SOURCE).toBe("project_primary");
           expect(capture.env.PAPERCLIP_WORKSPACE_REPO_REF).toBe("main");
           expect(capture.env.PAPERCLIP_WORKSPACE_BRANCH).toBeUndefined();
-          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH).toBe(workspaceRepo.branchName);
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH).toMatch(/^paperclip\//);
+          expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH).not.toBe(workspaceRepo.branchName);
           expect(capture.env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD).toBe(workspaceRepo.headSha);
 
           const contextSnapshot =
@@ -621,11 +655,12 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
               : null;
 
           expect(paperclipWorkspace).toMatchObject({
-            cwd: workspaceRepo.repoRoot,
+            cwd: capture.env.PAPERCLIP_WORKSPACE_CWD,
             source: "project_primary",
             repoRef: "main",
             branchName: null,
-            observedBranchName: workspaceRepo.branchName,
+            observedRepoRoot: capture.env.PAPERCLIP_WORKSPACE_CWD,
+            observedBranchName: capture.env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH,
             observedHeadSha: workspaceRepo.headSha,
           });
         } finally {
@@ -643,7 +678,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     await mkdir(mentionedWorkspace, { recursive: true });
 
     try {
-      const { capture, run, issueId, mentionedProjectId, mentionedProjectWorkspaceId } = await runWakeCase({
+      const { agentId, capture, run, issueId, mentionedProjectId, mentionedProjectWorkspaceId } = await runWakeCase({
         adapterType: "codex_local",
         wake: {
           source: "assignment",
@@ -664,7 +699,13 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       });
 
       expect(run.status).toBe("succeeded");
-      expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(mentionedWorkspace);
+      expectTaskScopedWorkspaceCwd({
+        cwd: capture.env.PAPERCLIP_WORKSPACE_CWD,
+        agentId,
+        workspaceId: mentionedProjectWorkspaceId,
+        leafDir: "copy",
+      });
+      expect(capture.env.PAPERCLIP_WORKSPACE_CWD).not.toBe(mentionedWorkspace);
 
       const persistedIssue = await db
         .select({
