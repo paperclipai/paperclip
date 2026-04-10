@@ -97,55 +97,31 @@ describe("dangerouslySkipPermissions propagation", () => {
 
   describe("resolveExecutionRunAdapterConfig preserves field", () => {
     it("preserves dangerouslySkipPermissions=true through secret resolution", async () => {
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
-
       const result = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: { dangerouslySkipPermissions: true, cwd: "/app" },
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       expect(result.resolvedConfig.dangerouslySkipPermissions).toBe(true);
     });
 
     it("preserves dangerouslySkipPermissions=false through secret resolution", async () => {
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
-
       const result = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: { dangerouslySkipPermissions: false, cwd: "/app" },
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       expect(result.resolvedConfig.dangerouslySkipPermissions).toBe(false);
     });
 
     it("preserves missing field as undefined (runtime will apply default)", async () => {
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
-
       const result = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: { cwd: "/app" },
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       expect(result.resolvedConfig.dangerouslySkipPermissions).toBeUndefined();
     });
@@ -167,18 +143,11 @@ describe("dangerouslySkipPermissions propagation", () => {
         mode: "agent_default",
       });
       const stripped = stripWorkspaceRuntimeFromExecutionRunConfig(persisted);
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
       const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: stripped,
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       const runtimeConfig = { ...resolvedConfig };
       expect(runtimeConfig.dangerouslySkipPermissions).toBe(true);
@@ -199,18 +168,11 @@ describe("dangerouslySkipPermissions propagation", () => {
         mode: "agent_default",
       });
       const stripped = stripWorkspaceRuntimeFromExecutionRunConfig(persisted);
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
       const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: stripped,
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       const runtimeConfig = { ...resolvedConfig };
       expect(runtimeConfig.dangerouslySkipPermissions).toBe(false);
@@ -231,18 +193,11 @@ describe("dangerouslySkipPermissions propagation", () => {
         mode: "agent_default",
       });
       const stripped = stripWorkspaceRuntimeFromExecutionRunConfig(persisted);
-      const svc = {
-        ...noopSecretsSvc,
-        resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({
-          config: { ...config },
-          secretKeys: new Set<string>(),
-        })),
-      };
       const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
         companyId: "c1",
         executionRunConfig: stripped,
         projectEnv: null,
-        secretsSvc: svc as any,
+        secretsSvc: noopSecretsSvc as any,
       });
       const runtimeConfig = { ...resolvedConfig };
       expect(runtimeConfig.dangerouslySkipPermissions).toBeUndefined();

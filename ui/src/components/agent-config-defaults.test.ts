@@ -61,9 +61,8 @@ describe("agent-config-defaults", () => {
       expect(values.adapterType).toBe("codex_local");
       expect(values.model).toBeTruthy();
       expect(values.dangerouslyBypassSandbox).toBe(true);
-      // Should NOT inherit claude's dangerouslySkipPermissions override
-      // (base defaultCreateValues has it as true, but that's the base default)
-      expect(typeof values.dangerouslySkipPermissions).toBe("boolean");
+      // codex_local has no dangerouslySkipPermissions override, so it inherits the base default (true)
+      expect(values.dangerouslySkipPermissions).toBe(true);
     });
 
     it("returns opencode_local defaults with skip permissions and empty model", () => {
