@@ -36,18 +36,20 @@ function updateVariableList(
 }
 
 export function RoutineVariablesEditor({
+  title,
   description,
   value,
   onChange,
 }: {
+  title: string;
   description: string;
   value: RoutineVariable[];
   onChange: (value: RoutineVariable[]) => void;
 }) {
   const [open, setOpen] = useState(true);
   const syncedVariables = useMemo(
-    () => syncRoutineVariablesWithTemplate(description, value),
-    [description, value],
+    () => syncRoutineVariablesWithTemplate([title, description], value),
+    [description, title, value],
   );
   const syncedSignature = serializeVariables(syncedVariables);
   const currentSignature = serializeVariables(value);
@@ -68,7 +70,7 @@ export function RoutineVariablesEditor({
         <div>
           <p className="text-sm font-medium">Variables</p>
           <p className="text-xs text-muted-foreground">
-            Detected from `{"{{name}}"}` placeholders in the routine instructions.
+            Detected from `{"{{name}}"}` placeholders in the routine title and instructions.
           </p>
         </div>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}

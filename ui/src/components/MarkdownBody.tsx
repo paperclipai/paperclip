@@ -11,6 +11,8 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
+  /** Called when a user clicks an inline image */
+  onImageClick?: (src: string) => void;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -92,7 +94,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, style, resolveImageSrc }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, style, resolveImageSrc, onImageClick }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
@@ -132,10 +134,19 @@ export function MarkdownBody({ children, className, style, resolveImageSrc }: Ma
       );
     },
   };
-  if (resolveImageSrc) {
+  if (resolveImageSrc || onImageClick) {
     components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = src ? resolveImageSrc(src) : null;
-      return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
+      const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
+      const finalSrc = resolved ?? src;
+      return (
+        <img
+          {...imgProps}
+          src={finalSrc}
+          alt={alt ?? ""}
+          onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
+          style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+        />
+      );
     };
   }
 

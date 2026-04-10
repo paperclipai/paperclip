@@ -13,6 +13,7 @@ export interface RunTranscriptSource {
   id: string;
   status: string;
   adapterType: string;
+  hasStoredOutput?: boolean;
 }
 
 interface UseLiveRunTranscriptsOptions {
@@ -70,7 +71,17 @@ export function useLiveRunTranscripts({
   companyId,
   maxChunksPerRun = 200,
 }: UseLiveRunTranscriptsOptions) {
+  const runsKey = useMemo(
+    () =>
+      runs
+        .map((run) => `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}`)
+        .sort((a, b) => a.localeCompare(b))
+        .join(","),
+    [runs],
+  );
+  const normalizedRuns = useMemo(() => runs.map((run) => ({ ...run })), [runsKey]);
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
+  const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
@@ -84,14 +95,14 @@ export function useLiveRunTranscripts({
     queryFn: () => instanceSettingsApi.getGeneral(),
   });
 
-  const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(
-    () => new Set(runs.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
-    [runs],
+    () => new Set(normalizedRuns.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
+    [normalizedRuns],
   );
   const runIdsKey = useMemo(
-    () => runs.map((run) => run.id).sort((a, b) => a.localeCompare(b)).join(","),
-    [runs],
+    () => normalizedRuns.map((run) => run.id).sort((a, b) => a.localeCompare(b)).join(","),
+    [normalizedRuns],
   );
 
   const appendChunks = (runId: string, chunks: Array<RunLogChunk & { dedupeKey: string }>) => {
@@ -118,12 +129,21 @@ export function useLiveRunTranscripts({
   };
 
   useEffect(() => {
-    const knownRunIds = new Set(runs.map((run) => run.id));
+    const knownRunIds = new Set(normalizedRuns.map((run) => run.id));
     setChunksByRun((prev) => {
       const next = new Map<string, RunLogChunk[]>();
       for (const [runId, chunks] of prev) {
         if (knownRunIds.has(runId)) {
           next.set(runId, chunks);
+        }
+      }
+      return next.size === prev.size ? prev : next;
+    });
+    setHydratedRunIds((prev) => {
+      const next = new Set<string>();
+      for (const runId of prev) {
+        if (knownRunIds.has(runId)) {
+          next.add(runId);
         }
       }
       return next.size === prev.size ? prev : next;
@@ -140,10 +160,10 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
-  }, [runs]);
+  }, [normalizedRuns]);
 
   useEffect(() => {
-    if (runs.length === 0) return;
+    if (normalizedRuns.length === 0) return;
 
     let cancelled = false;
 
@@ -164,15 +184,24 @@ export function useLiveRunTranscripts({
         }
       } catch {
         // Ignore log read errors while output is initializing.
+      } finally {
+        if (!cancelled) {
+          setHydratedRunIds((prev) => {
+            if (prev.has(run.id)) return prev;
+            const next = new Set(prev);
+            next.add(run.id);
+            return next;
+          });
+        }
       }
     };
 
     const readAll = async () => {
-      await Promise.all(runs.map((run) => readRunLog(run)));
+      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = runs.filter((run) => !isTerminalStatus(run.status));
+    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
     const interval = activeRuns.length > 0
       ? window.setInterval(() => {
           void Promise.all(activeRuns.map((run) => readRunLog(run)));
@@ -183,7 +212,7 @@ export function useLiveRunTranscripts({
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [runIdsKey, runs]);
+  }, [normalizedRuns, runIdsKey]);
 
   useEffect(() => {
     if (!companyId || activeRunIds.size === 0) return;
@@ -281,7 +310,16 @@ export function useLiveRunTranscripts({
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
-        socket.close(1000, "live_run_transcripts_unmount");
+        if (socket.readyState === WebSocket.CONNECTING) {
+          // Defer the close until the handshake completes so the browser
+          // does not emit a noisy "closed before the connection is established"
+          // warning during rapid run teardown.
+          socket.onopen = () => {
+            socket?.close(1000, "live_run_transcripts_unmount");
+          };
+        } else if (socket.readyState === WebSocket.OPEN) {
+          socket.close(1000, "live_run_transcripts_unmount");
+        }
       }
     };
   }, [activeRunIds, companyId, runById]);
@@ -289,7 +327,7 @@ export function useLiveRunTranscripts({
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();
     const censorUsernameInLogs = generalSettings?.censorUsernameInLogs === true;
-    for (const run of runs) {
+    for (const run of normalizedRuns) {
       const adapter = getUIAdapter(run.adapterType);
       next.set(
         run.id,
@@ -299,12 +337,13 @@ export function useLiveRunTranscripts({
       );
     }
     return next;
-  }, [chunksByRun, generalSettings?.censorUsernameInLogs, parserTick, runs]);
+  }, [chunksByRun, generalSettings?.censorUsernameInLogs, normalizedRuns, parserTick]);
 
   return {
     transcriptByRun,
+    isInitialHydrating: normalizedRuns.some((run) => !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
-      return (chunksByRun.get(runId)?.length ?? 0) > 0;
+      return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;
     },
   };
 }

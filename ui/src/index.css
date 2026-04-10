@@ -294,26 +294,29 @@
   }
 }
 
-/* Shimmer text effect for active "Working" state */
+/* Shimmer text effect for active "Working" state — Cursor-style sweep */
 @keyframes shimmer-text-slide {
-  0% { background-position: 200% center; }
-  100% { background-position: -200% center; }
+  0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
+  100% { background-position: 0% center; }
 }
 
 .shimmer-text {
-  --shimmer-base: hsl(var(--foreground) / 0.75);
-  --shimmer-highlight: hsl(var(--foreground) / 0.3);
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
   background: linear-gradient(
-    110deg,
-    var(--shimmer-base) 35%,
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
     var(--shimmer-highlight) 50%,
-    var(--shimmer-base) 65%
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
   );
-  background-size: 250% 100%;
+  background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmer-text-slide 2.5s ease-in-out infinite;
+  animation: shimmer-text-slide 2.5s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
