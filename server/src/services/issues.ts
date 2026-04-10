@@ -913,7 +913,7 @@ export function issueService(db: Db) {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
-        ? Math.max(1, Math.floor(filters.limit))
+        ? Math.max(1, Math.min(1000, Math.floor(filters.limit)))
         : 100; // DEFAULT_ISSUE_LIST_LIMIT — prevents correlated subquery explosion on large datasets
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
