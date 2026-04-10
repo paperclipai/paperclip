@@ -37,6 +37,28 @@ This starts:
 - API server: `http://localhost:3100`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
+## neurOS macOS App Foundation
+
+The native macOS app foundation now lives in `apps/neuros-macos` as a Swift Package.
+
+Build it from repo root:
+
+```sh
+pnpm neuros:macos:build
+```
+
+Run it locally:
+
+```sh
+pnpm neuros:macos:run
+```
+
+Notes:
+
+- this scaffold is native SwiftUI code for the future `neurOS` macOS surface
+- it currently builds with Swift 6+ and does not yet require a checked-in Xcode project
+- signing, notarization, and `.app` distribution require a machine with full Xcode app tooling enabled
+
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.

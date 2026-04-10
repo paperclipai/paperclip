@@ -223,6 +223,8 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 pnpm dev              # Full dev (API + UI, watch mode)
 pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
+pnpm neuros:macos:build  # Build the native neurOS macOS foundation
+pnpm neuros:macos:run    # Run the native neurOS macOS foundation
 pnpm build            # Build all
 pnpm typecheck        # Type checking
 pnpm test:run         # Run tests
@@ -281,6 +283,9 @@ We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for deta
 - [Discord](https://discord.gg/m4HZY7xNG3) — Join the community
 - [GitHub Issues](https://github.com/paperclipai/paperclip/issues) — bugs and feature requests
 - [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) — ideas and RFC
+- Instagram: [@monrars](https://instagram.com/monrars)
+- Site: [goldneuron.io](https://goldneuron.io)
+- GitHub: [@monrars1995](https://github.com/monrars1995)
 
 <br/>
 

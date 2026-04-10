@@ -5,6 +5,8 @@ dist/
 drizzle/meta/
 .vite/
 coverage/
+.build/
+.swiftpm/
 .DS_Store
 data/
 .paperclip/
