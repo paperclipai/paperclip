@@ -38,11 +38,13 @@ export function renderPrBody({
   maintenanceRef,
   commits = [],
   diagnostics,
+  conflictDiagnostics,
   translationSummary = {},
   validationSummary = {},
   localizationSummary = {},
   failure,
 }) {
+  const effectiveDiagnostics = conflictDiagnostics ?? diagnostics;
   const translatedFiles = translationSummary.translatedFiles ?? [];
   const manualReviewItems = localizationSummary.manualReviewItems ?? [];
   const uiTypecheck = validationSummary.uiTypecheck ?? { status: 'not-run', summary: 'UI typecheck not run.' };
@@ -58,7 +60,7 @@ export function renderPrBody({
     `- branch: \`${branchName}\``,
     `- upstream ref/tag: \`${upstreamRef}\``,
     `- maintenance ref: \`${maintenanceRef}\``,
-    formatConflictLine(diagnostics),
+    formatConflictLine(effectiveDiagnostics),
     '',
     ...(failure
       ? [

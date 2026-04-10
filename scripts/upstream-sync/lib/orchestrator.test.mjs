@@ -299,6 +299,8 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
       conflicts: ['scripts/upstream-sync/lib/orchestrator.mjs'],
       failingCommitSummary: 'c2 conflict commit summary\n',
     });
+    const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
+    assert.match(prBody, /- conflicts: 1 file\(s\)/);
     assert.equal(validationCallCount, 0);
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
