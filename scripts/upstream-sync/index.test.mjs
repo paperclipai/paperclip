@@ -108,4 +108,7 @@ test('main mirrors outputs into GITHUB_OUTPUT when configured', async () => {
 test('resolveExitCode returns non-zero for error results', () => {
   assert.equal(resolveExitCode({ status: 'error' }), 1);
   assert.equal(resolveExitCode({ status: 'replayed' }), 0);
+  assert.equal(resolveExitCode({ status: 'conflict', validationStatus: 'not-run' }), 1);
+  assert.equal(resolveExitCode({ status: 'replayed', validationStatus: 'failed' }), 1);
+  assert.equal(resolveExitCode({ status: 'replayed', validationStatus: 'error' }), 1);
 });

@@ -33,7 +33,19 @@ export async function writeOutputs(
 }
 
 export function resolveExitCode(result) {
-  return result?.status === 'error' ? 1 : 0;
+  if (!result) {
+    return 1;
+  }
+
+  if (result.status === 'error' || result.status === 'conflict') {
+    return 1;
+  }
+
+  if (result.validationStatus === 'failed' || result.validationStatus === 'error') {
+    return 1;
+  }
+
+  return 0;
 }
 
 export async function main(
