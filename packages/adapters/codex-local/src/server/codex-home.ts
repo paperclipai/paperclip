@@ -66,7 +66,16 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
-  if (existing) return;
+  if (existing && !existing.isFile()) return;
+  if (existing?.isFile()) {
+    const [sourceContent, targetContent] = await Promise.all([
+      fs.readFile(source),
+      fs.readFile(target).catch(() => null),
+    ]);
+    if (targetContent && Buffer.compare(sourceContent, targetContent) === 0) {
+      return;
+    }
+  }
   await ensureParentDir(target);
   await fs.copyFile(source, target);
 }

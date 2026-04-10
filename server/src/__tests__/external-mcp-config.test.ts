@@ -34,8 +34,28 @@ describe("external MCP config", () => {
         type: "http",
         url: "https://rube.example/mcp",
         headers: {
+          Accept: "application/json, text/event-stream",
           Authorization: "Bearer test-token",
           "X-Workspace": "paperclip",
+        },
+      },
+    ]);
+  });
+
+  it("adds the Composio MCP Accept header when Rube headers omit it", () => {
+    expect(resolveConfiguredExternalMcpServers({
+      PAPERCLIP_RUBE_MCP_URL: "https://rube.example/mcp",
+      PAPERCLIP_RUBE_MCP_HEADERS_JSON: JSON.stringify({
+        "x-api-key": "ak_test",
+      }),
+    })).toEqual([
+      {
+        name: "rube",
+        type: "http",
+        url: "https://rube.example/mcp",
+        headers: {
+          Accept: "application/json, text/event-stream",
+          "x-api-key": "ak_test",
         },
       },
     ]);
@@ -115,7 +135,7 @@ describe("external MCP config", () => {
     ])).toBe(merged);
   });
 
-  it("does not accumulate duplicate header subtables on repeated syncs", () => {
+  it("does not accumulate duplicate headers on repeated syncs", () => {
     const server = {
       name: "rube",
       type: "http" as const,
@@ -137,9 +157,9 @@ describe("external MCP config", () => {
     }
 
     const final_1 = results[results.length - 1];
-    // Exactly one parent block and one headers subtable — no duplicates
+    // Exactly one parent block and one http_headers line — no duplicates
     expect(final_1.match(/\[mcp_servers\.rube\](?!\.)/g)).toHaveLength(1);
-    expect(final_1.match(/\[mcp_servers\.rube\.headers\]/g)).toHaveLength(1);
+    expect((final_1.match(/http_headers\s*=/g) ?? [])).toHaveLength(1);
     // Headers content appears exactly once
     expect((final_1.match(/"Authorization" = "Bearer test"/g) ?? [])).toHaveLength(1);
     expect((final_1.match(/"x-api-key" = "ak_test"/g) ?? [])).toHaveLength(1);
@@ -152,6 +172,7 @@ describe("external MCP config", () => {
         type: "http",
         url: "https://backend.composio.dev/tool_router/trs_test/mcp",
         headers: {
+          Accept: "application/json, text/event-stream",
           "x-api-key": "ak_test",
           Authorization: "Bearer test",
         },
@@ -160,9 +181,7 @@ describe("external MCP config", () => {
 
     expect(merged).toContain('[mcp_servers.rube]');
     expect(merged).toContain('url = "https://backend.composio.dev/tool_router/trs_test/mcp"');
-    expect(merged).toContain('[mcp_servers.rube.headers]');
-    expect(merged).toContain('"Authorization" = "Bearer test"');
-    expect(merged).toContain('"x-api-key" = "ak_test"');
+    expect(merged).toContain('http_headers = { "Accept" = "application/json, text/event-stream", "Authorization" = "Bearer test", "x-api-key" = "ak_test" }');
   });
 
   it("writes shared Claude and Codex config files during startup sync", async () => {
@@ -198,10 +217,15 @@ describe("external MCP config", () => {
     const claudeConfig = await fs.readFile(path.join(claudeHome, "mcp-servers.json"), "utf8");
     expect(codexConfig).toContain('[mcp_servers.playwright]');
     expect(codexConfig).toContain('[mcp_servers.rube]');
+    expect(codexConfig).toContain('http_headers = { "Accept" = "application/json, text/event-stream" }');
     expect(JSON.parse(claudeConfig)).toEqual({
       mcpServers: {
         betterstack: { type: "http", url: "https://betterstack.example/mcp" },
-        rube: { type: "http", url: "https://rube.example/mcp" },
+        rube: {
+          type: "http",
+          url: "https://rube.example/mcp",
+          headers: { Accept: "application/json, text/event-stream" },
+        },
       },
     });
 

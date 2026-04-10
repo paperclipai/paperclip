@@ -9,6 +9,8 @@ export type ExternalMcpServer = {
   headers?: Record<string, string>;
 };
 
+const COMPOSIO_MCP_ACCEPT_HEADER = "application/json, text/event-stream";
+
 function nonEmpty(value: string | undefined | null): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -17,10 +19,6 @@ function nonEmpty(value: string | undefined | null): string | null {
 
 function escapeTomlString(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeHeaders(value: unknown): Record<string, string> | undefined {
@@ -33,6 +31,15 @@ function normalizeHeaders(value: unknown): Record<string, string> | undefined {
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+function withRubeHeaderDefaults(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  const next = { ...(headers ?? {}) };
+  const hasAcceptHeader = Object.keys(next).some((key) => key.toLowerCase() === "accept");
+  if (!hasAcceptHeader) {
+    next.Accept = COMPOSIO_MCP_ACCEPT_HEADER;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 export function resolveConfiguredExternalMcpServers(
   env: NodeJS.ProcessEnv = process.env,
 ): ExternalMcpServer[] {
@@ -41,11 +48,11 @@ export function resolveConfiguredExternalMcpServers(
   const rubeName = nonEmpty(env.PAPERCLIP_RUBE_MCP_NAME) ?? "rube";
   const rubeHeaders = (() => {
     const raw = nonEmpty(env.PAPERCLIP_RUBE_MCP_HEADERS_JSON);
-    if (!raw) return undefined;
+    if (!raw) return withRubeHeaderDefaults(undefined);
     try {
-      return normalizeHeaders(JSON.parse(raw));
+      return withRubeHeaderDefaults(normalizeHeaders(JSON.parse(raw)));
     } catch {
-      return undefined;
+      return withRubeHeaderDefaults(undefined);
     }
   })();
 
@@ -129,13 +136,42 @@ function buildCodexHttpServerBlock(server: ExternalMcpServer): string {
     `url = "${escapeTomlString(server.url)}"`,
   ];
   if (server.headers && Object.keys(server.headers).length > 0) {
-    lines.push(`[mcp_servers.${server.name}.headers]`);
-    for (const [key, value] of Object.entries(server.headers).sort(([left], [right]) => left.localeCompare(right))) {
-      lines.push(`"${escapeTomlString(key)}" = "${escapeTomlString(value)}"`);
-    }
+    const renderedHeaders = Object.entries(server.headers)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `"${escapeTomlString(key)}" = "${escapeTomlString(value)}"`)
+      .join(", ");
+    lines.push(`http_headers = { ${renderedHeaders} }`);
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function stripCodexServerBlock(config: string, serverName: string): string {
+  const lines = config.split("\n");
+  const nextLines: string[] = [];
+  const serverPrefix = `mcp_servers.${serverName}`;
+  let skipping = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      const sectionName = sectionMatch[1] ?? "";
+      const isTargetSection =
+        sectionName === serverPrefix || sectionName.startsWith(`${serverPrefix}.`);
+      if (isTargetSection) {
+        skipping = true;
+        continue;
+      }
+      skipping = false;
+    }
+
+    if (!skipping) {
+      nextLines.push(line);
+    }
+  }
+
+  return nextLines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "\n");
 }
 
 export function mergeCodexConfigToml(
@@ -149,18 +185,7 @@ export function mergeCodexConfigToml(
 
   for (const server of servers) {
     const block = buildCodexHttpServerBlock(server);
-    // Match a full TOML section block for this server, including all
-    // nested subtable headers and their content lines, up to the next
-    // [mcp_servers.*] section or end-of-file. Uses negative lookahead
-    // to match any line that does NOT start with `[mcp_servers.`.
-    // Optional nested header + content section handles `[mcp_servers.<name>.headers]`.
-    const pattern = new RegExp(
-      `\\[mcp_servers\\.${escapeRegExp(server.name)}(?:\\.[^\\[\\n]+)?\\](?:(?!\\[mcp_servers\\.)[^\\n]*\\n)*(?:\\[mcp_servers\\.${escapeRegExp(server.name)}\\.[^\\[\\n]*\\](?:(?!\\[mcp_servers\\.)[^\\n]*\\n)*)?(?:(?=\\n\\[mcp_servers\\.|$))`,
-    );
-    if (pattern.test(nextConfig)) {
-      nextConfig = nextConfig.replace(pattern, block);
-      continue;
-    }
+    nextConfig = stripCodexServerBlock(nextConfig, server.name);
     if (nextConfig.length > 0 && !nextConfig.endsWith("\n\n")) {
       nextConfig += "\n";
     }
