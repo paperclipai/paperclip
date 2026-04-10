@@ -186,6 +186,10 @@ export function issueRoutes(
 
   const C_SUITE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "hermes"]);
 
+  // Roles allowed to reopen tasks from terminal "done" status.
+  const REOPEN_ALLOWED_ROLES = new Set(["ceo", "cto", "qa"]);
+  const REOPEN_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
+
   function canAssignTasksImplicitly(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
     if (C_SUITE_ROLES.has(agent.role)) return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
@@ -252,6 +256,58 @@ export function issueRoutes(
       };
     }
     return null;
+  }
+
+  const REOPEN_ALLOWED_TARGETS = new Set(["todo", "in_progress"]);
+
+  /**
+   * Validates whether an agent is allowed to reopen a "done" task.
+   * Only CEO/CTO/QA roles can reopen, and they must provide a reason code + evidence.
+   * Reopens are time-boxed to 48h after the task was last updated.
+   */
+  async function assertAgentReopenAllowed(
+    req: Request,
+    existing: { updatedAt: Date },
+  ): Promise<{ allowed: true; agentRole: string } | { allowed: false; gate: string; reason: string }> {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      return { allowed: false, gate: "invalid_agent_transition", reason: "Agent authentication required for reopen." };
+    }
+
+    const agent = await agentsSvc.getById(req.actor.agentId);
+    if (!agent || !REOPEN_ALLOWED_ROLES.has(agent.role)) {
+      return {
+        allowed: false,
+        gate: "invalid_agent_transition",
+        reason: "Only CEO, CTO, or QA agents can reopen done tasks. Other agents must escalate to a privileged role.",
+      };
+    }
+
+    const { reopenReasonCode, reopenEvidence } = req.body;
+    if (!reopenReasonCode) {
+      return {
+        allowed: false,
+        gate: "reopen_missing_reason",
+        reason: "Reopening a done task requires a reopenReasonCode field (one of: user_rejected, qa_retraction, prod_regression).",
+      };
+    }
+    if (!reopenEvidence) {
+      return {
+        allowed: false,
+        gate: "reopen_missing_evidence",
+        reason: "Reopening a done task requires a reopenEvidence field (link to evidence or comment ID).",
+      };
+    }
+
+    const doneAt = new Date(existing.updatedAt).getTime();
+    if (Date.now() - doneAt > REOPEN_WINDOW_MS) {
+      return {
+        allowed: false,
+        gate: "reopen_window_expired",
+        reason: "The 48-hour reopen window has expired. Create a new child task instead of reopening.",
+      };
+    }
+
+    return { allowed: true, agentRole: agent.role };
   }
 
   const CODE_DELIVERY_TYPES = new Set(["branch", "commit", "pull_request"]);
@@ -1949,25 +2005,52 @@ export function issueRoutes(
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     // Status transition gates (agent-only — board always bypasses)
+    let isPrivilegedReopen = false;
+    let reopenAgentRole: string | null = null;
     if (req.body.status && req.body.status !== existing.status) {
       // Transition graph: agents follow forward-only workflow
       const transitionResult = assertAgentTransition(req, existing.status, req.body.status);
       if (transitionResult) {
-        const actor = getActorInfo(req);
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.transition_blocked",
-          entityType: "issue",
-          entityId: existing.id,
-          details: { gate: transitionResult.gate, reason: transitionResult.reason, fromStatus: existing.status, targetStatus: req.body.status },
-        });
-        await incrementGateBlockCount(existing.id);
-        res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
-        return;
+        // Allow privileged agents (CEO/CTO/QA) to reopen done tasks with proper payload
+        if (existing.status === "done" && REOPEN_ALLOWED_TARGETS.has(req.body.status)) {
+          const reopenResult = await assertAgentReopenAllowed(req, existing);
+          if (reopenResult.allowed) {
+            isPrivilegedReopen = true;
+            reopenAgentRole = reopenResult.agentRole;
+          } else {
+            const actor = getActorInfo(req);
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.transition_blocked",
+              entityType: "issue",
+              entityId: existing.id,
+              details: { gate: reopenResult.gate, reason: reopenResult.reason, fromStatus: existing.status, targetStatus: req.body.status },
+            });
+            await incrementGateBlockCount(existing.id);
+            res.status(422).json({ error: reopenResult.reason, gate: reopenResult.gate });
+            return;
+          }
+        } else {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.transition_blocked",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { gate: transitionResult.gate, reason: transitionResult.reason, fromStatus: existing.status, targetStatus: req.body.status },
+          });
+          await incrementGateBlockCount(existing.id);
+          res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
+          return;
+        }
       }
 
       // Delivery gate: agents must push code before transitioning code issues
@@ -2063,6 +2146,8 @@ export function issueRoutes(
     const {
       comment: commentBody,
       reopen: reopenRequested,
+      reopenReasonCode,
+      reopenEvidence,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       ...updateFields
@@ -2119,21 +2204,48 @@ export function issueRoutes(
 
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       if (req.actor.type === "agent") {
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.transition_blocked",
-          entityType: "issue",
-          entityId: existing.id,
-          details: { gate: "invalid_agent_transition", reason: "Agents cannot reopen terminal issues.", fromStatus: existing.status, targetStatus: "todo" },
-        });
-        res.status(422).json({ error: "Agents cannot reopen terminal issues. Only board users can reopen done or cancelled issues.", gate: "invalid_agent_transition" });
-        return;
+        // Allow privileged agents (CEO/CTO/QA) to reopen done tasks via the reopen flag
+        if (existing.status === "done") {
+          const reopenResult = await assertAgentReopenAllowed(req, existing);
+          if (reopenResult.allowed) {
+            isPrivilegedReopen = true;
+            reopenAgentRole = reopenResult.agentRole;
+            updateFields.status = "todo";
+          } else {
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.transition_blocked",
+              entityType: "issue",
+              entityId: existing.id,
+              details: { gate: reopenResult.gate, reason: reopenResult.reason, fromStatus: existing.status, targetStatus: "todo" },
+            });
+            await incrementGateBlockCount(existing.id);
+            res.status(422).json({ error: reopenResult.reason, gate: reopenResult.gate });
+            return;
+          }
+        } else {
+          // Cancelled issues still cannot be reopened by agents
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.transition_blocked",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { gate: "invalid_agent_transition", reason: "Agents cannot reopen cancelled issues.", fromStatus: existing.status, targetStatus: "todo" },
+          });
+          res.status(422).json({ error: "Agents cannot reopen cancelled issues. Only board users can reopen cancelled issues.", gate: "invalid_agent_transition" });
+          return;
+        }
+      } else {
+        updateFields.status = "todo";
       }
-      updateFields.status = "todo";
     }
 
     // Comment-required gate: agents must explain status/assignee changes
@@ -2221,11 +2333,8 @@ export function issueRoutes(
 
     const hasFieldChanges = Object.keys(previous).length > 0;
     const reopened =
-      commentBody &&
-      reopenRequested === true &&
-      isClosed &&
-      previous.status !== undefined &&
-      issue.status === "todo";
+      (commentBody && reopenRequested === true && isClosed && previous.status !== undefined && (issue.status === "todo" || issue.status === "in_progress")) ||
+      isPrivilegedReopen;
     const reopenFromStatus = reopened ? existing.status : null;
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2241,10 +2350,33 @@ export function issueRoutes(
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(isPrivilegedReopen ? { reopenReasonCode, reopenEvidence, reopenAgentRole: reopenAgentRole } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    // Emit a dedicated audit event for privileged agent reopens
+    if (isPrivilegedReopen) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.reopened",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          reopenedFrom: reopenFromStatus,
+          reopenedTo: issue.status,
+          reopenReasonCode,
+          reopenEvidence,
+          reopenAgentRole: reopenAgentRole,
+        },
+      });
+    }
 
     if (issue.status === "done" && existing.status !== "done") {
       const tc = getTelemetryClient();

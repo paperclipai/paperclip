@@ -163,7 +163,7 @@ describe("transition gate", () => {
     expect(res.body.gate).toBe("invalid_agent_transition");
   });
 
-  it("agent: done → in_progress blocked", async () => {
+  it("agent: done → in_progress blocked (privileged role without reopen payload)", async () => {
     const issue = makeIssue({ status: "done" });
     mockIssueService.getById.mockResolvedValue(issue);
 
@@ -172,7 +172,9 @@ describe("transition gate", () => {
       .send({ status: "in_progress" });
 
     expect(res.status).toBe(422);
-    expect(res.body.gate).toBe("invalid_agent_transition");
+    // CEO is a privileged reopen role, so the gate is reopen_missing_reason
+    // (not invalid_agent_transition) when the reopen payload is absent.
+    expect(res.body.gate).toBe("reopen_missing_reason");
   });
 
   it("agent: cancelled → todo blocked", async () => {
@@ -356,7 +358,9 @@ describe("transition gate", () => {
       .send({ status: "in_progress" });
 
     expect(res.status).toBe(422);
-    expect(res.body.gate).toBe("invalid_agent_transition");
+    // CEO is a privileged reopen role, so the gate is reopen_missing_reason
+    // when the reopen payload is absent — still fires before the delivery gate.
+    expect(res.body.gate).toBe("reopen_missing_reason");
     // Delivery gate should NOT have been reached
     expect(mockWorkProductService.listForIssue).not.toHaveBeenCalled();
   });

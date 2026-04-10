@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_STATUSES, REOPEN_REASON_CODES } from "../constants.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -69,6 +69,8 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
+  reopenReasonCode: z.enum(REOPEN_REASON_CODES).optional(),
+  reopenEvidence: z.string().min(1).optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });

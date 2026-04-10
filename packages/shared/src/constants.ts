@@ -130,6 +130,13 @@ export const INBOX_MINE_ISSUE_STATUSES = [
 ] as const;
 export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
 
+export const REOPEN_REASON_CODES = [
+  "user_rejected",
+  "qa_retraction",
+  "prod_regression",
+] as const;
+export type ReopenReasonCode = (typeof REOPEN_REASON_CODES)[number];
+
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
