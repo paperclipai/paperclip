@@ -156,7 +156,7 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["exec", "--json"];
+      const args = ["exec", "--experimental-json", "--skip-git-repo-check"];
       if (search) args.unshift("--search");
       if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
       if (model) args.push("--model", model);
@@ -203,7 +203,7 @@ export async function testEnvironment(
           ...(hasHello
             ? {}
             : {
-                hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+                hint: "Try the probe manually (`codex exec --experimental-json --skip-git-repo-check -` then prompt: Respond with hello) to inspect full output.",
               }),
         });
       } else if (CODEX_AUTH_REQUIRED_RE.test(authEvidence)) {
