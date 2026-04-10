@@ -31,13 +31,24 @@ function createGitRunner(cwd = process.cwd()) {
   };
 }
 
+async function runGit(run, args) {
+  const result = await run({ command: 'git', args });
+  if (typeof result === 'string') {
+    return result;
+  }
+  if (result && typeof result.stdout === 'string') {
+    return result.stdout;
+  }
+  return '';
+}
+
 async function writeArtifact(artifactPath, contents) {
   await mkdir(path.dirname(artifactPath), { recursive: true });
   await writeFile(artifactPath, contents, 'utf8');
 }
 
 async function resolveBotBranchName({ run, branchPrefix, upstreamRef }) {
-  const shortSha = (await run({ command: 'git', args: ['rev-parse', '--short=12', upstreamRef] })).trim();
+  const shortSha = (await runGit(run, ['rev-parse', '--short=12', upstreamRef])).trim();
   return `${branchPrefix}/${shortSha}`;
 }
 
@@ -57,6 +68,16 @@ function buildReportContent({ config, branchName, status, commits, diagnostics }
       ? [
           '## Conflict diagnostics',
           `- failing commit: \`${diagnostics.failingCommit}\``,
+          '### Current git status',
+          '```',
+          diagnostics.status,
+          '```',
+          '',
+          '### Failing commit summary',
+          '```',
+          diagnostics.failingCommitSummary,
+          '```',
+          '',
           ...diagnostics.conflicts.map((file) => `- \`${file}\``),
           '',
         ]

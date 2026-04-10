@@ -39,7 +39,7 @@ test('runUpstreamSync dry-run prepares a bot branch name without replaying commi
   const { calls, run } = createRunMock({
     '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
     '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c3\nc2\nc1\n',
-    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': { stdout: 'abc123def456\n' },
   });
 
   try {
@@ -172,6 +172,10 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
     assert.match(report, /- status: `conflict`/);
     assert.match(report, /## Conflict diagnostics/);
     assert.match(report, /- failing commit: `c2`/);
+    assert.match(report, /### Current git status/);
+    assert.match(report, /UU scripts\/upstream-sync\/lib\/orchestrator\.mjs/);
+    assert.match(report, /### Failing commit summary/);
+    assert.match(report, /c2 conflict commit summary/);
     assert.match(report, /scripts\/upstream-sync\/lib\/orchestrator\.mjs/);
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
