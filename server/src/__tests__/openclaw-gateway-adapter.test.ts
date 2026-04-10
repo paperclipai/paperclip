@@ -510,24 +510,60 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
-  it("strips payloadTemplate.paperclip before sending agent params", async () => {
+  it("strips a persisted legacy payloadTemplate.paperclip fixture before sending agent params", async () => {
     const gateway = await createMockGatewayServer();
 
     try {
       const result = await execute(
-        buildContext({
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+              paperclip: {
+                runId: "persisted-run-id",
+                companyId: "persisted-company-id",
+                agentId: "persisted-agent-id",
+                agentName: "Persisted OpenClaw Agent",
+                taskId: "persisted-task-id",
+                issueId: "persisted-issue-id",
+                issueIds: ["persisted-issue-id"],
+                wakeReason: "missing_issue_comment",
+                wakeCommentId: "persisted-comment-id",
+                approvalId: null,
+                approvalStatus: null,
+                apiUrl: "https://paperclip.example",
+                wake: {
+                  reason: "issue_commented",
+                  latestCommentId: "persisted-comment-id",
+                  commentIds: ["persisted-comment-id"],
+                },
+                workspace: {
+                  cwd: "/tmp/persisted-workspace",
+                  strategy: "git_worktree",
+                },
+              },
+            },
+            waitTimeoutMs: 2000,
           },
-          payloadTemplate: {
-            message: "wake now",
-            paperclip: {
-              injected: true,
+          {
+            context: {
+              taskId: "task-123",
+              issueId: "issue-123",
+              wakeReason: "issue_commented",
+              wakeCommentId: "comment-123",
+              issueIds: ["issue-123"],
+              paperclipWake: {
+                reason: "issue_commented",
+                latestCommentId: "comment-123",
+                commentIds: ["comment-123"],
+              },
             },
           },
-          waitTimeoutMs: 2000,
-        }),
+        ),
       );
 
       expect(result.exitCode).toBe(0);
@@ -535,6 +571,7 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload).not.toHaveProperty("paperclip");
+      expect(String(payload?.message ?? "")).toContain('"latestCommentId":"comment-123"');
     } finally {
       await gateway.close();
     }
