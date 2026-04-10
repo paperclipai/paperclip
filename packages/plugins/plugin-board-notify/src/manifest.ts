@@ -16,6 +16,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "secrets.read-ref",
     "http.outbound",
+    "issues.read",
+    "issue.comments.read",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -53,6 +55,12 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on blocked (board action needed)",
         description: "Send email when an issue is marked blocked and the latest comment mentions board action",
         default: true,
+      },
+      paperclipBaseUrl: {
+        type: "string",
+        title: "Paperclip Base URL",
+        description: "Base URL for links in emails (e.g. https://wyvern-jig.exe.xyz:3100)",
+        default: "",
       },
     },
     required: ["resendApiKeyRef", "fromAddress", "toAddress"],
