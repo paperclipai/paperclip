@@ -40,6 +40,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { syncConfiguredExternalMcpServers } from "./external-mcp-config.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -89,6 +90,17 @@ export async function startServer(): Promise<StartedServer> {
   }
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
+  const externalMcpSync = await syncConfiguredExternalMcpServers(process.env);
+  if (externalMcpSync.configured) {
+    logger.info(
+      {
+        servers: externalMcpSync.syncedServers,
+        updatedCodexConfig: externalMcpSync.updatedCodexConfig,
+        updatedClaudeConfig: externalMcpSync.updatedClaudeConfig,
+      },
+      "Synchronized shared external MCP server configuration for local agent runtimes.",
+    );
   }
   
   type MigrationSummary =

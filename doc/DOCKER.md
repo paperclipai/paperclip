@@ -146,6 +146,31 @@ Notes:
 - Without API keys, the app still runs normally.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 
+## Shared Composio / Rube MCP for Local Agents
+
+Paperclip can project one shared external MCP endpoint into the local Claude and Codex homes it manages at server startup.
+
+Set these optional environment variables on the server container or VPS host:
+
+- `PAPERCLIP_RUBE_MCP_URL` - Composio/Rube MCP endpoint, for example `https://rube.app/mcp`
+- `PAPERCLIP_RUBE_MCP_NAME` - optional MCP server name override; defaults to `rube`
+- `PAPERCLIP_RUBE_MCP_HEADERS_JSON` - optional JSON object of HTTP headers for that endpoint
+- `PAPERCLIP_EXTERNAL_MCP_SERVERS_JSON` - optional JSON array or object for additional shared HTTP MCP servers
+
+When configured, Paperclip writes the merged config into:
+
+- `~/.claude/mcp-servers.json`
+- `~/.codex/config.toml`
+
+This is the preferred Phase 1 integration shape for Composio on the VPS because it makes the same MCP endpoint available to all local Paperclip agents without adding per-adapter SaaS wiring.
+
+Example:
+
+```sh
+PAPERCLIP_RUBE_MCP_URL=https://rube.app/mcp
+PAPERCLIP_RUBE_MCP_HEADERS_JSON='{"Authorization":"Bearer ..."}'
+```
+
 ## Stripe (test / integration)
 
 Paperclip reads Stripe keys from the environment (no billing routes ship yet; keys are normalized for upcoming use and for Stripe SDK defaults).

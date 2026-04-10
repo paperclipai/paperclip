@@ -56,6 +56,11 @@ services:
       STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
       # OpenRouter API key — needed by pi --list-models for custom model providers in models.json
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Optional shared Composio/Rube MCP endpoint projected into local Claude/Codex homes on server startup.
+      PAPERCLIP_RUBE_MCP_URL: "${PAPERCLIP_RUBE_MCP_URL:-}"
+      PAPERCLIP_RUBE_MCP_NAME: "${PAPERCLIP_RUBE_MCP_NAME:-}"
+      PAPERCLIP_RUBE_MCP_HEADERS_JSON: "${PAPERCLIP_RUBE_MCP_HEADERS_JSON:-}"
+      PAPERCLIP_EXTERNAL_MCP_SERVERS_JSON: "${PAPERCLIP_EXTERNAL_MCP_SERVERS_JSON:-}"
     # gid 999 = docker group on host, needed for hermes-bridge.sh to docker-exec into hermes-agent container.
     group_add:
       - "999"
