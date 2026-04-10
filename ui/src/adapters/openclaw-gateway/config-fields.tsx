@@ -132,6 +132,15 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
+      {isCreate && set && (
+        <SecretField
+          label="Gateway auth token (x-openclaw-token)"
+          value={values!.openclawGatewayToken ?? ""}
+          onCommit={(v) => set({ openclawGatewayToken: v.trim() })}
+          placeholder="From gateway.token or openclaw.json → gateway.auth.token"
+        />
+      )}
+
       {!isCreate && (
         <>
           <Field label="Paperclip API URL override">
