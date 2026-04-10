@@ -97,6 +97,7 @@ export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,
+  IssueRecoveryTransition,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
   IssueExecutionState,

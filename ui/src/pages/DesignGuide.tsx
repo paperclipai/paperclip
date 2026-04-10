@@ -549,7 +549,7 @@ export function DesignGuide() {
                 <SelectItem value="backlog">Backlog</SelectItem>
                 <SelectItem value="todo">Todo</SelectItem>
                 <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
+                <SelectItem value="in_review">QA</SelectItem>
                 <SelectItem value="done">Done</SelectItem>
               </SelectContent>
             </Select>

@@ -1086,6 +1086,8 @@ export function issueRoutes(
         title: issue.title,
         identifier: issue.identifier,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+        ...(req.body.recoveryFromIssueId ? { recoveryFromIssueId: req.body.recoveryFromIssueId } : {}),
+        ...(req.body.recoveryDisposition ? { recoveryDisposition: req.body.recoveryDisposition } : {}),
       },
     });
 
@@ -1427,7 +1429,7 @@ export function issueRoutes(
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (assigneeChanged && issue.assigneeAgentId && !["backlog", "done", "cancelled"].includes(issue.status)) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -1447,7 +1449,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId && !["done", "cancelled"].includes(issue.status)) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",

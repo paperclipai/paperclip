@@ -27,6 +27,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRecoveryDisposition,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -586,10 +587,14 @@ export interface WorkerToHostMethods {
       goalId?: string;
       parentId?: string;
       inheritExecutionWorkspaceFromIssueId?: string;
+      recoveryFromIssueId?: string;
+      recoveryDisposition?: IssueRecoveryDisposition;
       title: string;
       description?: string;
+      status?: Issue["status"];
       priority?: string;
       assigneeAgentId?: string;
+      assigneeUserId?: string;
     },
     result: Issue,
   ];

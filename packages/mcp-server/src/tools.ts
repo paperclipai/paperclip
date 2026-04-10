@@ -89,9 +89,11 @@ const upsertDocumentToolSchema = z.object({
   baseRevisionId: z.string().uuid().nullable().optional(),
 });
 
+const createIssueCoreShape = (createIssueSchema as z.ZodEffects<z.ZodObject<z.ZodRawShape>>)._def.schema.shape;
+
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueSchema);
+}).extend(createIssueCoreShape);
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,

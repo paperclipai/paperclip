@@ -21,6 +21,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRecoveryDisposition,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -895,17 +896,23 @@ export interface PluginIssuesClient {
     goalId?: string;
     parentId?: string;
     inheritExecutionWorkspaceFromIssueId?: string;
+    recoveryFromIssueId?: string;
+    recoveryDisposition?: IssueRecoveryDisposition;
     title: string;
     description?: string;
+    status?: Issue["status"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
+    assigneeUserId?: string;
   }): Promise<Issue>;
   update(
     issueId: string,
-    patch: Partial<Pick<
-      Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
-    >>,
+    patch: Partial<Pick<Issue, "title" | "description" | "status" | "priority" | "assigneeAgentId" | "assigneeUserId">> & {
+      recovery?: {
+        successorIssueId?: string;
+        disposition: IssueRecoveryDisposition;
+      };
+    },
     companyId: string,
   ): Promise<Issue>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;

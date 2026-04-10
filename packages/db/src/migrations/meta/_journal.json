@@ -372,6 +372,13 @@
       "when": 1775571715162,
       "tag": "0052_mushy_trauma",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1775600000000,
+      "tag": "0053_quiet_regenerator",
+      "breakpoints": true
     }
   ]
 }

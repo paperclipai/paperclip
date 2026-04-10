@@ -20,6 +20,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { formatIssueStatusLabel } from "../lib/issue-status-labels";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -31,10 +32,6 @@ const boardStatuses = [
   "done",
   "cancelled",
 ];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface Agent {
   id: string;
@@ -66,18 +63,16 @@ function KanbanColumn({
   const isEmpty = issues.length === 0;
 
   return (
-    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
-      <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
+    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[96px] w-[96px]" : "min-w-[260px] w-[260px]"}`}>
+      <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground truncate">
+          {formatIssueStatusLabel(status)}
+        </span>
         {(!isEmpty || isOver) && (
-          <>
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {statusLabel(status)}
-            </span>
-            <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-              {issues.length}
-            </span>
-          </>
+          <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
+            {issues.length}
+          </span>
         )}
       </div>
       <div

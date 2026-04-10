@@ -4,6 +4,7 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_RECOVERY_DISPOSITIONS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
 } from "../constants.js";
@@ -113,7 +114,30 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
-export const createIssueSchema = z.object({
+export const issueRecoverySchema = z
+  .object({
+    successorIssueId: z.string().uuid().optional(),
+    disposition: z.enum(ISSUE_RECOVERY_DISPOSITIONS),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      (value.disposition === "superseded" ||
+        value.disposition === "recovered_by_reissue" ||
+        value.disposition === "blocked") &&
+      !value.successorIssueId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Recovery dispositions that create a continuation issue require successorIssueId",
+        path: ["successorIssueId"],
+      });
+    }
+  });
+
+export type IssueRecovery = z.infer<typeof issueRecoverySchema>;
+
+const createIssueCoreSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -136,6 +160,25 @@ export const createIssueSchema = z.object({
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
+const issueRecoveryFieldSchema = z.object({
+  recoveryFromIssueId: z.string().uuid().optional().nullable(),
+  recoveryDisposition: z.enum(ISSUE_RECOVERY_DISPOSITIONS).optional(),
+});
+
+export const createIssueSchema = createIssueCoreSchema
+  .extend(issueRecoveryFieldSchema.shape)
+  .superRefine((value, ctx) => {
+    const hasRecoverySource = Boolean(value.recoveryFromIssueId);
+    const hasRecoveryDisposition = Boolean(value.recoveryDisposition);
+    if (hasRecoverySource !== hasRecoveryDisposition) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "recoveryFromIssueId and recoveryDisposition must be provided together",
+        path: hasRecoverySource ? ["recoveryDisposition"] : ["recoveryFromIssueId"],
+      });
+    }
+  });
+
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
 export const createIssueLabelSchema = z.object({
@@ -145,11 +188,14 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueCoreSchema
+  .partial()
+  .extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  recovery: issueRecoverySchema.optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

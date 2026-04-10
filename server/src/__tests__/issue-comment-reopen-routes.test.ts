@@ -90,7 +90,7 @@ function createApp() {
   return app;
 }
 
-function makeIssue(status: "todo" | "done") {
+function makeIssue(status: "todo" | "done" | "cancelled") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -182,6 +182,23 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("does not wake assignees when reassignment keeps the issue cancelled", async () => {
+    const issue = makeIssue("cancelled");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("interrupts an active run before a combined comment update", async () => {

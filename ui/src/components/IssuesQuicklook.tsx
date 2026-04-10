@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusIcon } from "./StatusIcon";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
+import { formatIssueStatusLabel } from "../lib/issue-status-labels";
 import { timeAgo } from "../lib/timeAgo";
 
 interface IssuesQuicklookProps {
@@ -44,7 +45,7 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
             <span>·</span>
-            <span>{issue.status.replace(/_/g, " ")}</span>
+            <span>{formatIssueStatusLabel(issue.status)}</span>
             <span>·</span>
             <span>{timeAgo(new Date(issue.updatedAt))}</span>
           </div>

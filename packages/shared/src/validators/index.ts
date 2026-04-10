@@ -129,6 +129,7 @@ export {
 
 export {
   createIssueSchema,
+  issueRecoverySchema,
   createIssueLabelSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
@@ -143,6 +144,7 @@ export {
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   type CreateIssue,
+  type IssueRecovery,
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueExecutionWorkspaceSettings,

@@ -591,10 +591,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             goalId: input.goalId,
             parentId: input.parentId,
             inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
+            recoveryFromIssueId: input.recoveryFromIssueId,
+            recoveryDisposition: input.recoveryDisposition,
             title: input.title,
             description: input.description,
+            status: input.status,
             priority: input.priority,
             assigneeAgentId: input.assigneeAgentId,
+            assigneeUserId: input.assigneeUserId,
           });
         },
 

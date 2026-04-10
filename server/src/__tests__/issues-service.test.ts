@@ -1023,6 +1023,118 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects assignee changes while an issue stays terminal", async () => {
+    const companyId = randomUUID();
+    const currentAssigneeId = randomUUID();
+    const nextAssigneeId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: currentAssigneeId,
+        companyId,
+        name: "Current Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAssigneeId,
+        companyId,
+        name: "Next Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cancelled issue",
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: currentAssigneeId,
+    });
+
+    await expect(
+      svc.update(issueId, { assigneeAgentId: nextAssigneeId }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const persisted = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toEqual({
+      status: "cancelled",
+      assigneeAgentId: currentAssigneeId,
+    });
+  });
+
+  it("allows reassignment when reopening a terminal issue", async () => {
+    const companyId = randomUUID();
+    const currentAssigneeId = randomUUID();
+    const nextAssigneeId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: currentAssigneeId,
+        companyId,
+        name: "Current Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAssigneeId,
+        companyId,
+        name: "Next Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cancelled issue",
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: currentAssigneeId,
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "todo",
+      assigneeAgentId: nextAssigneeId,
+    });
+    expect(updated).not.toBeNull();
+    expect(updated?.status).toBe("todo");
+    expect(updated?.assigneeAgentId).toBe(nextAssigneeId);
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1135,5 +1247,207 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       assigneeAgentId,
       childIssueIds: [childA, childB],
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService recovery transitions", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-recovery-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("create with recovery disposition clears source ownership, links successor, and records transition truth", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const sourceIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Recovery agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Broken source issue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const continuation = await svc.create(companyId, {
+      title: "Continuation issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId,
+      recoveryFromIssueId: sourceIssueId,
+      recoveryDisposition: "recovered_by_reissue",
+    });
+
+    const sourceIssue = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toEqual(
+      expect.objectContaining({
+        status: "blocked",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }),
+    );
+
+    const relation = await db
+      .select({
+        issueId: issueRelations.issueId,
+        relatedIssueId: issueRelations.relatedIssueId,
+        type: issueRelations.type,
+      })
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(relation).toEqual(
+      expect.objectContaining({
+        issueId: sourceIssueId,
+        relatedIssueId: continuation.id,
+        type: "recovered_by",
+      }),
+    );
+
+    const transitionComment = await db
+      .select({
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(transitionComment?.body).toContain("[issue-recovery-transition]");
+    expect(transitionComment?.body).toContain(continuation.identifier ?? continuation.id);
+  });
+
+  it("update recovery with successor clears source ownership and persists transition truth", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Recovery agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Stuck source issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        title: "Replacement issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    const updated = await svc.update(sourceIssueId, {
+      actorAgentId: assigneeAgentId,
+      recovery: {
+        successorIssueId,
+        disposition: "superseded",
+      },
+    });
+    expect(updated).not.toBeNull();
+    expect(updated?.status).toBe("cancelled");
+    expect(updated?.assigneeAgentId).toBeNull();
+    expect(updated?.assigneeUserId).toBeNull();
+
+    const relation = await db
+      .select({
+        issueId: issueRelations.issueId,
+        relatedIssueId: issueRelations.relatedIssueId,
+        type: issueRelations.type,
+      })
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(relation).toEqual(
+      expect.objectContaining({
+        issueId: sourceIssueId,
+        relatedIssueId: successorIssueId,
+        type: "recovered_by",
+      }),
+    );
+
+    const successor = await db
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(eq(issues.id, successorIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    const transitionComment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(transitionComment?.body).toContain("[issue-recovery-transition]");
+    expect(transitionComment?.body).toContain(successor?.identifier ?? successorIssueId);
   });
 });

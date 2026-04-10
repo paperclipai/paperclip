@@ -839,6 +839,30 @@ async function readGitOutput(cwd: string, args: string[]) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizePortableRepoUrl(repoUrl: string | null) {
+  if (!repoUrl) return null;
+  const trimmed = repoUrl.trim();
+  if (!trimmed) return null;
+
+  const scpLikeGitHubMatch = /^git@github\.com:(.+)$/i.exec(trimmed);
+  if (scpLikeGitHubMatch?.[1]) {
+    return `https://github.com/${scpLikeGitHubMatch[1].replace(/^\/+/, "")}`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const isGitHub = parsed.hostname.toLowerCase() === "github.com";
+    const isSsh = parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:";
+    if (isGitHub && isSsh && parsed.username === "git") {
+      return `https://github.com${parsed.pathname}`;
+    }
+  } catch {
+    return trimmed;
+  }
+
+  return trimmed;
+}
+
 async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectLike["workspaces"]>[number]) {
   const cwd = asString(workspace.cwd);
   if (!cwd) {
@@ -880,7 +904,7 @@ async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectL
   }
 
   return {
-    repoUrl,
+    repoUrl: normalizePortableRepoUrl(repoUrl),
     repoRef,
     defaultRef,
   };
@@ -903,7 +927,7 @@ async function buildPortableProjectWorkspaces(
       !asString(workspace.repoUrl) || !asString(workspace.repoRef) || !asString(workspace.defaultRef)
         ? await inferPortableWorkspaceGitMetadata(workspace)
         : { repoUrl: null, repoRef: null, defaultRef: null };
-    const repoUrl = asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl;
+    const repoUrl = normalizePortableRepoUrl(asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl);
     if (!repoUrl) {
       warnings.push(`Project ${projectSlug} workspace ${workspace.name} was omitted from export because it does not have a portable repoUrl.`);
       continue;

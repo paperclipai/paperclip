@@ -13,11 +13,12 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { HttpError, conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -67,6 +68,8 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const HEARTBEAT_MAX_LIVE_RUNS_DEFAULT = 5;
+const HEARTBEAT_MAX_LIVE_RUNS_MAX = 100;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
@@ -83,6 +86,8 @@ const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
 const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
 const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
 const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
+const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
+  /\bcart|checkout|frontend|backend|api|component|typescript|react|db|database|migration|refactor|bug|fix|code\b/i;
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
@@ -289,7 +294,7 @@ async function resolveOperationsHeartbeatTargets(
 ): Promise<OperationsHeartbeatTarget[]> {
   const now = Date.now();
 
-  const openAssignedIssues = await db
+  let openAssignedIssues = await db
     .select({
       id: issues.id,
       identifier: issues.identifier,
@@ -309,6 +314,24 @@ async function resolveOperationsHeartbeatTargets(
         sql`${issues.assigneeAgentId} is not null`,
       ),
     );
+
+  if (openAssignedIssues.length > 0) {
+    const recoveredSourceRows = await db
+      .select({ issueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.type, "recovered_by"),
+          inArray(issueRelations.issueId, openAssignedIssues.map((row) => row.id)),
+        ),
+      );
+
+    if (recoveredSourceRows.length > 0) {
+      const recoveredSourceIssueIds = new Set(recoveredSourceRows.map((row) => row.issueId));
+      openAssignedIssues = openAssignedIssues.filter((row) => !recoveredSourceIssueIds.has(row.id));
+    }
+  }
 
   if (openAssignedIssues.length > 0) {
     const runIds = Array.from(
@@ -497,6 +520,14 @@ async function resolveOperationsHeartbeatTargets(
           issueId: entry.issue.id,
           mode: entry.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
           reason: entry.reasons.join("; "),
+          autoReissueEligible:
+            !entry.isOperationsOwned
+            && !entry.isWatchdogIssue
+            && (
+              entry.hasStuckAssignedSignals
+              || entry.hasFalseCompleteSignals
+              || entry.hasContradictoryTruthSignals
+            ),
         }));
     }
   }
@@ -524,6 +555,7 @@ async function resolveOperationsHeartbeatTargets(
       issueId: readyUnassigned.id,
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
     }];
   }
 
@@ -533,10 +565,12 @@ type OperationsHeartbeatTarget = {
   issueId: string;
   mode: "ops_active" | "cross_agent_recovery" | "ready_unassigned";
   reason: string;
+  autoReissueEligible: boolean;
 };
 type DbExecutor = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 const SESSIONED_LOCAL_ADAPTERS = new Set([
-
+  "claude_local",
+  "codex_local",
   "cursor",
   "gemini_local",
   "opencode_local",
@@ -761,6 +795,12 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function normalizeMaxLiveRuns(value: unknown) {
+  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_LIVE_RUNS_DEFAULT));
+  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_LIVE_RUNS_DEFAULT;
+  return Math.max(1, Math.min(HEARTBEAT_MAX_LIVE_RUNS_MAX, parsed));
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -1484,6 +1524,14 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function isAgentInvokableStatus(status: string | null | undefined) {
+  return status !== "paused" && status !== "terminated" && status !== "pending_approval";
+}
+
+function isAgentNotInvokableConflict(error: unknown) {
+  return error instanceof HttpError && error.status === 409 && error.message === "Agent is not invokable in its current state";
 }
 
 const defaultSessionCodec: AdapterSessionCodec = {
@@ -2707,6 +2755,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxLiveRuns: normalizeMaxLiveRuns(heartbeat.maxLiveRuns ?? heartbeat.maxQueuedRuns),
     };
   }
 
@@ -3110,7 +3159,7 @@ export function heartbeatService(db: Db) {
     const companyId = input.agent.companyId;
     const nowMs = Date.now();
 
-    const [targets, boardRows, openAssignedIssues, openUnassignedIssues] = await Promise.all([
+    const [targets, boardRows, rawOpenAssignedIssues, rawOpenUnassignedIssues] = await Promise.all([
       resolveOperationsHeartbeatTargets(db, {
         companyId,
         operationsAgentId: input.agent.id,
@@ -3123,11 +3172,13 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           status: issues.status,
+          priority: issues.priority,
           identifier: issues.identifier,
           title: issues.title,
           projectId: issues.projectId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeName: agents.name,
+          assigneeRole: agents.role,
           assigneeStatus: agents.status,
         })
         .from(issues)
@@ -3144,6 +3195,7 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           status: issues.status,
+          priority: issues.priority,
           identifier: issues.identifier,
           title: issues.title,
           projectId: issues.projectId,
@@ -3160,6 +3212,31 @@ export function heartbeatService(db: Db) {
         .orderBy(desc(issues.updatedAt)),
     ]);
 
+    let openAssignedIssues = rawOpenAssignedIssues;
+    let openUnassignedIssues = rawOpenUnassignedIssues;
+    const recoveryCandidateIssueIds = Array.from(
+      new Set([
+        ...openAssignedIssues.map((issue) => issue.id),
+        ...openUnassignedIssues.map((issue) => issue.id),
+      ]),
+    );
+    if (recoveryCandidateIssueIds.length > 0) {
+      const recoveredSourceRows = await db
+        .select({ issueId: issueRelations.issueId })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "recovered_by"),
+            inArray(issueRelations.issueId, recoveryCandidateIssueIds),
+          ),
+        );
+      if (recoveredSourceRows.length > 0) {
+        const recoveredSourceIssueIds = new Set(recoveredSourceRows.map((row) => row.issueId));
+        openAssignedIssues = openAssignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
+        openUnassignedIssues = openUnassignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
+      }
+    }
     const issueIds = openAssignedIssues.map((issue) => issue.id);
     const assigneeAgentIds = Array.from(
       new Set(openAssignedIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
@@ -3233,8 +3310,14 @@ export function heartbeatService(db: Db) {
     const latestRunByAssigneeId = new Map(latestAssigneeRunRows.map((row) => [row.agentId, row]));
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
     const latestOpsCommentByIssueId = new Map(latestOpsCommentRows.map((row) => [row.issueId, row]));
+    const autoReissueTargetIssueIds = new Set(
+      targets
+        .filter((target) => target.mode === "cross_agent_recovery" && target.autoReissueEligible)
+        .map((target) => target.issueId),
+    );
 
     const idleOwnedIssues = openAssignedIssues.filter((issue) => {
+      if (autoReissueTargetIssueIds.has(issue.id)) return false;
       const assigneeAgentId = issue.assigneeAgentId;
       if (!assigneeAgentId) return false;
       if (assigneeAgentId === input.agent.id) return false;
@@ -3321,14 +3404,71 @@ export function heartbeatService(db: Db) {
 
     let recoveryCommentCount = 0;
     let recoveryWakeupCount = 0;
+    let recoveryReissueCount = 0;
+    let recoveryReissueWakeupCount = 0;
     let requeuedOperationsIssueCount = 0;
     let assignedIssueCount = 0;
     let assignmentCommentCount = 0;
     let assignmentWakeupCount = 0;
+    const recoveryReissueTargets: Array<{
+      issue: (typeof openAssignedIssues)[number];
+      reason: string;
+    }> = [];
     const idleHandledIssueIds = new Set(idleOwnedIssues.map((issue) => issue.id));
     const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
     const targetReasonByIssueId = new Map<string, string>();
     const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+
+    const requestCrossAgentRecoveryWake = async (targetIssue: (typeof openAssignedIssues)[number], reason: string) => {
+      if (!targetIssue.assigneeAgentId) return;
+      if (!isAgentInvokableStatus(targetIssue.assigneeStatus)) return;
+
+      try {
+        await issuesSvc.addComment(
+          targetIssue.id,
+          buildOperationsRecoveryWakeComment({
+            assigneeAgentId: targetIssue.assigneeAgentId,
+            assigneeName: targetIssue.assigneeName,
+            reason,
+          }),
+          { agentId: input.agent.id, runId: input.run.id },
+        );
+        recoveryCommentCount += 1;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+          "operations heartbeat failed to post recovery wake comment",
+        );
+      }
+
+      try {
+        await enqueueWakeup(targetIssue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "operations_cross_agent_recovery",
+          payload: {
+            issueId: targetIssue.id,
+            mutation: "operations_cross_agent_recovery",
+            sourceRunId: input.run.id,
+          },
+          requestedByActorType: "agent",
+          requestedByActorId: input.agent.id,
+          contextSnapshot: {
+            issueId: targetIssue.id,
+            taskId: targetIssue.id,
+            source: "operations.heartbeat",
+            wakeReason: "operations_cross_agent_recovery",
+          },
+        });
+        recoveryWakeupCount += 1;
+      } catch (err) {
+        if (isAgentNotInvokableConflict(err)) return;
+        logger.warn(
+          { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+          "operations heartbeat failed to enqueue cross-agent recovery wakeup",
+        );
+      }
+    };
     for (const target of targets) {
       if (!targetReasonByIssueId.has(target.issueId)) {
         targetReasonByIssueId.set(target.issueId, target.reason);
@@ -3351,7 +3491,17 @@ export function heartbeatService(db: Db) {
         continue;
       }
       const latestOpsTargetComment = latestOpsCommentByIssueId.get(targetIssue.id);
+      const assigneeUnavailableForRecovery =
+        targetIssue.assigneeStatus === "error" ||
+        targetIssue.assigneeStatus === "paused" ||
+        targetIssue.assigneeStatus === "terminated" ||
+        targetIssue.assigneeStatus === "pending_approval";
+      const shouldAutoReissueTarget =
+        target.mode === "cross_agent_recovery" &&
+        Boolean(targetIssue.assigneeAgentId) &&
+        (target.autoReissueEligible || assigneeUnavailableForRecovery);
       const targetRecoveryCooldownActive =
+        !shouldAutoReissueTarget &&
         Boolean(
           latestOpsTargetComment?.body
           && (
@@ -3367,50 +3517,14 @@ export function heartbeatService(db: Db) {
       handledTargetIssueIds.add(targetIssue.id);
 
       if (target.mode === "cross_agent_recovery" && targetIssue.assigneeAgentId) {
-        try {
-          await issuesSvc.addComment(
-            targetIssue.id,
-            buildOperationsRecoveryWakeComment({
-              assigneeAgentId: targetIssue.assigneeAgentId,
-              assigneeName: targetIssue.assigneeName,
-              reason: target.reason,
-            }),
-            { agentId: input.agent.id, runId: input.run.id },
-          );
-          recoveryCommentCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
-            "operations heartbeat failed to post recovery wake comment",
-          );
-        }
-
-        try {
-          await enqueueWakeup(targetIssue.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "operations_cross_agent_recovery",
-            payload: {
-              issueId: targetIssue.id,
-              mutation: "operations_cross_agent_recovery",
-              sourceRunId: input.run.id,
-            },
-            requestedByActorType: "agent",
-            requestedByActorId: input.agent.id,
-            contextSnapshot: {
-              issueId: targetIssue.id,
-              taskId: targetIssue.id,
-              source: "operations.heartbeat",
-              wakeReason: "operations_cross_agent_recovery",
-            },
+        if (shouldAutoReissueTarget) {
+          recoveryReissueTargets.push({
+            issue: targetIssue,
+            reason: target.reason,
           });
-          recoveryWakeupCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
-            "operations heartbeat failed to enqueue cross-agent recovery wakeup",
-          );
+          continue;
         }
+        await requestCrossAgentRecoveryWake(targetIssue, target.reason);
       }
 
       if (
@@ -3441,6 +3555,39 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const misassignedEngineeringIssues = openAssignedIssues.filter((issue) => {
+      if (!issue.assigneeAgentId) return false;
+      if (issue.assigneeAgentId === input.agent.id) return false;
+      if (isWatchdogIssueLabel(`${issue.identifier ?? ""} ${issue.title}`)) return false;
+      if (!ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN.test(`${issue.identifier ?? ""} ${issue.title}`)) return false;
+      return issue.assigneeRole !== "engineer";
+    });
+    for (const issue of misassignedEngineeringIssues) {
+      try {
+        await issuesSvc.addComment(
+          issue.id,
+          buildOperationsRequeueComment({
+            reason: "engineering task was assigned to non-engineering role; requeueing for engineer assignment",
+          }),
+          { agentId: input.agent.id, runId: input.run.id },
+        );
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to post misassignment requeue comment");
+      }
+
+      try {
+        await issuesSvc.update(issue.id, {
+          assigneeAgentId: null,
+          ...(issue.status === "in_progress" ? { status: "todo" } : {}),
+          actorAgentId: input.agent.id,
+        });
+        requeuedOperationsIssueCount += 1;
+        opsActiveTargetIssueIdsForAssignment.add(issue.id);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to requeue misassigned engineering issue");
+      }
+    }
+
     const availableAssignmentCandidates = await db
       .select({
         id: agents.id,
@@ -3460,13 +3607,31 @@ export function heartbeatService(db: Db) {
         row.status !== "pending_approval" &&
         !isOrchestratorOnlyAgent(row)
       )));
+    const pausedFallbackAssignmentCandidates = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        capabilities: agents.capabilities,
+        status: agents.status,
+        runtimeConfig: agents.runtimeConfig,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .then((rows) => rows.filter((row) => (
+        row.id !== input.agent.id &&
+        row.status !== "terminated" &&
+        row.status !== "pending_approval" &&
+        !isOrchestratorOnlyAgent(row)
+      )));
 
     function pickAssignmentCandidate(issue: {
       id: string;
       identifier: string | null;
       title: string;
       projectId: string | null;
-    }) {
+    }, opts?: { excludeAgentId?: string | null; allowPausedFallback?: boolean }) {
       const sameProjectCounts = new Map<string, number>();
       for (const candidateIssue of openAssignedIssues) {
         if (!candidateIssue.assigneeAgentId) continue;
@@ -3478,24 +3643,92 @@ export function heartbeatService(db: Db) {
       }
 
       const issueText = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
+      const isQaLikeIssue = /\bqa|release|audit|verify|test\b/.test(issueText);
+      const isLeadLikeIssue = /\blead|restaurant|prospect|sheet\b/.test(issueText);
+      const isOnboardingLikeIssue = /\bonboard|onboarding|go[- ]?live|activation|rollout|intake|implementation\b/.test(issueText);
+      const isEngineeringIssue = ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN.test(issueText);
+      const isAppLikeEngineeringIssue = /\bcart|checkout|client|frontend|ui|app|mobile|react|screen|component\b/.test(issueText);
+      const isWebLikeEngineeringIssue = /\bweb|browser|page|route|view\b/.test(issueText);
+      const isPlatformLikeEngineeringIssue = /\bplatform|infra|runtime|pipeline|orchestr|migration|database|server|backend|auth|api\b/.test(issueText);
+      const profileText = (candidate: {
+        name: string;
+        title: string | null;
+        capabilities: string | null;
+      }) => `${candidate.name ?? ""} ${candidate.title ?? ""} ${candidate.capabilities ?? ""}`.toLowerCase();
       const healthyCandidates = availableAssignmentCandidates.filter((candidate) => candidate.status !== "error");
-      const candidatePool = healthyCandidates.length > 0 ? healthyCandidates : availableAssignmentCandidates;
+      let baseCandidatePool = healthyCandidates.length > 0 ? healthyCandidates : availableAssignmentCandidates;
+      if (baseCandidatePool.length === 0 && opts?.allowPausedFallback) {
+        const pausedFallbackHealthyCandidates = pausedFallbackAssignmentCandidates.filter((candidate) => candidate.status !== "error");
+        baseCandidatePool =
+          pausedFallbackHealthyCandidates.length > 0
+            ? pausedFallbackHealthyCandidates
+            : pausedFallbackAssignmentCandidates;
+      }
+      const isReadyCandidate = (candidate: { status: string | null }) => (
+        candidate.status !== "error" &&
+        candidate.status !== "paused" &&
+        candidate.status !== "terminated" &&
+        candidate.status !== "pending_approval"
+      );
+      const specializationSourcePool = opts?.allowPausedFallback
+        ? pausedFallbackAssignmentCandidates
+        : availableAssignmentCandidates;
+      if (isEngineeringIssue) {
+        const engineerCandidates = specializationSourcePool.filter((candidate) => candidate.role === "engineer");
+        if (engineerCandidates.length === 0) return null;
+
+        const readyEngineers = engineerCandidates.filter(isReadyCandidate);
+        if (readyEngineers.length === 0) return null;
+        const appEngineerCandidates = engineerCandidates.filter((candidate) => (
+          /\bproduct engineer - app\b|\bapp\b|frontend|react|mobile|ios|android|client/.test(profileText(candidate))
+        ));
+        const webEngineerCandidates = engineerCandidates.filter((candidate) => (
+          /\bproduct engineer - web\b|\bweb\b|frontend|react|browser|ui/.test(profileText(candidate))
+        ));
+        const platformEngineerCandidates = engineerCandidates.filter((candidate) => (
+          /\bplatform\b|infra|backend|server|runtime|devops|database/.test(profileText(candidate))
+        ));
+
+        const preferReadySpecialists = (specialists: typeof engineerCandidates) => {
+          const readySpecialists = specialists.filter(isReadyCandidate);
+          return readySpecialists.length > 0 ? readySpecialists : readyEngineers;
+        };
+
+        if (isAppLikeEngineeringIssue) {
+          baseCandidatePool = preferReadySpecialists(appEngineerCandidates);
+        } else if (isWebLikeEngineeringIssue) {
+          baseCandidatePool = preferReadySpecialists(webEngineerCandidates);
+        } else if (isPlatformLikeEngineeringIssue) {
+          baseCandidatePool = preferReadySpecialists(platformEngineerCandidates);
+        } else {
+          baseCandidatePool = readyEngineers;
+        }
+      }
+      const preferredCandidatePool = opts?.excludeAgentId
+        ? baseCandidatePool.filter((candidate) => candidate.id !== opts.excludeAgentId)
+        : baseCandidatePool;
+      const candidatePool = preferredCandidatePool.length > 0 ? preferredCandidatePool : baseCandidatePool;
 
       const ranked = candidatePool
         .map((candidate) => {
-          let score = (sameProjectCounts.get(candidate.id) ?? 0) * 100;
-          const candidateText = `${candidate.name ?? ""} ${candidate.title ?? ""} ${candidate.capabilities ?? ""}`.toLowerCase();
+          const sameProjectLoad = sameProjectCounts.get(candidate.id) ?? 0;
+          let score = Math.min(sameProjectLoad, 2) * 20;
+          const candidateText = profileText(candidate);
 
           if (candidate.status === "idle") score += 25;
           else if (candidate.status === "running") score += 10;
           else if (candidate.status === "error") score -= 200;
 
-          if (/\bqa|release|audit|verify|test\b/.test(issueText)) {
+          if (isQaLikeIssue) {
             if (candidate.role === "qa" || /\bqa|release\b/.test(candidateText)) score += 120;
-          } else if (/\blead|restaurant|prospect|sheet\b/.test(issueText)) {
+          } else if (isLeadLikeIssue) {
             if (candidate.role === "researcher" || /lead generation|sales/.test(candidateText)) score += 120;
-          } else if (candidate.role === "engineer" || /\bengineer|app|web|platform\b/.test(candidateText)) {
-            score += 90;
+          } else if (isOnboardingLikeIssue) {
+            if (candidate.role === "pm" || /\bonboarding|implementation|project manager\b/.test(candidateText)) score += 120;
+          } else if (candidate.role === "engineer" || /\bengineer|app|web|platform|frontend|backend\b/.test(candidateText)) {
+            score += 140;
+          } else {
+            score -= 80;
           }
 
           return { candidate, score };
@@ -3503,6 +3736,99 @@ export function heartbeatService(db: Db) {
         .sort((a, b) => b.score - a.score || a.candidate.name.localeCompare(b.candidate.name));
 
       return ranked[0]?.candidate ?? null;
+    }
+
+    for (const reissueTarget of recoveryReissueTargets) {
+      const sourceIssue = await issuesSvc.getById(reissueTarget.issue.id);
+      if (!sourceIssue) continue;
+      const candidate = pickAssignmentCandidate(
+        {
+          id: sourceIssue.id,
+          identifier: sourceIssue.identifier,
+          title: sourceIssue.title,
+          projectId: sourceIssue.projectId,
+        },
+        { excludeAgentId: reissueTarget.issue.assigneeAgentId, allowPausedFallback: true },
+      );
+      if (!candidate || !isAgentInvokableStatus(candidate.status)) {
+        await requestCrossAgentRecoveryWake(reissueTarget.issue, reissueTarget.reason);
+        continue;
+      }
+
+      try {
+        const continuation = await issuesSvc.create(companyId, {
+          projectId: sourceIssue.projectId ?? undefined,
+          projectWorkspaceId: sourceIssue.projectWorkspaceId ?? undefined,
+          goalId: sourceIssue.goalId ?? undefined,
+          parentId: sourceIssue.parentId ?? undefined,
+          inheritExecutionWorkspaceFromIssueId: sourceIssue.id,
+          title: sourceIssue.title,
+          description: sourceIssue.description ?? undefined,
+          status: "todo",
+          priority: sourceIssue.priority,
+          assigneeAgentId: candidate.id,
+          assigneeUserId: null,
+          ...(Array.isArray(sourceIssue.labelIds) ? { labelIds: sourceIssue.labelIds } : {}),
+          recoveryFromIssueId: sourceIssue.id,
+          recoveryDisposition: "superseded",
+          createdByAgentId: input.agent.id,
+        });
+        recoveryReissueCount += 1;
+
+        try {
+          await issuesSvc.addComment(
+            continuation.id,
+            buildOperationsAssignmentComment({
+              assigneeAgentId: candidate.id,
+              assigneeName: candidate.name,
+              reason: `recovery reissue from ${sourceIssue.identifier ?? sourceIssue.id}: ${reissueTarget.reason}`,
+            }),
+            { agentId: input.agent.id, runId: input.run.id },
+          );
+          assignmentCommentCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
+            "operations heartbeat failed to post recovery reissue assignment comment",
+          );
+        }
+
+        try {
+          await enqueueWakeup(candidate.id, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "operations_recovery_reissue",
+            payload: {
+              issueId: continuation.id,
+              sourceIssueId: sourceIssue.id,
+              mutation: "operations_recovery_reissue",
+              sourceRunId: input.run.id,
+            },
+            requestedByActorType: "agent",
+            requestedByActorId: input.agent.id,
+            contextSnapshot: {
+              issueId: continuation.id,
+              sourceIssueId: sourceIssue.id,
+              taskId: continuation.id,
+              source: "operations.heartbeat",
+              wakeReason: "operations_recovery_reissue",
+            },
+          });
+          recoveryReissueWakeupCount += 1;
+        } catch (err) {
+          if (isAgentNotInvokableConflict(err)) continue;
+          logger.warn(
+            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
+            "operations heartbeat failed to enqueue recovery reissue wakeup",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, issueId: sourceIssue.id, assigneeAgentId: candidate.id },
+          "operations heartbeat failed to create recovery continuation issue",
+        );
+        await requestCrossAgentRecoveryWake(reissueTarget.issue, reissueTarget.reason);
+      }
     }
 
     const issuesNeedingAssignment = [
@@ -3598,6 +3924,8 @@ export function heartbeatService(db: Db) {
         wakeupCount,
         recoveryCommentCount,
         recoveryWakeupCount,
+        recoveryReissueCount,
+        recoveryReissueWakeupCount,
         requeuedOperationsIssueCount,
         assignedIssueCount,
         assignmentCommentCount,
@@ -3616,6 +3944,8 @@ export function heartbeatService(db: Db) {
     const blockedTargetIssueId =
       Number(operationsHeartbeatSweep.recoveryCommentCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.recoveryWakeupCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.recoveryReissueCount ?? 0) > 0
+      || Number(operationsHeartbeatSweep.recoveryReissueWakeupCount ?? 0) > 0
       || Number(operationsHeartbeatSweep.requeuedOperationsIssueCount ?? 0) > 0
         ? null
         : (readNonEmptyString(operationsHeartbeatSweep.targetIssueId) ?? input.issueId);
@@ -5127,6 +5457,31 @@ export function heartbeatService(db: Db) {
           return { kind: "deferred" as const };
         }
 
+        const [{ liveRunCount }] = await tx
+          .select({ liveRunCount: sql<number>`count(*)` })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+        if (Number(liveRunCount ?? 0) >= policy.maxLiveRuns) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "heartbeat.live_run_limit_reached",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return {
+            kind: "live_run_limit_reached" as const,
+            liveRunCount: Number(liveRunCount ?? 0),
+          };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -5175,6 +5530,20 @@ export function heartbeatService(db: Db) {
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "live_run_limit_reached") {
+        logger.warn(
+          {
+            agentId,
+            companyId: agent.companyId,
+            source,
+            triggerDetail,
+            liveRunCount: outcome.liveRunCount,
+            liveRunLimit: policy.maxLiveRuns,
+          },
+          "heartbeat wakeup skipped due to live run limit",
+        );
+        return null;
+      }
       if (outcome.kind === "coalesced") return outcome.run;
 
       const newRun = outcome.run;
@@ -5244,6 +5613,35 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
       });
       return mergedRun;
+    }
+
+    if (activeRuns.length >= policy.maxLiveRuns) {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: "heartbeat.live_run_limit_reached",
+        payload,
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+      });
+
+      logger.warn(
+        {
+          agentId,
+          companyId: agent.companyId,
+          source,
+          triggerDetail,
+          liveRunCount: activeRuns.length,
+          liveRunLimit: policy.maxLiveRuns,
+        },
+        "heartbeat wakeup skipped due to live run limit",
+      );
+      return null;
     }
 
     const wakeupRequest = await db

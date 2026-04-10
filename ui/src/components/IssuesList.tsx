@@ -8,6 +8,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
+import { formatIssueStatusLabel } from "../lib/issue-status-labels";
 import { formatDate, cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { StatusIcon } from "./StatusIcon";
@@ -31,9 +32,7 @@ import type { Issue } from "@paperclipai/shared";
 const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
+const statusLabel = formatIssueStatusLabel;
 
 /* ── View state ── */
 

@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
+import { formatIssueStatusLabel } from "../lib/issue-status-labels";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
@@ -226,11 +227,11 @@ function formatFileSize(file: File) {
 }
 
 const statuses = [
-  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
+  { value: "backlog", label: formatIssueStatusLabel("backlog"), color: issueStatusText.backlog ?? issueStatusTextDefault },
+  { value: "todo", label: formatIssueStatusLabel("todo"), color: issueStatusText.todo ?? issueStatusTextDefault },
+  { value: "in_progress", label: formatIssueStatusLabel("in_progress"), color: issueStatusText.in_progress ?? issueStatusTextDefault },
+  { value: "in_review", label: formatIssueStatusLabel("in_review"), color: issueStatusText.in_review ?? issueStatusTextDefault },
+  { value: "done", label: formatIssueStatusLabel("done"), color: issueStatusText.done ?? issueStatusTextDefault },
 ];
 
 const priorities = [

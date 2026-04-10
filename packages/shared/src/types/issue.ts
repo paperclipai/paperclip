@@ -3,9 +3,11 @@ import type {
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueRecoveryDisposition,
   IssueOriginKind,
   IssuePriority,
   IssueStatus,
+  IssueRelationType,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
@@ -119,8 +121,13 @@ export interface IssueRelation {
   companyId: string;
   issueId: string;
   relatedIssueId: string;
-  type: "blocks";
+  type: IssueRelationType;
   relatedIssue: IssueRelationIssueSummary;
+}
+
+export interface IssueRecoveryTransition {
+  successorIssueId: string;
+  disposition: IssueRecoveryDisposition;
 }
 
 export interface IssueExecutionStagePrincipal {

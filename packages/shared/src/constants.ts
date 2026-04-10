@@ -135,8 +135,17 @@ export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
-export const ISSUE_RELATION_TYPES = ["blocks"] as const;
+export const ISSUE_RELATION_TYPES = ["blocks", "recovered_by"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
+
+export const ISSUE_RECOVERY_DISPOSITIONS = [
+  "closed",
+  "cancelled",
+  "superseded",
+  "recovered_by_reissue",
+  "blocked",
+] as const;
+export type IssueRecoveryDisposition = (typeof ISSUE_RECOVERY_DISPOSITIONS)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];

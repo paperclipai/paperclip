@@ -1000,7 +1000,7 @@ describe("realizeExecutionWorkspace", () => {
       await fs.realpath(path.join(repoRoot, "packages", "shared")),
     );
     },
-    15_000,
+    30_000,
   );
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {

@@ -22,8 +22,14 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  ISSUE_RECOVERY_DISPOSITIONS,
+  IssueRelationIssueSummary,
+  type IssueRecoveryDisposition,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -38,6 +44,23 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const RECOVERY_RELATION_TYPE = "recovered_by" as const;
+const RECOVERY_DISPOSITIONS_REQUIRING_SUCCESSOR = new Set(["superseded", "recovered_by_reissue", "blocked"]);
+const RECOVERY_DISPOSITION_COMPLETE_STATUS: Record<IssueRecoveryDisposition, "done" | "cancelled" | "blocked"> = {
+  closed: "done",
+  cancelled: "cancelled",
+  superseded: "cancelled",
+  recovered_by_reissue: "blocked",
+  blocked: "blocked",
+};
+const RECOVERY_TRUTH_COMMENT_MARKER = "[issue-recovery-transition]";
+const RECOVERY_DISPOSITION_LABEL: Record<IssueRecoveryDisposition, string> = {
+  closed: "closed",
+  cancelled: "cancelled",
+  superseded: "superseded",
+  recovered_by_reissue: "recovered by reissue",
+  blocked: "blocked with successor",
+};
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -62,6 +85,195 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function deriveRecoveryDispositionStatus(disposition: IssueRecoveryDisposition) {
+  return RECOVERY_DISPOSITION_COMPLETE_STATUS[disposition];
+}
+
+function requireRecoverySuccessorIssue(disposition: IssueRecoveryDisposition) {
+  return RECOVERY_DISPOSITIONS_REQUIRING_SUCCESSOR.has(disposition);
+}
+
+function applyIssueLifecyclePatch(
+  patch: Partial<typeof issues.$inferInsert>,
+  nextStatus: string | undefined,
+) {
+  if (!nextStatus) return;
+  patch.status = nextStatus;
+  applyStatusSideEffects(nextStatus, patch);
+  if (nextStatus !== "done") {
+    patch.completedAt = null;
+  }
+  if (nextStatus !== "cancelled") {
+    patch.cancelledAt = null;
+  }
+  if (nextStatus !== "in_progress") {
+    patch.checkoutRunId = null;
+    patch.executionRunId = null;
+    patch.executionAgentNameKey = null;
+    patch.executionLockedAt = null;
+  }
+}
+
+async function createRecoveryRelation({
+  dbOrTx,
+  companyId,
+  sourceIssueId,
+  successorIssueId,
+  actorAgentId,
+  actorUserId,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  sourceIssueId: string;
+  successorIssueId: string;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+}) {
+  await dbOrTx
+    .delete(issueRelations)
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.issueId, sourceIssueId),
+        eq(issueRelations.type, RECOVERY_RELATION_TYPE),
+      ),
+    );
+
+  await dbOrTx.insert(issueRelations).values({
+    companyId,
+    issueId: sourceIssueId,
+    relatedIssueId: successorIssueId,
+    type: RECOVERY_RELATION_TYPE,
+    createdByAgentId: actorAgentId ?? null,
+    createdByUserId: actorUserId ?? null,
+  });
+}
+
+function formatRecoveryIssueReference(issue: { id: string; identifier: string | null; title?: string | null }) {
+  const reference = issue.identifier?.trim() || issue.id;
+  if (issue.title?.trim()) {
+    return `${reference} (${issue.title.trim()})`;
+  }
+  return reference;
+}
+
+function buildRecoveryTransitionComment(input: {
+  successorIssue: { id: string; identifier: string | null; title?: string | null };
+  disposition: IssueRecoveryDisposition;
+}) {
+  const successorRef = formatRecoveryIssueReference(input.successorIssue);
+  const dispositionLabel = RECOVERY_DISPOSITION_LABEL[input.disposition];
+  return [
+    RECOVERY_TRUTH_COMMENT_MARKER,
+    `Recovery transition: this issue is now ${dispositionLabel}.`,
+    `Successor issue: ${successorRef}`,
+  ].join("\n");
+}
+
+async function appendRecoveryTransitionComment({
+  dbOrTx,
+  companyId,
+  sourceIssueId,
+  successorIssue,
+  disposition,
+  actorAgentId,
+  actorUserId,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  sourceIssueId: string;
+  successorIssue: { id: string; identifier: string | null; title?: string | null };
+  disposition: IssueRecoveryDisposition;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+}) {
+  const body = buildRecoveryTransitionComment({
+    successorIssue,
+    disposition,
+  });
+  await dbOrTx.insert(issueComments).values({
+    companyId,
+    issueId: sourceIssueId,
+    authorAgentId: actorAgentId ?? null,
+    authorUserId: actorUserId ?? null,
+    createdByRunId: null,
+    body,
+  });
+}
+
+async function resolveRecoveryTarget({
+  dbOrTx,
+  companyId,
+  sourceIssueId,
+  successorIssueId,
+  disposition,
+  actorAgentId,
+  actorUserId,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  sourceIssueId: string;
+  successorIssueId: string;
+  disposition: IssueRecoveryDisposition;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+}) {
+  if (sourceIssueId === successorIssueId) {
+    throw unprocessable("Issue recovery successor cannot reference the same issue");
+  }
+
+  const sourceIssue = await dbOrTx
+    .select({ status: issues.status, companyId: issues.companyId })
+    .from(issues)
+    .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, companyId)))
+    .then((rows: Array<{ status: string; companyId: string }>) => rows[0] ?? null);
+  if (!sourceIssue) {
+    throw unprocessable("Recovery issue source not found");
+  }
+
+  const successor = await dbOrTx
+    .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .where(eq(issues.id, successorIssueId))
+    .then((rows: Array<{ id: string; companyId: string; identifier: string | null; title: string }>) => rows[0] ?? null);
+  if (!successor || successor.companyId !== companyId) {
+    throw unprocessable("Recovery successor must be in the same company");
+  }
+
+  const nextStatus = deriveRecoveryDispositionStatus(disposition);
+  if (sourceIssue.status !== nextStatus) {
+    assertTransition(sourceIssue.status, nextStatus);
+  }
+
+  const now = new Date();
+  const patch: Partial<typeof issues.$inferInsert> = {
+    status: nextStatus,
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    updatedAt: now,
+  };
+  applyIssueLifecyclePatch(patch, nextStatus);
+
+  await dbOrTx.update(issues).set(patch).where(eq(issues.id, sourceIssueId));
+  await createRecoveryRelation({
+    dbOrTx,
+    companyId,
+    sourceIssueId,
+    successorIssueId,
+    actorAgentId,
+    actorUserId,
+  });
+  await appendRecoveryTransitionComment({
+    dbOrTx,
+    companyId,
+    sourceIssueId,
+    successorIssue: successor,
+    disposition,
+    actorAgentId,
+    actorUserId,
+  });
 }
 
 export interface IssueFilters {
@@ -119,6 +331,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  recoveryFromIssueId?: string | null;
+  recoveryDisposition?: IssueRecoveryDisposition | null;
 };
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
@@ -1383,8 +1597,16 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        recoveryFromIssueId,
+        recoveryDisposition,
         ...issueData
       } = data;
+      const hasRecoverySource = Boolean(recoveryFromIssueId);
+      const hasRecoveryDisposition = Boolean(recoveryDisposition);
+      if (hasRecoverySource !== hasRecoveryDisposition) {
+        throw unprocessable("recoveryFromIssueId and recoveryDisposition must be provided together");
+      }
+
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -1537,6 +1759,17 @@ export function issueService(db: Db) {
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
+        if (recoveryFromIssueId && recoveryDisposition) {
+          await resolveRecoveryTarget({
+            dbOrTx: tx,
+            companyId,
+            sourceIssueId: recoveryFromIssueId,
+            successorIssueId: issue.id,
+            disposition: recoveryDisposition,
+            actorAgentId: issueData.createdByAgentId ?? null,
+            actorUserId: issueData.createdByUserId ?? null,
+          });
+        }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(
             issue.id,
@@ -1561,6 +1794,10 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        recovery?: {
+          successorIssueId?: string;
+          disposition: IssueRecoveryDisposition;
+        };
       },
       dbOrTx: any = db,
     ) => {
@@ -1576,6 +1813,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        recovery,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -1583,6 +1821,26 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
+      }
+
+      if (recovery) {
+        if (recovery.successorIssueId === id) {
+          throw unprocessable("Issue recovery successor cannot reference the same issue");
+        }
+        if (!recovery.disposition) {
+          throw unprocessable("Recovery disposition is required");
+        }
+        if (!Object.values(ISSUE_RECOVERY_DISPOSITIONS).includes(recovery.disposition)) {
+          throw unprocessable("Unknown recovery disposition");
+        }
+        if (!recovery.successorIssueId && requireRecoverySuccessorIssue(recovery.disposition)) {
+          throw unprocessable("Recovery dispositions that create a continuation issue require successorIssueId");
+        }
+        const nextRecoveryStatus = deriveRecoveryDispositionStatus(recovery.disposition);
+        if (issueData.status && issueData.status !== nextRecoveryStatus) {
+          throw unprocessable("Recovery disposition and status are inconsistent");
+        }
+        issueData.status = nextRecoveryStatus;
       }
 
       if (issueData.status) {
@@ -1593,14 +1851,27 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (recovery?.successorIssueId) {
+        patch.assigneeAgentId = null;
+        patch.assigneeUserId = null;
+      }
 
       const nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const assigneeWillChange =
+        (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
+        (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId);
+      const existingIsTerminal = existing.status === "done" || existing.status === "cancelled";
+      const nextStatus = issueData.status ?? existing.status;
+      const nextIsTerminal = nextStatus === "done" || nextStatus === "cancelled";
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
+      }
+      if (assigneeWillChange && existingIsTerminal && nextIsTerminal) {
+        throw unprocessable("Cannot reassign terminal issues; reopen first");
       }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -1623,24 +1894,25 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
-      if (issueData.status && issueData.status !== "done") {
-        patch.completedAt = null;
+      if (recovery) {
+        applyIssueLifecyclePatch(patch, issueData.status);
+      } else {
+        applyStatusSideEffects(issueData.status, patch);
+        if (issueData.status && issueData.status !== "done") {
+          patch.completedAt = null;
+        }
+        if (issueData.status && issueData.status !== "cancelled") {
+          patch.cancelledAt = null;
+        }
+        if (issueData.status && issueData.status !== "in_progress") {
+          patch.checkoutRunId = null;
+          // Fix B: also clear the execution lock when leaving in_progress
+          patch.executionRunId = null;
+          patch.executionAgentNameKey = null;
+          patch.executionLockedAt = null;
+        }
       }
-      if (issueData.status && issueData.status !== "cancelled") {
-        patch.cancelledAt = null;
-      }
-      if (issueData.status && issueData.status !== "in_progress") {
-        patch.checkoutRunId = null;
-        // Fix B: also clear the execution lock when leaving in_progress
-        patch.executionRunId = null;
-        patch.executionAgentNameKey = null;
-        patch.executionLockedAt = null;
-      }
-      if (
-        (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
-        (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
-      ) {
+      if (assigneeWillChange) {
         patch.checkoutRunId = null;
         // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
         patch.executionRunId = null;
@@ -1688,6 +1960,33 @@ export function issueService(db: Db) {
             },
             tx,
           );
+        }
+        if (recovery?.successorIssueId) {
+          const successor = await tx
+            .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier, title: issues.title })
+            .from(issues)
+            .where(eq(issues.id, recovery.successorIssueId))
+            .then((rows: Array<{ id: string; companyId: string; identifier: string | null; title: string }>) => rows[0] ?? null);
+          if (!successor || successor.companyId !== existing.companyId) {
+            throw unprocessable("Recovery successor must be in the same company");
+          }
+          await createRecoveryRelation({
+            dbOrTx: tx,
+            companyId: existing.companyId,
+            sourceIssueId: updated.id,
+            successorIssueId: recovery.successorIssueId,
+            actorAgentId,
+            actorUserId,
+          });
+          await appendRecoveryTransitionComment({
+            dbOrTx: tx,
+            companyId: existing.companyId,
+            sourceIssueId: updated.id,
+            successorIssue: successor,
+            disposition: recovery.disposition,
+            actorAgentId,
+            actorUserId,
+          });
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;

@@ -16,6 +16,7 @@ import {
   ensurePostgresDatabase,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -239,6 +240,184 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 45_000);
 
+  it("skips wakeups when an agent has reached its live run limit", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Queue Guard Co",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Guarded Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "ws://127.0.0.1:9",
+        },
+        runtimeConfig: {
+          heartbeat: {
+            maxLiveRuns: 2,
+          },
+        },
+        permissions: {},
+      });
+
+      await db.insert(heartbeatRuns).values([
+        {
+          companyId,
+          agentId,
+          invocationSource: "on_demand",
+          triggerDetail: "manual",
+          status: "queued",
+          contextSnapshot: { taskId: "seed-queued" },
+        },
+        {
+          companyId,
+          agentId,
+          invocationSource: "on_demand",
+          triggerDetail: "manual",
+          status: "running",
+          contextSnapshot: { taskId: "seed-running" },
+        },
+      ]);
+
+      const wakeResult = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual_probe",
+        payload: { probe: true },
+        contextSnapshot: { taskId: "new-task" },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(wakeResult).toBeNull();
+
+      const liveRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running"))));
+      expect(liveRuns).toHaveLength(2);
+
+      const skippedWakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "skipped"),
+            eq(agentWakeupRequests.reason, "heartbeat.live_run_limit_reached"),
+          ),
+        );
+
+      expect(skippedWakeups).toHaveLength(1);
+    } finally {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running"))));
+    }
+  });
+
+  it("keeps recovered blocked issues blocked during operations sweeps", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Recovery Ops Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: operationsAgentId,
+      companyId,
+      name: "Operations",
+      role: "coo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        executionBoundary: "orchestrator_only",
+      },
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Recovered source issue",
+        status: "blocked",
+        priority: "high",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        title: "Successor issue",
+        status: "todo",
+        priority: "high",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: successorIssueId,
+      type: "recovered_by",
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const sourceIssue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(sourceIssue?.status).toBe("blocked");
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
@@ -410,10 +589,19 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2);
+      await waitFor(() => gateway.getAgentPayloads().length >= 2);
       await waitFor(async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        const promotedBatchRun = runs.find((run) => {
+          if (run.retryOfRunId) return false;
+          const context = (run.contextSnapshot ?? {}) as Record<string, unknown>;
+          return context.commentId === comment3.id;
+        });
+        return promotedBatchRun?.status === "succeeded";
       }, 45_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
