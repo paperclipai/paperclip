@@ -21,7 +21,7 @@ Core fields:
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
-- dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
+- dangerouslySkipPermissions (boolean, optional, default true on non-root): pass --dangerously-skip-permissions to claude; ignored (treated as false) when the Paperclip process runs as root, because Claude CLI forbids this flag for uid 0. On root, Paperclip injects --allowed-tools with a built-in list so headless runs (curl/Bash to the Paperclip API, skills, subagents) work without interactive approval; override or extend with extraArgs --allowed-tools if you need MCP tools by name
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

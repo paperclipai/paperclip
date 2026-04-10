@@ -33,6 +33,11 @@ import {
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
+import {
+  CLAUDE_ROOT_HEADLESS_ALLOWED_TOOLS,
+  resolveDangerouslySkipPermissions,
+  shouldInjectRootHeadlessAllowedTools,
+} from "./process-defaults.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -332,7 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const dangerouslySkipPermissions = resolveDangerouslySkipPermissions(config.dangerouslySkipPermissions);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
@@ -439,6 +444,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    if (shouldInjectRootHeadlessAllowedTools(dangerouslySkipPermissions, extraArgs)) {
+      args.push("--allowed-tools", CLAUDE_ROOT_HEADLESS_ALLOWED_TOOLS);
+    }
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (chrome) args.push("--chrome");
