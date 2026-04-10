@@ -15,7 +15,16 @@ Metacorp exists solely to improve and extend Metaclip. We have no external custo
 | Our fork (active development) | https://github.com/nrdnfjrdio/Metaclip |
 | Local running instance | `~/Projects/Metaclip_Dev/Metaclip` |
 
-> **The local install is the live running instance of Metaclip. Never modify it directly.**
+> **The local install is the live running instance of Metaclip. Never commit directly to `master` or make untracked edits outside of the feature-branch workflow.**
+
+### Important: Watch Mode and Live Reload
+
+The Metaclip dev server runs in **watch mode** from `~/Projects/Metaclip_Dev/Metaclip`. This means:
+
+- **Any file change in the repo directory is immediately reflected in the running server** — including changes on feature branches, before any merge or PR.
+- This is expected dev-environment behavior. It does NOT mean you are bypassing governance.
+- The governance rules protect `master` (the canonical branch) and require board approval for merges. They do not prevent feature-branch changes from being hot-reloaded locally.
+- Agents should understand that stakeholders will see feature-branch work in the live UI as soon as files are written, even before a PR is raised. Keep experimental branches clearly named and document their status in comments.
 
 ## Governance Rules
 
@@ -36,7 +45,7 @@ Metacorp exists solely to improve and extend Metaclip. We have no external custo
 
 - **Never push directly to `master`** without board approval.
 - **Never sync or rebase directly from upstream** (`paperclipai/paperclip`). Monitor it; cherry-pick selectively.
-- **Never modify the running Metaclip instance code** at `~/Projects/Metaclip_Dev/Metaclip`. It is the live environment — treat it as read-only for code changes.
+- **Never commit directly to `master`** in the local repo at `~/Projects/Metaclip_Dev/Metaclip`. All changes must go through a feature branch and the PR/approval process.
 - **Never start implementation without commanding officer approval.** Ideacraft and research first, then ask.
 - **Never build features for external customers.** Metacorp has no customers. Scope all work to internal needs.
 
