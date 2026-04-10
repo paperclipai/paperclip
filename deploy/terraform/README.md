@@ -175,7 +175,7 @@ ACM certificate validation completes automatically once DNS propagates (~5 minut
 |----------|-------------|
 | VPC + subnets | `/16` VPC with 2 public and 2 private subnets across 2 AZs |
 | Internet Gateway | Public subnet internet access |
-| NAT Gateway | Private subnet IPv4 egress |
+| NAT Gateway | Private subnet IPv4 egress (single gateway in `public_a` — see [Known Limitations](#known-limitations)) |
 | Application Load Balancer | Public-facing, dualstack (IPv4 + IPv6) |
 | ECR Repository | Stores the Paperclip Docker image |
 | ECS Cluster | EC2-backed cluster |
@@ -426,3 +426,25 @@ aws ecs update-service \
   --service "$SERVICE" \
   --force-new-deployment
 ```
+
+## Known Limitations
+
+### Single NAT Gateway
+
+This module provisions one NAT Gateway, placed in `public_a` (`${var.aws_region}a`), and both private route tables point to it for IPv4 egress.
+
+**Impact:** If `${var.aws_region}a` experiences an AZ-level disruption, private instances running in the `private_b` subnet lose all IPv4 egress. This affects:
+
+- ECR image pulls
+- AWS Secrets Manager API calls
+- Any other outbound IPv4 traffic from the ECS task
+
+**Why it is left as-is:** Paperclip is designed as a single-instance deployment (`desired_count = 1`, `min_size = 1`). A second NAT Gateway adds ~$32 USD/month in fixed costs for a redundancy benefit that only materialises when the primary AZ fails *and* the ASG has placed the task in the secondary AZ — an unlikely combination for a single-task service.
+
+**To eliminate the dependency** if you scale beyond one instance or require stronger isolation guarantees:
+
+1. Add a second `aws_nat_gateway` resource in `public_b`.
+2. Create a separate `aws_route_table` for `private_b` that routes `0.0.0.0/0` to the new gateway.
+3. Update the `aws_route_table_association` for `private_b` to use the new route table.
+
+This keeps each AZ's private subnet routing entirely within that AZ.
