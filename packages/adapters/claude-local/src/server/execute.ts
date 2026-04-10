@@ -829,7 +829,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "claude_auth_required"
         : usageLimited
           ? "claude_usage_limited"
-          : null,
+          : clearSessionForMaxTurns
+            ? "claude_max_turns"
+            : null,
       errorMeta: mergedErrorMeta,
       usage,
       sessionId: resolvedSessionId,

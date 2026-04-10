@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldSelfWake } from "../services/heartbeat.js";
+import { shouldSelfWake, hasNonDelegatedWork } from "../services/heartbeat.js";
 
 describe("shouldSelfWake", () => {
   it("returns true when outcome is succeeded", () => {
@@ -43,6 +43,13 @@ describe("shouldSelfWake", () => {
     expect(shouldSelfWake("failed", "claude_usage_limited")).toBe(false);
   });
 
+  // Max turns is NOT a systemic failure — the agent did real work but
+  // exhausted its turn budget. It should still self-wake to process
+  // remaining inbox items in a fresh session.
+  it("returns true when outcome is failed with claude_max_turns", () => {
+    expect(shouldSelfWake("failed", "claude_max_turns")).toBe(true);
+  });
+
   it("returns false when outcome is timed_out", () => {
     expect(shouldSelfWake("timed_out", undefined)).toBe(false);
   });
@@ -57,5 +64,23 @@ describe("shouldSelfWake", () => {
 
   it("returns false when outcome is cancelled with cancelled errorCode", () => {
     expect(shouldSelfWake("cancelled", "cancelled")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasNonDelegatedWork — exported for verification
+//
+// This helper is used by the self-wake gate to prevent CTO polling loops.
+// When the CTO delegates subtasks and the only remaining assigned issues are
+// parents waiting on open children, the self-wake should be suppressed.
+// The CTO will instead be woken by `engineer_run_completed` events.
+//
+// Full integration testing requires a database; these are smoke tests to
+// verify the export exists and the function signature is correct.
+// ---------------------------------------------------------------------------
+
+describe("hasNonDelegatedWork", () => {
+  it("is exported as an async function", () => {
+    expect(typeof hasNonDelegatedWork).toBe("function");
   });
 });

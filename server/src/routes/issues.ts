@@ -733,7 +733,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
       }
 
-      // Wake parent issue's assignee when a child is completed
+      // Wake parent issue's assignee when a child is completed.
+      // If ALL children are now done/cancelled and the parent is blocked,
+      // auto-unblock it to `in_progress` so the parent agent can synthesize.
       if (
         req.body.status === "done" &&
         existing.status !== "done" &&
@@ -741,16 +743,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
       ) {
         try {
           const parent = await svc.getById(issue.parentId);
-          if (parent?.assigneeAgentId && !wakeups.has(parent.assigneeAgentId)) {
-            wakeups.set(parent.assigneeAgentId, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_status_changed",
-              payload: { issueId: parent.id, childIssueId: issue.id, mutation: "child_completed" },
-              requestedByActorType: actor.actorType,
-              requestedByActorId: actor.actorId,
-              contextSnapshot: { issueId: parent.id, source: "issue.child_completed" },
-            });
+          if (parent) {
+            // Auto-unblock: if parent is blocked and all other children are
+            // done/cancelled, move parent back to in_progress.
+            if (parent.status === "blocked") {
+              const openSiblings = await db
+                .select({ id: issues.id, status: issues.status })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.parentId, parent.id),
+                    ne(issues.id, issue.id),
+                  ),
+                );
+              const allResolved = openSiblings.every(
+                (s) => s.status === "done" || s.status === "cancelled",
+              );
+              if (allResolved) {
+                await svc.update(parent.id, { status: "in_progress" });
+                logger.info(
+                  { parentId: parent.id, completedChildId: issue.id },
+                  "Auto-unblocked parent issue — all children resolved",
+                );
+              }
+            }
+
+            if (parent.assigneeAgentId && !wakeups.has(parent.assigneeAgentId)) {
+              wakeups.set(parent.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "child_completed",
+                payload: { issueId: parent.id, childIssueId: issue.id, mutation: "child_completed" },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: { issueId: parent.id, source: "issue.child_completed" },
+              });
+            }
           }
         } catch (err) {
           logger.warn({ err, issueId: issue.id }, "failed to resolve parent issue for child completion wakeup");

@@ -459,6 +459,40 @@ export function shouldSelfWake(
 }
 
 /**
+ * Returns true when the agent has at least one assigned `todo` or
+ * `in_progress` issue that is NOT just waiting on open child issues.
+ *
+ * An issue is "delegated-and-waiting" when:
+ *   1. It has at least one child issue (via `parent_id`), AND
+ *   2. At least one of those children is not yet `done` or `cancelled`.
+ *
+ * When the only work remaining for an agent is delegated-and-waiting
+ * issues, a self-wake would just poll with no useful progress. The
+ * agent will be re-woken by `engineer_run_completed` when a child
+ * finishes instead.
+ *
+ * Exported for unit testing.
+ */
+export async function hasNonDelegatedWork(db: Db, agentId: string): Promise<boolean> {
+  // Uses raw SQL because Drizzle doesn't support correlated NOT EXISTS
+  // across the same table alias cleanly.
+  const result = await db.execute(sql`
+    SELECT 1
+    FROM ${issues} AS parent
+    WHERE parent.assignee_agent_id = ${agentId}
+      AND parent.status IN ('todo', 'in_progress')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${issues} AS child
+        WHERE child.parent_id = parent.id
+          AND child.status NOT IN ('done', 'cancelled')
+      )
+    LIMIT 1
+  `);
+  return (result as any).rows?.length > 0 || (Array.isArray(result) && result.length > 0);
+}
+
+/**
  * Computes a 0-100 quality score for a completed heartbeat run.
  */
 export function computeRunQualityScore(opts: {
@@ -2005,9 +2039,20 @@ export function heartbeatService(db: Db) {
 
       // Self-wake if agent has remaining actionable inbox items.
       // Skip for timer-only heartbeats to avoid converting idle polls into tight loops.
+      // Skip when the agent's only remaining work is delegated parent issues
+      // waiting on child completion — the agent will be re-woken via the
+      // `engineer_run_completed` path when a child finishes.
       if (shouldSelfWake(outcome, adapterResult.errorCode) && run.invocationSource !== "timer") {
         void (async () => {
           try {
+            const hasWork = await hasNonDelegatedWork(db, agent.id);
+            if (!hasWork) {
+              logger.info(
+                { agentId: agent.id, runId: run.id },
+                "Skipping self-wake — only delegated-and-waiting issues remain",
+              );
+              return;
+            }
             logger.info({ agentId: agent.id, runId: run.id }, "Enqueueing self-wake for remaining inbox items");
             await enqueueWakeup(agent.id, {
               source: "automation",
@@ -2421,7 +2466,7 @@ export function heartbeatService(db: Db) {
 
     // Skip wakeup if agent has no actionable (non-blocked) issues,
     // unless the wake reason indicates an unblock event or it's a manual trigger.
-    const unblockReasons = ["sibling_unblocked", "issue_comment_mentioned", "issue_assigned", "manual_unblock"];
+    const unblockReasons = ["sibling_unblocked", "issue_comment_mentioned", "issue_assigned", "manual_unblock", "engineer_run_completed", "child_completed"];
     const isUnblockWake =
       triggerDetail === "manual" ||
       unblockReasons.some(r =>
