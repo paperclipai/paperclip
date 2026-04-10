@@ -1950,11 +1950,24 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
-    const handoffLatencyMs = assignmentToCheckoutLatencyMs({
-      createdAt: issue.createdAt,
-      startedAt: updated.startedAt ?? new Date(),
-    });
-    const shouldEmitStaleHandoffGuardrail = issue.status !== "in_progress" && isStaleHandoffLatency(handoffLatencyMs);
+    const checkoutStartedAt = updated.startedAt;
+    const handoffLatencyMs = checkoutStartedAt
+      ? assignmentToCheckoutLatencyMs({
+          createdAt: issue.updatedAt,
+          startedAt: checkoutStartedAt,
+        })
+      : 0;
+    const shouldEmitStaleHandoffGuardrail =
+      Boolean(checkoutStartedAt) &&
+      issue.status !== "in_progress" &&
+      isStaleHandoffLatency(handoffLatencyMs);
+
+    if (!checkoutStartedAt) {
+      logger.warn(
+        { issueId: issue.id, agentId: req.body.agentId, checkoutRunId },
+        "issue checkout startedAt missing; skipping stale handoff guardrail emission",
+      );
+    }
 
     res.json(updated);
 
