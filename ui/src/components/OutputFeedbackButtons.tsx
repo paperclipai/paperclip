@@ -19,12 +19,16 @@ export function OutputFeedbackButtons({
   sharingPreference = "prompt",
   termsUrl = null,
   onVote,
+  rightSlot,
+  inline = false,
 }: {
   activeVote?: FeedbackVoteValue | null;
   disabled?: boolean;
   sharingPreference?: FeedbackDataSharingPreference;
   termsUrl?: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
+  rightSlot?: React.ReactNode;
+  inline?: boolean;
 }) {
   const [pendingVote, setPendingVote] = useState<{
     vote: FeedbackVoteValue;
@@ -107,7 +111,10 @@ export function OutputFeedbackButtons({
 
   return (
     <>
-      <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-3">
+      <div className={cn(
+        "flex items-center gap-2",
+        inline ? "justify-end" : "mt-3 border-t border-border/60 pt-3",
+      )}>
         <Button
           type="button"
           size="sm"
@@ -130,6 +137,7 @@ export function OutputFeedbackButtons({
           <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
           Needs work
         </Button>
+        {rightSlot ? <div className="ml-auto">{rightSlot}</div> : null}
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
@@ -216,6 +224,7 @@ export function OutputFeedbackButtons({
           <DialogFooter>
             <Button
               type="button"
+              variant="outline"
               disabled={!pendingVote || isSaving}
               onClick={() => {
                 if (!pendingVote) return;

@@ -56,6 +56,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     myLastTouchAt: null,
     lastExternalCommentAt: null,
+    lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
   };
@@ -204,6 +205,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
@@ -228,6 +231,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
