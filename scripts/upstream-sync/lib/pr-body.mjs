@@ -60,6 +60,7 @@ export function renderPrBody({
     `- branch: \`${branchName}\``,
     `- upstream ref/tag: \`${upstreamRef}\``,
     `- maintenance ref: \`${maintenanceRef}\``,
+    '- merge strategy: `rebase` only',
     formatConflictLine(effectiveDiagnostics),
     '',
     ...(failure

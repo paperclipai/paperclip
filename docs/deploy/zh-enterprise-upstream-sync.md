@@ -122,7 +122,9 @@ Rerunning the discovery workflow for the same upstream SHA refreshes the bot bra
 
 ### successful ready PR
 
-Review the generated PR like any other upgrade PR. Check the replay summary, low-risk translation edits, manual-review items, and validation output before merging into `zh-enterprise`.
+Review the generated PR like any other upgrade PR, but merge it with **rebase** only. Do **not** use merge commits or squash merges for upstream-sync PRs, because the replay algorithm expects `zh-enterprise` maintenance history to stay replayable as a linear commit stack.
+
+Check the replay summary, low-risk translation edits, manual-review items, and validation output before rebasing into `zh-enterprise`.
 
 ## Important note about low-risk translation edits
 

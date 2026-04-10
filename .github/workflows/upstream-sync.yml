@@ -65,8 +65,33 @@ jobs:
           git fetch --no-tags upstream master:refs/remotes/upstream/master
           git fetch --no-tags origin zh-enterprise:refs/remotes/origin/zh-enterprise
 
+      - name: Check whether upstream SHA is already handled
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          branch_name="bot-upgrade/$(git rev-parse --short=12 upstream/master)"
+          echo "branch_name=$branch_name" >> "$GITHUB_OUTPUT"
+
+          existing_pr="$(
+            gh pr list --state all --base zh-enterprise --head "$branch_name" --json url,headRepositoryOwner,mergedAt,state \
+              --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | select(.state == \"OPEN\" or .mergedAt != null) | .url" |
+            head -n 1
+          )"
+
+          if [ -n "$existing_pr" ]; then
+            echo "skip_sync=true" >> "$GITHUB_OUTPUT"
+            echo "existing_pr_url=$existing_pr" >> "$GITHUB_OUTPUT"
+            echo "Upstream SHA already handled by $existing_pr"
+          else
+            echo "skip_sync=false" >> "$GITHUB_OUTPUT"
+            echo "existing_pr_url=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run upstream sync
         id: sync
+        if: steps.preflight.outputs.skip_sync != 'true'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -88,6 +113,29 @@ jobs:
             ${{ steps.sync.outputs.validation_log_path }}
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Write upstream sync summary
+        if: always()
+        env:
+          SKIP_SYNC: ${{ steps.preflight.outputs.skip_sync }}
+          EXISTING_PR_URL: ${{ steps.preflight.outputs.existing_pr_url }}
+          BRANCH_NAME: ${{ steps.sync.outputs.branch_name || steps.preflight.outputs.branch_name }}
+          STATUS: ${{ steps.sync.outputs.status }}
+          VALIDATION_STATUS: ${{ steps.sync.outputs.validation_status }}
+          READY_FOR_PR: ${{ steps.sync.outputs.ready_for_pr }}
+        run: |
+          {
+            echo "## Upstream Sync"
+            echo "- branch: \`${BRANCH_NAME:-<unknown>}\`"
+            if [ "$SKIP_SYNC" = "true" ]; then
+              echo "- result: already handled"
+              echo "- existing PR: ${EXISTING_PR_URL}"
+            else
+              echo "- status: \`${STATUS:-<empty>}\`"
+              echo "- validation: \`${VALIDATION_STATUS:-<empty>}\`"
+              echo "- ready_for_pr: \`${READY_FOR_PR:-false}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure git identity
         if: steps.sync.outputs.ready_for_pr == 'true'
@@ -162,6 +210,7 @@ jobs:
       - name: Fail when sync needs maintainer action
         if: always()
         env:
+          SKIP_SYNC: ${{ steps.preflight.outputs.skip_sync }}
           STATUS: ${{ steps.sync.outputs.status }}
           VALIDATION_STATUS: ${{ steps.sync.outputs.validation_status }}
           STEP_OUTCOME: ${{ steps.sync.outcome }}
@@ -169,6 +218,10 @@ jobs:
           echo "upstream-sync step outcome: $STEP_OUTCOME"
           echo "status: ${STATUS:-<empty>}"
           echo "validation_status: ${VALIDATION_STATUS:-<empty>}"
+
+          if [ "$SKIP_SYNC" = "true" ]; then
+            exit 0
+          fi
 
           case "$STATUS" in
             no-op|dry-run)

@@ -59,6 +59,7 @@ test('renderPrBody includes replay status, translated files, validation results,
   assert.match(body, /# Upstream sync/);
   assert.match(body, /- replay status: `replayed`/);
   assert.match(body, /- upstream ref\/tag: `upstream\/v1\.2\.3`/);
+  assert.match(body, /- merge strategy: `rebase` only/);
   assert.match(body, /- conflicts: none/);
   assert.match(body, /## Failure/);
   assert.match(body, /- stage: `scan-localization`/);

@@ -84,3 +84,23 @@ jobs:
             reports/upstream-sync-validation-log.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Write upstream sync PR summary
+        if: always()
+        run: |
+          {
+            echo "## Upstream Sync PR Validation"
+            echo "- branch: \`${{ github.head_ref }}\`"
+            if [ -f reports/upstream-sync-validation-log.json ]; then
+              node --input-type=module <<'NODE'
+              import fs from 'node:fs';
+              const summary = JSON.parse(fs.readFileSync('reports/upstream-sync-validation-log.json', 'utf8'));
+              process.stdout.write(`- overall: \`${summary.status}\`\n`);
+              process.stdout.write(`- ui typecheck: \`${summary.uiTypecheck?.status ?? 'not-run'}\`\n`);
+              process.stdout.write(`- server typecheck: \`${summary.serverTypecheck?.status ?? 'not-run'}\`\n`);
+              process.stdout.write(`- check:i18n: \`${summary.checkI18n?.status ?? 'not-run'}\`\n`);
+              NODE
+            else
+              echo "- validation log: not generated"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
