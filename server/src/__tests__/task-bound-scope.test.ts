@@ -24,6 +24,7 @@ const mockIssueService = vi.hoisted(() => ({
   countRecentByAgent: vi.fn(async () => 0),
   listAttachments: vi.fn(async () => []),
   getDepartmentLabelIds: vi.fn(async () => new Set(["d0000000-0000-4000-8000-000000000001"])),
+  findDepartmentDuplicate: vi.fn(async () => null),
 }));
 
 const mockWorkProductService = vi.hoisted(() => ({

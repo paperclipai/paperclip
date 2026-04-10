@@ -16,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
   hasReachedStatus: vi.fn(),
   countRecentByAgent: vi.fn(),
   getDepartmentLabelIds: vi.fn(),
+  findDepartmentDuplicate: vi.fn(),
 }));
 
 const mockWorkProductService = vi.hoisted(() => ({
@@ -135,6 +136,7 @@ describe("issue creation rate limit", () => {
     vi.clearAllMocks();
     delete process.env.AGENT_ISSUE_CREATION_RATE_LIMIT;
     mockIssueService.getDepartmentLabelIds.mockResolvedValue(new Set([DEPT_LABEL_ID]));
+    mockIssueService.findDepartmentDuplicate.mockResolvedValue(null);
   });
 
   afterEach(() => {

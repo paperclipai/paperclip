@@ -1618,6 +1618,45 @@ export function issueService(db: Db) {
       return new Set(rows.map((r) => r.id));
     },
 
+    /**
+     * Find an open issue in the same department with a similar normalized title.
+     * Returns the first match or null. Used by the department-wide dedup gate.
+     */
+    findDepartmentDuplicate: async (
+      companyId: string,
+      deptLabelId: string,
+      title: string,
+    ): Promise<{ id: string; identifier: string | null; title: string } | null> => {
+      const normalizeTitle = (t: string) =>
+        t.replace(/^[A-Z]+-\d+\s*/, "").toLowerCase().trim().slice(0, 40);
+      const newNorm = normalizeTitle(title);
+      if (newNorm.length <= 5) return null;
+
+      // Find all open issues in the same department
+      const deptIssueIds = await db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, deptLabelId)));
+      if (deptIssueIds.length === 0) return null;
+
+      const rows = await db
+        .select({ id: issues.id, title: issues.title, status: issues.status, identifier: issues.identifier })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, deptIssueIds.map((r) => r.issueId)),
+          ),
+        );
+
+      return rows.find(
+        (r) =>
+          r.status !== "done" &&
+          r.status !== "cancelled" &&
+          normalizeTitle(r.title) === newNorm,
+      ) ?? null;
+    },
+
     getLabelById: (id: string) =>
       db
         .select()

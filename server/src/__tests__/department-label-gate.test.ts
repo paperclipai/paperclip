@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   hasReachedStatus: vi.fn(),
   countRecentByAgent: vi.fn(),
   getDepartmentLabelIds: vi.fn(),
+  findDepartmentDuplicate: vi.fn(),
 }));
 
 const mockWorkProductService = vi.hoisted(() => ({
@@ -139,6 +140,7 @@ describe("department label gate", () => {
     mockIssueService.getDepartmentLabelIds.mockResolvedValue(
       new Set([DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID]),
     );
+    mockIssueService.findDepartmentDuplicate.mockResolvedValue(null);
   });
 
   it("agent creating issue without dept label → 422", async () => {
@@ -233,5 +235,83 @@ describe("department label gate", () => {
         agentId: "agent-1",
       }),
     );
+  });
+});
+
+describe("department-wide dedup gate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIssueService.countRecentByAgent.mockResolvedValue(0);
+    mockIssueService.getDepartmentLabelIds.mockResolvedValue(
+      new Set([DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID]),
+    );
+    mockIssueService.findDepartmentDuplicate.mockResolvedValue(null);
+  });
+
+  it("blocks agent when similar title exists in same department → 409", async () => {
+    mockIssueService.findDepartmentDuplicate.mockResolvedValue({
+      id: "existing-issue-id",
+      identifier: "PAP-100",
+      title: "Write blog post about cold calling",
+    });
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Draft blog post on cold calling", labelIds: [DEPT_ENG_LABEL_ID] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.gate).toBe("department_dedup_blocker");
+    expect(res.body.existingIdentifier).toBe("PAP-100");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows creation when no department duplicate exists → 201", async () => {
+    mockIssueService.create.mockResolvedValue(createdIssue);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Completely unique task", labelIds: [DEPT_ENG_LABEL_ID] });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findDepartmentDuplicate).toHaveBeenCalledWith(
+      "company-1",
+      DEPT_ENG_LABEL_ID,
+      "Completely unique task",
+    );
+  });
+
+  it("logs activity when department dedup blocks", async () => {
+    mockIssueService.findDepartmentDuplicate.mockResolvedValue({
+      id: "existing-id",
+      identifier: "PAP-200",
+      title: "Existing task",
+    });
+
+    const app = createAgentApp();
+    await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Existing task again", labelIds: [DEPT_ENG_LABEL_ID] });
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.department_dedup_blocked",
+        agentId: "agent-1",
+      }),
+    );
+  });
+
+  it("board user bypasses department dedup → 201", async () => {
+    mockIssueService.create.mockResolvedValue(createdIssue);
+
+    const app = createBoardApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Board can create duplicates" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findDepartmentDuplicate).not.toHaveBeenCalled();
   });
 });

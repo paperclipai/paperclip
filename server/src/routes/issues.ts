@@ -1640,6 +1640,42 @@ export function issueRoutes(
     if (actor.actorType === "agent") {
       const deptLabelIds = await svc.getDepartmentLabelIds(companyId);
       const providedLabelIds: string[] = req.body.labelIds ?? [];
+
+      // Department-wide dedup: check for similar titles across the entire department,
+      // not just under the same parent. Catches overlapping work like
+      // "Write blog about X" vs "Draft content on X" across different parent trees.
+      if (req.body.title) {
+        const deptLabelId = providedLabelIds.find((id: string) => deptLabelIds.has(id));
+        if (deptLabelId) {
+          const deptDuplicate = await svc.findDepartmentDuplicate(companyId, deptLabelId, req.body.title);
+          if (deptDuplicate) {
+            await logActivity(db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.department_dedup_blocked",
+              entityType: "issue",
+              entityId: actor.agentId!,
+              details: {
+                proposedTitle: req.body.title,
+                existingIssueId: deptDuplicate.id,
+                existingIdentifier: deptDuplicate.identifier,
+                existingTitle: deptDuplicate.title,
+              },
+            });
+            res.status(409).json({
+              error: "department_duplicate",
+              gate: "department_dedup_blocker",
+              existingIssueId: deptDuplicate.id,
+              existingIdentifier: deptDuplicate.identifier,
+              message: `An open issue with a similar title already exists in this department (${deptDuplicate.identifier}: "${deptDuplicate.title}"). Comment on the existing issue instead of creating a duplicate.`,
+            });
+            return;
+          }
+        }
+      }
       const hasDeptLabel = providedLabelIds.some((id: string) => deptLabelIds.has(id));
       if (!hasDeptLabel) {
         await logActivity(db, {
