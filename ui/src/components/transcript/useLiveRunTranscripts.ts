@@ -68,6 +68,8 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
@@ -85,21 +87,24 @@ export function useLiveRunTranscripts({
 
   const appendChunks = (runId: string, chunks: Array<RunLogChunk & { dedupeKey: string }>) => {
     if (chunks.length === 0) return;
+
+    // Deduplicate outside the state updater so React 18 double-invocations
+    // of the updater function don't silently discard chunks.
+    const newChunks = chunks.filter((c) => !seenChunkKeysRef.current.has(c.dedupeKey));
+    if (newChunks.length === 0) return;
+
+    for (const c of newChunks) {
+      seenChunkKeysRef.current.add(c.dedupeKey);
+    }
+    if (seenChunkKeysRef.current.size > 12000) {
+      seenChunkKeysRef.current.clear();
+    }
+
     setChunksByRun((prev) => {
       const next = new Map(prev);
       const existing = [...(next.get(runId) ?? [])];
-      let changed = false;
-
-      for (const chunk of chunks) {
-        if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
-        seenChunkKeysRef.current.add(chunk.dedupeKey);
-        existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
-        changed = true;
-      }
-
-      if (!changed) return prev;
-      if (seenChunkKeysRef.current.size > 12000) {
-        seenChunkKeysRef.current.clear();
+      for (const c of newChunks) {
+        existing.push({ ts: c.ts, stream: c.stream, chunk: c.chunk });
       }
       next.set(runId, existing.slice(-maxChunksPerRun));
       return next;
@@ -132,7 +137,7 @@ export function useLiveRunTranscripts({
   }, [runs]);
 
   useEffect(() => {
-    if (runs.length === 0) return;
+    if (!runIdsKey) return;
 
     let cancelled = false;
 
@@ -157,7 +162,9 @@ export function useLiveRunTranscripts({
     };
 
     const readAll = async () => {
-      await Promise.all(runs.map((run) => readRunLog(run)));
+      // Read from ref so the effect doesn't restart on every query refetch.
+      const currentRuns = runsRef.current;
+      await Promise.all(currentRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
@@ -169,7 +176,8 @@ export function useLiveRunTranscripts({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [runIdsKey, runs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runIdsKey]);
 
   useEffect(() => {
     if (!companyId || activeRunIds.size === 0) return;
