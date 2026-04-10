@@ -50,7 +50,11 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { verifyGitHubEvidenceIsRemoteVisible } from "./github-evidence.js";
+import {
+  parseGitHubRepoIdentityFromRepoUrl,
+  verifyGitHubEvidenceIsRemoteVisible,
+  type GitHubEvidenceTarget,
+} from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -152,6 +156,32 @@ export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
   };
 }
 
+export function buildDoneEvidenceNotLandedErrorResponse(
+  landingError: string,
+  trackedTarget?: GitHubEvidenceTarget | null,
+) {
+  return {
+    error:
+      "Cannot mark issue done: GitHub evidence is not landed on the tracked base branch yet. " +
+      "Keep the issue in_review until the cited pull request is merged or the cited commit is reachable from the tracked base branch.",
+    details: {
+      ...buildDoneEvidenceRequiredDetails(),
+      landingVerification: {
+        result: "not_landed",
+        detail: landingError,
+        trackedRepository: trackedTarget
+          ? `github.com/${trackedTarget.owner}/${trackedTarget.repo}`
+          : null,
+        trackedBaseRef: trackedTarget?.baseRef ?? null,
+        fix:
+          trackedTarget?.baseRef
+            ? `Keep the issue in_review until the cited PR merges into ${trackedTarget.baseRef} or the cited commit is reachable from ${trackedTarget.baseRef}.`
+            : "Keep the issue in_review until the cited PR is merged or the cited commit is landed on the tracked repository default branch.",
+      },
+    },
+  };
+}
+
 export function buildTaskAssignPermissionDeniedDetails() {
   return {
     fallback: {
@@ -180,6 +210,38 @@ export function issueRequiresDoneEvidence(input: {
   companyLabels?: Array<{ id: string; name: string }> | null | undefined;
 }) {
   return issueRequiresCodeDoneEvidence(input);
+}
+
+async function resolveTrackedGitHubEvidenceTarget(
+  projectsSvc: ReturnType<typeof projectService>,
+  input: {
+    projectId: string | null | undefined;
+    projectWorkspaceId: string | null | undefined;
+  },
+): Promise<GitHubEvidenceTarget | null> {
+  if (!input.projectId) return null;
+
+  const workspaces = await projectsSvc.listWorkspaces(input.projectId);
+  if (workspaces.length === 0) return null;
+
+  const explicitWorkspace =
+    input.projectWorkspaceId
+      ? workspaces.find((workspace) => workspace.id === input.projectWorkspaceId)
+      : null;
+  const trackedWorkspace =
+    (explicitWorkspace?.repoUrl ? explicitWorkspace : null) ??
+    workspaces.find((workspace) => workspace.isPrimary && workspace.repoUrl) ??
+    workspaces.find((workspace) => workspace.repoUrl) ??
+    null;
+  if (!trackedWorkspace?.repoUrl) return null;
+
+  const repo = parseGitHubRepoIdentityFromRepoUrl(trackedWorkspace.repoUrl);
+  if (!repo) return null;
+
+  return {
+    ...repo,
+    baseRef: trackedWorkspace.defaultRef ?? trackedWorkspace.repoRef ?? null,
+  };
 }
 
 export function issueRoutes(db: Db, storage: StorageService) {
@@ -1013,17 +1075,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
           // UI-only transitions do not need GitHub repository traceability.
           updateFields.status = "done";
         } else {
-        if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
-          res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
-          return;
-        }
+          if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
+            res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
+            return;
+          }
 
-        // Verify commit evidence is actually reachable on the remote
-        const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!);
-        if (!remoteCheck.valid) {
-          res.status(422).json(buildDoneEvidenceUnreachableErrorResponse(remoteCheck.error!));
-          return;
-        }
+          const projectIdForEvidence =
+            updateFields.projectId === undefined ? existing.projectId : updateFields.projectId;
+          const projectWorkspaceIdForEvidence =
+            updateFields.projectWorkspaceId === undefined
+              ? existing.projectWorkspaceId
+              : updateFields.projectWorkspaceId;
+          const trackedGitHubTarget = await resolveTrackedGitHubEvidenceTarget(projectsSvc, {
+            projectId: projectIdForEvidence,
+            projectWorkspaceId: projectWorkspaceIdForEvidence,
+          });
+
+          // Verify commit evidence is actually reachable on the remote and landed
+          // on the tracked base branch when the issue belongs to a repo-backed project.
+          const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!, {
+            trackedTarget: trackedGitHubTarget,
+          });
+          if (!remoteCheck.valid) {
+            if (remoteCheck.failureKind === "not_landed") {
+              res.status(422).json(
+                buildDoneEvidenceNotLandedErrorResponse(remoteCheck.error!, trackedGitHubTarget),
+              );
+              return;
+            }
+            res.status(422).json(buildDoneEvidenceUnreachableErrorResponse(remoteCheck.error!));
+            return;
+          }
         }
       }
     }

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   containsGitHubPrLink,
   extractGitHubCommitRefs,
+  extractGitHubPullRequestRefs,
+  parseGitHubRepoIdentityFromRepoUrl,
   verifyGitHubEvidenceIsRemoteVisible,
 } from "../routes/github-evidence.js";
 
@@ -49,6 +51,40 @@ describe("containsGitHubPrLink", () => {
   });
 });
 
+describe("extractGitHubPullRequestRefs", () => {
+  it("extracts owner, repo, and number from PR URLs", () => {
+    const body = "Merged in https://github.com/acme/paperclip/pull/42";
+    expect(extractGitHubPullRequestRefs(body)).toEqual([
+      {
+        owner: "acme",
+        repo: "paperclip",
+        number: 42,
+        url: "https://github.com/acme/paperclip/pull/42",
+      },
+    ]);
+  });
+});
+
+describe("parseGitHubRepoIdentityFromRepoUrl", () => {
+  it("parses https GitHub remote URLs", () => {
+    expect(parseGitHubRepoIdentityFromRepoUrl("https://github.com/acme/paperclip.git")).toEqual({
+      owner: "acme",
+      repo: "paperclip",
+    });
+  });
+
+  it("parses scp GitHub remote URLs", () => {
+    expect(parseGitHubRepoIdentityFromRepoUrl("git@github.com:acme/paperclip.git")).toEqual({
+      owner: "acme",
+      repo: "paperclip",
+    });
+  });
+
+  it("returns null for non-GitHub repo URLs", () => {
+    expect(parseGitHubRepoIdentityFromRepoUrl("https://gitlab.com/acme/paperclip.git")).toBeNull();
+  });
+});
+
 describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   const originalFetch = globalThis.fetch;
 
@@ -62,9 +98,19 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   });
 
   it("passes when comment contains only PR links (no commit refs to verify)", async () => {
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
-      "Merged in https://github.com/acme/paperclip/pull/42",
-    );
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: true,
+        merged_at: "2026-04-09T00:00:00Z",
+        draft: false,
+        state: "closed",
+        base: { ref: "main" },
+      }),
+    });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible("Merged in https://github.com/acme/paperclip/pull/42");
     expect(result.valid).toBe(true);
     expect(result.softPass).toBeUndefined();
   });
@@ -172,5 +218,72 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
     expect(result.valid).toBe(false);
     expect(result.unreachableRefs).toHaveLength(1);
     expect(result.unreachableRefs![0].sha).toBe("bbb2222");
+  });
+
+  it("rejects when a PR is not merged into the tracked base branch", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: true,
+        merged_at: "2026-04-09T00:00:00Z",
+        draft: false,
+        state: "closed",
+        base: { ref: "release" },
+      }),
+    });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "Done in https://github.com/acme/paperclip/pull/42",
+      {
+        trackedTarget: { owner: "acme", repo: "paperclip", baseRef: "main" },
+      },
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.failureKind).toBe("not_landed");
+    expect(result.error).toContain("merged into release");
+  });
+
+  it("rejects when a commit exists remotely but is not landed on the tracked base branch", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "ahead" }),
+      });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "Done in https://github.com/acme/paperclip/commit/abc1234",
+      {
+        trackedTarget: { owner: "acme", repo: "paperclip", baseRef: "main" },
+      },
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.failureKind).toBe("not_landed");
+    expect(result.error).toContain("not landed");
+  });
+
+  it("accepts a commit when it is reachable from the tracked base branch", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "behind" }),
+      });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "Done in https://github.com/acme/paperclip/commit/abc1234",
+      {
+        trackedTarget: { owner: "acme", repo: "paperclip", baseRef: "main" },
+      },
+    );
+
+    expect(result.valid).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import EmbeddedPostgres from "embedded-postgres";
 import { applyPendingMigrations, companies, createDb, ensurePostgresDatabase } from "@paperclipai/db";
 import { createApp } from "../app.js";
 import { issueService } from "../services/issues.js";
+import { projectService } from "../services/projects.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 
@@ -104,6 +105,29 @@ describe("issue done transition route", () => {
     });
   }
 
+  async function createTrackedRepoCodeIssue() {
+    const projects = projectService(db);
+    const project = await projects.create(companyId, {
+      name: `Tracked repo project ${randomUUID()}`,
+      status: "in_progress",
+    });
+    const workspace = await projects.createWorkspace(project.id, {
+      name: "Primary",
+      repoUrl: "https://github.com/acme/paperclip.git",
+      repoRef: "main",
+      defaultRef: "main",
+      isPrimary: true,
+    });
+    return issueService(db).create(companyId, {
+      title: `Tracked repo code issue ${randomUUID()}`,
+      status: "todo",
+      priority: "high",
+      labelIds: [codeLabelId],
+      projectId: project.id,
+      projectWorkspaceId: workspace?.id ?? null,
+    });
+  }
+
   async function attachImage(issueId: string) {
     return issueService(db).createAttachment({
       issueId,
@@ -188,6 +212,100 @@ describe("issue done transition route", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
+  });
+
+  it("rejects done when PR evidence is not merged into the tracked base branch", async () => {
+    const issue = await createTrackedRepoCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: true,
+        merged_at: "2026-04-09T00:00:00Z",
+        draft: false,
+        state: "closed",
+        base: { ref: "release" },
+      }),
+    });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/paperclip/pull/42",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("not landed on the tracked base branch");
+      expect(res.body.details.landingVerification).toMatchObject({
+        result: "not_landed",
+        trackedRepository: "github.com/acme/paperclip",
+        trackedBaseRef: "main",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects done when commit evidence is remote-visible but not landed on the tracked base branch", async () => {
+    const issue = await createTrackedRepoCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "ahead" }),
+      });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/paperclip/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("not landed on the tracked base branch");
+      expect(res.body.details.landingVerification).toMatchObject({
+        result: "not_landed",
+        trackedRepository: "github.com/acme/paperclip",
+        trackedBaseRef: "main",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("allows done when commit evidence is reachable from the tracked base branch", async () => {
+    const issue = await createTrackedRepoCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "behind" }),
+      });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/paperclip/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("rejects done transitions for ui issues without screenshot attachments", async () => {
