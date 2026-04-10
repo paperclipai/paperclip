@@ -134,6 +134,9 @@ export function Approvals() {
               }
               detailLink={`/approvals/${approval.id}`}
               isPending={approveMutation.isPending || rejectMutation.isPending}
+              pendingAction={
+                approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null
+              }
             />
           ))}
         </div>

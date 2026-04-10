@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -94,6 +94,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+type RuntimeConfigSecretResolver = Pick<
+  ReturnType<typeof secretService>,
+  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+>;
+
+export async function resolveExecutionRunAdapterConfig(input: {
+  companyId: string;
+  executionRunConfig: Record<string, unknown>;
+  projectEnv: unknown;
+  secretsSvc: RuntimeConfigSecretResolver;
+}) {
+  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+    input.companyId,
+    input.executionRunConfig,
+  );
+  const projectEnvResolution = input.projectEnv
+    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
+    : { env: {}, secretKeys: new Set<string>() };
+  if (Object.keys(projectEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...projectEnvResolution.env,
+    };
+    for (const key of projectEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
+  return { resolvedConfig, secretKeys };
+}
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
@@ -746,8 +776,27 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return true;
+  if (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  ) {
+    return true;
+  }
   return false;
+}
+
+function shouldRequireIssueCommentForWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  return (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  );
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -764,6 +813,9 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
+  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   return null;
 }
 
@@ -917,9 +969,8 @@ async function buildPaperclipWakePayload(input: {
       }
     | null;
 }) {
+  const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
-  if (commentIds.length === 0) return null;
-
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const issueSummary =
     input.issueSummary ??
@@ -936,23 +987,27 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
-  const commentRows = await input.db
-    .select({
-      id: issueComments.id,
-      issueId: issueComments.issueId,
-      body: issueComments.body,
-      authorAgentId: issueComments.authorAgentId,
-      authorUserId: issueComments.authorUserId,
-      createdAt: issueComments.createdAt,
-    })
-    .from(issueComments)
-    .where(
-      and(
-        eq(issueComments.companyId, input.companyId),
-        inArray(issueComments.id, commentIds),
-      ),
-    );
+  const commentRows =
+    commentIds.length === 0
+      ? []
+      : await input.db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, input.companyId),
+              inArray(issueComments.id, commentIds),
+            ),
+          );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
@@ -1009,6 +1064,7 @@ async function buildPaperclipWakePayload(input: {
           priority: issueSummary.priority,
         }
       : null,
+    executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
@@ -1885,6 +1941,221 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
+  async function patchRunIssueCommentStatus(
+    runId: string,
+    patch: Partial<Pick<typeof heartbeatRuns.$inferInsert, "issueCommentStatus" | "issueCommentSatisfiedByCommentId" | "issueCommentRetryQueuedAt">>,
+  ) {
+    return db
+      .update(heartbeatRuns)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findRunIssueComment(runId: string, companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.createdByRunId, runId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function enqueueMissingIssueCommentRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    issueId: string,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "missing_issue_comment",
+      retryReason: "missing_issue_comment",
+      missingIssueCommentForRunId: run.id,
+    };
+    const now = new Date();
+
+    const retryRun = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+      );
+
+      const issue = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "missing_issue_comment",
+          payload: {
+            issueId,
+            retryOfRunId: run.id,
+            retryReason: "missing_issue_comment",
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const queuedRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          issueCommentStatus: "not_applicable",
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: queuedRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: queuedRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issue.id));
+
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          issueCommentStatus: "retry_queued",
+          issueCommentRetryQueuedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+
+      return queuedRun;
+    });
+
+    if (!retryRun) return null;
+
+    publishLiveEvent({
+      companyId: retryRun.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: retryRun.id,
+        agentId: retryRun.agentId,
+        invocationSource: retryRun.invocationSource,
+        triggerDetail: retryRun.triggerDetail,
+        wakeupRequestId: retryRun.wakeupRequestId,
+      },
+    });
+
+    return retryRun;
+  }
+
+  async function finalizeIssueCommentPolicy(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
+    const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
+    if (postedComment) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "satisfied",
+        issueCommentSatisfiedByCommentId: postedComment.id,
+        issueCommentRetryQueuedAt: null,
+      });
+      return { outcome: "satisfied" as const, queuedRun: null };
+    }
+
+    if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "retry_exhausted",
+        issueCommentSatisfiedByCommentId: null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+      });
+      return { outcome: "retry_exhausted" as const, queuedRun: null };
+    }
+
+    if (!shouldRequireIssueCommentForWake(contextSnapshot)) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
+    const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
+    if (queuedRun) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run ended without an issue comment; queued one follow-up wake to require a comment",
+      });
+      return { outcome: "retry_queued" as const, queuedRun };
+    }
+
+    await patchRunIssueCommentStatus(run.id, {
+      issueCommentStatus: "retry_exhausted",
+      issueCommentSatisfiedByCommentId: null,
+    });
+    return { outcome: "retry_exhausted" as const, queuedRun: null };
+  }
+
   async function enqueueProcessLossRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -2060,6 +2331,29 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+
+    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
+    // not at queue time. Guard is idempotent — safe if called more than once.
+    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+    if (claimedIssueId) {
+      const claimedAgent = await getAgent(claimed.agentId);
+      await db
+        .update(issues)
+        .set({
+          executionRunId: claimed.id,
+          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+          executionLockedAt: claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(
+          and(
+            eq(issues.id, claimedIssueId),
+            eq(issues.companyId, claimed.companyId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+          ),
+        );
+    }
+
     return claimed;
   }
 
@@ -2412,17 +2706,20 @@ export function heartbeatService(db: Db) {
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectContext = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            env: projects.env,
+          })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) =>
-            gateProjectExecutionWorkspacePolicy(
-              parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
-              isolatedWorkspacesEnabled,
-            ))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
+      parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
+      isolatedWorkspacesEnabled,
+    );
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -2519,10 +2816,12 @@ export function heartbeatService(db: Db) {
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
+    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+      companyId: agent.companyId,
       executionRunConfig,
-    );
+      projectEnv: projectContext?.env ?? null,
+      secretsSvc,
+    });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...resolvedConfig,
@@ -3171,7 +3470,7 @@ export function heartbeatService(db: Db) {
           try {
             const issueComment = buildHeartbeatRunIssueComment(adapterResult.resultJson ?? null);
             if (issueComment) {
-              await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id });
+              await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: finalizedRun.id });
             }
           } catch (err) {
             await onLog(
@@ -3180,6 +3479,7 @@ export function heartbeatService(db: Db) {
             );
           }
         }
+        await finalizeIssueCommentPolicy(finalizedRun, agent);
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -3248,6 +3548,7 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
+        await finalizeIssueCommentPolicy(failedRun, agent);
         await releaseIssueExecutionAndPromote(failedRun);
 
         await updateRuntimeState(agent, failedRun, {
@@ -3299,6 +3600,10 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
+            const failedAgent = await getAgent(run.agentId).catch(() => null);
+            if (failedAgent) {
+              await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
+            }
             await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
@@ -3831,15 +4136,9 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: agentNameKey,
-            executionLockedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
+        // executionRunId is NOT stamped here (enqueueWakeup queues the run but
+        // doesn't start it). It will be stamped in claimQueuedRun() once the run
+        // transitions to "running" — Fix A (lazy locking).
 
         return { kind: "queued" as const, run: newRun };
       });

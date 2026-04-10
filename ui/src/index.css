@@ -266,6 +266,67 @@
   }
 }
 
+/* Chain-of-thought reasoning line ticker animations.
+   Pure translate, no opacity — the overflow-hidden container clips.
+   Both keyframes share the same easing so the two spans move in lockstep. */
+@keyframes cot-line-slide-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@keyframes cot-line-slide-out {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-100%); }
+}
+
+.cot-line-enter {
+  animation: cot-line-slide-in 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.cot-line-exit {
+  animation: cot-line-slide-out 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cot-line-enter,
+  .cot-line-exit {
+    animation: none;
+  }
+}
+
+/* Shimmer text effect for active "Working" state — Cursor-style sweep */
+@keyframes shimmer-text-slide {
+  0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
+  100% { background-position: 0% center; }
+}
+
+.shimmer-text {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    -webkit-text-fill-color: unset;
+    background: none;
+  }
+}
+
 /* MDXEditor theme integration */
 .paperclip-mdxeditor-scope,
 .paperclip-mdxeditor {
