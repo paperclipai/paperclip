@@ -37,6 +37,34 @@ test('extractCopyEntries flattens en and zh-CN copy tables from helper source', 
   });
 });
 
+test('extractCopyEntries skips unrelated object literals before the locale tables', () => {
+  const sourceText = `
+    const helper = {
+      metadata: {
+        owner: 'paperclip',
+      },
+    };
+
+    export const copy = {
+      en: {
+        title: 'Inbox',
+      },
+      'zh-CN': {
+        title: '收件箱',
+      },
+    } as const;
+  `;
+
+  assert.deepEqual(extractCopyEntries(sourceText), {
+    english: {
+      title: 'Inbox',
+    },
+    chinese: {
+      title: '收件箱',
+    },
+  });
+});
+
 test('diffCopyResource reports missing and changed zh-CN entries for changed English copy', () => {
   const diff = diffCopyResource({
     resourcePath: 'ui/src/lib/inbox-copy.ts',
@@ -78,6 +106,47 @@ test('diffCopyResource reports missing and changed zh-CN entries for changed Eng
         baselineEnglish: 'Old description',
         english: 'New description',
         chinese: '旧说明',
+      },
+    ],
+    stale: [],
+    hasDiff: true,
+  });
+});
+
+test('diffCopyResource reports stale zh-CN entries for deleted or renamed English keys', () => {
+  const diff = diffCopyResource({
+    resourcePath: 'ui/src/lib/inbox-copy.ts',
+    baselineEnglish: {
+      title: 'Inbox',
+      cta: 'Retry',
+      legacyCta: 'Learn more',
+    },
+    english: {
+      title: 'Inbox',
+      cta: 'Retry',
+      helpCta: 'Learn more',
+    },
+    chinese: {
+      title: '收件箱',
+      cta: '重试',
+      legacyCta: '了解更多',
+    },
+  });
+
+  assert.deepEqual(diff, {
+    resourcePath: 'ui/src/lib/inbox-copy.ts',
+    missing: [
+      {
+        key: 'helpCta',
+        english: 'Learn more',
+      },
+    ],
+    changed: [],
+    stale: [
+      {
+        key: 'legacyCta',
+        chinese: '了解更多',
+        baselineEnglish: 'Learn more',
       },
     ],
     hasDiff: true,

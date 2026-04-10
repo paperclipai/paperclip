@@ -51,7 +51,12 @@ function findCopyObjectLiteral(sourceFile) {
       const english = getObjectProperty(node, 'en');
       const chinese = getObjectProperty(node, 'zh-CN');
 
-      if (ts.isObjectLiteralExpression(english) && ts.isObjectLiteralExpression(chinese)) {
+      if (
+        english
+        && chinese
+        && ts.isObjectLiteralExpression(english)
+        && ts.isObjectLiteralExpression(chinese)
+      ) {
         match = node;
         return;
       }
@@ -123,6 +128,7 @@ export function extractCopyEntries(sourceText) {
 export function diffCopyResource({ resourcePath, baselineEnglish = {}, english = {}, chinese = {} }) {
   const missing = [];
   const changed = [];
+  const stale = [];
 
   for (const key of Object.keys(english).sort()) {
     if (!Object.hasOwn(chinese, key)) {
@@ -143,11 +149,22 @@ export function diffCopyResource({ resourcePath, baselineEnglish = {}, english =
     }
   }
 
+  for (const key of Object.keys(chinese).sort()) {
+    if (!Object.hasOwn(english, key)) {
+      stale.push({
+        key,
+        chinese: chinese[key],
+        baselineEnglish: Object.hasOwn(baselineEnglish, key) ? baselineEnglish[key] : undefined,
+      });
+    }
+  }
+
   return {
     resourcePath,
     missing,
     changed,
-    hasDiff: missing.length > 0 || changed.length > 0,
+    stale,
+    hasDiff: missing.length > 0 || changed.length > 0 || stale.length > 0,
   };
 }
 
