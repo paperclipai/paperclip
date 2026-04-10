@@ -54,9 +54,9 @@ jobs:
       - name: Configure upstream remote
         run: |
           if git remote get-url upstream >/dev/null 2>&1; then
-            git remote set-url upstream https://github.com/paperclip-ai/paperclip.git
+            git remote set-url upstream https://github.com/paperclipai/paperclip.git
           else
-            git remote add upstream https://github.com/paperclip-ai/paperclip.git
+            git remote add upstream https://github.com/paperclipai/paperclip.git
           fi
 
       - name: Fetch sync refs

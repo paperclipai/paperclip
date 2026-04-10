@@ -26,6 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -45,9 +46,9 @@ jobs:
       - name: Configure upstream remote
         run: |
           if git remote get-url upstream >/dev/null 2>&1; then
-            git remote set-url upstream https://github.com/paperclip-ai/paperclip.git
+            git remote set-url upstream https://github.com/paperclipai/paperclip.git
           else
-            git remote add upstream https://github.com/paperclip-ai/paperclip.git
+            git remote add upstream https://github.com/paperclipai/paperclip.git
           fi
 
       - name: Fetch sync refs

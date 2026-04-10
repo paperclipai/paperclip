@@ -19,7 +19,7 @@ This split matters because the bot must be able to push upgrade branches somewhe
 Keep these branch roles stable:
 
 - `zh-enterprise`: the reviewed integration branch for the Chinese enterprise fork.
-- `bot-upgrade/*`: short-lived bot branches, one branch per upstream sync attempt.
+- `bot-upgrade/*`: short-lived bot branches named from the upstream SHA. Reruns for the same upstream SHA reuse and refresh the same branch name.
 
 The workflows never push directly to `zh-enterprise`.
 
@@ -110,7 +110,12 @@ A replay conflict blocked the bot branch. Download the artifacts, inspect the co
 
 ### `validation failure`
 
-The replay completed, but one of the required checks failed. Review the uploaded validation log, fix the failing changes on the bot branch, and rerun the PR validation workflow.
+The replay completed, but one of the required checks failed. Review the uploaded validation log and decide whether to:
+
+1. push a short-lived follow-up fix onto the current `bot-upgrade/*` branch without rerunning upstream-sync, or
+2. move the fix to a separate branch if you expect to rerun upstream-sync for the same upstream SHA
+
+Rerunning the discovery workflow for the same upstream SHA refreshes the bot branch, so do not treat `bot-upgrade/*` as a durable place for long-lived manual fixes.
 
 ### successful ready PR
 
