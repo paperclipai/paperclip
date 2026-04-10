@@ -81,6 +81,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
+import { HtmlReportPreview, buildReportApiUrl, extractReportFilenames } from "./HtmlReportPreview";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -88,6 +89,8 @@ interface IssueChatMessageContext {
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  companyId?: string | null;
+  issueId?: string | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -188,6 +191,7 @@ interface IssueChatThreadProps {
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
   companyId?: string | null;
+  issueId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -422,11 +426,27 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { onImageClick, companyId, issueId } = useContext(IssueChatCtx);
+  const reportEntries = useMemo(() => {
+    const filenames = extractReportFilenames(text);
+    return filenames
+      .map((fn) => ({ filename: fn, url: buildReportApiUrl(fn, companyId, issueId) }))
+      .filter((e): e is { filename: string; url: string } => e.url !== null);
+  }, [text, companyId, issueId]);
+
   return (
-    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined} onImageClick={onImageClick}>
-      {text}
-    </MarkdownBody>
+    <div>
+      <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined} onImageClick={onImageClick}>
+        {text}
+      </MarkdownBody>
+      {reportEntries.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {reportEntries.map(({ filename, url }) => (
+            <HtmlReportPreview key={filename} src={url} filename={filename} defaultExpanded={false} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1769,6 +1789,7 @@ export function IssueChatThread({
   liveRuns = [],
   activeRun = null,
   companyId,
+  issueId,
   projectId,
   issueStatus,
   agentMap,
@@ -1907,6 +1928,8 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      companyId,
+      issueId,
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
@@ -1918,6 +1941,8 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      companyId,
+      issueId,
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,

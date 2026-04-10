@@ -57,6 +57,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
+import { HtmlReportPreview } from "../components/HtmlReportPreview";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
@@ -2044,33 +2045,62 @@ export function IssueDetail() {
 
         {nonImageAttachments.length > 0 && (
           <div className="space-y-2">
-            {nonImageAttachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <a
-                    href={attachment.contentPath}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs hover:underline truncate"
-                    title={attachment.originalFilename ?? attachment.id}
-                  >
-                    {attachment.originalFilename ?? attachment.id}
-                  </a>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => deleteAttachment.mutate(attachment.id)}
-                    disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+            {nonImageAttachments.map((attachment) => {
+              const isHtml = attachment.contentType === "text/html" || /\.html?$/i.test(attachment.originalFilename ?? "");
+              return (
+                <div key={attachment.id} className="border border-border rounded-md overflow-hidden">
+                  {isHtml ? (
+                    <>
+                      <HtmlReportPreview
+                        src={attachment.contentPath}
+                        filename={attachment.originalFilename ?? undefined}
+                        defaultExpanded={false}
+                      />
+                      <div className="flex items-center justify-between gap-2 px-2 py-1 bg-muted/20 border-t border-border">
+                        <p className="text-[11px] text-muted-foreground">
+                          {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                        </p>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => deleteAttachment.mutate(attachment.id)}
+                          disabled={deleteAttachment.isPending}
+                          title="Delete attachment"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <a
+                          href={attachment.contentPath}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs hover:underline truncate"
+                          title={attachment.originalFilename ?? attachment.id}
+                        >
+                          {attachment.originalFilename ?? attachment.id}
+                        </a>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => deleteAttachment.mutate(attachment.id)}
+                          disabled={deleteAttachment.isPending}
+                          title="Delete attachment"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
         </div>
@@ -2139,6 +2169,7 @@ export function IssueDetail() {
                 liveRuns={liveRuns}
                 activeRun={activeRun}
                 companyId={issue.companyId}
+                issueId={issue.id}
                 projectId={issue.projectId}
                 issueStatus={issue.status}
                 agentMap={agentMap}

@@ -1,7 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq, or } from "drizzle-orm";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agentTaskSessions, assets, executionWorkspaces, issueAttachments, issues, projectWorkspaces, projects } from "@paperclipai/db";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { updateExecutionWorkspaceSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
@@ -406,6 +409,200 @@ export function executionWorkspaceRoutes(db: Db) {
       },
     });
     res.json(workspace);
+  });
+
+  /**
+   * Serve an HTML report file from the most-recent execution workspace for an issue.
+   * Only files inside the `reports/` subdirectory are accessible.
+   *
+   * GET /companies/:companyId/issues/:issueId/reports/:filename
+   */
+  router.get("/companies/:companyId/issues/:issueId/reports/:filename", async (req, res) => {
+    const { companyId, issueId, filename } = req.params as {
+      companyId: string;
+      issueId: string;
+      filename: string;
+    };
+    assertCompanyAccess(req, companyId);
+
+    if (!filename.endsWith(".html") && !filename.endsWith(".htm")) {
+      res.status(400).json({ error: "Only HTML report files are served via this endpoint" });
+      return;
+    }
+
+    // Prevent path traversal
+    const safeName = path.basename(filename);
+    if (safeName !== filename || safeName.startsWith(".")) {
+      res.status(400).json({ error: "Invalid filename" });
+      return;
+    }
+
+    // Resolve issue metadata for workspace lookup
+    const issueRow = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        projectId: issues.projectId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issueRow) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    // Build ordered list of candidate workspace root directories to check.
+    const candidateDirs: string[] = [];
+
+    const pushDir = (raw: string | null | undefined) => {
+      const p = raw?.trim();
+      if (p) candidateDirs.push(p);
+    };
+
+    // 1. Execution workspaces linked to the issue (most reliable when they exist)
+    const wsRows = await db
+      .select({ providerRef: executionWorkspaces.providerRef, cwd: executionWorkspaces.cwd })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          issueRow.executionWorkspaceId
+            ? or(
+                eq(executionWorkspaces.id, issueRow.executionWorkspaceId),
+                eq(executionWorkspaces.sourceIssueId, issueId),
+              )
+            : eq(executionWorkspaces.sourceIssueId, issueId),
+        ),
+      )
+      .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt))
+      .limit(10);
+
+    for (const row of wsRows) {
+      pushDir(row.providerRef);
+      pushDir(row.cwd);
+    }
+
+    // 2. Project workspaces linked to the issue's project
+    if (issueRow.projectId) {
+      const pwRows = await db
+        .select({ cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.companyId, companyId),
+            eq(projectWorkspaces.projectId, issueRow.projectId),
+          ),
+        )
+        .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt))
+        .limit(5);
+      for (const row of pwRows) pushDir(row.cwd);
+
+      // Also try the managed workspace directory (used when project_workspace.cwd is null)
+      try {
+        const repoName = pwRows[0]?.repoUrl
+          ? pwRows[0].repoUrl.split("/").pop()?.replace(/\.git$/, "") ?? null
+          : null;
+        pushDir(resolveManagedProjectWorkspaceDir({
+          companyId,
+          projectId: issueRow.projectId,
+          repoName,
+        }));
+      } catch {
+        // invalid ids — skip
+      }
+    }
+
+    // 3. Agent task session cwd — the most direct record of where the agent actually ran.
+    //    taskKey is set to issueId when the run is triggered for an issue.
+    if (issueRow.assigneeAgentId) {
+      const sessionRows = await db
+        .select({ sessionParamsJson: agentTaskSessions.sessionParamsJson })
+        .from(agentTaskSessions)
+        .where(
+          and(
+            eq(agentTaskSessions.companyId, companyId),
+            eq(agentTaskSessions.agentId, issueRow.assigneeAgentId),
+            eq(agentTaskSessions.taskKey, issueId),
+          ),
+        )
+        .orderBy(desc(agentTaskSessions.updatedAt))
+        .limit(3);
+
+      for (const row of sessionRows) {
+        const params = row.sessionParamsJson as Record<string, unknown> | null;
+        if (typeof params?.cwd === "string") pushDir(params.cwd);
+      }
+    }
+
+    // 4. Agent's default workspace directory (fallback when no project workspace exists)
+    if (issueRow.assigneeAgentId) {
+      try {
+        pushDir(resolveDefaultAgentWorkspaceDir(issueRow.assigneeAgentId));
+      } catch {
+        // invalid agentId format — skip
+      }
+    }
+
+    // Try each candidate directory
+    let filePath: string | null = null;
+    const checkedPaths: string[] = [];
+    const seen = new Set<string>();
+    for (const dir of candidateDirs) {
+      const resolvedDir = path.resolve(dir);
+      const candidate = path.resolve(resolvedDir, "reports", safeName);
+      // Path traversal guard
+      if (!candidate.startsWith(resolvedDir + path.sep)) continue;
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      checkedPaths.push(candidate);
+      try {
+        await fs.access(candidate);
+        filePath = candidate;
+        break;
+      } catch {
+        // not here, keep looking
+      }
+    }
+
+    if (!filePath) {
+      // Fallback: look for an issue attachment with a matching filename.
+      // The agent may have uploaded the file via the attachments API instead of keeping
+      // it in the workspace filesystem.
+      const attachmentRow = await db
+        .select({ attachmentId: issueAttachments.id })
+        .from(issueAttachments)
+        .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+        .where(
+          and(
+            eq(issueAttachments.companyId, companyId),
+            eq(issueAttachments.issueId, issueId),
+            eq(assets.originalFilename, safeName),
+          ),
+        )
+        .orderBy(desc(issueAttachments.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (attachmentRow) {
+        res.redirect(302, `/api/attachments/${attachmentRow.attachmentId}/content`);
+        return;
+      }
+
+      res.status(404).json({
+        error: "Report file not found",
+        debug: { checkedPaths },
+      });
+      return;
+    }
+
+    const html = await fs.readFile(filePath, "utf8");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline';");
+    res.send(html);
   });
 
   return router;
