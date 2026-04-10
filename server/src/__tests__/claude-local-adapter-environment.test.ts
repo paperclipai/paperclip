@@ -4,6 +4,32 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-claude-local/server";
 
+/** Fake Claude CLI: valid stream-json but exit 1 (matches subscription / org rate limits). */
+async function writeRateLimitedFakeClaude(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.readFileSync(0, "utf8");
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s-rate", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "rejected" } }));
+console.log(JSON.stringify({
+  type: "assistant",
+  session_id: "s-rate",
+  error: "rate_limit",
+  message: { content: [{ type: "text", text: "You've hit your limit" }] },
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: true,
+  session_id: "s-rate",
+  result: "You've hit your limit · resets soon",
+}));
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_BEDROCK = process.env.CLAUDE_CODE_USE_BEDROCK;
 const ORIGINAL_BEDROCK_URL = process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -179,5 +205,45 @@ describe("claude_local environment diagnostics", () => {
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+  });
+
+  /**
+   * Regression: real `claude` exits 1 with valid stream-json when the final `result` has is_error (e.g. rate limits).
+   * The probe must not treat that as claude_hello_probe_failed solely from exit code.
+   *
+   * Related upstream discussion: https://github.com/paperclipai/paperclip/pull/3162 (exit 0 + is_error path).
+   */
+  it("classifies exit 1 + rate_limit stream-json as rate-limited warn, not probe error", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-probe-ratelimit-"));
+    const binDir = path.join(root, "bin");
+    const workspace = path.join(root, "workspace");
+    const claudePath = path.join(binDir, "claude");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await writeRateLimitedFakeClaude(claudePath);
+
+    try {
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          command: claudePath,
+          cwd: workspace,
+        },
+      });
+
+      expect(result.checks.some((c) => c.code === "claude_hello_probe_failed")).toBe(false);
+      expect(
+        result.checks.some((c) => c.code === "claude_hello_probe_rate_limited" && c.level === "warn"),
+      ).toBe(true);
+      expect(result.checks.some((c) => c.level === "error")).toBe(false);
+      expect(result.status).toBe("warn");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

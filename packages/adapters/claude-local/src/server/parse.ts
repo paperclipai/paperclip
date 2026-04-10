@@ -1,5 +1,5 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
-import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import { asString, asNumber, asBoolean, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
@@ -175,5 +175,21 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
 
   return allMessages.some((msg) =>
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+  );
+}
+
+/** True when stream-json shows a rate/quota limit (Claude often exits 1 with is_error despite valid output). */
+export function isClaudeRateLimitedOutput(stdout: string, resultJson: Record<string, unknown> | null): boolean {
+  if (
+    /rate_limit_event|"error"\s*:\s*"rate_limit"|hit your limit|you['']ve hit your limit/i.test(stdout)
+  ) {
+    return true;
+  }
+  if (!resultJson) return false;
+  if (asString(resultJson.error, "") === "rate_limit") return true;
+  if (!asBoolean(resultJson.is_error, false)) return false;
+  const resultText = asString(resultJson.result, "").trim();
+  return /(?:\brate\s*limit\b|\busage\s*limit\b|\bquota\b|\b429\b|too\s+many\s+requests)/i.test(
+    resultText,
   );
 }
