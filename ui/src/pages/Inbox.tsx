@@ -767,9 +767,9 @@ export function Inbox() {
   });
   const expiredConnections = useMemo(
     () => (connectionsData?.connections ?? []).filter(
-      (c) => (c.status === "expired" || c.status === "error") && !dismissed.has(`connection:${c.id}`),
+      (c) => (c.status === "expired" || c.status === "error") && !dismissedAlerts.has(`connection:${c.id}`),
     ),
-    [connectionsData, dismissed],
+    [connectionsData, dismissedAlerts],
   );
 
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
@@ -2165,7 +2165,7 @@ export function Inbox() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => dismiss(`connection:${conn.id}`)}
+                    onClick={() => dismissAlert(`connection:${conn.id}`)}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
