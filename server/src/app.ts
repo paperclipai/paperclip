@@ -421,12 +421,59 @@ export async function createApp(
   });
   leaderProcess
     .reconcile()
-    .then((result) => {
+    .then(async (result) => {
       if (result.reconciled || result.crashed || result.orphanStopped) {
         logger.info(
           { ...result },
           "leader process reconcile completed",
         );
+      }
+
+      // Auto-start all leader agents (claude_local) that aren't already running.
+      // This ensures leaders are always on after server boot.
+      try {
+        const { agents: agentsSchema } = await import("@paperclipai/db");
+        const { eq, and, ne } = await import("drizzle-orm");
+        const allLeaders = await (db as any)
+          .select({ id: agentsSchema.id, companyId: agentsSchema.companyId, name: agentsSchema.name })
+          .from(agentsSchema)
+          .where(
+            and(
+              eq(agentsSchema.adapterType, "claude_local"),
+              ne(agentsSchema.status, "terminated"),
+            ),
+          );
+
+        if (allLeaders.length === 0) return;
+
+        // Check which ones are already running
+        const running = new Set<string>();
+        for (const leader of allLeaders) {
+          const detail = await leaderProcess.status({ agentId: leader.id });
+          if (detail?.alive) running.add(leader.id);
+        }
+
+        const toStart = allLeaders.filter((a: any) => !running.has(a.id));
+        if (toStart.length === 0) {
+          logger.info({ alreadyRunning: running.size }, "all leader agents already running");
+          return;
+        }
+
+        let ok = 0;
+        let fail = 0;
+        for (const leader of toStart) {
+          try {
+            await leaderProcess.start({ companyId: leader.companyId, agentId: leader.id });
+            ok++;
+            logger.info({ agentId: leader.id, name: leader.name }, "auto-started leader agent");
+          } catch (err: any) {
+            fail++;
+            logger.warn({ agentId: leader.id, name: leader.name, err: err?.message }, "failed to auto-start leader agent");
+          }
+        }
+        logger.info({ started: ok, failed: fail, alreadyRunning: running.size, total: allLeaders.length }, "leader auto-start completed");
+      } catch (err) {
+        logger.error({ err }, "leader auto-start failed");
       }
     })
     .catch((err) => {

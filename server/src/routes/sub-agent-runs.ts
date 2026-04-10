@@ -51,7 +51,7 @@ export function subAgentRunRoutes(db: Db) {
     validate(rateSubAgentRunSchema),
     async (req, res) => {
       const actor = getActorInfo(req);
-      const userId = actor.userId ?? "unknown";
+      const userId = actor.actorType === "user" ? actor.actorId : "unknown";
       try {
         const row = await svc.rate(req.params.id as string, req.body, userId);
         res.json(row);
