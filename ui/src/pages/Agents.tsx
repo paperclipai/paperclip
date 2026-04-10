@@ -1,14 +1,15 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useT } from "../i18n";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { leaderProcessesApi } from "../api/leader-processes";
+import { leaderProcessesApi, type LeaderProcessRow } from "../api/leader-processes";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
@@ -19,7 +20,13 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Bot, Plus, List, GitBranch, SlidersHorizontal, MoreHorizontal, Play, RotateCw, Square, Terminal, RefreshCw } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -210,6 +217,7 @@ export function Agents() {
               </button>
             </div>
           )}
+          <RestartAllLeadersButton companyId={selectedCompanyId} agents={agents ?? []} leaderProcesses={leaderProcesses ?? []} />
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
@@ -287,6 +295,11 @@ export function Agents() {
                           <StatusBadge status={agent.status} />
                         )}
                       </span>
+                      <AgentContextMenu
+                        agent={agent}
+                        companyId={selectedCompanyId!}
+                        cliAlive={cliAliveSet.has(agent.id)}
+                      />
                     </div>
                   </div>
                 }
@@ -306,7 +319,7 @@ export function Agents() {
       {effectiveView === "org" && filteredOrg.length > 0 && (
         <div className="border border-border py-1">
           {filteredOrg.map((node) => (
-            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} cliAliveSet={cliAliveSet} tab={tab} />
+            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} cliAliveSet={cliAliveSet} tab={tab} companyId={selectedCompanyId!} />
           ))}
         </div>
       )}
@@ -333,6 +346,7 @@ function OrgTreeNode({
   liveRunByAgent,
   cliAliveSet,
   tab,
+  companyId,
 }: {
   node: OrgNode;
   depth: number;
@@ -340,6 +354,7 @@ function OrgTreeNode({
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
   cliAliveSet: Set<string>;
   tab: FilterTab;
+  companyId: string;
 }) {
   const agent = agentMap.get(node.id);
 
@@ -401,17 +416,276 @@ function OrgTreeNode({
                 <StatusBadge status={node.status} />
               )}
             </span>
+            {agent && (
+              <AgentContextMenu
+                agent={agent}
+                companyId={companyId}
+                cliAlive={cliAliveSet.has(agent.id)}
+              />
+            )}
           </div>
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border/50 ml-4">
           {node.reports.map((child) => (
-            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} cliAliveSet={cliAliveSet} tab={tab} />
+            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} cliAliveSet={cliAliveSet} tab={tab} companyId={companyId} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** Restart all leader (claude_local) agents */
+function RestartAllLeadersButton({
+  companyId,
+  agents,
+  leaderProcesses,
+}: {
+  companyId: string;
+  agents: Agent[];
+  leaderProcesses: LeaderProcessRow[];
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const [loading, setLoading] = useState(false);
+
+  const leaders = agents.filter((a) => a.adapterType === "claude_local" && a.status !== "terminated");
+  if (leaders.length === 0) return null;
+
+  const runningSet = new Set(
+    leaderProcesses.filter((p) => p.status === "running").map((p) => p.agentId),
+  );
+  const runningCount = leaders.filter((a) => runningSet.has(a.id)).length;
+
+  const handleRestartAll = async () => {
+    if (!confirm(`Restart all ${leaders.length} leader agents?`)) return;
+    setLoading(true);
+    let ok = 0;
+    let fail = 0;
+    for (const agent of leaders) {
+      try {
+        if (runningSet.has(agent.id)) {
+          await leaderProcessesApi.restart(companyId, agent.id);
+        } else {
+          await leaderProcessesApi.start(companyId, agent.id);
+        }
+        ok++;
+      } catch {
+        fail++;
+      }
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.leaderProcesses.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    pushToast({
+      title: `Leaders: ${ok} started${fail ? `, ${fail} failed` : ""}`,
+      tone: fail ? "error" : "success",
+    });
+    setLoading(false);
+  };
+
+  return (
+    <Button size="sm" variant="outline" onClick={handleRestartAll} disabled={loading}>
+      <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading && "animate-spin")} />
+      {loading ? "Restarting..." : `Restart Leaders (${runningCount}/${leaders.length})`}
+    </Button>
+  );
+}
+
+/** Context menu for individual agent actions */
+function AgentContextMenu({
+  agent,
+  companyId,
+  cliAlive,
+}: {
+  agent: Agent;
+  companyId: string;
+  cliAlive: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+
+  const isLeader = agent.adapterType === "claude_local";
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.leaderProcesses.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+  };
+
+  const startMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.start(companyId, agent.id),
+    onSuccess: () => { invalidate(); pushToast({ title: `${agent.name} started`, tone: "success" }); },
+    onError: (e: Error) => pushToast({ title: `Start failed: ${e.message}`, tone: "error" }),
+  });
+
+  const restartMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.restart(companyId, agent.id),
+    onSuccess: () => { invalidate(); pushToast({ title: `${agent.name} restarted`, tone: "success" }); },
+    onError: (e: Error) => pushToast({ title: `Restart failed: ${e.message}`, tone: "error" }),
+  });
+
+  const stopMutation = useMutation({
+    mutationFn: () => leaderProcessesApi.stop(companyId, agent.id),
+    onSuccess: () => { invalidate(); pushToast({ title: `${agent.name} stopped`, tone: "success" }); },
+    onError: (e: Error) => pushToast({ title: `Stop failed: ${e.message}`, tone: "error" }),
+  });
+
+  const isMutating = startMutation.isPending || restartMutation.isPending || stopMutation.isPending;
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  if (!isLeader) return null;
+
+  return (
+    <>
+      <div className="relative" ref={menuRef}>
+        <button
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}
+          className="p-1 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+        {open && (
+          <div className="absolute right-0 top-full mt-1 z-50 w-44 border border-border bg-popover shadow-lg rounded-md py-1">
+            {!cliAlive ? (
+              <button
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
+                disabled={isMutating}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); startMutation.mutate(); setOpen(false); }}
+              >
+                <Play className="h-3.5 w-3.5" />
+                {startMutation.isPending ? "Starting..." : "Start"}
+              </button>
+            ) : (
+              <button
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 disabled:opacity-50"
+                disabled={isMutating}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); restartMutation.mutate(); setOpen(false); }}
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+                {restartMutation.isPending ? "Restarting..." : "Restart"}
+              </button>
+            )}
+            {cliAlive && (
+              <button
+                className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 text-destructive disabled:opacity-50"
+                disabled={isMutating}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); stopMutation.mutate(); setOpen(false); }}
+              >
+                <Square className="h-3.5 w-3.5" />
+                {stopMutation.isPending ? "Stopping..." : "Stop"}
+              </button>
+            )}
+            <div className="border-t border-border my-1" />
+            <button
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setLogOpen(true); setOpen(false); }}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              Logs
+            </button>
+          </div>
+        )}
+      </div>
+      {logOpen && (
+        <AgentLogModal
+          companyId={companyId}
+          agent={agent}
+          open={logOpen}
+          onClose={() => setLogOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+/** Modal showing live CLI logs */
+function AgentLogModal({
+  companyId,
+  agent,
+  open,
+  onClose,
+}: {
+  companyId: string;
+  agent: Agent;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [logKind, setLogKind] = useState<"out" | "err">("out");
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ["agent-logs", companyId, agent.id, logKind],
+    queryFn: () => leaderProcessesApi.logs(companyId, agent.id, { kind: logKind, lines: 200 }),
+    enabled: open,
+    refetchInterval: 3000,
+  });
+
+  const scrollToBottom = useCallback(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    if (logs) scrollToBottom();
+  }, [logs, scrollToBottom]);
+
+  // Strip ANSI escape codes for clean display
+  const cleanLines = (logs?.lines ?? []).map((line) =>
+    line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\[[\d;]*m/g, ""),
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Terminal className="h-4 w-4" />
+            {agent.name} — CLI Logs
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex gap-1 mb-2">
+          <button
+            className={cn(
+              "px-2 py-1 text-xs rounded",
+              logKind === "out" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50",
+            )}
+            onClick={() => setLogKind("out")}
+          >
+            stdout
+          </button>
+          <button
+            className={cn(
+              "px-2 py-1 text-xs rounded",
+              logKind === "err" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50",
+            )}
+            onClick={() => setLogKind("err")}
+          >
+            stderr
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-auto bg-black rounded-md p-3 font-mono text-xs text-green-400 leading-relaxed">
+          {isLoading && <p className="text-muted-foreground">Loading...</p>}
+          {cleanLines.map((line, i) => (
+            <div key={i} className="whitespace-pre-wrap break-all">
+              {line || "\u00A0"}
+            </div>
+          ))}
+          <div ref={logEndRef} />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
