@@ -1,10 +1,11 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, GitMerge } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
+  merge_code: "Request | Merge Code",
 };
 
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
@@ -20,6 +21,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   hire_agent: UserPlus,
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
+  merge_code: GitMerge,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -127,8 +129,40 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
   );
 }
 
+export function MergeCodePayload({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Title" value={payload.title} />
+      <PayloadField label="Branch" value={payload.branch} />
+      {payload.prUrl && (
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">PR URL</span>
+          <a
+            href={String(payload.prUrl)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline break-all"
+          >
+            {String(payload.prUrl)}
+          </a>
+        </div>
+      )}
+      {payload.issueId && (
+        <PayloadField label="Issue" value={payload.issueId} />
+      )}
+      {payload.description && (
+        <div className="flex items-start gap-2 mt-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Description</span>
+          <span className="text-muted-foreground whitespace-pre-wrap">{String(payload.description)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({ type, payload }: { type: string; payload: Record<string, unknown> }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  if (type === "merge_code") return <MergeCodePayload payload={payload} />;
   return <CeoStrategyPayload payload={payload} />;
 }

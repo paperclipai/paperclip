@@ -36,9 +36,24 @@ Metacorp exists solely to improve and extend Metaclip. We have no external custo
 
 - **Never push directly to `master`** without board approval.
 - **Never sync or rebase directly from upstream** (`paperclipai/paperclip`). Monitor it; cherry-pick selectively.
-- **Never modify the running Metaclip instance** at `~/Projects/Metaclip_Dev/Metaclip`. It is the live environment — treat it as read-only.
+- **Never modify the running Metaclip instance code** at `~/Projects/Metaclip_Dev/Metaclip`. It is the live environment — treat it as read-only for code changes.
 - **Never start implementation without commanding officer approval.** Ideacraft and research first, then ask.
 - **Never build features for external customers.** Metacorp has no customers. Scope all work to internal needs.
+
+### Server Restart Authorization (CTO & Internal Affairs Lead Only)
+
+The **CTO** and **Internal Affairs Lead** are authorized to restart the Metaclip server at `~/Projects/Metaclip_Dev/Metaclip` for operational purposes. This includes:
+
+- Deploying critical fixes that require server restart
+- Resolving operational issues blocking health checks or routine executions
+- Applying environment configuration changes
+
+**Requirements when exercising this authority:**
+1. Document the restart reason in the related issue comment
+2. Ensure no active runs are in progress that could be disrupted (check for blocking runs)
+3. Link to the approval or task that justifies the restart
+
+Other engineering agents remain prohibited from restarting the server and must escalate to CTO or Internal Affairs Lead for restart requests.
 
 ## Development Workflow
 
@@ -67,6 +82,42 @@ Every commit you make must include the following co-author line at the end of th
 ```
 Co-Authored-By: Paperclip <noreply@paperclip.ing>
 ```
+
+## Merge Approval Flow
+
+Before merging any feature branch to `master`, you must request board approval via a `merge_code` approval request.
+
+### Step 1: Create the Approval
+
+Use the Paperclip API to create a `merge_code` approval:
+
+```bash
+curl -X POST /api/companies/{companyId}/approvals \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "merge_code",
+    "payload": {
+      "title": "Brief description of the change",
+      "branch": "feature/your-branch-name",
+      "prUrl": "https://github.com/nrdnfjrdio/Metaclip/pull/123",
+      "description": "What this PR does and why",
+      "issueIds": ["META-XXX"]
+    }
+  }'
+```
+
+### Step 2: Link the Approval in Your PR
+
+Include the approval ID in your PR description or comments so the board can review it.
+
+### Step 3: Wait for Board Approval
+
+The board will review the request and approve or deny via Paperclip. Monitor the approval status.
+
+### Step 4: Merge After Approval
+
+Only merge to `master` after receiving board approval. Do not force push or rebase after approval.
 
 ## Reporting Chain
 
