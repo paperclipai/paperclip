@@ -62,6 +62,12 @@ resource "aws_eip" "nat" {
   tags       = merge(local.tags, { Name = "${var.app_name}-nat-eip" })
 }
 
+# Single NAT Gateway placed in public_a. Both private route tables share it,
+# so an AZ-a outage would interrupt IPv4 egress for private_b workloads.
+# This is acceptable for a single-instance deployment (desired_count = 1) where
+# the cost of a second gateway (~$32/mo) outweighs the redundancy benefit.
+# To add per-AZ gateways, provision a second aws_nat_gateway in public_b and
+# give private_b its own route table pointing to it.
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public_a.id
