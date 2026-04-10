@@ -74,7 +74,7 @@ test('captureConflictDiagnostics collects conflict context for the failing commi
 
   assert.deepEqual(calls, [
     { command: 'git', args: ['status', '--short'] },
-    { command: 'git', args: ['diff', '--name-only', '--diff-filter=U'] },
     { command: 'git', args: ['show', '--stat', '--oneline', '-1', 'deadbeef'] },
+    { command: 'git', args: ['diff', '--name-only', '--diff-filter=U'] },
   ]);
 });

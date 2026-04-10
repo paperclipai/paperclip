@@ -49,8 +49,12 @@ function readArgValue(argv, flag) {
   return undefined;
 }
 
-export function parseSyncConfig(env = process.env, argv = process.argv.slice(2)) {
-  const githubRepository = readConfigValue(env.GITHUB_REPOSITORY) ?? readRepositoryFromGitRemote();
+export function parseSyncConfig(
+  env = process.env,
+  argv = process.argv.slice(2),
+  { readRepositoryFromGitRemote: resolveRepository = readRepositoryFromGitRemote } = {},
+) {
+  const githubRepository = readConfigValue(env.GITHUB_REPOSITORY) ?? resolveRepository();
 
   if (!githubRepository) {
     throw new Error('GITHUB_REPOSITORY is required');

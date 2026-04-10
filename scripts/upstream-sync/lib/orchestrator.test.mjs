@@ -138,8 +138,8 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
     '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
     '{"command":"git","args":["cherry-pick","c1"]}': '',
     '{"command":"git","args":["cherry-pick","c2"]}': new Error('cherry-pick failed'),
-    '{"command":"git","args":["status","--short"]}': 'UU scripts/upstream-sync/lib/orchestrator.mjs\n',
     '{"command":"git","args":["diff","--name-only","--diff-filter=U"]}': 'scripts/upstream-sync/lib/orchestrator.mjs\n',
+    '{"command":"git","args":["status","--short"]}': 'UU scripts/upstream-sync/lib/orchestrator.mjs\n',
     '{"command":"git","args":["show","--stat","--oneline","-1","c2"]}': 'c2 conflict commit summary\n',
   });
 
@@ -180,9 +180,59 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
       { command: 'git', args: ['checkout', '-B', 'bot-upgrade/abc123def456', 'origin/master'] },
       { command: 'git', args: ['cherry-pick', 'c1'] },
       { command: 'git', args: ['cherry-pick', 'c2'] },
-      { command: 'git', args: ['status', '--short'] },
       { command: 'git', args: ['diff', '--name-only', '--diff-filter=U'] },
+      { command: 'git', args: ['status', '--short'] },
       { command: 'git', args: ['show', '--stat', '--oneline', '-1', 'c2'] },
+    ]);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('runUpstreamSync rethrows non-conflict replay failures', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`non-conflict-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const { calls, run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\nc2\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+    '{"command":"git","args":["cherry-pick","c1"]}': '',
+    '{"command":"git","args":["cherry-pick","c2"]}': new Error('replay failed'),
+    '{"command":"git","args":["diff","--name-only","--diff-filter=U"]}': '',
+  });
+
+  try {
+    await assert.rejects(
+      runUpstreamSync({
+        config: {
+          githubRepository: 'paperclip/paperclip',
+          baseBranch: 'zh-enterprise',
+          upstreamRemote: 'upstream',
+          upstreamRef: 'origin/master',
+          maintenanceRef: 'HEAD',
+          branchPrefix: 'bot-upgrade',
+          dryRun: false,
+          llmApiBase: undefined,
+          llmApiKey: undefined,
+          llmModel: undefined,
+        },
+        run,
+      }),
+      /replay failed/,
+    );
+
+    assert.deepEqual(calls, [
+      { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
+      { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
+      { command: 'git', args: ['rev-parse', '--short=12', 'origin/master'] },
+      { command: 'git', args: ['checkout', '-B', 'bot-upgrade/abc123def456', 'origin/master'] },
+      { command: 'git', args: ['cherry-pick', 'c1'] },
+      { command: 'git', args: ['cherry-pick', 'c2'] },
+      { command: 'git', args: ['diff', '--name-only', '--diff-filter=U'] },
     ]);
   } finally {
     process.chdir(previousCwd);

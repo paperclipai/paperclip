@@ -42,18 +42,23 @@ export async function replayCommitStack({ run, commits }) {
   }
 }
 
-export async function captureConflictDiagnostics({ run, failingCommit }) {
-  const status = await runGit(run, ['status', '--short']);
+export async function listUnmergedFiles({ run }) {
   const conflicts = await runGit(run, ['diff', '--name-only', '--diff-filter=U']);
+
+  return conflicts
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export async function captureConflictDiagnostics({ run, failingCommit, status: statusOutput, conflicts }) {
+  const status = statusOutput ?? (await runGit(run, ['status', '--short']));
   const failingCommitSummary = await runGit(run, ['show', '--stat', '--oneline', '-1', failingCommit]);
 
   return {
     failingCommit,
     status,
-    conflicts: conflicts
-      .split('\n')
-      .map((entry) => entry.trim())
-      .filter(Boolean),
+    conflicts: conflicts ?? (await listUnmergedFiles({ run })),
     failingCommitSummary,
   };
 }

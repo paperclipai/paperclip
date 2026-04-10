@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import {
   captureConflictDiagnostics,
   listMaintenanceCommits,
+  listUnmergedFiles,
   prepareBotBranch,
   replayCommitStack,
 } from './git-ops.mjs';
@@ -106,10 +107,22 @@ export async function runUpstreamSync({ config, run = createGitRunner() }) {
       await replayCommitStack({ run, commits });
       status = 'replayed';
     } catch (error) {
+      let conflicts;
+      try {
+        conflicts = await listUnmergedFiles({ run });
+      } catch {
+        throw error;
+      }
+
+      if (conflicts.length === 0) {
+        throw error;
+      }
+
       status = 'conflict';
       diagnostics = await captureConflictDiagnostics({
         run,
         failingCommit: error && typeof error === 'object' && 'failingCommit' in error ? error.failingCommit : commits[commits.length - 1],
+        conflicts,
       });
     }
   }

@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSyncConfig } from './config.mjs';
@@ -57,13 +56,9 @@ test('parseSyncConfig falls back from blank config values', () => {
 });
 
 test('parseSyncConfig infers repository metadata from git remote when missing', () => {
-  const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
-  const match = remoteUrl.match(/github\.com[:/](.+?\/.+?)(?:\.git)?$/) ?? remoteUrl.match(/github\.com\/(.+?\/.+?)(?:\.git)?$/);
+  const config = parseSyncConfig({}, [], {
+    readRepositoryFromGitRemote: () => 'paperclip/paperclip',
+  });
 
-  const config = parseSyncConfig({}, []);
-
-  assert.equal(config.githubRepository, match?.[1] ?? config.githubRepository);
+  assert.equal(config.githubRepository, 'paperclip/paperclip');
 });
