@@ -1824,6 +1824,56 @@ export function issueService(db: Db) {
 
       if (!current) throw notFound("Issue not found");
 
+      // Clear stale executionRunId if the referenced run is terminal/missing
+      if (
+        current.executionRunId &&
+        current.executionRunId !== checkoutRunId &&
+        await isTerminalOrMissingHeartbeatRun(current.executionRunId)
+      ) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.executionRunId, current.executionRunId),
+            ),
+          );
+        current.executionRunId = null;
+
+        // Retry the checkout now that executionRunId is cleared
+        const retried = await db
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), and(eq(issues.assigneeAgentId, agentId), or(isNull(issues.checkoutRunId), checkoutRunId ? eq(issues.checkoutRunId, checkoutRunId) : sql`false`))),
+              isNull(issues.executionRunId),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (retried) {
+          const [enriched] = await withIssueLabels(db, [retried]);
+          return enriched;
+        }
+      }
+
       if (
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
@@ -1980,6 +2030,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
