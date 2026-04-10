@@ -41,6 +41,7 @@ export function renderPrBody({
   translationSummary = {},
   validationSummary = {},
   localizationSummary = {},
+  failure,
 }) {
   const translatedFiles = translationSummary.translatedFiles ?? [];
   const manualReviewItems = localizationSummary.manualReviewItems ?? [];
@@ -59,6 +60,14 @@ export function renderPrBody({
     `- maintenance ref: \`${maintenanceRef}\``,
     formatConflictLine(diagnostics),
     '',
+    ...(failure
+      ? [
+          '## Failure',
+          `- stage: \`${failure.stage}\``,
+          `- message: ${failure.message}`,
+          '',
+        ]
+      : []),
     '## Replayed commits',
     ...(commits.length > 0 ? commits.map((commit) => `- \`${commit}\``) : ['- none']),
     '',

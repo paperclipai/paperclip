@@ -90,6 +90,7 @@ function buildReport({
   validationSummary,
   readyForPr,
   validationLogPath,
+  failure = null,
 }) {
   return {
     branchName,
@@ -104,6 +105,14 @@ function buildReport({
     translationSummary: localizationResult.translationSummary,
     validationSummary,
     validationLogPath,
+    failure,
+  };
+}
+
+function buildFailure(stage, error) {
+  return {
+    stage,
+    message: error instanceof Error ? error.message : String(error),
   };
 }
 
@@ -136,91 +145,151 @@ export async function runUpstreamSync({
   runValidation = runValidationSuite,
   renderPrBodyContent = renderPrBody,
 } = {}) {
-  const commits = await listMaintenanceCommits({
-    run,
-    upstreamRef: config.upstreamRef,
-    maintenanceRef: config.maintenanceRef,
-  });
-  const branchName = await resolveBotBranchName({
-    run,
-    branchPrefix: config.branchPrefix,
-    upstreamRef: config.upstreamRef,
-  });
-
-  let status = 'dry-run';
-  let diagnostics;
-
-  if (!config.dryRun) {
-    await prepareBotBranch({
-      run,
-      baseRef: config.upstreamRef,
-      branchName,
-    });
-
-    try {
-      await replayCommitStack({ run, commits });
-      status = 'replayed';
-    } catch (error) {
-      let conflicts;
-      try {
-        conflicts = await listUnmergedFiles({ run });
-      } catch {
-        throw error;
-      }
-
-      if (conflicts.length === 0) {
-        throw error;
-      }
-
-      status = 'conflict';
-      diagnostics = await captureConflictDiagnostics({
-        run,
-        failingCommit: error && typeof error === 'object' && 'failingCommit' in error ? error.failingCommit : commits[commits.length - 1],
-        conflicts,
-      });
-    }
-  }
-
-  const localizationResult = status === 'conflict'
-    ? createSkippedLocalizationSummary('replay-conflict')
-    : await scanLocalization({ config, run });
-  const validationSummary = await resolveValidationSummary({
-    config,
-    runValidation,
-    status,
-  });
-  const validationStatus = validationSummary.status;
-  const validationLogPath = validationSummary.logPath ?? '';
-  const readyForPr = !config.dryRun && status !== 'conflict' && validationStatus === 'passed';
-
-  const report = buildReport({
-    config,
-    branchName,
-    status,
-    commits,
-    diagnostics,
-    localizationResult,
-    validationSummary,
-    readyForPr,
-    validationLogPath,
-  });
-
   const reportPath = REPORT_PATH;
   const prBodyPath = PR_BODY_PATH;
+  let stage = 'list-maintenance-commits';
+  let commits = [];
+  let branchName = '';
+  let status = config.dryRun ? 'dry-run' : 'preparing';
+  let diagnostics;
+  let localizationResult = createSkippedLocalizationSummary('not-started');
+  let validationSummary;
+  let validationStatus = 'not-run';
+  let validationLogPath = '';
+  let readyForPr = false;
 
-  await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  await writeArtifact(prBodyPath, renderPrBodyContent(report));
+  try {
+    commits = await listMaintenanceCommits({
+      run,
+      upstreamRef: config.upstreamRef,
+      maintenanceRef: config.maintenanceRef,
+    });
+    stage = 'resolve-bot-branch-name';
+    branchName = await resolveBotBranchName({
+      run,
+      branchPrefix: config.branchPrefix,
+      upstreamRef: config.upstreamRef,
+    });
 
-  return {
-    branchName,
-    commits,
-    reportPath,
-    prBodyPath,
-    status,
-    validationStatus,
-    validationLogPath,
-    readyForPr,
-    diagnostics,
-    report,
-  };
+    if (!config.dryRun) {
+      stage = 'prepare-bot-branch';
+      await prepareBotBranch({
+        run,
+        baseRef: config.upstreamRef,
+        branchName,
+      });
+
+      try {
+        stage = 'replay-commit-stack';
+        await replayCommitStack({ run, commits });
+        status = 'replayed';
+      } catch (error) {
+        let conflicts;
+        stage = 'detect-conflicts';
+        try {
+          conflicts = await listUnmergedFiles({ run });
+        } catch {
+          throw error;
+        }
+
+        if (conflicts.length === 0) {
+          throw error;
+        }
+
+        stage = 'capture-conflict-diagnostics';
+        status = 'conflict';
+        diagnostics = await captureConflictDiagnostics({
+          run,
+          failingCommit: error && typeof error === 'object' && 'failingCommit' in error ? error.failingCommit : commits[commits.length - 1],
+          conflicts,
+        });
+      }
+    }
+    stage = 'scan-localization';
+    localizationResult = status === 'conflict'
+      ? createSkippedLocalizationSummary('replay-conflict')
+      : await scanLocalization({ config, run });
+
+    stage = 'resolve-validation-summary';
+    validationSummary = await resolveValidationSummary({
+      config,
+      runValidation,
+      status,
+    });
+    validationStatus = validationSummary.status;
+    validationLogPath = validationSummary.logPath ?? '';
+    readyForPr = !config.dryRun && status !== 'conflict' && validationStatus === 'passed';
+
+    const report = buildReport({
+      config,
+      branchName,
+      status,
+      commits,
+      diagnostics,
+      localizationResult,
+      validationSummary,
+      readyForPr,
+      validationLogPath,
+    });
+
+    await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeArtifact(prBodyPath, renderPrBodyContent(report));
+
+    return {
+      branchName,
+      commits,
+      reportPath,
+      prBodyPath,
+      status,
+      validationStatus,
+      validationLogPath,
+      readyForPr,
+      diagnostics,
+      report,
+    };
+  } catch (error) {
+    if (!validationSummary) {
+      validationSummary = createSkippedValidationSummary(`orchestration-failed:${stage}`, VALIDATION_LOG_PATH);
+      await writeValidationArtifact(VALIDATION_LOG_PATH, validationSummary);
+      validationStatus = validationSummary.status;
+      validationLogPath = validationSummary.logPath ?? '';
+    }
+
+    if (!localizationResult || localizationResult.localizationSummary?.skippedReason === 'not-started') {
+      localizationResult = createSkippedLocalizationSummary(`orchestration-failed:${stage}`);
+    }
+
+    status = 'error';
+    readyForPr = false;
+
+    const report = buildReport({
+      config,
+      branchName,
+      status,
+      commits,
+      diagnostics,
+      localizationResult,
+      validationSummary,
+      readyForPr,
+      validationLogPath,
+      failure: buildFailure(stage, error),
+    });
+
+    await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeArtifact(prBodyPath, renderPrBodyContent(report));
+
+    return {
+      branchName,
+      commits,
+      reportPath,
+      prBodyPath,
+      status,
+      validationStatus,
+      validationLogPath,
+      readyForPr,
+      diagnostics,
+      report,
+      error: report.failure,
+    };
+  }
 }

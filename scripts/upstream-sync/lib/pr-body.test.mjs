@@ -50,12 +50,19 @@ test('renderPrBody includes replay status, translated files, validation results,
         },
       ],
     },
+    failure: {
+      stage: 'scan-localization',
+      message: 'localization scan failed',
+    },
   });
 
   assert.match(body, /# Upstream sync/);
   assert.match(body, /- replay status: `replayed`/);
   assert.match(body, /- upstream ref\/tag: `upstream\/v1\.2\.3`/);
   assert.match(body, /- conflicts: none/);
+  assert.match(body, /## Failure/);
+  assert.match(body, /- stage: `scan-localization`/);
+  assert.match(body, /- message: localization scan failed/);
   assert.match(body, /## Auto-translated files/);
   assert.match(body, /ui\/src\/lib\/inbox-copy\.ts/);
   assert.match(body, /## Validation/);

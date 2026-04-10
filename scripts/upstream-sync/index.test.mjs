@@ -33,3 +33,38 @@ test('main prints workflow-consumable validation outputs', async () => {
   assert.match(output, /^ready_for_pr=true$/m);
   assert.match(output, /^validation_log_path=reports\/upstream-sync-validation-log\.json$/m);
 });
+
+test('main prints workflow-consumable outputs for error results', async () => {
+  let output = '';
+
+  const result = await main([], {}, {
+    runUpstreamSync: async () => ({
+      branchName: '',
+      reportPath: 'reports/upstream-sync-report.json',
+      prBodyPath: 'reports/upstream-sync-pr-body.md',
+      status: 'error',
+      validationStatus: 'not-run',
+      readyForPr: false,
+      validationLogPath: 'reports/upstream-sync-validation-log.json',
+      error: {
+        stage: 'scan-localization',
+        message: 'localization scan failed',
+      },
+    }),
+    parseSyncConfig: () => ({ dryRun: false }),
+    stdout: {
+      write(chunk) {
+        output += chunk;
+      },
+    },
+  });
+
+  assert.equal(result.status, 'error');
+  assert.match(output, /^branch_name=$/m);
+  assert.match(output, /^report_path=reports\/upstream-sync-report\.json$/m);
+  assert.match(output, /^pr_body_path=reports\/upstream-sync-pr-body\.md$/m);
+  assert.match(output, /^status=error$/m);
+  assert.match(output, /^validation_status=not-run$/m);
+  assert.match(output, /^ready_for_pr=false$/m);
+  assert.match(output, /^validation_log_path=reports\/upstream-sync-validation-log\.json$/m);
+});

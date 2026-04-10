@@ -255,7 +255,7 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
   }
 });
 
-test('runUpstreamSync rethrows non-conflict replay failures', async () => {
+test('runUpstreamSync records non-conflict replay failures without losing artifacts', async () => {
   const { sandboxRoot, sandbox } = createSandbox(`non-conflict-${Date.now()}`);
   const previousCwd = process.cwd();
   process.chdir(sandbox);
@@ -271,25 +271,32 @@ test('runUpstreamSync rethrows non-conflict replay failures', async () => {
   });
 
   try {
-    await assert.rejects(
-      runUpstreamSync({
-        config: {
-          githubRepository: 'paperclip/paperclip',
-          baseBranch: 'zh-enterprise',
-          upstreamRemote: 'upstream',
-          upstreamRef: 'origin/master',
-          maintenanceRef: 'HEAD',
-          branchPrefix: 'bot-upgrade',
-          dryRun: false,
-          llmApiBase: undefined,
-          llmApiKey: undefined,
-          llmModel: undefined,
-        },
-        run,
-      }),
-      /replay failed/,
-    );
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+    });
 
+    assert.equal(result.status, 'error');
+    assert.equal(result.readyForPr, false);
+    assert.equal(result.validationStatus, 'not-run');
+    assert.equal(result.validationLogPath, 'reports/upstream-sync-validation-log.json');
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.validationLogPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.failure.stage, 'detect-conflicts');
+    assert.equal(report.failure.message, 'replay failed');
     assert.deepEqual(calls, [
       { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
       { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
@@ -406,6 +413,54 @@ test('runUpstreamSync records unexpected validation runner errors without losing
     assert.equal(report.validationSummary.errorMessage, 'validation log write failed');
     const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
     assert.match(prBody, /overall: `error`/);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('runUpstreamSync records localization scan failures without losing artifacts', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`localization-error-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const { run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+    '{"command":"git","args":["cherry-pick","c1"]}': '',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      scanLocalization: async () => {
+        throw new Error('localization scan failed');
+      },
+    });
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.validationStatus, 'not-run');
+    assert.equal(result.readyForPr, false);
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.validationLogPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.failure.stage, 'scan-localization');
+    assert.equal(report.failure.message, 'localization scan failed');
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
