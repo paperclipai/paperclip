@@ -11,8 +11,10 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import { readFileSync } from "node:fs";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import { DEFAULT_OPENCLAW_GATEWAY_WS_URL } from "../defaults.js";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
 
@@ -1042,16 +1044,7 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const urlValue = asString(ctx.config.url, "").trim();
-  if (!urlValue) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorMessage: "OpenClaw gateway adapter missing url",
-      errorCode: "openclaw_gateway_url_missing",
-    };
-  }
+  const urlValue = asString(ctx.config.url, "").trim() || DEFAULT_OPENCLAW_GATEWAY_WS_URL;
 
   const parsedUrl = normalizeUrl(urlValue);
   if (!parsedUrl) {
@@ -1083,7 +1076,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
 
   const headers = toStringRecord(ctx.config.headers);
-  const authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  let authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  if (!authToken) {
+    authToken =
+      nonEmpty(process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN) ??
+      nonEmpty(process.env.OPENCLAW_GATEWAY_TOKEN);
+  }
+  if (!authToken) {
+    const tokenFile = process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN_FILE?.trim();
+    if (tokenFile) {
+      try {
+        authToken = nonEmpty(readFileSync(tokenFile, "utf8"));
+      } catch {
+        // ignore missing/unreadable file
+      }
+    }
+  }
   const password = nonEmpty(ctx.config.password);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
@@ -1132,7 +1140,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // OpenClaw gateway agent params schema uses additionalProperties: false — no root `paperclip`.
+  delete agentParams.paperclip;
+  const paperclipContextBlock = [
+    "## Paperclip context",
+    "",
+    "```json",
+    JSON.stringify(paperclipPayload, null, 2),
+    "```",
+  ].join("\n");
+  const existingExtra = nonEmpty(agentParams.extraSystemPrompt);
+  agentParams.extraSystemPrompt = existingExtra
+    ? `${existingExtra}\n\n${paperclipContextBlock}`
+    : paperclipContextBlock;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {

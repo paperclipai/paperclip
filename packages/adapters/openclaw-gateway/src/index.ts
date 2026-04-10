@@ -16,9 +16,10 @@ Don't use when:
 - Your deployment does not permit outbound WebSocket access from the Paperclip server.
 
 Core fields:
-- url (string, required): OpenClaw gateway WebSocket URL (ws:// or wss://)
+- url (string, optional): OpenClaw gateway WebSocket URL (ws:// or wss://); if omitted, defaults to ws://127.0.0.1:18789 (same host)
 - headers (object, optional): handshake headers; supports x-openclaw-token / x-openclaw-auth
 - authToken (string, optional): shared gateway token override
+- Server fallback (no token in config): env \`PAPERCLIP_OPENCLAW_GATEWAY_TOKEN\` or \`PAPERCLIP_OPENCLAW_GATEWAY_TOKEN_FILE\` (path to \`gateway.token\`) is read by the adapter when the agent config has no credentials.
 - password (string, optional): gateway shared password, if configured
 
 Gateway connect identity fields:
@@ -42,11 +43,9 @@ Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
-Standard outbound payload additions:
-- paperclip (object): standardized Paperclip context added to every gateway agent request
-- paperclip.workspace (object, optional): resolved execution workspace for this run
-- paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
-- paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+Standard outbound context (OpenClaw agent params forbid extra root keys):
+- The same structured Paperclip context is appended to the gateway field "extraSystemPrompt" as a "## Paperclip context" JSON block (a root "paperclip" property is rejected).
+- Includes workspace, workspaces, workspaceRuntime, wake metadata, and env-derived fields as built by the adapter.
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports
