@@ -1409,11 +1409,16 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        if (!claimedNextRunAt) continue;
+
+        const dispatchTimes: Date[] = [];
+        let scheduleTimeISO = claimedNextRunAt.toISOString();
 
         if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+            dispatchTimes.push(cursor);
             runCount += 1;
             claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
             cursor = claimedNextRunAt;
@@ -1438,10 +1443,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         if (!claimed) continue;
 
         for (let i = 0; i < runCount; i += 1) {
+          const timeISO = dispatchTimes[i]?.toISOString() ?? scheduleTimeISO;
           await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
+            idempotencyKey: `${row.routine.id}:${row.trigger.id}:${timeISO}`,
           });
           triggered += 1;
         }
