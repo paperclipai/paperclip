@@ -430,7 +430,10 @@ function estimateCostCentsFromTokens(
   outputTokens: number,
 ): number {
   const pricing = ANTHROPIC_PRICING_PER_MTOK[model];
-  if (!pricing) return 0;
+  if (!pricing) {
+    logger.warn({ model }, "no pricing entry for model; cost will be reported as 0");
+    return 0;
+  }
   const cost =
     (inputTokens / 1_000_000) * pricing.input +
     (cachedInputTokens / 1_000_000) * pricing.cachedInput +
