@@ -1,0 +1,53 @@
+# Darwin Agency — Sandbox Deploy Pipeline (Railway)
+# Deploys to Railway "sandbox" environment on every push to master.
+# Sandbox URL: https://paperclip.sandbox.darwinagency.ai
+#
+# Required secret: RAILWAY_TOKEN (service-scoped token from railway.app)
+# Setup guide: paperclip-wiki/runbooks/sandbox-deploy-setup.md
+
+name: Deploy Sandbox
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: sandbox-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Railway sandbox deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    environment:
+      name: sandbox
+      url: https://paperclip.sandbox.darwinagency.ai
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@latest
+
+      - name: Deploy to sandbox
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --environment sandbox --detach
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "## Sandbox Deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Service** | paperclip |"
+            echo "| **Commit** | [\`${GITHUB_SHA::8}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |"
+            echo "| **Branch** | \`${{ github.ref_name }}\` |"
+            echo "| **Sandbox URL** | https://paperclip.sandbox.darwinagency.ai |"
+          } >> "$GITHUB_STEP_SUMMARY"
