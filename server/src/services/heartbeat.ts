@@ -991,7 +991,7 @@ export function recoverTimerWakeTaskScope(input: {
 }) {
   // Timer wakes inherit the last real task scope so they resume the same
   // saved session instead of falling back to the synthetic heartbeat bucket.
-  if (input.currentTaskKey !== HEARTBEAT_TASK_KEY) return null;
+  if (input.currentTaskKey !== null && input.currentTaskKey !== HEARTBEAT_TASK_KEY) return null;
 
   const recoveredTaskKey = deriveTaskKey(input.lastRunContextSnapshot, null);
   if (!recoveredTaskKey || recoveredTaskKey === HEARTBEAT_TASK_KEY) return null;

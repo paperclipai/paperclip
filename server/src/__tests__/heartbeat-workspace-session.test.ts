@@ -399,6 +399,22 @@ describe("recoverTimerWakeTaskScope", () => {
       }),
     ).toBeNull();
   });
+
+  it("recovers null task keys from scheduler timer wakes", () => {
+    expect(
+      recoverTimerWakeTaskScope({
+        currentTaskKey: null,
+        lastRunContextSnapshot: {
+          issueId: "issue-456",
+          taskId: "issue-456",
+        },
+      }),
+    ).toEqual({
+      taskKey: "issue-456",
+      issueId: "issue-456",
+      taskId: "issue-456",
+    });
+  });
 });
 
 describe("comment wake batching", () => {
