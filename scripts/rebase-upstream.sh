@@ -26,6 +26,7 @@ FEATURE_BRANCHES=(
   "feature/company-kill-switch"
   "feature/heartbeat-model-override"
   "feature/post-import-defaults"
+  "fix/plugin-page-route-prefix-doubling"
   "chore/update-issue-templates"
 )
 
