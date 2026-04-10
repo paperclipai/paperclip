@@ -3,6 +3,7 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -143,6 +144,30 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function createExecutionPolicy(overrides: Partial<IssueExecutionPolicy> = {}): IssueExecutionPolicy {
+  return {
+    mode: "normal",
+    commentRequired: true,
+    stages: [],
+    ...overrides,
+  };
+}
+
+function createExecutionState(overrides: Partial<IssueExecutionState> = {}): IssueExecutionState {
+  return {
+    status: "changes_requested",
+    currentStageId: "stage-1",
+    currentStageIndex: 0,
+    currentStageType: "review",
+    currentParticipant: { type: "agent", agentId: "agent-1", userId: null },
+    returnAssignee: { type: "agent", agentId: "agent-2", userId: null },
+    completedStageIds: [],
+    lastDecisionId: null,
+    lastDecisionOutcome: "changes_requested",
+    ...overrides,
+  };
+}
+
 function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -198,6 +223,121 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    const runReviewButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Run review now"));
+    expect(runReviewButton).not.toBeUndefined();
+
+    await act(async () => {
+      runReviewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+
+    act(() => root.unmount());
+  });
+
+  it("shows a run approval action when approval is the next runnable stage", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-2", type: "user", agentId: null, userId: "user-1" }],
+            },
+          ],
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Run approval now");
+    expect(container.textContent).not.toContain("Run review now");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the run review action available after changes are requested", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_progress",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState(),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Run review now");
+
+    act(() => root.unmount());
+  });
+
+  it("hides the run action while an execution stage is already pending", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageType: "review",
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Run review now");
+    expect(container.textContent).not.toContain("Run approval now");
 
     act(() => root.unmount());
   });

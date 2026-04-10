@@ -288,6 +288,7 @@ export type {
   DashboardSummary,
   ActivityEvent,
   SidebarBadges,
+  InboxDismissal,
   CompanyMembership,
   PrincipalPermissionGrant,
   Invite,
@@ -641,8 +642,11 @@ export {
 } from "./project-mentions.js";
 
 export {
+  BUILTIN_ROUTINE_VARIABLE_NAMES,
   extractRoutineVariableNames,
+  getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
+  isBuiltinRoutineVariable,
   isValidRoutineVariableName,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,

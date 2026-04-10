@@ -309,6 +309,26 @@ export function IssueProperties({
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm truncate">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
+  const nextRunnableExecutionStage = (() => {
+    if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
+      return issue.executionState.currentStageType;
+    }
+    if (issue.executionState) return null;
+    if (reviewerValues.length > 0) return "review";
+    if (approverValues.length > 0) return "approval";
+    return null;
+  })();
+  const runExecutionButton = (stageType: "review" | "approval") => (
+    <PropertyRow label="">
+      <button
+        type="button"
+        className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        onClick={() => onUpdate({ status: "in_review" })}
+      >
+        {stageType === "review" ? "Run review now" : "Run approval now"}
+      </button>
+    </PropertyRow>
+  );
   const currentExecutionLabel = (() => {
     if (!issue.executionState?.currentStageType) return null;
     const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
@@ -846,15 +866,13 @@ export function IssueProperties({
                 </Link>
               ))}
             </div>
-          ) : (
-            <span className="text-sm text-muted-foreground">None</span>
-          )}
+          ) : null}
         </PropertyRow>
 
         <PropertyRow label="Sub-issues">
           <div className="flex flex-wrap items-center gap-1.5">
-            {childIssues.length > 0 ? (
-              childIssues.map((child) => (
+            {childIssues.length > 0
+              ? childIssues.map((child) => (
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
@@ -863,9 +881,7 @@ export function IssueProperties({
                   {child.identifier ?? child.title}
                 </Link>
               ))
-            ) : (
-              <span className="text-sm text-muted-foreground">None</span>
-            )}
+              : null}
             {onAddSubIssue ? (
               <button
                 type="button"
@@ -896,6 +912,7 @@ export function IssueProperties({
             () => updateExecutionPolicy([], approverValues),
           )}
         </PropertyPicker>
+        {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
 
         <PropertyPicker
           inline={inline}
@@ -914,6 +931,7 @@ export function IssueProperties({
             () => updateExecutionPolicy(reviewerValues, []),
           )}
         </PropertyPicker>
+        {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">

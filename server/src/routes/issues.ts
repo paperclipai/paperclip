@@ -56,12 +56,211 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
+type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
+type ActivityIssueRelationSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+};
+type ActivityExecutionParticipant = Pick<
+  NormalizedExecutionPolicy["stages"][number]["participants"][number],
+  "type" | "agentId" | "userId"
+>;
+type ExecutionStageWakeContext = {
+  wakeRole: "reviewer" | "approver" | "executor";
+  stageId: string | null;
+  stageType: ParsedExecutionState["currentStageType"];
+  currentParticipant: ParsedExecutionState["currentParticipant"];
+  returnAssignee: ParsedExecutionState["returnAssignee"];
+  lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
+  allowedActions: string[];
+};
+
+function executionPrincipalsEqual(
+  left: ParsedExecutionState["currentParticipant"] | null,
+  right: ParsedExecutionState["currentParticipant"] | null,
+) {
+  if (!left || !right || left.type !== right.type) return false;
+  return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
+}
+
+function buildExecutionStageWakeContext(input: {
+  state: ParsedExecutionState;
+  wakeRole: ExecutionStageWakeContext["wakeRole"];
+  allowedActions: string[];
+}): ExecutionStageWakeContext {
+  return {
+    wakeRole: input.wakeRole,
+    stageId: input.state.currentStageId,
+    stageType: input.state.currentStageType,
+    currentParticipant: input.state.currentParticipant,
+    returnAssignee: input.state.returnAssignee,
+    lastDecisionOutcome: input.state.lastDecisionOutcome,
+    allowedActions: input.allowedActions,
+  };
+}
+
+function summarizeIssueRelationForActivity(relation: {
+  id: string;
+  identifier: string | null;
+  title: string;
+}): ActivityIssueRelationSummary {
+  return {
+    id: relation.id,
+    identifier: relation.identifier,
+    title: relation.title,
+  };
+}
+
+function activityExecutionParticipantKey(participant: ActivityExecutionParticipant): string {
+  return participant.type === "agent" ? `agent:${participant.agentId}` : `user:${participant.userId}`;
+}
+
+function summarizeExecutionParticipants(
+  policy: NormalizedExecutionPolicy | null,
+  stageType: NormalizedExecutionPolicy["stages"][number]["type"],
+): ActivityExecutionParticipant[] {
+  const stage = policy?.stages.find((candidate) => candidate.type === stageType);
+  return (
+    stage?.participants.map((participant) => ({
+      type: participant.type,
+      agentId: participant.agentId ?? null,
+      userId: participant.userId ?? null,
+    })) ?? []
+  );
+}
+
+function diffExecutionParticipants(
+  previousPolicy: NormalizedExecutionPolicy | null,
+  nextPolicy: NormalizedExecutionPolicy | null,
+  stageType: NormalizedExecutionPolicy["stages"][number]["type"],
+) {
+  const previousParticipants = summarizeExecutionParticipants(previousPolicy, stageType);
+  const nextParticipants = summarizeExecutionParticipants(nextPolicy, stageType);
+  const previousByKey = new Map(previousParticipants.map((participant) => [
+    activityExecutionParticipantKey(participant),
+    participant,
+  ]));
+  const nextByKey = new Map(nextParticipants.map((participant) => [
+    activityExecutionParticipantKey(participant),
+    participant,
+  ]));
+
+  return {
+    participants: nextParticipants,
+    addedParticipants: nextParticipants.filter((participant) => !previousByKey.has(activityExecutionParticipantKey(participant))),
+    removedParticipants: previousParticipants.filter((participant) => !nextByKey.has(activityExecutionParticipantKey(participant))),
+  };
+}
+
+function buildExecutionStageWakeup(input: {
+  issueId: string;
+  previousState: ParsedExecutionState | null;
+  nextState: ParsedExecutionState | null;
+  interruptedRunId: string | null;
+  requestedByActorType: "user" | "agent";
+  requestedByActorId: string;
+}) {
+  const { issueId, previousState, nextState, interruptedRunId } = input;
+  if (!nextState) return null;
+
+  if (nextState.status === "pending") {
+    const agentId =
+      nextState.currentParticipant?.type === "agent" ? (nextState.currentParticipant.agentId ?? null) : null;
+    const stageChanged =
+      previousState?.status !== "pending" ||
+      previousState?.currentStageId !== nextState.currentStageId ||
+      !executionPrincipalsEqual(previousState?.currentParticipant ?? null, nextState.currentParticipant ?? null);
+    if (!agentId || !stageChanged) return null;
+
+    const reason =
+      nextState.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
+      allowedActions: ["approve", "request_changes"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason,
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: reason,
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
+  if (nextState.status === "changes_requested") {
+    const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
+    const becameChangesRequested =
+      previousState?.status !== "changes_requested" ||
+      previousState?.lastDecisionId !== nextState.lastDecisionId ||
+      !executionPrincipalsEqual(previousState?.returnAssignee ?? null, nextState.returnAssignee ?? null);
+    if (!agentId || !becameChangesRequested) return null;
+
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: "executor",
+      allowedActions: ["address_changes", "resubmit"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason: "execution_changes_requested",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_changes_requested",
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
+  return null;
+}
 
 export function issueRoutes(
   db: Db,
@@ -1066,9 +1265,10 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     const issue = await svc.create(companyId, {
       ...req.body,
-      executionPolicy: normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -1110,24 +1310,6 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const assigneeWillChange =
-      (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
-      (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
-
-    const isAgentReturningIssueToCreator =
-      req.actor.type === "agent" &&
-      !!req.actor.agentId &&
-      existing.assigneeAgentId === req.actor.agentId &&
-      req.body.assigneeAgentId === null &&
-      typeof req.body.assigneeUserId === "string" &&
-      !!existing.createdByUserId &&
-      req.body.assigneeUserId === existing.createdByUserId;
-
-    if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
-      }
-    }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
@@ -1191,13 +1373,15 @@ export function issueRoutes(
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
+    const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+    const nextExecutionPolicy =
+      updateFields.executionPolicy !== undefined
+        ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
+        : previousExecutionPolicy;
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
-      policy:
-        updateFields.executionPolicy !== undefined
-          ? (updateFields.executionPolicy as NonNullable<typeof updateFields.executionPolicy> | null)
-          : normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+      policy: nextExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId:
@@ -1223,6 +1407,27 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    const nextAssigneeAgentId =
+      updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
+    const nextAssigneeUserId =
+      updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
+    const assigneeWillChange =
+      nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
+    const isAgentReturningIssueToCreator =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      nextAssigneeAgentId === null &&
+      typeof nextAssigneeUserId === "string" &&
+      !!existing.createdByUserId &&
+      nextAssigneeUserId === existing.createdByUserId;
+
+    if (assigneeWillChange && !transition.workflowControlledAssignment) {
+      if (!isAgentReturningIssueToCreator) {
+        await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
 
     let issue;
     try {
@@ -1291,8 +1496,9 @@ export function issueRoutes(
       return;
     }
     let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
+    let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
-      const updatedRelations = await svc.getRelationSummaries(issue.id);
+      updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
         blockedBy: updatedRelations.blockedBy,
@@ -1349,6 +1555,8 @@ export function issueRoutes(
       const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
       const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
       const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
+      const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
+      const previousBlockedByRelations = existingRelations?.blockedBy ?? [];
       if (addedBlockedByIssueIds.length > 0 || removedBlockedByIssueIds.length > 0) {
         await logActivity(db, {
           companyId: issue.companyId,
@@ -1364,9 +1572,56 @@ export function issueRoutes(
             blockedByIssueIds: req.body.blockedByIssueIds,
             addedBlockedByIssueIds,
             removedBlockedByIssueIds,
+            blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
+            addedBlockedByIssues: nextBlockedByRelations
+              .filter((relation) => addedBlockedByIssueIds.includes(relation.id))
+              .map(summarizeIssueRelationForActivity),
+            removedBlockedByIssues: previousBlockedByRelations
+              .filter((relation) => removedBlockedByIssueIds.includes(relation.id))
+              .map(summarizeIssueRelationForActivity),
           },
         });
       }
+    }
+
+    const reviewerChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "review");
+    if (reviewerChanges.addedParticipants.length > 0 || reviewerChanges.removedParticipants.length > 0) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.reviewers_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          participants: reviewerChanges.participants,
+          addedParticipants: reviewerChanges.addedParticipants,
+          removedParticipants: reviewerChanges.removedParticipants,
+        },
+      });
+    }
+
+    const approverChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "approval");
+    if (approverChanges.addedParticipants.length > 0 || approverChanges.removedParticipants.length > 0) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.approvers_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          participants: approverChanges.participants,
+          addedParticipants: approverChanges.addedParticipants,
+          removedParticipants: approverChanges.removedParticipants,
+        },
+      });
     }
 
     if (issue.status === "done" && existing.status !== "done") {
@@ -1414,6 +1669,16 @@ export function issueRoutes(
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const previousExecutionState = parseIssueExecutionState(existing.executionState);
+    const nextExecutionState = parseIssueExecutionState(issue.executionState);
+    const executionStageWakeup = buildExecutionStageWakeup({
+      issueId: issue.id,
+      previousState: previousExecutionState,
+      nextState: nextExecutionState,
+      interruptedRunId,
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -1427,13 +1692,16 @@ export function issueRoutes(
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (executionStageWakeup) {
+        addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
+      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
           payload: {
             issueId: issue.id,
+            ...(comment ? { commentId: comment.id } : {}),
             mutation: "update",
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
@@ -1441,6 +1709,13 @@ export function issueRoutes(
           requestedByActorId: actor.actorId,
           contextSnapshot: {
             issueId: issue.id,
+            ...(comment
+              ? {
+                  taskId: issue.id,
+                  commentId: comment.id,
+                  wakeCommentId: comment.id,
+                }
+              : {}),
             source: "issue.update",
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
@@ -1468,6 +1743,38 @@ export function issueRoutes(
       }
 
       if (commentBody && comment) {
+        const assigneeId = issue.assigneeAgentId;
+        const actorIsAgent = actor.actorType === "agent";
+        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const skipAssigneeCommentWake = selfComment || isClosed;
+
+        if (assigneeId && !assigneeChanged && !skipAssigneeCommentWake) {
+          addWakeup(assigneeId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            payload: {
+              issueId: id,
+              commentId: comment.id,
+              mutation: "comment",
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: id,
+              taskId: id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              source: reopened ? "issue.comment.reopen" : "issue.comment",
+              wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+          });
+        }
+
         let mentionedIds: string[] = [];
         try {
           mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);

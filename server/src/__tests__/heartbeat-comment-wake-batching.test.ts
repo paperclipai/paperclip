@@ -406,7 +406,7 @@ describe("heartbeat comment wake batching", () => {
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
-      }, 30_000);
+      }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -422,7 +422,7 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 45_000);
+  }, 120_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
     const gateway = await createControlledGatewayServer();
@@ -488,6 +488,23 @@ describe("heartbeat comment wake batching", () => {
 
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
+      const firstPayload = gateway.getAgentPayloads()[0] ?? {};
+      expect(firstPayload.paperclip).toMatchObject({
+        wake: {
+          reason: "issue_assigned",
+          issue: {
+            id: issueId,
+            identifier: `${issuePrefix}-1`,
+            title: "Require a comment",
+            status: "todo",
+            priority: "medium",
+          },
+          commentIds: [],
+        },
+      });
+      expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db

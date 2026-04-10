@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const closedWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -39,43 +37,58 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({
-    getDefaultCompanyGoal: vi.fn(async () => null),
-    getById: vi.fn(async () => null),
-  }),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
+function registerServiceMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-function createApp() {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+    documentService: () => ({}),
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => ({
+      getDefaultCompanyGoal: vi.fn(async () => null),
+      getById: vi.fn(async () => null),
+    }),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({}),
+  }));
+}
+
+async function createApp() {
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -123,13 +136,15 @@ function makeClosedWorkspace() {
 
 describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerServiceMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });
 
   it("rejects new issue comments when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
 
@@ -139,7 +154,7 @@ describe("closed isolated workspace issue routes", () => {
   });
 
   it("rejects comment updates when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
@@ -150,7 +165,7 @@ describe("closed isolated workspace issue routes", () => {
   });
 
   it("rejects checkout when the linked isolated workspace is closed", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -168,14 +183,11 @@ describe("closed isolated workspace issue routes", () => {
       executionWorkspaceId: nextWorkspaceId,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ executionWorkspaceId: nextWorkspaceId });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      issueId,
-      expect.objectContaining({ executionWorkspaceId: nextWorkspaceId }),
-    );
+    expect(res.body.executionWorkspaceId).toBe(nextWorkspaceId);
   });
 });
