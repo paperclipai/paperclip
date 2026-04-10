@@ -37,6 +37,7 @@ import {
 import { firstNonEmptyLine } from "./utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const GEMINI_COMPANION_INSTRUCTION_FILES = ["HEARTBEAT.md", "SOUL.md", "TOOLS.md"] as const;
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -75,6 +76,14 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "",
     "",
   ].join("\n");
+}
+
+async function readInstructionFileIfPresent(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 function geminiSkillsHome(): string {
@@ -257,13 +266,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
+  const loadedInstructionFiles: string[] = [];
   if (instructionsFilePath) {
     try {
       const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
+      loadedInstructionFiles.push(instructionsFilePath);
+      const sections = [
         `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsDir}.\n`,
+      ];
+
+      if (path.basename(instructionsFilePath) === "AGENTS.md") {
+        for (const relativeName of GEMINI_COMPANION_INSTRUCTION_FILES) {
+          const companionPath = path.join(path.dirname(instructionsFilePath), relativeName);
+          const companionContents = await readInstructionFileIfPresent(companionPath);
+          if (!companionContents) continue;
+          loadedInstructionFiles.push(companionPath);
+          sections.push(
+            `## Companion instructions: ${relativeName}\n\n` +
+              `${companionContents}\n\n` +
+              `The above companion instructions were loaded from ${companionPath}. ` +
+              `Resolve any relative file references from ${instructionsDir}.\n`,
+          );
+        }
+      }
+
+      instructionsPrefix = sections.join("\n\n");
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -279,6 +308,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (instructionsPrefix.length > 0) {
       notes.push(
         `Loaded agent instructions from ${instructionsFilePath}`,
+        loadedInstructionFiles.length > 1
+          ? `Loaded companion instruction files: ${loadedInstructionFiles.slice(1).join(", ")}`
+          : "No companion instruction files were loaded.",
         `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
       );
       return notes;
