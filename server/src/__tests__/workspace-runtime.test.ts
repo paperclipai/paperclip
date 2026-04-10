@@ -367,6 +367,61 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
+  it("reuses a worktree when the branch is checked out at a different directory path", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-999-branch-in-different-dir";
+
+    // Create a worktree at a path that does NOT match the sanitized branch name.
+    // This simulates a worktree created by an older version with different
+    // directory naming, which is the root cause of OCT-412's failure.
+    const shortWorktreeDir = path.join(repoRoot, ".paperclip", "worktrees", "PAP-999-short-name");
+    await fs.mkdir(path.dirname(shortWorktreeDir), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, shortWorktreeDir, "HEAD"]);
+
+    // Add a commit on the branch inside the worktree so we can verify it's preserved.
+    await fs.writeFile(path.join(shortWorktreeDir, "work.txt"), "keep this\n", "utf8");
+    await runGit(shortWorktreeDir, ["add", "work.txt"]);
+    await runGit(shortWorktreeDir, ["commit", "-m", "Work in progress"]);
+    const expectedHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: shortWorktreeDir })).stdout.trim();
+
+    // Now realize the workspace — it will try to create a worktree at the
+    // canonical path (PAP-999-branch-in-different-dir) but the branch is
+    // already checked out at the shorter path. It should find and reuse it.
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-999",
+        title: "Branch in different dir",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(workspace.branchName).toBe(branchName);
+    expect(workspace.cwd).toBe(shortWorktreeDir);
+    expect(workspace.created).toBe(false);
+    await expect(fs.readFile(path.join(workspace.cwd, "work.txt"), "utf8")).resolves.toBe("keep this\n");
+    const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
+    expect(actualHead).toBe(expectedHead);
+  });
+
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
     const repoRoot = await createTempRepo();
 
