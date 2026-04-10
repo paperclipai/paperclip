@@ -191,6 +191,7 @@ function quickstartDefaultsFromEnv(): {
     auth: {
       baseUrlMode: authBaseUrlMode,
       disableSignUp: false,
+      allowedEmailDomains: [],
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
     },
     storage: {

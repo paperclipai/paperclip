@@ -62,6 +62,7 @@ function defaultConfig(): PaperclipConfig {
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      allowedEmailDomains: [],
     },
     telemetry: {
       enabled: true,

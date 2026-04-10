@@ -43,6 +43,7 @@ function createExistingConfigFixture() {
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      allowedEmailDomains: [],
     },
     telemetry: {
       enabled: true,

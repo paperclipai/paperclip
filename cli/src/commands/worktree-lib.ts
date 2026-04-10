@@ -223,6 +223,7 @@ export function buildWorktreeConfig(input: {
       baseUrlMode: source?.auth.baseUrlMode ?? "auto",
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
       disableSignUp: source?.auth.disableSignUp ?? false,
+      allowedEmailDomains: source?.auth.allowedEmailDomains ?? [],
     },
     telemetry: {
       enabled: source?.telemetry?.enabled ?? true,
