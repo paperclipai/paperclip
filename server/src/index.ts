@@ -87,6 +87,13 @@ const BUNDLED_PLUGINS: BundledPlugin[] = [
     isLocalPath: true,
     pluginKey: "paperclip-plugin-kalshi",
   },
+  // Lucitra Capital — cross-asset research (yfinance, FRED, SEC EDGAR,
+  // Tavily). Layer 1 read-only. Sibling submodule in lucitra-dev.
+  {
+    packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-research"),
+    isLocalPath: true,
+    pluginKey: "paperclip-plugin-research",
+  },
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
