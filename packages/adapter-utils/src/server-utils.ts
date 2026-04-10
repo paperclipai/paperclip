@@ -1076,6 +1076,32 @@ export async function runChildProcess(
             })
             : Promise.resolve();
 
+        if (opts.stdin != null && child.stdin) {
+          const stdin = child.stdin;
+          stdin.on("error", (err) => {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== "EPIPE") {
+              onLogError(err, runId, "child.stdin error");
+            }
+          });
+
+          void spawnPersistPromise.finally(() => {
+            if (stdin.writable && !child.killed && !stdin.destroyed) {
+              stdin.write(opts.stdin as string, (err) => {
+                if (err) {
+                  const code = (err as NodeJS.ErrnoException).code;
+                  if (code !== "EPIPE") {
+                    onLogError(err, runId, "child.stdin write error");
+                  }
+                }
+                if (!stdin.destroyed) {
+                  stdin.end();
+                }
+              });
+            }
+          });
+        }
+
         runningProcesses.set(runId, { child, graceSec: opts.graceSec });
 
         let timedOut = false;
@@ -1086,14 +1112,14 @@ export async function runChildProcess(
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
-                timedOut = true;
-                child.kill("SIGTERM");
-                setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
+              timedOut = true;
+              child.kill("SIGTERM");
+              setTimeout(() => {
+                if (!child.killed) {
+                  child.kill("SIGKILL");
+                }
+              }, Math.max(1, opts.graceSec) * 1000);
+            }, opts.timeoutSec * 1000)
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
@@ -1111,15 +1137,6 @@ export async function runChildProcess(
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
-
-        const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
-          });
-        }
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);

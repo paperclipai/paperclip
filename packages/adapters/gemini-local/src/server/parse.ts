@@ -232,7 +232,7 @@ export function describeGeminiFailure(parsed: Record<string, unknown>): string |
 
 const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
 const GEMINI_QUOTA_EXHAUSTED_RE =
-  /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
+  /(?:resource[-_ ]?exhausted|quota|exceeded|rate[-_ ]?limit|too many requests|\b429\b|billing details|exhausted)/i;
 
 export function detectGeminiAuthRequired(input: {
   parsed: Record<string, unknown> | null;
