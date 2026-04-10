@@ -162,7 +162,7 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
     );
   }
 
-  if ((result.status ?? 0) !== 0) {
+  if ((result.status ?? 1) !== 0) {
     throw new Error(
       "Failed to prepare workspace build artifacts before starting the Paperclip dev server.",
     );
