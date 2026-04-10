@@ -1922,9 +1922,15 @@ export function heartbeatService(db: Db) {
         if (agent) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
-      } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
       }
+      // Always release remaining execution locks on the failed run.
+      // After a process-loss retry, the primary issue's lock was already
+      // transferred to the retry run (inside enqueueProcessLossRetry), so
+      // this only releases secondary locks — e.g. from checkout lock
+      // adoption when the agent posted a comment on a different issue.
+      // Without this, secondary issues keep a stale executionRunId pointing
+      // at the failed run, blocking deferred wakes from being promoted.
+      await releaseIssueExecutionAndPromote(finalizedRun);
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
