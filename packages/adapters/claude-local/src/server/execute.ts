@@ -82,6 +82,7 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+  mcpConfigPaths: string[];
 }
 
 function buildLoginResult(input: {
@@ -122,6 +123,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceBaseCwd = asString(workspaceContext.baseCwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "") || null;
@@ -269,6 +271,43 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     return asStringArray(config.args);
   })();
 
+  // Resolve MCP config paths: explicit adapter config takes precedence,
+  // otherwise auto-discover .mcp.json from the project base directory.
+  const mcpConfigPaths: string[] = await (async () => {
+    const explicit = asStringArray(config.mcpConfig);
+    if (explicit.length > 0) return explicit;
+    // Auto-discover: prefer baseCwd (original project root) over the effective cwd,
+    // since .mcp.json is typically untracked and absent from git worktrees.
+    // When falling back to configuredCwd, walk up to the git root because
+    // configuredCwd may be a subdirectory (e.g. packages/my-app).
+    let discoveryRoot = workspaceBaseCwd;
+    if (!discoveryRoot && configuredCwd) {
+      let dir = configuredCwd;
+      while (dir !== path.dirname(dir)) {
+        try {
+          await fs.access(path.join(dir, ".git"));
+          discoveryRoot = dir;
+          break;
+        } catch {
+          dir = path.dirname(dir);
+        }
+      }
+      if (!discoveryRoot) discoveryRoot = configuredCwd;
+    }
+    if (discoveryRoot) return [path.join(discoveryRoot, ".mcp.json")];
+    return [];
+  })();
+  // Filter to only paths that actually exist on disk.
+  const resolvedMcpConfigPaths: string[] = [];
+  for (const p of mcpConfigPaths) {
+    try {
+      await fs.access(p);
+      resolvedMcpConfigPaths.push(p);
+    } catch {
+      // File does not exist — skip.
+    }
+  }
+
   return {
     command,
     resolvedCommand,
@@ -281,6 +320,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
     graceSec,
     extraArgs,
+    mcpConfigPaths: resolvedMcpConfigPaths,
   };
 }
 
@@ -354,6 +394,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     extraArgs,
+    mcpConfigPaths,
   } = runtimeConfig;
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
@@ -457,6 +498,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);
+    for (const p of mcpConfigPaths) args.push("--mcp-config", p);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
