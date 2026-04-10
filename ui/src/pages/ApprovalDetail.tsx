@@ -85,7 +85,8 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: (decisionNote?: string) =>
+      approvalsApi.approve(approvalId!, decisionNote),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -95,7 +96,8 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (decisionNote?: string) =>
+      approvalsApi.reject(approvalId!, decisionNote),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -266,15 +268,27 @@ export function ApprovalDetail() {
               <Button
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
-                onClick={() => approveMutation.mutate()}
+                onClick={() => approveMutation.mutate(undefined)}
                 disabled={approveMutation.isPending}
               >
                 Approve
               </Button>
+              {approval.type === "tool_use" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-green-700/50 text-green-700 dark:text-green-400 hover:bg-green-700/10"
+                  onClick={() => approveMutation.mutate("remember")}
+                  disabled={approveMutation.isPending}
+                  title="Approve and don't ask again for similar calls in this thread"
+                >
+                  Approve always
+                </Button>
+              )}
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => rejectMutation.mutate(undefined)}
                 disabled={rejectMutation.isPending}
               >
                 Reject

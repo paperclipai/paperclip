@@ -199,7 +199,21 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
+export const APPROVAL_TYPES = [
+  "hire_agent",
+  "approve_ceo_strategy",
+  "budget_override_required",
+  // Generic tool-use approval. Used by the chat plugin and any other
+  // surface that wants to gate a single MCP / SDK tool call behind a
+  // board decision. Payload shape:
+  //   {
+  //     tool: string,              // tool name (Bash, Write, mcp__paperclip__paperclip-create-issue, ...)
+  //     input: Record<string, unknown>,  // exact arguments Claude proposed
+  //     threadId?: string,         // chat thread that requested it
+  //     summary?: string,          // human-readable one-liner for the dashboard
+  //   }
+  "tool_use",
+] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_STATUSES = [

@@ -32,7 +32,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { approvalLabel, approvalSubtitle, absoluteTime, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { timeAgo } from "../lib/timeAgo";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -542,6 +542,9 @@ function ApprovalInboxRow({
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const subtitle = approvalSubtitle(approval.type, approval.payload as Record<string, unknown> | null);
+  const createdAbs = absoluteTime(approval.createdAt);
+  const updatedAbs = absoluteTime(approval.updatedAt);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
@@ -600,13 +603,26 @@ function ApprovalInboxRow({
             <Icon className="h-4 w-4 text-muted-foreground" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
+            <span
+              className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none"
+              title={label}
+            >
               {label}
             </span>
-            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            {subtitle ? (
+              <span className="block text-xs text-muted-foreground font-mono mt-0.5 line-clamp-1">
+                {subtitle}
+              </span>
+            ) : null}
+            <span className="mt-1 flex items-center gap-x-2 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
               {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              <span
+                className="ml-auto shrink-0"
+                title={`Created ${createdAbs} · Updated ${updatedAbs}`}
+              >
+                updated {timeAgo(approval.updatedAt)}
+              </span>
             </span>
           </span>
         </Link>

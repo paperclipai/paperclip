@@ -25,8 +25,13 @@ export function ApprovalCard({
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
-  onApprove: () => void;
-  onReject: () => void;
+  /**
+   * Called on Approve. Optional `decisionNote` is forwarded to the
+   * resolver — the chat plugin checks for the substring "remember" or
+   * "always" to persist a reusable permission rule.
+   */
+  onApprove: (decisionNote?: string) => void;
+  onReject: (decisionNote?: string) => void;
   onOpen?: () => void;
   detailLink?: string;
   isPending: boolean;
@@ -36,6 +41,10 @@ export function ApprovalCard({
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
+  // Only tool_use approvals support "approve always" — the other types
+  // are one-shot decisions (hiring, CEO strategy) where remembering
+  // doesn't make sense.
+  const showApproveAlways = approval.type === "tool_use";
 
   return (
     <div className="border border-border rounded-lg p-4 space-y-0">
@@ -71,19 +80,31 @@ export function ApprovalCard({
 
       {/* Actions */}
       {showResolutionButtons && (
-        <div className="flex gap-2 mt-4 pt-3 border-t border-border">
+        <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-border">
           <Button
             size="sm"
             className="bg-green-700 hover:bg-green-600 text-white"
-            onClick={onApprove}
+            onClick={() => onApprove()}
             disabled={isPending}
           >
             Approve
           </Button>
+          {showApproveAlways && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-green-700/50 text-green-700 dark:text-green-400 hover:bg-green-700/10"
+              onClick={() => onApprove("remember")}
+              disabled={isPending}
+              title="Approve this action and don't ask again for similar calls in this thread"
+            >
+              Approve always
+            </Button>
+          )}
           <Button
             variant="destructive"
             size="sm"
-            onClick={onReject}
+            onClick={() => onReject()}
             disabled={isPending}
           >
             Reject

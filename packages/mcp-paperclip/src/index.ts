@@ -270,6 +270,48 @@ const CORE_TOOLS: CoreToolSpec[] = [
     pathTemplate: "/api/companies/{companyId}/projects",
     pathParams: ["companyId"],
   },
+  // NOTE: paperclip-spawn-agent was removed. Agent creation is a board
+  // decision and must go through the UI hire-agent approval flow. Chat
+  // can still *propose* a new agent by describing it to the user; the
+  // user then spawns it manually from Settings → Agents → New Agent.
+  {
+    name: "paperclip-ask-board",
+    description:
+      "Ask the board (the human user) a question or request approval for a non-tool-use decision. Use this when you need clarification, a strategic decision, or authorization that can't be expressed as a single tool call. The request lands in the same approvals inbox the board already reviews (alongside tool_use, hire_agent, and budget approvals). Wait for the response before continuing work. Examples: 'Should we proceed with the v2 migration?', 'Approve this refactor plan?', 'Which approach should I take: A or B?'.",
+    params: {
+      companyId: { type: "string", description: "Company UUID", required: true },
+      title: {
+        type: "string",
+        description: "Short title for the board to see in the inbox (e.g. 'Approve v2 migration plan')",
+        required: true,
+      },
+      question: {
+        type: "string",
+        description: "The full question or proposal in markdown. Include context, options, and what you need decided.",
+        required: true,
+      },
+      nextStepsIfApproved: {
+        type: "string",
+        description: "What you will do if the board approves — helps them evaluate the request.",
+      },
+      nextStepsIfRejected: {
+        type: "string",
+        description: "What you will do if the board rejects — usually 'hold and wait for guidance'.",
+      },
+      issueIds: {
+        type: "string",
+        description:
+          "Comma-separated Paperclip issue UUIDs to link this approval to. The board will see the linked issues alongside the approval.",
+      },
+    },
+    method: "POST",
+    pathTemplate: "/api/companies/{companyId}/approvals",
+    pathParams: ["companyId"],
+    // Custom body shape — approvals use a typed payload wrapper. We
+    // remap the flat params to the nested shape in a pre-dispatch hook
+    // (see executeCoreTool for the `ask-board` special case).
+    bodyParams: ["title", "question", "nextStepsIfApproved", "nextStepsIfRejected", "issueIds"],
+  },
   {
     name: "paperclip-list-issue-comments",
     description: "List comments on an issue.",
@@ -347,7 +389,31 @@ async function executeCoreTool(
     for (const b of spec.bodyParams) {
       if (args[b] !== undefined) payload[b] = args[b];
     }
-    body = JSON.stringify(payload);
+    // Special-case: paperclip-ask-board remaps flat fields onto the
+    // approvals plugin's nested payload shape.
+    if (spec.name === "paperclip-ask-board") {
+      const issueIdsRaw = args.issueIds;
+      const issueIds =
+        typeof issueIdsRaw === "string"
+          ? issueIdsRaw.split(",").map((s) => s.trim()).filter(Boolean)
+          : Array.isArray(issueIdsRaw)
+            ? (issueIdsRaw as unknown[]).filter((x): x is string => typeof x === "string")
+            : undefined;
+      body = JSON.stringify({
+        type: "approve_ceo_strategy",
+        payload: {
+          title: args.title,
+          question: args.question,
+          plan: args.question, // alias so the existing CeoStrategyPayload renderer shows the body
+          nextStepsIfApproved: args.nextStepsIfApproved,
+          nextStepsIfRejected: args.nextStepsIfRejected,
+          requestedAt: new Date().toISOString(),
+        },
+        ...(issueIds && issueIds.length > 0 ? { issueIds } : {}),
+      });
+    } else {
+      body = JSON.stringify(payload);
+    }
   }
 
   try {

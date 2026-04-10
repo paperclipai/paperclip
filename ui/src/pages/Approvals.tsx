@@ -42,11 +42,17 @@ export function Approvals() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.approve(id),
-    onSuccess: (_approval, id) => {
+    mutationFn: (args: { id: string; decisionNote?: string }) =>
+      approvalsApi.approve(args.id, args.decisionNote),
+    onSuccess: (_approval, args) => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
-      navigate(`/approvals/${id}?resolved=approved`);
+      // Stay on the list for "approve always" (don't navigate away — the
+      // user is likely approving several in a row). Only navigate for
+      // non-tool_use approvals where the detail page matters.
+      if (!args.decisionNote || !args.decisionNote.toLowerCase().includes("remember")) {
+        navigate(`/approvals/${args.id}?resolved=approved`);
+      }
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to approve");
@@ -54,7 +60,8 @@ export function Approvals() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.reject(id),
+    mutationFn: (args: { id: string; decisionNote?: string }) =>
+      approvalsApi.reject(args.id, args.decisionNote),
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
@@ -119,8 +126,12 @@ export function Approvals() {
               key={approval.id}
               approval={approval}
               requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
-              onApprove={() => approveMutation.mutate(approval.id)}
-              onReject={() => rejectMutation.mutate(approval.id)}
+              onApprove={(decisionNote) =>
+                approveMutation.mutate({ id: approval.id, decisionNote })
+              }
+              onReject={(decisionNote) =>
+                rejectMutation.mutate({ id: approval.id, decisionNote })
+              }
               detailLink={`/approvals/${approval.id}`}
               isPending={approveMutation.isPending || rejectMutation.isPending}
             />
