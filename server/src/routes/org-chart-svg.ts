@@ -147,7 +147,7 @@ function guessRoleTag(node: OrgNode): string {
   if (role.includes("quality") || role.includes("qa")) return "quality";
   if (role.includes("design")) return "design";
   if (role.includes("finance")) return "finance";
-  if (role.includes("operations") || role.includes("ops")) return "operations";
+  if (role.includes("operations") || role.includes("ops")) return "coo";
   return "default";
 }
 

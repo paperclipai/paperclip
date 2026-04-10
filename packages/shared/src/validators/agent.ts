@@ -5,6 +5,7 @@ import {
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
+import { normalizeAgentRoleInput } from "../agent-role.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -46,7 +47,7 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),
-  role: z.enum(AGENT_ROLES).optional().default("general"),
+  role: z.preprocess(normalizeAgentRoleInput, z.enum(AGENT_ROLES).optional()).default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),

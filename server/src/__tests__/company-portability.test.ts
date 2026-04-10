@@ -1822,6 +1822,73 @@ describe("company portability", () => {
     ]);
   });
 
+  it("normalizes legacy operations roles to coo during preview and import", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Operations Import Test",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "Operations Agent",
+    });
+
+    const source = {
+      type: "inline" as const,
+      rootPath: "operations-package",
+      files: {
+        "COMPANY.md": [
+          "---",
+          'schema: "agentcompanies/v1"',
+          'name: "Operations Import Test"',
+          "---",
+          "",
+        ].join("\n"),
+        "agents/operations-agent/AGENTS.md": [
+          "---",
+          'name: "Operations Agent"',
+          'role: "operations"',
+          "---",
+          "",
+          "# Operations Agent",
+          "",
+          "Keep the workflow moving.",
+          "",
+        ].join("\n"),
+      },
+    };
+
+    const preview = await portability.previewImport({
+      source,
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Operations Import Test" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.agents).toEqual([
+      expect.objectContaining({
+        slug: "operations-agent",
+        role: "coo",
+      }),
+    ]);
+
+    await portability.importBundle({
+      source,
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Operations Import Test" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      role: "coo",
+    }));
+  });
+
   it("treats no-separator auth and api key env names as secrets during export", async () => {
     const portability = companyPortabilityService({} as any);
 

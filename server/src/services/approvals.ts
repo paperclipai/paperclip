@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
+import { canonicalizeAgentRole } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
@@ -29,6 +30,29 @@ export function approvalService(db: Db) {
     return {
       ...comment,
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+    };
+  }
+
+  function normalizeHireApprovalPayload(payload: unknown): Record<string, unknown> {
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return {};
+    }
+    const record = payload as Record<string, unknown>;
+    const role = typeof record.role === "string" ? canonicalizeAgentRole(record.role) : record.role;
+    if (role === record.role) return record;
+    return {
+      ...record,
+      role,
+    };
+  }
+
+  function normalizeApprovalRecord<T extends ApprovalRecord>(approval: T): T {
+    if (approval.type !== "hire_agent") return approval;
+    const normalizedPayload = normalizeHireApprovalPayload(approval.payload);
+    if (normalizedPayload === approval.payload) return approval;
+    return {
+      ...approval,
+      payload: normalizedPayload,
     };
   }
 
@@ -115,7 +139,7 @@ export function approvalService(db: Db) {
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
-      return db.select().from(approvals).where(and(...conditions));
+      return db.select().from(approvals).where(and(...conditions)).then((rows) => rows.map(normalizeApprovalRecord));
     },
 
     getById: (id: string) =>
@@ -123,14 +147,21 @@ export function approvalService(db: Db) {
         .select()
         .from(approvals)
         .where(eq(approvals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => {
+          const approval = rows[0] ?? null;
+          return approval ? normalizeApprovalRecord(approval) : null;
+        }),
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
       db
         .insert(approvals)
-        .values({ ...data, companyId })
+        .values({
+          ...data,
+          companyId,
+          payload: data.type === "hire_agent" ? normalizeHireApprovalPayload(data.payload) : data.payload,
+        })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => normalizeApprovalRecord(rows[0])),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
@@ -168,7 +199,7 @@ export function approvalService(db: Db) {
       let hireApprovedAgentId: string | null = null;
       const now = new Date();
       if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
+        const payload = normalizeHireApprovalPayload(updated.payload);
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
@@ -192,7 +223,7 @@ export function approvalService(db: Db) {
                 });
             const created = await agentsSvc.create(updated.companyId, {
               name: String(payload.name ?? "New Agent"),
-              role: String(payload.role ?? "general"),
+              role: canonicalizeAgentRole(String(payload.role ?? "general")),
               title: typeof payload.title === "string" ? payload.title : null,
               reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
               capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
@@ -242,7 +273,7 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      return { approval: normalizeApprovalRecord(updated), applied };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
@@ -261,7 +292,7 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      return { approval: normalizeApprovalRecord(updated), applied };
     },
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
@@ -296,7 +327,9 @@ export function approvalService(db: Db) {
         .update(approvals)
         .set({
           status: "pending",
-          payload: payload ?? existing.payload,
+          payload: existing.type === "hire_agent"
+            ? normalizeHireApprovalPayload(payload ?? existing.payload)
+            : (payload ?? existing.payload),
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
@@ -304,7 +337,7 @@ export function approvalService(db: Db) {
         })
         .where(eq(approvals.id, id))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => normalizeApprovalRecord(rows[0]));
     },
 
     listComments: async (approvalId: string) => {

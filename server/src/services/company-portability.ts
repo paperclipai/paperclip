@@ -41,6 +41,7 @@ import {
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
   envConfigSchema,
+  canonicalizeAgentRole,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
@@ -2494,7 +2495,7 @@ function buildManifestFromPackageFiles(
       name: asString(frontmatter.name) ?? title ?? slug,
       path: agentPath,
       skills: readAgentSkillRefs(frontmatter),
-      role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
+      role: canonicalizeAgentRole(asString(extension.role) ?? asString(frontmatter.role) ?? "agent"),
       title,
       icon: asString(extension.icon),
       capabilities: asString(extension.capabilities),
@@ -4116,7 +4117,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
         const patch = {
           name: planAgent.plannedName,
-          role: manifestAgent.role,
+          role: canonicalizeAgentRole(manifestAgent.role),
           title: manifestAgent.title,
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,

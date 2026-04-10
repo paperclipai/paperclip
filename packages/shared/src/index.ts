@@ -1,4 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export { LEGACY_AGENT_ROLE_ALIASES, canonicalizeAgentRole, normalizeAgentRoleInput } from "./agent-role.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,

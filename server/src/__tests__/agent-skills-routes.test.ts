@@ -349,6 +349,34 @@ describe("agent skill routes", () => {
     });
   });
 
+  it("normalizes the legacy operations role to coo when creating an agent directly", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Operations Agent",
+        role: "operations",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        role: "coo",
+      }),
+    );
+    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "coo",
+      }),
+      expect.objectContaining({
+        "AGENTS.md": expect.stringContaining("healthy recovery state"),
+      }),
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+  });
+
   it("materializes a managed AGENTS.md for directly created local agents", async () => {
     const res = await request(createApp())
       .post("/api/companies/company-1/agents")
@@ -414,7 +442,7 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {
+  it("materializes the bundled engineer instruction set for default engineer agents with no prompt template", async () => {
     const res = await request(createApp())
       .post("/api/companies/company-1/agents")
       .send({
@@ -432,7 +460,7 @@ describe("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("Keep the work moving until it's done."),
+        "AGENTS.md": expect.stringContaining("You are an engineer."),
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
@@ -495,5 +523,26 @@ describe("agent skill routes", () => {
       | { payload?: { adapterConfig?: Record<string, unknown> } }
       | undefined;
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();
+  });
+
+  it("normalizes the legacy operations role to coo in hire approval payloads", async () => {
+    const res = await request(createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Operations Agent",
+        role: "operations",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          role: "coo",
+        }),
+      }),
+    );
   });
 });

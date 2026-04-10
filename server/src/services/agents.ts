@@ -16,7 +16,7 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { canonicalizeAgentRole, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -91,7 +91,7 @@ function buildConfigSnapshot(
       : row.metadata ?? null;
   return {
     name: row.name,
-    role: row.role,
+    role: canonicalizeAgentRole(row.role),
     title: row.title,
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
@@ -139,7 +139,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
 
   return {
     name: snapshot.name,
-    role: snapshot.role,
+    role: canonicalizeAgentRole(snapshot.role),
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
@@ -204,9 +204,11 @@ export function agentService(db: Db) {
   }
 
   function normalizeAgentRow(row: typeof agents.$inferSelect) {
+    const role = canonicalizeAgentRole(row.role);
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      role,
+      permissions: normalizeAgentPermissions(row.permissions, role),
     });
   }
 
@@ -335,8 +337,11 @@ export function agentService(db: Db) {
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    if (data.role !== undefined) {
+      normalizedPatch.role = canonicalizeAgentRole(data.role);
+    }
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
+      const role = canonicalizeAgentRole((normalizedPatch.role ?? existing.role) as string);
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
 
@@ -396,7 +401,7 @@ export function agentService(db: Db) {
         .where(eq(agents.companyId, companyId));
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
-      const role = data.role ?? "general";
+      const role = canonicalizeAgentRole(data.role ?? "general");
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const created = await db
         .insert(agents)

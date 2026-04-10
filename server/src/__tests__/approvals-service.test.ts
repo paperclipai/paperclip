@@ -228,4 +228,27 @@ describe("approvalService resolution idempotency", () => {
     });
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
+
+  it("normalizes legacy operations hire approvals to coo when approving", async () => {
+    const pending = createApproval("pending");
+    pending.payload = {
+      name: "Operations Agent",
+      role: "operations",
+      adapterType: "process",
+      adapterConfig: {},
+    };
+    const approved = { ...pending, status: "approved" };
+    const dbStub = createDbStub([[pending], [pending]], [[approved]]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        role: "coo",
+      }),
+    );
+  });
 });
