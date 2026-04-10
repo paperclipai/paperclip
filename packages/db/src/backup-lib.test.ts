@@ -125,12 +125,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retentionDays: 7,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-test",
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql$/);
-        expect(result.sizeBytes).toBeGreaterThan(1024 * 1024);
+        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
+        expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
         await runDatabaseRestore({
@@ -175,5 +175,50 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       }
     },
     60_000,
+  );
+
+  it(
+    "restores statements incrementally when backup comments precede the first breakpoint",
+    async () => {
+      const restoreConnectionString = await createTempDatabase();
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+      const backupDir = createTempDir("paperclip-db-restore-manual-");
+      const backupFile = path.join(backupDir, "manual.sql");
+
+      try {
+        await fs.promises.writeFile(
+          backupFile,
+          [
+            "-- Paperclip database backup",
+            "-- Created: 2026-04-06T00:00:00.000Z",
+            "",
+            "BEGIN;",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "CREATE TABLE public.restore_stream_test (id integer primary key, payload text not null);",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "INSERT INTO public.restore_stream_test (id, payload)",
+            "VALUES (1, 'hello');",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "COMMIT;",
+            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+          ].join("\n"),
+          "utf8",
+        );
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ payload: string }[]>(`
+          SELECT payload
+          FROM public.restore_stream_test
+        `);
+        expect(rows).toEqual([{ payload: "hello" }]);
+      } finally {
+        await restoreSql.end();
+      }
+    },
+    20_000,
   );
 });

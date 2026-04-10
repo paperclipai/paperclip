@@ -216,7 +216,7 @@ export function loadConfig(): Config {
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ||
       fileDatabaseBackup?.retentionDays ||
-      30,
+      7,
   );
   const databaseBackupDir = resolveHomeAwarePath(
     process.env.PAPERCLIP_DB_BACKUP_DIR ??

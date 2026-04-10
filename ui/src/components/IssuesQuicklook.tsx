@@ -3,7 +3,7 @@ import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusIcon } from "./StatusIcon";
-import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
+import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import { timeAgo } from "../lib/timeAgo";
 
 interface IssuesQuicklookProps {
@@ -36,6 +36,7 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
             <StatusIcon status={issue.status} className="mt-0.5 shrink-0" />
             <Link
               to={createIssueDetailPath(issue.identifier ?? issue.id)}
+              state={withIssueDetailHeaderSeed(null, issue)}
               className="text-sm font-medium leading-snug hover:underline line-clamp-2"
             >
               {issue.title}
