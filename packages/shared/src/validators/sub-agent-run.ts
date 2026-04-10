@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const createSubAgentRunSchema = z.object({
   subAgentId: z.string().uuid(),
+  leaderAgentId: z.string().uuid().optional(),
   issueId: z.string().uuid().optional().nullable(),
   task: z.string().min(1),
 });

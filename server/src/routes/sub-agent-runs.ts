@@ -21,9 +21,10 @@ export function subAgentRunRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
-      const leaderAgentId = actor.agentId;
+      // Agent calling: use its own ID. Board user: must supply leaderAgentId in body.
+      const leaderAgentId = actor.agentId ?? req.body.leaderAgentId;
       if (!leaderAgentId) {
-        res.status(403).json({ error: "Only agents can report sub-agent runs" });
+        res.status(400).json({ error: "leaderAgentId required (agent auth auto-resolves, board user must provide it)" });
         return;
       }
       const row = await svc.create(companyId, leaderAgentId, req.body);
