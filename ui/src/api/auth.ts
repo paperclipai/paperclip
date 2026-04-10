@@ -33,11 +33,13 @@ async function authPost(path: string, body: Record<string, unknown>) {
   });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    const p = payload as { error?: { message?: string } | string; message?: string } | null;
     const message =
-      (payload as { error?: { message?: string } | string } | null)?.error &&
-      typeof (payload as { error?: { message?: string } | string }).error === "object"
-        ? ((payload as { error?: { message?: string } }).error?.message ?? `Request failed: ${res.status}`)
-        : (payload as { error?: string } | null)?.error ?? `Request failed: ${res.status}`;
+      p?.error && typeof p.error === "object"
+        ? (p.error.message ?? `Request failed: ${res.status}`)
+        : typeof p?.error === "string"
+          ? p.error
+          : (p?.message ?? `Request failed: ${res.status}`);
     throw new Error(message);
   }
   return payload;
