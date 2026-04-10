@@ -161,14 +161,49 @@ export function Dashboard() {
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
     for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
+
+    const approvalTypeLabels: Record<string, string> = {
+      hire_agent: "Hire Agent",
+      approve_ceo_strategy: "CEO Strategy",
+      budget_override_required: "Budget Override",
+      tool_use: "Tool Use",
+      request_board_approval: "Board Approval",
+    };
+    for (const event of activity ?? []) {
+      const key = `${event.entityType}:${event.entityId}`;
+      if (map.has(key)) continue;
+      const d = event.details as Record<string, unknown> | null;
+      let name: string | undefined;
+      if (event.entityType === "issue") {
+        name = event.issueIdentifier ?? undefined;
+      } else if (event.entityType === "plugin") {
+        name = (typeof d?.pluginKey === "string" && d.pluginKey) || undefined;
+      } else if (event.entityType === "approval") {
+        const t = typeof d?.type === "string" ? d.type : undefined;
+        name = t ? (approvalTypeLabels[t] ?? t) : undefined;
+      } else if (event.entityType === "routine_run") {
+        name = (typeof d?.routineTitle === "string" && d.routineTitle) || undefined;
+      } else if (d) {
+        name =
+          (typeof d.name === "string" && d.name) ||
+          (typeof d.title === "string" && d.title) ||
+          undefined;
+      }
+      if (name) map.set(key, name);
+    }
     return map;
-  }, [issues, agents, projects]);
+  }, [issues, agents, projects, activity]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    for (const event of activity ?? []) {
+      if (event.entityType !== "issue" || !event.issueTitle) continue;
+      const key = `issue:${event.entityId}`;
+      if (!map.has(key)) map.set(key, event.issueTitle);
+    }
     return map;
-  }, [issues]);
+  }, [issues, activity]);
 
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
