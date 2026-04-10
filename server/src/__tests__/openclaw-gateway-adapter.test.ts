@@ -502,12 +502,13 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      // OpenClaw agent params schema forbids a root `paperclip` key; context is merged into extraSystemPrompt.
+      expect(payload?.paperclip).toBeUndefined();
+      const extra = String(payload?.extraSystemPrompt ?? "");
+      expect(extra).toContain("## Paperclip context");
+      expect(extra).toContain("\"wake\"");
+      expect(extra).toContain("comment-2");
+      expect(extra).toContain("pap-123-test");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {
@@ -515,10 +516,11 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
-  it("fails fast when url is missing", async () => {
+  it("uses default loopback gateway URL when url is omitted (no url_missing error)", async () => {
     const result = await execute(buildContext({}));
+    expect(result.errorCode).not.toBe("openclaw_gateway_url_missing");
+    // Default ws://127.0.0.1:18789 — without a listening gateway, expect a connection-style failure.
     expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
   it("returns adapter-managed runtime services from gateway result meta", async () => {
@@ -664,14 +666,17 @@ describe("openclaw gateway ui build config", () => {
 });
 
 describe("openclaw gateway testEnvironment", () => {
-  it("reports missing url as failure", async () => {
+  it("defaults empty url to loopback and records openclaw_gateway_url_defaulted", async () => {
     const result = await testEnvironment({
       companyId: "company-123",
       adapterType: "openclaw_gateway",
       config: {},
     });
 
-    expect(result.status).toBe("fail");
-    expect(result.checks.some((check) => check.code === "openclaw_gateway_url_missing")).toBe(true);
+    expect(result.checks.some((check) => check.code === "openclaw_gateway_url_defaulted")).toBe(true);
+    expect(result.checks.some((check) => check.code === "openclaw_gateway_url_missing")).toBe(false);
+    expect(result.checks.some((check) => check.code === "openclaw_gateway_url_valid")).toBe(true);
+    // Probe outcome depends on whether a gateway listens on 127.0.0.1:18789.
+    expect(["pass", "warn", "fail"]).toContain(result.status);
   });
 });

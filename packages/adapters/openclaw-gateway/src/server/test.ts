@@ -4,8 +4,10 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import { DEFAULT_OPENCLAW_GATEWAY_WS_URL } from "../defaults.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -192,21 +194,15 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const urlValue = asString(config.url, "").trim();
+  const urlValue = asString(config.url, "").trim() || DEFAULT_OPENCLAW_GATEWAY_WS_URL;
 
-  if (!urlValue) {
+  if (!asString(config.url, "").trim()) {
     checks.push({
-      code: "openclaw_gateway_url_missing",
-      level: "error",
-      message: "OpenClaw gateway adapter requires a WebSocket URL.",
-      hint: "Set adapterConfig.url to ws://host:port (or wss://).",
+      code: "openclaw_gateway_url_defaulted",
+      level: "info",
+      message: `No adapterConfig.url set; using default ${DEFAULT_OPENCLAW_GATEWAY_WS_URL}.`,
+      hint: "Set adapterConfig.url explicitly if your gateway is not on the same host.",
     });
-    return {
-      adapterType: ctx.adapterType,
-      status: summarizeStatus(checks),
-      checks,
-      testedAt: new Date().toISOString(),
-    };
   }
 
   let url: URL | null = null;
@@ -247,7 +243,22 @@ export async function testEnvironment(
   }
 
   const headers = toStringRecord(config.headers);
-  const authToken = resolveAuthToken(config, headers);
+  let authToken = resolveAuthToken(config, headers);
+  if (!authToken) {
+    authToken =
+      nonEmpty(process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN) ??
+      nonEmpty(process.env.OPENCLAW_GATEWAY_TOKEN);
+  }
+  if (!authToken) {
+    const tokenFile = process.env.PAPERCLIP_OPENCLAW_GATEWAY_TOKEN_FILE?.trim();
+    if (tokenFile) {
+      try {
+        authToken = nonEmpty(readFileSync(tokenFile, "utf8"));
+      } catch {
+        // ignore
+      }
+    }
+  }
   const password = nonEmpty(config.password);
   const role = nonEmpty(config.role) ?? "operator";
   const scopes = toStringArray(config.scopes);
