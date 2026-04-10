@@ -115,6 +115,36 @@ describe("external MCP config", () => {
     ])).toBe(merged);
   });
 
+  it("does not accumulate duplicate header subtables on repeated syncs", () => {
+    const server = {
+      name: "rube",
+      type: "http" as const,
+      url: "https://backend.example/mcp",
+      headers: { Authorization: "Bearer test", "x-api-key": "ak_test" },
+    };
+
+    // Start with an empty config and merge 5 times — result must be identical each time
+    const results: string[] = [];
+    let current: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      current = mergeCodexConfigToml(current, [server]);
+      results.push(current);
+    }
+
+    // Each merge must produce the same output as the previous one (idempotent)
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]).toBe(results[i - 1]);
+    }
+
+    const final_1 = results[results.length - 1];
+    // Exactly one parent block and one headers subtable — no duplicates
+    expect(final_1.match(/\[mcp_servers\.rube\](?!\.)/g)).toHaveLength(1);
+    expect(final_1.match(/\[mcp_servers\.rube\.headers\]/g)).toHaveLength(1);
+    // Headers content appears exactly once
+    expect((final_1.match(/"Authorization" = "Bearer test"/g) ?? [])).toHaveLength(1);
+    expect((final_1.match(/"x-api-key" = "ak_test"/g) ?? [])).toHaveLength(1);
+  });
+
   it("renders Codex header tables for authenticated MCP servers", () => {
     const merged = mergeCodexConfigToml("", [
       {

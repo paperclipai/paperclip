@@ -149,8 +149,13 @@ export function mergeCodexConfigToml(
 
   for (const server of servers) {
     const block = buildCodexHttpServerBlock(server);
+    // Match a full TOML section block for this server, including all
+    // nested subtable headers and their content lines, up to the next
+    // [mcp_servers.*] section or end-of-file. Uses negative lookahead
+    // to match any line that does NOT start with `[mcp_servers.`.
+    // Optional nested header + content section handles `[mcp_servers.<name>.headers]`.
     const pattern = new RegExp(
-      `\\[mcp_servers\\.${escapeRegExp(server.name)}\\]\\n[\\s\\S]*?(?=\\n\\[mcp_servers\\.|$)`,
+      `\\[mcp_servers\\.${escapeRegExp(server.name)}(?:\\.[^\\[\\n]+)?\\](?:(?!\\[mcp_servers\\.)[^\\n]*\\n)*(?:\\[mcp_servers\\.${escapeRegExp(server.name)}\\.[^\\[\\n]*\\](?:(?!\\[mcp_servers\\.)[^\\n]*\\n)*)?(?:(?=\\n\\[mcp_servers\\.|$))`,
     );
     if (pattern.test(nextConfig)) {
       nextConfig = nextConfig.replace(pattern, block);
