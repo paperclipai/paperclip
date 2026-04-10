@@ -13,6 +13,7 @@ import {
 import { renderPrBody } from './pr-body.mjs';
 import { scanAndMaybeTranslateLowRisk } from './translate-low-risk.mjs';
 import {
+  createValidationErrorSummary,
   createSkippedValidationSummary,
   runValidationSuite,
   VALIDATION_LOG_PATH,
@@ -119,7 +120,13 @@ async function resolveValidationSummary({ config, runValidation, status }) {
     return summary;
   }
 
-  return runValidation({ artifactPath: VALIDATION_LOG_PATH });
+  try {
+    return await runValidation({ artifactPath: VALIDATION_LOG_PATH });
+  } catch (error) {
+    const summary = createValidationErrorSummary(error, VALIDATION_LOG_PATH);
+    await writeValidationArtifact(VALIDATION_LOG_PATH, summary);
+    return summary;
+  }
 }
 
 export async function runUpstreamSync({

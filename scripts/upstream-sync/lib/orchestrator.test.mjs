@@ -359,3 +359,55 @@ test('runUpstreamSync writes validation failures to report artifacts without thr
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
   }
 });
+
+test('runUpstreamSync records unexpected validation runner errors without losing artifacts', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`validation-error-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const { run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+    '{"command":"git","args":["cherry-pick","c1"]}': '',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      runValidation: async () => {
+        throw new Error('validation log write failed');
+      },
+    });
+
+    assert.equal(result.status, 'replayed');
+    assert.equal(result.validationStatus, 'error');
+    assert.equal(result.readyForPr, false);
+    assert.equal(result.validationLogPath, 'reports/upstream-sync-validation-log.json');
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.validationLogPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.validationSummary.status, 'error');
+    assert.equal(report.validationSummary.reason, 'validation-runner-error');
+    assert.equal(report.validationSummary.errorMessage, 'validation log write failed');
+    const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
+    assert.match(prBody, /overall: `error`/);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});

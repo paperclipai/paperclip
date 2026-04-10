@@ -152,6 +152,27 @@ export function createSkippedValidationSummary(reason, artifactPath = VALIDATION
   });
 }
 
+export function createValidationErrorSummary(error, artifactPath = VALIDATION_LOG_PATH) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const checks = VALIDATION_CHECKS.map((check) => createCheckResult(check, {
+    status: 'error',
+    stdout: '',
+    stderr: `${errorMessage}\n`,
+    exitCode: null,
+    summary: `Validation orchestration failed before ${check.label} could complete.`,
+    errorMessage,
+  }));
+
+  return {
+    ...buildSummary({
+      checks,
+      logPath: artifactPath,
+      reason: 'validation-runner-error',
+    }),
+    errorMessage,
+  };
+}
+
 export async function runValidationSuite({
   runCommand = createCommandRunner(),
   artifactPath = VALIDATION_LOG_PATH,
