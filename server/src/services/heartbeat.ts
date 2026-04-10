@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -2467,6 +2467,23 @@ export function heartbeatService(db: Db) {
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
       }
+
+      // Per-agent cooldown: don't start a new run if the last one finished < 60s ago (fix for #1241)
+      const MIN_GAP_MS = 60_000;
+      const lastFinished = await db
+        .select({ finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.agentId, agentId),
+          isNotNull(heartbeatRuns.finishedAt),
+        ))
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1)
+        .then((rows) => rows[0]?.finishedAt ?? null);
+      if (lastFinished && Date.now() - new Date(lastFinished).getTime() < MIN_GAP_MS) {
+        return []; // Too soon — leave queued runs for the next tick
+      }
+
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
