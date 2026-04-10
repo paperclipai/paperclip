@@ -63,18 +63,20 @@ export function redactAdapterConfigEnvForApi(env: unknown): Record<string, unkno
   const out: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(env)) {
     if (typeof raw === "string") {
-      out[key] = REDACTED_EVENT_VALUE;
+      out[key] = { type: "plain", hasValue: raw.length > 0 };
       continue;
     }
     if (isSecretRefBinding(raw)) {
-      out[key] = { ...raw };
+      out[key] = { type: "secret_ref", hasValue: true };
       continue;
     }
     if (isPlainBinding(raw)) {
-      out[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      const has = raw.value !== undefined && raw.value !== null && String(raw.value).length > 0;
+      out[key] = { type: "plain", hasValue: has };
       continue;
     }
-    out[key] = REDACTED_EVENT_VALUE;
+    const has = raw !== undefined && raw !== null;
+    out[key] = { type: "unknown", hasValue: has };
   }
   return out;
 }
