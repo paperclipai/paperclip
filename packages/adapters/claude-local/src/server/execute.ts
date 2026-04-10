@@ -30,6 +30,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -620,16 +621,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
-    if (
+    const shouldRetryFreshSession =
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
+      (isClaudeUnknownSessionError(initial.parsed) || isClaudeImageProcessingError(initial.parsed));
+
+    if (shouldRetryFreshSession) {
+      const reason = isClaudeUnknownSessionError(initial.parsed!)
+        ? "is unavailable"
+        : "contains an unprocessable image";
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
