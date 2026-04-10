@@ -4,6 +4,14 @@ interface NewIssueDefaults {
   status?: string;
   priority?: string;
   projectId?: string;
+  projectWorkspaceId?: string;
+  goalId?: string;
+  parentId?: string;
+  parentIdentifier?: string;
+  parentTitle?: string;
+  executionWorkspaceId?: string;
+  executionWorkspaceMode?: string;
+  parentExecutionWorkspaceLabel?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
   title?: string;

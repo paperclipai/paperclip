@@ -762,6 +762,28 @@ export interface PluginMetricsClient {
 }
 
 /**
+ * `ctx.telemetry` — emit plugin-scoped telemetry to the host's external
+ * telemetry pipeline.
+ *
+ * Requires `telemetry.track` capability.
+ */
+export interface PluginTelemetryClient {
+  /**
+   * Track a plugin telemetry event.
+   *
+   * The host prefixes the final event name as `plugin.<pluginId>.<eventName>`
+   * before forwarding it to the shared telemetry client.
+   *
+   * @param eventName - Bare plugin event slug (for example `"sync_completed"`)
+   * @param dimensions - Optional structured dimensions
+   */
+  track(
+    eventName: string,
+    dimensions?: Record<string, string | number | boolean>,
+  ): Promise<void>;
+}
+
+/**
  * `ctx.companies` — read company metadata.
  *
  * Requires `companies.read` capability.
@@ -887,7 +909,12 @@ export interface PluginIssuesClient {
     companyId: string,
   ): Promise<Issue>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
-  createComment(issueId: string, body: string, companyId: string): Promise<IssueComment>;
+  createComment(
+    issueId: string,
+    body: string,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<IssueComment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
 }
@@ -1155,6 +1182,9 @@ export interface PluginContext {
 
   /** Write plugin metrics. Requires `metrics.write`. */
   metrics: PluginMetricsClient;
+
+  /** Emit plugin-scoped external telemetry. Requires `telemetry.track`. */
+  telemetry: PluginTelemetryClient;
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;

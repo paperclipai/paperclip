@@ -1,17 +1,38 @@
 import { useEffect } from "react";
+import { isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 
 interface ShortcutHandlers {
+  enabled?: boolean;
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
+  onShowShortcuts?: () => void;
 }
 
-export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel }: ShortcutHandlers) {
+export function useKeyboardShortcuts({
+  enabled = true,
+  onNewIssue,
+  onToggleSidebar,
+  onTogglePanel,
+  onShowShortcuts,
+}: ShortcutHandlers) {
   useEffect(() => {
+    if (!enabled) return;
+
     function handleKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) {
+        return;
+      }
+
       // Don't fire shortcuts when typing in inputs
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+      if (isKeyboardShortcutTextInputTarget(e.target)) {
+        return;
+      }
+
+      // ? → Show keyboard shortcuts cheatsheet
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        onShowShortcuts?.();
         return;
       }
 
@@ -36,5 +57,5 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewIssue, onToggleSidebar, onTogglePanel]);
+  }, [enabled, onNewIssue, onToggleSidebar, onTogglePanel, onShowShortcuts]);
 }

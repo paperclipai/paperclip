@@ -1,20 +1,32 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@/lib/router";
-import { ChevronDown, ChevronRight, MoreHorizontal, Play, Plus, Repeat } from "lucide-react";
+import { useNavigate, useSearchParams } from "@/lib/router";
+import { Check, ChevronDown, ChevronRight, Layers, MoreHorizontal, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { issuesApi } from "../api/issues";
+import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { groupBy } from "../lib/groupBy";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
+import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { PageTabBar } from "../components/PageTabBar";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import {
+  RoutineRunVariablesDialog,
+  type RoutineRunDialogSubmitData,
+} from "../components/RoutineRunVariablesDialog";
+import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -26,6 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -33,6 +46,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -62,11 +77,222 @@ function nextRoutineStatus(currentStatus: string, enabled: boolean) {
   return enabled ? "active" : "paused";
 }
 
+type RoutinesTab = "routines" | "runs";
+type RoutineGroupBy = "none" | "project" | "assignee";
+
+type RoutineViewState = {
+  groupBy: RoutineGroupBy;
+  collapsedGroups: string[];
+};
+
+type RoutineGroup = {
+  key: string;
+  label: string | null;
+  items: RoutineListItem[];
+};
+
+const defaultRoutineViewState: RoutineViewState = {
+  groupBy: "none",
+  collapsedGroups: [],
+};
+
+function getRoutineViewState(key: string): RoutineViewState {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return { ...defaultRoutineViewState, ...JSON.parse(raw) };
+  } catch {
+    // Ignore malformed local state and fall back to defaults.
+  }
+  return { ...defaultRoutineViewState };
+}
+
+function saveRoutineViewState(key: string, state: RoutineViewState) {
+  localStorage.setItem(key, JSON.stringify(state));
+}
+
+function formatRoutineRunStatus(value: string | null | undefined) {
+  if (!value) return null;
+  return value.replaceAll("_", " ");
+}
+
+function buildRoutineMutationPayload(input: {
+  title: string;
+  description: string;
+  projectId: string;
+  assigneeAgentId: string;
+  priority: string;
+  concurrencyPolicy: string;
+  catchUpPolicy: string;
+  variables: RoutineVariable[];
+}) {
+  return {
+    ...input,
+    description: input.description.trim() || null,
+    projectId: input.projectId || null,
+    assigneeAgentId: input.assigneeAgentId || null,
+  };
+}
+
+export function buildRoutineGroups(
+  routines: RoutineListItem[],
+  groupByValue: RoutineGroupBy,
+  projectById: Map<string, { name: string }>,
+  agentById: Map<string, { name: string }>,
+): RoutineGroup[] {
+  if (groupByValue === "none") {
+    return [{ key: "__all", label: null, items: routines }];
+  }
+
+  if (groupByValue === "project") {
+    const groups = groupBy(routines, (routine) => routine.projectId ?? "__no_project");
+    return Object.keys(groups)
+      .sort((left, right) => {
+        const leftLabel = left === "__no_project" ? "No project" : (projectById.get(left)?.name ?? "Unknown project");
+        const rightLabel = right === "__no_project" ? "No project" : (projectById.get(right)?.name ?? "Unknown project");
+        return leftLabel.localeCompare(rightLabel);
+      })
+      .map((key) => ({
+        key,
+        label: key === "__no_project" ? "No project" : (projectById.get(key)?.name ?? "Unknown project"),
+        items: groups[key]!,
+      }));
+  }
+
+  const groups = groupBy(routines, (routine) => routine.assigneeAgentId ?? "__unassigned");
+  return Object.keys(groups)
+    .sort((left, right) => {
+      const leftLabel = left === "__unassigned" ? "Unassigned" : (agentById.get(left)?.name ?? "Unknown agent");
+      const rightLabel = right === "__unassigned" ? "Unassigned" : (agentById.get(right)?.name ?? "Unknown agent");
+      return leftLabel.localeCompare(rightLabel);
+    })
+    .map((key) => ({
+      key,
+      label: key === "__unassigned" ? "Unassigned" : (agentById.get(key)?.name ?? "Unknown agent"),
+      items: groups[key]!,
+    }));
+}
+
+function buildRoutinesTabHref(tab: RoutinesTab) {
+  return tab === "runs" ? "/routines?tab=runs" : "/routines";
+}
+
+function RoutineListRow({
+  routine,
+  projectById,
+  agentById,
+  runningRoutineId,
+  statusMutationRoutineId,
+  onNavigate,
+  onRunNow,
+  onToggleEnabled,
+  onToggleArchived,
+}: {
+  routine: RoutineListItem;
+  projectById: Map<string, { name: string; color?: string | null }>;
+  agentById: Map<string, { name: string; icon?: string | null }>;
+  runningRoutineId: string | null;
+  statusMutationRoutineId: string | null;
+  onNavigate: (routineId: string) => void;
+  onRunNow: (routine: RoutineListItem) => void;
+  onToggleEnabled: (routine: RoutineListItem, enabled: boolean) => void;
+  onToggleArchived: (routine: RoutineListItem) => void;
+}) {
+  const enabled = routine.status === "active";
+  const isArchived = routine.status === "archived";
+  const isStatusPending = statusMutationRoutineId === routine.id;
+  const project = routine.projectId ? projectById.get(routine.projectId) ?? null : null;
+  const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
+  const isDraft = !isArchived && !routine.assigneeAgentId;
+
+  return (
+    <div
+      className="group flex cursor-pointer flex-col gap-3 border-b border-border px-3 py-3 transition-colors hover:bg-accent/50 last:border-b-0 sm:flex-row sm:items-center"
+      onClick={() => onNavigate(routine.id)}
+    >
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium">{routine.title}</span>
+          {(isArchived || routine.status === "paused" || isDraft) ? (
+            <span className="text-xs text-muted-foreground">
+              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
+            </span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-sm"
+              style={{ backgroundColor: project?.color ?? "#64748b" }}
+            />
+            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
+          </span>
+          <span className="flex items-center gap-2">
+            {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
+            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
+          </span>
+          <span>
+            {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
+            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center gap-3">
+          <ToggleSwitch
+            size="lg"
+            checked={enabled}
+            onCheckedChange={() => onToggleEnabled(routine, enabled)}
+            disabled={isStatusPending || isArchived}
+            aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
+          />
+          <span className="w-12 text-xs text-muted-foreground">
+            {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
+          </span>
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onNavigate(routine.id)}>
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={runningRoutineId === routine.id || isArchived}
+              onClick={() => onRunNow(routine)}
+            >
+              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => onToggleEnabled(routine, enabled)}
+              disabled={isStatusPending || isArchived}
+            >
+              {enabled ? "Pause" : "Enable"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onToggleArchived(routine)}
+              disabled={isStatusPending}
+            >
+              {routine.status === "archived" ? "Restore" : "Archive"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  );
+}
+
 export function Routines() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { pushToast } = useToast();
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -74,9 +300,20 @@ export function Routines() {
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
   const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<string | null>(null);
+  const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [draft, setDraft] = useState({
+  const activeTab: RoutinesTab = searchParams.get("tab") === "runs" ? "runs" : "routines";
+  const [draft, setDraft] = useState<{
+    title: string;
+    description: string;
+    projectId: string;
+    assigneeAgentId: string;
+    priority: string;
+    concurrencyPolicy: string;
+    catchUpPolicy: string;
+    variables: RoutineVariable[];
+  }>({
     title: "",
     description: "",
     projectId: "",
@@ -84,11 +321,20 @@ export function Routines() {
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    variables: [],
   });
+  const routineViewStateKey = selectedCompanyId
+    ? `paperclip:routines-view:${selectedCompanyId}`
+    : "paperclip:routines-view";
+  const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Routines" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    setRoutineViewState(getRoutineViewState(routineViewStateKey));
+  }, [routineViewStateKey]);
 
   const { data: routines, isLoading, error } = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
@@ -105,6 +351,17 @@ export function Routines() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: routineExecutionIssues, isLoading: recentRunsLoading, error: recentRunsError } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
+    enabled: !!selectedCompanyId && activeTab === "runs",
+  });
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId && activeTab === "runs",
+    refetchInterval: 5000,
+  });
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -112,10 +369,7 @@ export function Routines() {
 
   const createRoutine = useMutation({
     mutationFn: () =>
-      routinesApi.create(selectedCompanyId!, {
-        ...draft,
-        description: draft.description.trim() || null,
-      }),
+      routinesApi.create(selectedCompanyId!, buildRoutineMutationPayload(draft)),
     onSuccess: async (routine) => {
       setDraft({
         title: "",
@@ -125,16 +379,26 @@ export function Routines() {
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       });
       setComposerOpen(false);
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
         title: "Routine created",
-        body: "Add the first trigger to turn it into a live workflow.",
+        body: routine.assigneeAgentId
+          ? "Add the first trigger to turn it into a live workflow."
+          : "Draft saved. Add a default agent before enabling automation.",
         tone: "success",
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
+    },
+  });
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
     },
   });
 
@@ -162,11 +426,23 @@ export function Routines() {
   });
 
   const runRoutine = useMutation({
-    mutationFn: (id: string) => routinesApi.run(id),
-    onMutate: (id) => {
+    mutationFn: ({ id, data }: { id: string; data?: RoutineRunDialogSubmitData }) => routinesApi.run(id, {
+      ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
+      ...(data?.assigneeAgentId !== undefined ? { assigneeAgentId: data.assigneeAgentId } : {}),
+      ...(data?.projectId !== undefined ? { projectId: data.projectId } : {}),
+      ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
+      ...(data?.executionWorkspacePreference !== undefined
+        ? { executionWorkspacePreference: data.executionWorkspacePreference }
+        : {}),
+      ...(data?.executionWorkspaceSettings !== undefined
+        ? { executionWorkspaceSettings: data.executionWorkspaceSettings }
+        : {}),
+    }),
+    onMutate: ({ id }) => {
       setRunningRoutineId(id);
     },
-    onSuccess: async (_, id) => {
+    onSuccess: async (_, { id }) => {
+      setRunDialogRoutine(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
@@ -214,8 +490,69 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) ids.add(run.issueId);
+    }
+    return ids;
+  }, [liveRuns]);
+  const routineGroups = useMemo(
+    () => buildRoutineGroups(routines ?? [], routineViewState.groupBy, projectById, agentById),
+    [agentById, projectById, routineViewState.groupBy, routines],
+  );
+  const recentRunsIssueLinkState = useMemo(
+    () =>
+      createIssueDetailLocationState(
+        "Recent Runs",
+        buildRoutinesTabHref("runs"),
+        "issues",
+      ),
+    [],
+  );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
+
+  function updateRoutineView(patch: Partial<RoutineViewState>) {
+    setRoutineViewState((current) => {
+      const next = { ...current, ...patch };
+      saveRoutineViewState(routineViewStateKey, next);
+      return next;
+    });
+  }
+
+  function handleTabChange(tab: string) {
+    const nextTab = tab === "runs" ? "runs" : "routines";
+    startTransition(() => {
+      navigate(buildRoutinesTabHref(nextTab));
+    });
+  }
+
+  function handleRunNow(routine: RoutineListItem) {
+    setRunDialogRoutine(routine);
+  }
+
+  function handleToggleEnabled(routine: RoutineListItem, enabled: boolean) {
+    if (!enabled && !routine.assigneeAgentId) {
+      pushToast({
+        title: "Default agent required",
+        body: "Set a default agent before enabling routine automation.",
+        tone: "warn",
+      });
+      return;
+    }
+    updateRoutineStatus.mutate({
+      id: routine.id,
+      status: nextRoutineStatus(routine.status, !enabled),
+    });
+  }
+
+  function handleToggleArchived(routine: RoutineListItem) {
+    updateRoutineStatus.mutate({
+      id: routine.id,
+      status: routine.status === "archived" ? "active" : "archived",
+    });
+  }
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Repeat} message="Select a company to view routines." />;
@@ -243,6 +580,68 @@ export function Routines() {
         </Button>
       </div>
 
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <PageTabBar
+          align="start"
+          value={activeTab}
+          onValueChange={handleTabChange}
+          items={[
+            { value: "routines", label: "Routines" },
+            { value: "runs", label: "Recent Runs" },
+          ]}
+        />
+        <TabsContent value="routines" className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
+            </p>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" className="text-xs">
+                  <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                  <span className="hidden sm:inline">Group</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-44 p-0">
+                <div className="p-2 space-y-0.5">
+                  {([
+                    ["project", "Project"],
+                    ["assignee", "Agent"],
+                    ["none", "None"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                        routineViewState.groupBy === value
+                          ? "bg-accent/50 text-foreground"
+                          : "text-muted-foreground hover:bg-accent/50"
+                      }`}
+                      onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
+                    >
+                      <span>{label}</span>
+                      {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </TabsContent>
+        <TabsContent value="runs">
+          <IssuesList
+            issues={routineExecutionIssues ?? []}
+            isLoading={recentRunsLoading}
+            error={recentRunsError as Error | null}
+            agents={agents}
+            projects={projects}
+            liveIssueIds={liveIssueIds}
+            viewStateKey="paperclip:routine-recent-runs-view"
+            issueLinkState={recentRunsIssueLinkState}
+            onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+          />
+        </TabsContent>
+      </Tabs>
+
       <Dialog
         open={composerOpen}
         onOpenChange={(open) => {
@@ -259,7 +658,7 @@ export function Routines() {
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Trigger setup comes next on the detail page.
+                Define the recurring work first. Default project and agent are optional for draft routines.
               </p>
             </div>
             <Button
@@ -409,11 +808,20 @@ export function Routines() {
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
                 onSubmit={() => {
-                  if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
+                  if (!createRoutine.isPending && draft.title.trim()) {
                     createRoutine.mutate();
                   }
                 }}
               />
+              <div className="mt-3 space-y-3">
+                <RoutineVariablesHint />
+                <RoutineVariablesEditor
+                  title={draft.title}
+                  description={draft.description}
+                  value={draft.variables}
+                  onChange={(variables) => setDraft((current) => ({ ...current, variables }))}
+                />
+              </div>
             </div>
 
             <div className="border-t border-border/60 px-5 py-3">
@@ -469,16 +877,14 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.
+              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
                 onClick={() => createRoutine.mutate()}
                 disabled={
                   createRoutine.isPending ||
-                  !draft.title.trim() ||
-                  !draft.projectId ||
-                  !draft.assigneeAgentId
+                  !draft.title.trim()
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
@@ -502,165 +908,82 @@ export function Routines() {
         </Card>
       ) : null}
 
-      <div>
-        {(routines ?? []).length === 0 ? (
-          <div className="py-12">
-            <EmptyState
-              icon={Repeat}
-              message="No routines yet. Use Create routine to define the first recurring workflow."
-            />
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Project</th>
-                  <th className="px-3 py-2 font-medium">Agent</th>
-                  <th className="px-3 py-2 font-medium">Last run</th>
-                  <th className="px-3 py-2 font-medium">Enabled</th>
-                  <th className="w-12 px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {(routines ?? []).map((routine) => {
-                  const enabled = routine.status === "active";
-                  const isArchived = routine.status === "archived";
-                  const isStatusPending = statusMutationRoutineId === routine.id;
-                  return (
-                    <tr
-                      key={routine.id}
-                      className="align-middle border-b border-border transition-colors hover:bg-accent/50 last:border-b-0 cursor-pointer"
-                      onClick={() => navigate(`/routines/${routine.id}`)}
-                    >
-                      <td className="px-3 py-2.5">
-                        <div className="min-w-[180px]">
-                          <span className="font-medium">
-                            {routine.title}
-                          </span>
-                          {(isArchived || routine.status === "paused") && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {isArchived ? "archived" : "paused"}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {routine.projectId ? (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <span
-                              className="shrink-0 h-3 w-3 rounded-sm"
-                              style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#6366f1" }}
-                            />
-                            <span className="truncate">{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {routine.assigneeAgentId ? (() => {
-                          const agent = agentById.get(routine.assigneeAgentId);
-                          return agent ? (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                              <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
-                              <span className="truncate">{agent.name}</span>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Unknown</span>
-                          );
-                        })() : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-muted-foreground">
-                        <div>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}</div>
-                        {routine.lastRun ? (
-                          <div className="mt-1 text-xs">{routine.lastRun.status.replaceAll("_", " ")}</div>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            role="switch"
-                            data-slot="toggle"
-                            aria-checked={enabled}
-                            aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
-                            disabled={isStatusPending || isArchived}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                              enabled ? "bg-foreground" : "bg-muted"
-                            } ${isStatusPending || isArchived ? "cursor-not-allowed opacity-50" : ""}`}
-                            onClick={() =>
-                              updateRoutineStatus.mutate({
-                                id: routine.id,
-                                status: nextRoutineStatus(routine.status, !enabled),
-                              })
-                            }
-                          >
-                            <span
-                              className={`inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${
-                                enabled ? "translate-x-5" : "translate-x-0.5"
-                              }`}
-                            />
-                          </button>
-                          <span className="text-xs text-muted-foreground">
-                            {isArchived ? "Archived" : enabled ? "On" : "Off"}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/routines/${routine.id}`)}>
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              disabled={runningRoutineId === routine.id || isArchived}
-                              onClick={() => runRoutine.mutate(routine.id)}
-                            >
-                              {runningRoutineId === routine.id ? "Running..." : "Run now"}
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() =>
-                                updateRoutineStatus.mutate({
-                                  id: routine.id,
-                                  status: enabled ? "paused" : "active",
-                                })
-                              }
-                              disabled={isStatusPending || isArchived}
-                            >
-                              {enabled ? "Pause" : "Enable"}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() =>
-                                updateRoutineStatus.mutate({
-                                  id: routine.id,
-                                  status: routine.status === "archived" ? "active" : "archived",
-                                })
-                              }
-                              disabled={isStatusPending}
-                            >
-                              {routine.status === "archived" ? "Restore" : "Archive"}
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {activeTab === "routines" ? (
+        <div>
+          {(routines ?? []).length === 0 ? (
+            <div className="py-12">
+              <EmptyState
+                icon={Repeat}
+                message="No routines yet. Use Create routine to define the first recurring workflow."
+              />
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border">
+              {routineGroups.map((group) => (
+                <Collapsible
+                  key={group.key}
+                  open={!routineViewState.collapsedGroups.includes(group.key)}
+                  onOpenChange={(open) => {
+                    updateRoutineView({
+                      collapsedGroups: open
+                        ? routineViewState.collapsedGroups.filter((item) => item !== group.key)
+                        : [...routineViewState.collapsedGroups, group.key],
+                    });
+                  }}
+                >
+                  {group.label ? (
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <CollapsibleTrigger className="flex items-center gap-1.5">
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+                        <span className="text-sm font-semibold uppercase tracking-wide">
+                          {group.label}
+                        </span>
+                      </CollapsibleTrigger>
+                      <span className="text-xs text-muted-foreground">
+                        {group.items.length}
+                      </span>
+                    </div>
+                  ) : null}
+                  <CollapsibleContent>
+                    {group.items.map((routine) => (
+                      <RoutineListRow
+                        key={routine.id}
+                        routine={routine}
+                        projectById={projectById}
+                        agentById={agentById}
+                        runningRoutineId={runningRoutineId}
+                        statusMutationRoutineId={statusMutationRoutineId}
+                        onNavigate={(routineId) => navigate(`/routines/${routineId}`)}
+                        onRunNow={handleRunNow}
+                        onToggleEnabled={handleToggleEnabled}
+                        onToggleArchived={handleToggleArchived}
+                      />
+                    ))}
+                  </CollapsibleContent>
+                </Collapsible>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <RoutineRunVariablesDialog
+        open={runDialogRoutine !== null}
+        onOpenChange={(next) => {
+          if (!next) setRunDialogRoutine(null);
+        }}
+        companyId={selectedCompanyId}
+        agents={agents ?? []}
+        projects={projects ?? []}
+        defaultProjectId={runDialogRoutine?.projectId ?? null}
+        defaultAssigneeAgentId={runDialogRoutine?.assigneeAgentId ?? null}
+        variables={runDialogRoutine?.variables ?? []}
+        isPending={runRoutine.isPending}
+        onSubmit={(data) => {
+          if (!runDialogRoutine) return;
+          runRoutine.mutate({ id: runDialogRoutine.id, data });
+        }}
+      />
     </div>
   );
 }

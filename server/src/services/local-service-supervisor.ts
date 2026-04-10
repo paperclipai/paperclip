@@ -184,7 +184,31 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   const records = await listLocalServiceRegistryRecords(
     input.profileKind ? { profileKind: input.profileKind } : undefined,
   );
-  return records.find((record) => record.runtimeServiceId === input.runtimeServiceId) ?? null;
+  const record = records.find((entry) => entry.runtimeServiceId === input.runtimeServiceId) ?? null;
+  if (!record) return null;
+
+  let candidate = record;
+  if (!isPidAlive(candidate.pid)) {
+    const ownerPid = candidate.port ? await readLocalServicePortOwner(candidate.port) : null;
+    if (!ownerPid) {
+      await removeLocalServiceRegistryRecord(candidate.serviceKey);
+      return null;
+    }
+    candidate = {
+      ...candidate,
+      pid: ownerPid,
+      processGroupId: candidate.processGroupId && isPidAlive(candidate.processGroupId) ? candidate.processGroupId : ownerPid,
+      lastSeenAt: new Date().toISOString(),
+    };
+    await writeLocalServiceRegistryRecord(candidate);
+  }
+
+  if (!(await isLikelyMatchingCommand(candidate))) {
+    await removeLocalServiceRegistryRecord(record.serviceKey);
+    return null;
+  }
+
+  return candidate;
 }
 
 export function isPidAlive(pid: number) {
@@ -203,7 +227,10 @@ async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
     const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(record.pid)]);
     const commandLine = stdout.trim();
     if (!commandLine) return false;
-    return commandLine.includes(record.command) || commandLine.includes(record.serviceName);
+    const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+    const normalizedCommandLine = normalize(commandLine);
+    const normalizedRecordedCommand = normalize(record.command);
+    return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
   } catch {
     return true;
   }

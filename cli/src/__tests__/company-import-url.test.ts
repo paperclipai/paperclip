@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isGithubShorthand,
-  isGithubUrl,
+  looksLikeRepoUrl,
   isHttpUrl,
   normalizeGithubImportSource,
 } from "../commands/client/company.js";
@@ -21,17 +21,17 @@ describe("isHttpUrl", () => {
   });
 });
 
-describe("isGithubUrl", () => {
+describe("looksLikeRepoUrl", () => {
   it("matches GitHub URLs", () => {
-    expect(isGithubUrl("https://github.com/org/repo")).toBe(true);
+    expect(looksLikeRepoUrl("https://github.com/org/repo")).toBe(true);
   });
 
-  it("rejects non-GitHub HTTP URLs", () => {
-    expect(isGithubUrl("https://example.com/foo")).toBe(false);
+  it("rejects URLs without owner/repo path", () => {
+    expect(looksLikeRepoUrl("https://example.com/foo")).toBe(false);
   });
 
   it("rejects local paths", () => {
-    expect(isGithubUrl("/tmp/my-company")).toBe(false);
+    expect(looksLikeRepoUrl("/tmp/my-company")).toBe(false);
   });
 });
 

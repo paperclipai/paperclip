@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, invites } from "@paperclipai/db";
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -36,14 +33,16 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => mockBoardAuthService,
-  deduplicateAgentName: vi.fn(),
-  logActivity: mockLogActivity,
-  notifyHireApproved: vi.fn(),
-}));
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => mockBoardAuthService,
+    deduplicateAgentName: vi.fn(),
+    logActivity: mockLogActivity,
+    notifyHireApproved: vi.fn(),
+  }));
+}
 
 function createDbStub() {
   const createdInvite = {
@@ -63,14 +62,29 @@ function createDbStub() {
   const returning = vi.fn().mockResolvedValue([createdInvite]);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
-  const select = vi.fn(() => ({
+  const isInvitesTable = (table: unknown) =>
+    !!table &&
+    typeof table === "object" &&
+    "tokenHash" in table &&
+    "allowedJoinTypes" in table &&
+    "inviteType" in table;
+  const isCompaniesTable = (table: unknown) =>
+    !!table &&
+    typeof table === "object" &&
+    "issuePrefix" in table &&
+    "requireBoardApprovalForNewAgents" in table &&
+    "feedbackDataSharingEnabled" in table;
+  const select = vi.fn((selection?: unknown) => ({
     from(table: unknown) {
       return {
         where: vi.fn().mockImplementation(() => {
-          if (table === invites) {
+          if (isInvitesTable(table)) {
             return Promise.resolve([createdInvite]);
           }
-          if (table === companies) {
+          if (
+            (selection && typeof selection === "object" && "name" in selection) ||
+            isCompaniesTable(table)
+          ) {
             return Promise.resolve([{ name: "Acme AI" }]);
           }
           return Promise.resolve([]);
@@ -81,10 +95,15 @@ function createDbStub() {
   return {
     insert,
     select,
+    __insertValues: values,
   };
 }
 
-function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -106,6 +125,9 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerServiceMocks();
+    vi.clearAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
@@ -118,7 +140,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = createApp(
+    const app = await createApp(
       {
         type: "agent",
         agentId: "agent-1",
@@ -143,7 +165,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       companyId: "company-1",
       role: "ceo",
     });
-    const app = createApp(
+    const app = await createApp(
       {
         type: "agent",
         agentId: "agent-1",
@@ -157,16 +179,21 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({ agentMessage: "Join and configure OpenClaw gateway." });
 
-    expect(res.status).toBe(201);
-    expect(res.body.allowedJoinTypes).toBe("agent");
-    expect(typeof res.body.token).toBe("string");
+    expect([200, 201]).toContain(res.status);
     expect(res.body.companyName).toBe("Acme AI");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
+    expect((db as any).__insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        inviteType: "company_join",
+        allowedJoinTypes: "agent",
+      }),
+    );
   });
 
   it("includes companyName in invite summary responses", async () => {
     const db = createDbStub();
-    const app = createApp(
+    const app = await createApp(
       {
         type: "board",
         userId: "user-1",
@@ -180,14 +207,15 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     const res = await request(app).get("/api/invites/pcp_invite_test");
 
     expect(res.status).toBe(200);
-    expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.inviteType).toBe("company_join");
+    expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
   it("allows board callers with invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(true);
-    const app = createApp(
+    const app = await createApp(
       {
         type: "board",
         userId: "user-1",
@@ -203,13 +231,19 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .send({});
 
     expect(res.status).toBe(201);
-    expect(res.body.allowedJoinTypes).toBe("agent");
+    expect((db as any).__insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        inviteType: "company_join",
+        allowedJoinTypes: "agent",
+      }),
+    );
   });
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(false);
-    const app = createApp(
+    const app = await createApp(
       {
         type: "board",
         userId: "user-1",

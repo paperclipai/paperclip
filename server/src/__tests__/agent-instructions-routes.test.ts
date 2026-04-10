@@ -50,7 +50,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: vi.fn(),
+  findServerAdapter: vi.fn((_type: string) => ({ type: _type })),
   listAdapterModels: vi.fn(),
 }));
 

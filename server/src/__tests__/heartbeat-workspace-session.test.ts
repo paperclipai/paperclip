@@ -7,7 +7,9 @@ import {
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
+  extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -270,6 +272,18 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
+  it("resets session context on execution review wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
+  });
+
+  it("resets session context on execution approval wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_approval_requested" })).toBe(true);
+  });
+
+  it("resets session context on execution changes-requested wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
@@ -354,6 +368,32 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
+describe("comment wake batching", () => {
+  it("preserves ordered wake comment ids when coalescing queued follow-up wakes", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        wakeCommentId: "comment-1",
+        wakeCommentIds: ["comment-1"],
+        paperclipWake: {
+          latestCommentId: "comment-1",
+        },
+      },
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        wakeCommentId: "comment-2",
+      },
+    );
+
+    expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
+    expect(merged.commentId).toBe("comment-2");
+    expect(merged.wakeCommentId).toBe("comment-2");
+    expect(merged.paperclipWake).toBeUndefined();
   });
 });
 

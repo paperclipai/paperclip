@@ -261,6 +261,34 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+// ---------------------------------------------------------------------------
+// Adapter config schema — declarative UI config for external adapters
+// ---------------------------------------------------------------------------
+
+export interface ConfigFieldOption {
+  label: string;
+  value: string;
+  /** Optional group key for categorizing options (e.g. provider name) */
+  group?: string;
+}
+
+export interface ConfigFieldSchema {
+  key: string;
+  label: string;
+  type: "text" | "select" | "toggle" | "number" | "textarea" | "combobox";
+  options?: ConfigFieldOption[];
+  default?: unknown;
+  hint?: string;
+  required?: boolean;
+  group?: string;
+  /** Optional metadata — not rendered, but available to custom UI logic */
+  meta?: Record<string, unknown>;
+}
+
+export interface AdapterConfigSchema {
+  fields: ConfigFieldSchema[];
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -292,7 +320,14 @@ export interface ServerAdapterModule {
    * Returns the detected model/provider and the config source, or null if
    * the adapter does not support detection or no config is found.
    */
-  detectModel?: () => Promise<{ model: string; provider: string; source: string } | null>;
+  detectModel?: () => Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null>;
+  /**
+   * Optional: return a declarative config schema so the UI can render
+   * adapter-specific form fields without shipping React components.
+   * Dynamic options (e.g. scanning a profiles directory) should be
+   * resolved inside this method — the caller receives a fully hydrated schema.
+   */
+  getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +344,8 @@ export type TranscriptEntry =
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
-  | { kind: "stdout"; ts: string; text: string };
+  | { kind: "stdout"; ts: string; text: string }
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string };
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 
@@ -353,4 +389,6 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  /** Arbitrary key-value pairs populated by schema-driven config fields. */
+  adapterSchemaValues?: Record<string, unknown>;
 }

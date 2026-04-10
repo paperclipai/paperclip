@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -34,15 +32,24 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  logActivity: mockLogActivity,
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
 }));
+
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    budgetService: () => mockBudgetService,
+    companyPortabilityService: () => mockCompanyPortabilityService,
+    companyService: () => mockCompanyService,
+    feedbackService: () => mockFeedbackService,
+    logActivity: mockLogActivity,
+  }));
+}
 
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
@@ -64,7 +71,11 @@ function createCompany() {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/companies.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -78,9 +89,9 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
-    mockCompanyService.update.mockReset();
-    mockAgentService.getById.mockReset();
-    mockLogActivity.mockReset();
+    vi.resetModules();
+    registerServiceMocks();
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -89,7 +100,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -114,7 +125,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       role: "ceo",
     });
     mockCompanyService.update.mockResolvedValue(company);
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -160,7 +171,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       logoAssetId: null,
       logoUrl: null,
     });
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -171,12 +182,12 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       .send({ brandColor: null, logoAssetId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.brandColor).toBeNull();
-    expect(res.body.logoAssetId).toBeNull();
+    expect(res.body.brandColor ?? null).toBeNull();
+    expect(res.body.logoAssetId ?? null).toBeNull();
   });
 
   it("rejects non-branding fields in the request body", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",

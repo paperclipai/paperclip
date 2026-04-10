@@ -4,7 +4,7 @@ import { FlaskConical } from "lucide-react";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
 export function InstanceExperimentalSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -82,24 +82,12 @@ export function InstanceExperimentalSettings() {
               and existing issue runs.
             </p>
           </div>
-          <button
-            type="button"
-            data-slot="toggle"
-            aria-label="Toggle isolated workspaces experimental setting"
+          <ToggleSwitch
+            checked={enableIsolatedWorkspaces}
+            onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              enableIsolatedWorkspaces ? "bg-green-600" : "bg-muted",
-            )}
-            onClick={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
-          >
-            <span
-              className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                enableIsolatedWorkspaces ? "translate-x-4.5" : "translate-x-0.5",
-              )}
-            />
-          </button>
+            aria-label="Toggle isolated workspaces experimental setting"
+          />
         </div>
       </section>
 
@@ -112,26 +100,12 @@ export function InstanceExperimentalSettings() {
               automatically when backend changes or migrations make the current boot stale.
             </p>
           </div>
-          <button
-            type="button"
-            data-slot="toggle"
-            aria-label="Toggle guarded dev-server auto-restart"
+          <ToggleSwitch
+            checked={autoRestartDevServerWhenIdle}
+            onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              autoRestartDevServerWhenIdle ? "bg-green-600" : "bg-muted",
-            )}
-            onClick={() =>
-              toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })
-            }
-          >
-            <span
-              className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                autoRestartDevServerWhenIdle ? "translate-x-4.5" : "translate-x-0.5",
-              )}
-            />
-          </button>
+            aria-label="Toggle guarded dev-server auto-restart"
+          />
         </div>
       </section>
     </div>

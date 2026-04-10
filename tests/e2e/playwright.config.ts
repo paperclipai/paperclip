@@ -1,6 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
-const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3100);
+// Use a dedicated port so e2e tests always start their own server in local_trusted mode,
+// even when the dev server is running on :3100 in authenticated mode.
+const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
@@ -29,6 +31,11 @@ export default defineConfig({
     timeout: 120_000,
     stdout: "pipe",
     stderr: "pipe",
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
+    },
   },
   outputDir: "./test-results",
   reporter: [["list"], ["html", { open: "never", outputFolder: "./playwright-report" }]],

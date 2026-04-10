@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { routineRoutes } from "../routes/routines.js";
-import { errorHandler } from "../middleware/index.js";
 
 const companyId = "22222222-2222-4222-8222-222222222222";
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -82,14 +80,31 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  logActivity: mockLogActivity,
-  routineService: () => mockRoutineService,
-}));
+function registerRouteMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackRoutineCreated: mockTrackRoutineCreated,
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-function createApp(actor: Record<string, unknown>) {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    logActivity: mockLogActivity,
+    routineService: () => mockRoutineService,
+  }));
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ routineRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/routines.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -103,7 +118,10 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("routine routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerRouteMocks();
     vi.clearAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -118,7 +136,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission for non-admin board routine creation", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -140,7 +158,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -161,7 +179,7 @@ describe("routine routes", () => {
 
   it("requires tasks:assign permission to reactivate a routine", async () => {
     mockRoutineService.get.mockResolvedValue(pausedRoutine);
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -181,7 +199,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to create a trigger", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -203,7 +221,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to update a trigger", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -223,7 +241,7 @@ describe("routine routes", () => {
   });
 
   it("requires tasks:assign permission to manually run a routine", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -242,7 +260,7 @@ describe("routine routes", () => {
 
   it("allows routine creation when the board user has tasks:assign", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "session",
@@ -267,5 +285,6 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
 });

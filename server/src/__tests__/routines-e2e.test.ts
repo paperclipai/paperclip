@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -10,11 +10,13 @@ import {
   companies,
   companyMemberships,
   createDb,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
   issues,
   principalPermissionGrants,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
@@ -27,54 +29,53 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { accessService } from "../services/access.js";
 
-vi.mock("../services/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
-  const { randomUUID } = await import("node:crypto");
-  const { eq } = await import("drizzle-orm");
-  const { heartbeatRuns, issues } = await import("@paperclipai/db");
+function registerServiceMocks() {
+  vi.doMock("../services/index.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
 
-  return {
-    ...actual,
-    routineService: (db: any) =>
-      actual.routineService(db, {
-        heartbeat: {
-          wakeup: async (agentId: string, wakeupOpts: any) => {
-            const issueId =
-              (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
-              (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
-              null;
-            if (!issueId) return null;
+    return {
+      ...actual,
+      routineService: (db: any) =>
+        actual.routineService(db, {
+          heartbeat: {
+            wakeup: async (agentId: string, wakeupOpts: any) => {
+              const issueId =
+                (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+                (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+                null;
+              if (!issueId) return null;
 
-            const issue = await db
-              .select({ companyId: issues.companyId })
-              .from(issues)
-              .where(eq(issues.id, issueId))
-              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
-            if (!issue) return null;
+              const issue = await db
+                .select({ companyId: issues.companyId })
+                .from(issues)
+                .where(eq(issues.id, issueId))
+                .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+              if (!issue) return null;
 
-            const queuedRunId = randomUUID();
-            await db.insert(heartbeatRuns).values({
-              id: queuedRunId,
-              companyId: issue.companyId,
-              agentId,
-              invocationSource: wakeupOpts?.source ?? "assignment",
-              triggerDetail: wakeupOpts?.triggerDetail ?? null,
-              status: "queued",
-              contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
-            });
-            await db
-              .update(issues)
-              .set({
-                executionRunId: queuedRunId,
-                executionLockedAt: new Date(),
-              })
-              .where(eq(issues.id, issueId));
-            return { id: queuedRunId };
+              const queuedRunId = randomUUID();
+              await db.insert(heartbeatRuns).values({
+                id: queuedRunId,
+                companyId: issue.companyId,
+                agentId,
+                invocationSource: wakeupOpts?.source ?? "assignment",
+                triggerDetail: wakeupOpts?.triggerDetail ?? null,
+                status: "queued",
+                contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
+              });
+              await db
+                .update(issues)
+                .set({
+                  executionRunId: queuedRunId,
+                  executionLockedAt: new Date(),
+                })
+                .where(eq(issues.id, issueId));
+              return { id: queuedRunId };
+            },
           },
-        },
-      }),
-  };
-});
+        }),
+    };
+  });
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -94,6 +95,11 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(() => {
+    vi.resetModules();
+    registerServiceMocks();
+  });
+
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(routineRuns);
@@ -102,6 +108,8 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(routines);
@@ -271,5 +279,184 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  }, 15_000);
+
+  it("runs routines with variable inputs and interpolates the execution issue description", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Repository triage",
+        description: "Review {{repo}} for {{priority}} bugs",
+        assigneeAgentId: agentId,
+        variables: [
+          { name: "repo", type: "text", required: true },
+          { name: "priority", type: "select", required: true, defaultValue: "high", options: ["high", "low"] },
+        ],
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        variables: { repo: "paperclip" },
+      });
+
+    expect(runRes.status).toBe(202);
+    expect(runRes.body.triggerPayload).toEqual({
+      variables: {
+        repo: "paperclip",
+        priority: "high",
+      },
+    });
+
+    const [issue] = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue?.description).toBe("Review paperclip for high bugs");
+  });
+
+  it("allows drafting a routine without defaults and running it with one-off overrides", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        title: "Draft routine",
+        description: "No saved defaults",
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.projectId).toBeNull();
+    expect(createRes.body.assigneeAgentId).toBeNull();
+    expect(createRes.body.status).toBe("paused");
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        projectId,
+        assigneeAgentId: agentId,
+      });
+
+    expect(runRes.status).toBe(202);
+    expect(runRes.body.status).toBe("issue_created");
+
+    const [issue] = await db
+      .select({
+        projectId: issues.projectId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue).toEqual({
+      projectId,
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("persists execution workspace selections from manual routine runs", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(instanceSettings).values({
+      experimental: { enableIsolatedWorkspaces: true },
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Workspace-aware routine",
+        assigneeAgentId: agentId,
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(runRes.status).toBe(202);
+
+    const [issue] = await db
+      .select({
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue).toEqual({
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
   });
 });

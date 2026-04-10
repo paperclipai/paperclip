@@ -98,6 +98,8 @@
               "adapters/codex-local",
               "adapters/process",
               "adapters/http",
+              "adapters/external-adapters",
+              "adapters/adapter-ui-parser",
               "adapters/creating-an-adapter"
             ]
           }

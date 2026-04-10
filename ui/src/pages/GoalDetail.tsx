@@ -15,17 +15,42 @@ import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { projectUrl } from "../lib/utils";
+import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus } from "lucide-react";
+import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+
+interface GoalPropertiesToggleButtonProps {
+  panelVisible: boolean;
+  onShowProperties: () => void;
+}
+
+export function GoalPropertiesToggleButton({
+  panelVisible,
+  onShowProperties,
+}: GoalPropertiesToggleButtonProps) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      className={cn(
+        "hidden md:inline-flex shrink-0 transition-opacity duration-200",
+        panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+      )}
+      onClick={onShowProperties}
+      title="Show properties"
+    >
+      <SlidersHorizontal className="h-4 w-4" />
+    </Button>
+  );
+}
 
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
-  const { openPanel, closePanel } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -122,6 +147,12 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+          <div className="ml-auto">
+            <GoalPropertiesToggleButton
+              panelVisible={panelVisible}
+              onShowProperties={() => setPanelVisible(true)}
+            />
+          </div>
         </div>
 
         <InlineEditor

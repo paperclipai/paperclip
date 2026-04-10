@@ -1,11 +1,11 @@
 import { z } from "zod";
 import {
-  AGENT_ADAPTER_TYPES,
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
   PERMISSION_KEYS,
 } from "../constants.js";
+import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
 
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
@@ -26,7 +26,7 @@ export type CreateOpenClawInvitePrompt = z.infer<
 export const acceptInviteSchema = z.object({
   requestType: z.enum(JOIN_REQUEST_TYPES),
   agentName: z.string().min(1).max(120).optional(),
-  adapterType: z.enum(AGENT_ADAPTER_TYPES).optional(),
+  adapterType: optionalAgentAdapterTypeSchema,
   capabilities: z.string().max(4000).optional().nullable(),
   agentDefaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
   // OpenClaw join compatibility fields accepted at top level.
