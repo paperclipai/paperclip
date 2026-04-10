@@ -180,9 +180,9 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
 
 /** True when stream-json shows a rate/quota limit (Claude often exits 1 with is_error despite valid output). */
 export function isClaudeRateLimitedOutput(stdout: string, resultJson: Record<string, unknown> | null): boolean {
-  if (
-    /rate_limit_event|"error"\s*:\s*"rate_limit"|hit your limit|you['']ve hit your limit/i.test(stdout)
-  ) {
+  // Only match structured / protocol markers in raw stdout — avoid assistant narrative
+  // that might mention "limit" in unrelated text.
+  if (/rate_limit_event|"error"\s*:\s*"rate_limit"/i.test(stdout)) {
     return true;
   }
   if (!resultJson) return false;

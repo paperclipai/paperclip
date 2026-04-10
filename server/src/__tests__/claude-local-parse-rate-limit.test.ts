@@ -24,4 +24,8 @@ describe("isClaudeRateLimitedOutput", () => {
     };
     expect(isClaudeRateLimitedOutput("", resultJson)).toBe(false);
   });
+
+  it("does not treat free-form stdout mentioning limits as rate-limited without structured markers", () => {
+    expect(isClaudeRateLimitedOutput("You've hit your limit in this assistant tale.\n", null)).toBe(false);
+  });
 });

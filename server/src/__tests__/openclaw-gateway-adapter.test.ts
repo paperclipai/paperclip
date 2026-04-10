@@ -517,10 +517,17 @@ describe("openclaw gateway adapter execute", () => {
   });
 
   it("uses default loopback gateway URL when url is omitted (no url_missing error)", async () => {
-    const result = await execute(buildContext({}));
+    const logs: string[] = [];
+    const result = await execute(
+      buildContext({}, {
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      }),
+    );
     expect(result.errorCode).not.toBe("openclaw_gateway_url_missing");
-    // Default ws://127.0.0.1:18789 — without a listening gateway, expect a connection-style failure.
-    expect(result.exitCode).toBe(1);
+    // Assert we attempted the default URL (do not assert exitCode: a real gateway on loopback:18789 would make that flaky).
+    expect(logs.some((entry) => entry.includes("connecting to ws://127.0.0.1:18789"))).toBe(true);
   });
 
   it("returns adapter-managed runtime services from gateway result meta", async () => {
