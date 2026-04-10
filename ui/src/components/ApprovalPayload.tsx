@@ -134,7 +134,7 @@ export function MergeCodePayload({ payload }: { payload: Record<string, unknown>
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
       <PayloadField label="Branch" value={payload.branch} />
-      {payload.prUrl && (
+      {!!payload.prUrl && (
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">PR URL</span>
           <a
@@ -147,10 +147,10 @@ export function MergeCodePayload({ payload }: { payload: Record<string, unknown>
           </a>
         </div>
       )}
-      {payload.issueId && (
+      {!!payload.issueId && (
         <PayloadField label="Issue" value={payload.issueId} />
       )}
-      {payload.description && (
+      {!!payload.description && (
         <div className="flex items-start gap-2 mt-2">
           <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Description</span>
           <span className="text-muted-foreground whitespace-pre-wrap">{String(payload.description)}</span>
