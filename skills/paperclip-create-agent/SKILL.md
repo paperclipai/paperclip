@@ -65,7 +65,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - role/title/name
 - icon (required in practice; use one from `/llms/agent-icons.txt`)
 - reporting line (`reportsTo`)
-- adapter type
+- adapter type — default to your own adapter type (from step 1) unless the role specifically requires a different one; consult step 2–3 for available adapters
 - optional `desiredSkills` from the company skill library when this role needs installed skills on day one
 - adapter and runtime config aligned to this environment
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it

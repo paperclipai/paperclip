@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paperclip Architecture Guide</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #161922;
+    --surface-2: #1c1f2e;
+    --border: #2a2d3e;
+    --text: #e1e4ed;
+    --text-muted: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00cec9;
+    --green-dim: #0d3d3b;
+    --orange: #fdcb6e;
+    --orange-dim: #3d3420;
+    --red: #ff7675;
+    --red-dim: #3d1a1a;
+    --blue: #74b9ff;
+    --blue-dim: #1a2d3d;
+    --pink: #fd79a8;
+    --cyan: #81ecec;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+
+  /* --- NAV --- */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: 280px;
+    height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 100;
+    padding: 24px 0;
+  }
+  .sidebar-logo {
+    padding: 0 24px 20px;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--accent-light);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .sidebar-logo span { font-size: 24px; }
+  .sidebar nav a {
+    display: block;
+    padding: 8px 24px;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 13px;
+    transition: all .15s;
+    border-left: 3px solid transparent;
+  }
+  .sidebar nav a:hover, .sidebar nav a.active {
+    color: var(--text);
+    background: var(--surface-2);
+    border-left-color: var(--accent);
+  }
+  .sidebar nav .nav-group {
+    padding: 12px 24px 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* --- MAIN --- */
+  .main {
+    margin-left: 280px;
+    max-width: 960px;
+    padding: 48px 48px 120px;
+  }
+
+  /* --- HERO --- */
+  .hero {
+    background: linear-gradient(135deg, #1a1440 0%, #0f1117 60%, #0d2a2a 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 56px 48px;
+    margin-bottom: 48px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -60%; right: -20%;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(108,92,231,.12) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero h1 {
+    font-size: 40px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, var(--accent-light), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero p {
+    font-size: 17px;
+    color: var(--text-muted);
+    max-width: 600px;
+    line-height: 1.8;
+  }
+  .hero .badge-row { margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+  .badge .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .badge .dot.green { background: var(--green); }
+  .badge .dot.orange { background: var(--orange); }
+  .badge .dot.blue { background: var(--blue); }
+  .badge .dot.pink { background: var(--pink); }
+
+  /* --- SECTIONS --- */
+  section { margin-bottom: 56px; }
+  section > h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section > h2 .section-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  section > .section-desc {
+    color: var(--text-muted);
+    margin-bottom: 24px;
+    font-size: 14px;
+  }
+
+  h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--accent-light);
+  }
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 20px 0 8px;
+    color: var(--text);
+  }
+
+  p { margin-bottom: 12px; }
+
+  /* --- CARDS --- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .card-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .card-icon.purple { background: rgba(108,92,231,.15); }
+  .card-icon.green { background: rgba(0,206,201,.15); }
+  .card-icon.orange { background: rgba(253,203,110,.15); }
+  .card-icon.blue { background: rgba(116,185,255,.15); }
+  .card-icon.red { background: rgba(255,118,117,.15); }
+  .card-icon.pink { background: rgba(253,121,168,.15); }
+
+  .card-title { font-weight: 600; font-size: 16px; }
+  .card-body { color: var(--text-muted); font-size: 14px; line-height: 1.7; }
+  .card-body code { color: var(--cyan); }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) { .card-grid { grid-template-columns: 1fr; } }
+
+  /* --- QUOTE --- */
+  .quote {
+    border-left: 4px solid var(--accent);
+    background: var(--surface);
+    padding: 20px 24px;
+    margin: 20px 0;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-style: italic;
+    color: var(--text-muted);
+  }
+  .quote .source {
+    display: block;
+    margin-top: 8px;
+    font-style: normal;
+    font-size: 12px;
+    color: var(--accent-light);
+  }
+
+  /* --- TABLES --- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: .8px;
+    border-bottom: 1px solid var(--border);
+  }
+  thead th:first-child { border-radius: var(--radius-sm) 0 0 0; }
+  thead th:last-child { border-radius: 0 var(--radius-sm) 0 0; }
+  tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  tbody tr:hover td { background: var(--surface); }
+  tbody td code {
+    background: var(--surface-2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--cyan);
+  }
+
+  /* --- CODE --- */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+  pre code { background: none; padding: 0; }
+
+  /* inline code */
+  p code, li code, td code, .card-body code {
+    background: var(--surface-2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  /* --- LISTS --- */
+  ul, ol {
+    margin: 8px 0 16px 24px;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  li { margin-bottom: 6px; }
+  li strong { color: var(--text); }
+
+  /* --- CHIPS / TAGS --- */
+  .tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    margin: 2px 2px;
+  }
+  .tag.green { background: var(--green-dim); color: var(--green); }
+  .tag.orange { background: var(--orange-dim); color: var(--orange); }
+  .tag.red { background: var(--red-dim); color: var(--red); }
+  .tag.blue { background: var(--blue-dim); color: var(--blue); }
+  .tag.purple { background: rgba(108,92,231,.15); color: var(--accent-light); }
+
+  /* --- FLOW STEPS --- */
+  .flow-steps {
+    position: relative;
+    padding-left: 32px;
+    margin: 20px 0;
+  }
+  .flow-steps::before {
+    content: '';
+    position: absolute;
+    left: 14px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--border);
+  }
+  .flow-step {
+    position: relative;
+    margin-bottom: 16px;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .flow-step::before {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 18px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    z-index: 1;
+  }
+  .flow-step .step-num {
+    position: absolute;
+    left: -28px;
+    top: 15px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+  }
+  .flow-step-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .flow-step-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .flow-step-desc code { color: var(--cyan); }
+
+  /* --- INVARIANT RULES --- */
+  .rule-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .rule-list li {
+    display: flex;
+    gap: 14px;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 10px;
+    align-items: flex-start;
+  }
+  .rule-list .rule-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    background: var(--red-dim);
+  }
+  .rule-list .rule-text { font-size: 14px; color: var(--text-muted); }
+  .rule-list .rule-text strong { color: var(--text); }
+
+  /* --- MERMAID --- */
+  .mermaid-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .mermaid-wrap .mermaid-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    font-weight: 600;
+  }
+  .mermaid { display: flex; justify-content: center; }
+
+  /* --- FILE REF TABLE --- */
+  .file-ref {
+    font-size: 12px;
+    color: var(--accent-light);
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(108,92,231,.08);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    margin: 2px 0;
+  }
+
+  /* --- SEPARATOR --- */
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+
+  /* --- SCROLLBAR --- */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* --- LAYER DIAGRAM --- */
+  .layer-diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 20px 0;
+  }
+  .layer {
+    padding: 18px 24px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 14px;
+  }
+  .layer .layer-label {
+    font-weight: 700;
+    min-width: 140px;
+    font-size: 13px;
+  }
+  .layer .layer-items {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .layer.l-ui { background: rgba(116,185,255,.08); border: 1px solid rgba(116,185,255,.2); }
+  .layer.l-ui .layer-label { color: var(--blue); }
+  .layer.l-server { background: rgba(108,92,231,.08); border: 1px solid rgba(108,92,231,.2); }
+  .layer.l-server .layer-label { color: var(--accent-light); }
+  .layer.l-shared { background: rgba(0,206,201,.08); border: 1px solid rgba(0,206,201,.2); }
+  .layer.l-shared .layer-label { color: var(--green); }
+  .layer.l-db { background: rgba(253,203,110,.08); border: 1px solid rgba(253,203,110,.2); }
+  .layer.l-db .layer-label { color: var(--orange); }
+  .layer.l-adapters { background: rgba(253,121,168,.08); border: 1px solid rgba(253,121,168,.2); }
+  .layer.l-adapters .layer-label { color: var(--pink); }
+  .layer.l-external { background: rgba(255,118,117,.06); border: 1px dashed rgba(255,118,117,.3); }
+  .layer.l-external .layer-label { color: var(--red); }
+  .layer-arrow {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 18px;
+    padding: 2px 0;
+  }
+
+  /* smooth scrolling */
+  html { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="sidebar-logo"><span>&#9649;</span> Paperclip</div>
+  <nav>
+    <div class="nav-group">Overview</div>
+    <a href="#vision">Product Vision</a>
+    <a href="#architecture">System Architecture</a>
+    <a href="#invariants">Core Invariants</a>
+    <div class="nav-group">Server</div>
+    <a href="#boot">Boot Sequence</a>
+    <a href="#middleware">Middleware Stack</a>
+    <a href="#auth">Authentication</a>
+    <a href="#routes">API Routes</a>
+    <a href="#services">Service Layer</a>
+    <a href="#realtime">Real-time / WebSocket</a>
+    <div class="nav-group">Data</div>
+    <a href="#database">Database Schema</a>
+    <a href="#shared">Shared Packages</a>
+    <div class="nav-group">Adapters &amp; Plugins</div>
+    <a href="#adapters">Adapter System</a>
+    <a href="#execution-flow">Agent Execution Flow</a>
+    <a href="#plugins">Plugin System</a>
+    <div class="nav-group">Frontend</div>
+    <a href="#ui">UI Application</a>
+    <a href="#ui-adapters">UI Adapter Registry</a>
+    <div class="nav-group">Ops</div>
+    <a href="#cli">CLI Tool</a>
+    <a href="#cicd">CI/CD &amp; Release</a>
+    <a href="#files">Key File Reference</a>
+  </nav>
+</aside>
+
+<!-- MAIN CONTENT -->
+<div class="main">
+
+<!-- HERO -->
+<div class="hero" id="top">
+  <h1>Paperclip Architecture Guide</h1>
+  <p>The control plane for autonomous AI companies. This document covers the product vision, system architecture, data model, adapter system, plugin framework, and operational tooling &mdash; with code references throughout.</p>
+  <div class="badge-row">
+    <span class="badge"><span class="dot green"></span> Node.js 20+</span>
+    <span class="badge"><span class="dot blue"></span> TypeScript</span>
+    <span class="badge"><span class="dot orange"></span> Drizzle ORM</span>
+    <span class="badge"><span class="dot pink"></span> React 19 + Vite</span>
+    <span class="badge"><span class="dot green"></span> Express 5</span>
+    <span class="badge"><span class="dot blue"></span> pnpm Monorepo</span>
+  </div>
+</div>
+
+<!-- =============== SECTION 1: VISION =============== -->
+<section id="vision">
+  <h2><span class="section-num">1</span> Product Vision</h2>
+  <p class="section-desc">What Paperclip is, why it exists, and how it positions itself.</p>
+
+  <div class="quote">
+    "Paperclip is the backbone of the autonomous economy. We are building the infrastructure that autonomous AI companies run on."
+    <span class="source">doc/GOAL.md:3</span>
+  </div>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">&#9881;</div>
+        <div class="card-title">Control Plane, Not Execution</div>
+      </div>
+      <div class="card-body">Paperclip does <strong>not</strong> run agents. It orchestrates them. Agents run wherever they run and phone home. The control plane manages registry, task assignment, budgets, goals, and heartbeats.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon green">&#128101;</div>
+        <div class="card-title">Company-First Model</div>
+      </div>
+      <div class="card-body">Every entity is scoped to a <strong>Company</strong>. Companies have org charts, budgets, goals, and employees (AI agents). This is not a single-user tool &mdash; it models entire organizations.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon orange">&#128176;</div>
+        <div class="card-title">Cost Governance</div>
+      </div>
+      <div class="card-body">Token budgets per agent with hard-stop enforcement. Budget policies, incidents, and automatic pause when limits are exceeded. Financial ledger with debit/credit tracking.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon blue">&#9989;</div>
+        <div class="card-title">Human Governance</div>
+      </div>
+      <div class="card-body">Approval gates for critical actions (hiring agents, budget overrides, CEO strategy). Activity logging for every mutation. Humans stay in the loop.</div>
+    </div>
+  </div>
+
+  <div class="quote">
+    "You should be able to look at Paperclip and understand your entire company at a glance &mdash; who's doing what, how much it costs, and whether it's working."
+    <span class="source">doc/GOAL.md:55</span>
+  </div>
+</section>
+
+<!-- =============== SECTION 2: ARCHITECTURE =============== -->
+<section id="architecture">
+  <h2><span class="section-num">2</span> System Architecture</h2>
+  <p class="section-desc">Monorepo workspace layout and how the layers connect.</p>
+
+  <div class="layer-diagram">
+    <div class="layer l-ui">
+      <div class="layer-label">UI Layer</div>
+      <div class="layer-items">
+        <span class="tag blue">React 19</span>
+        <span class="tag blue">Vite</span>
+        <span class="tag blue">Tailwind</span>
+        <span class="tag blue">Radix UI</span>
+        <span class="tag blue">TanStack Query</span>
+      </div>
+    </div>
+    <div class="layer-arrow">&#8595; HTTP / WebSocket &#8595;</div>
+    <div class="layer l-server">
+      <div class="layer-label">Server Layer</div>
+      <div class="layer-items">
+        <span class="tag purple">Express 5</span>
+        <span class="tag purple">Middleware</span>
+        <span class="tag purple">Routes</span>
+        <span class="tag purple">Services</span>
+        <span class="tag purple">WebSocket</span>
+      </div>
+    </div>
+    <div class="layer-arrow">&#8595; imports &#8595;</div>
+    <div class="layer l-shared">
+      <div class="layer-label">Shared Packages</div>
+      <div class="layer-items">
+        <span class="tag green">Types</span>
+        <span class="tag green">Zod Validators</span>
+        <span class="tag green">API Constants</span>
+        <span class="tag green">600+ exports</span>
+      </div>
+    </div>
+    <div class="layer-arrow">&#8595; queries &#8595;</div>
+    <div class="layer l-db">
+      <div class="layer-label">Database Layer</div>
+      <div class="layer-items">
+        <span class="tag orange">Drizzle ORM</span>
+        <span class="tag orange">~65 Tables</span>
+        <span class="tag orange">PGlite (embedded)</span>
+        <span class="tag orange">Migrations</span>
+      </div>
+    </div>
+    <div class="layer-arrow">&#8595; spawns / calls &#8595;</div>
+    <div class="layer l-adapters">
+      <div class="layer-label">Adapter Layer</div>
+      <div class="layer-items">
+        <span class="tag purple">claude-local</span>
+        <span class="tag purple">opencode-local</span>
+        <span class="tag purple">codex-local</span>
+        <span class="tag purple">cursor-local</span>
+        <span class="tag purple">gemini-local</span>
+        <span class="tag purple">openclaw-gateway</span>
+      </div>
+    </div>
+    <div class="layer-arrow">&#8595; executes &#8595;</div>
+    <div class="layer l-external">
+      <div class="layer-label">External Runtimes</div>
+      <div class="layer-items">
+        <span class="tag red">Claude Code CLI</span>
+        <span class="tag red">OpenCode CLI</span>
+        <span class="tag red">Codex CLI</span>
+        <span class="tag red">Cursor IDE</span>
+        <span class="tag red">OpenClaw WS</span>
+        <span class="tag red">HTTP Webhooks</span>
+      </div>
+    </div>
+  </div>
+
+  <h3>Workspace Layout</h3>
+  <table>
+    <thead><tr><th>Directory</th><th>Package</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>server/</code></td><td>@paperclipai/server</td><td>Express REST API, orchestration services, WebSocket</td></tr>
+      <tr><td><code>ui/</code></td><td>@paperclipai/ui</td><td>React board UI served by server in dev</td></tr>
+      <tr><td><code>cli/</code></td><td>@paperclipai/cli</td><td>CLI tool: onboard, doctor, worktree, client commands</td></tr>
+      <tr><td><code>packages/db/</code></td><td>@paperclipai/db</td><td>Drizzle schema, migrations, DB client factory</td></tr>
+      <tr><td><code>packages/shared/</code></td><td>@paperclipai/shared</td><td>Types, Zod validators, API paths, constants</td></tr>
+      <tr><td><code>packages/adapter-utils/</code></td><td>@paperclipai/adapter-utils</td><td>Adapter contract types and transcript parsing</td></tr>
+      <tr><td><code>packages/adapters/*</code></td><td>per-adapter</td><td>Built-in adapter implementations</td></tr>
+      <tr><td><code>packages/plugins/sdk/</code></td><td>@paperclipai/plugin-sdk</td><td>Public plugin SDK</td></tr>
+      <tr><td><code>doc/</code></td><td>&mdash;</td><td>Product specs, dev guide, DB docs</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============== SECTION 3: INVARIANTS =============== -->
+<section id="invariants">
+  <h2><span class="section-num">3</span> Core Invariants</h2>
+  <p class="section-desc">Rules that must <strong>never</strong> be violated. Defined in <code>AGENTS.md:62-79</code>.</p>
+
+  <ul class="rule-list">
+    <li>
+      <div class="rule-icon">&#128274;</div>
+      <div class="rule-text"><strong>Company-scoped.</strong> Every domain entity must enforce company boundaries. Never leak data across companies. All routes apply company access checks.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#128100;</div>
+      <div class="rule-text"><strong>Single-assignee tasks.</strong> One agent per issue at a time. The <code>assigneeAgentId</code> column enforces this at the data model level.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#9878;</div>
+      <div class="rule-text"><strong>Atomic issue checkout.</strong> An agent must check out an issue before working on it. Prevents race conditions on concurrent assignment.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#9989;</div>
+      <div class="rule-text"><strong>Approval gates.</strong> Governed actions (hire agent, budget override, CEO strategy) require explicit human approval via the <code>approvals</code> table.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#128721;</div>
+      <div class="rule-text"><strong>Budget hard-stop.</strong> When an agent exceeds its budget, auto-pause immediately. Enforced via <code>budgetPolicies</code> + <code>budgetIncidents</code>. No exceptions.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#128221;</div>
+      <div class="rule-text"><strong>Activity logging.</strong> Every mutation is logged with actor context and published via WebSocket. The <code>activityLog</code> table is the audit trail.</div>
+    </li>
+    <li>
+      <div class="rule-icon">&#128260;</div>
+      <div class="rule-text"><strong>Synchronized contracts.</strong> Schema/API changes must update all layers: <code>packages/db</code> &rarr; <code>packages/shared</code> &rarr; <code>server</code> &rarr; <code>ui</code>.</div>
+    </li>
+  </ul>
+</section>
+
+<!-- =============== SECTION 4: BOOT =============== -->
+<section id="boot">
+  <h2><span class="section-num">4</span> Server Boot Sequence</h2>
+  <p class="section-desc">How the server starts up. Entry point: <span class="file-ref">server/src/index.ts</span></p>
+
+  <div class="flow-steps">
+    <div class="flow-step"><span class="step-num">1</span>
+      <div class="flow-step-title">Load Configuration</div>
+      <div class="flow-step-desc">Read env vars + config files via <code>loadConfig()</code>. Setup telemetry, secrets provider, storage config.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">2</span>
+      <div class="flow-step-title">Database Initialization</div>
+      <div class="flow-step-desc">Embedded PGlite if no <code>DATABASE_URL</code>, otherwise connect to external Postgres. Port detection via <code>detectPort()</code>.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">3</span>
+      <div class="flow-step-title">Run Migrations</div>
+      <div class="flow-step-desc">Auto-apply or prompt user. Dual-mode: drizzle-kit for empty DB, statement-by-statement with idempotency for non-empty.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">4</span>
+      <div class="flow-step-title">Auth Setup</div>
+      <div class="flow-step-desc"><code>local_trusted</code>: create implicit "local-board" user. <code>authenticated</code>: initialize BetterAuth with Drizzle adapter.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">5</span>
+      <div class="flow-step-title">Create Storage Service</div>
+      <div class="flow-step-desc">Route through <code>createStorageServiceFromConfig()</code> &rarr; local_disk or S3 provider. Cached singleton.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">6</span>
+      <div class="flow-step-title">Create Express App</div>
+      <div class="flow-step-desc"><code>createApp()</code> in <code>app.ts</code> &mdash; middleware chain, route mounting, plugin system init, UI serving.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">7</span>
+      <div class="flow-step-title">Attach WebSocket</div>
+      <div class="flow-step-desc"><code>setupLiveEventsWebSocketServer()</code> for real-time company-scoped events.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">8</span>
+      <div class="flow-step-title">Start Background Services</div>
+      <div class="flow-step-desc">Heartbeat scheduler, routine scheduler, DB backup timer. All run on periodic ticks.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">9</span>
+      <div class="flow-step-title">Load External Adapters</div>
+      <div class="flow-step-desc"><code>waitForExternalAdapters()</code> &mdash; discover and register plugins from <code>~/.paperclip/adapter-plugins.json</code>.</div>
+    </div>
+    <div class="flow-step"><span class="step-num">10</span>
+      <div class="flow-step-title">Listen</div>
+      <div class="flow-step-desc">Bind to host:port (default <code>localhost:3100</code>), print banner, register SIGINT/SIGTERM for graceful shutdown.</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 5: MIDDLEWARE =============== -->
+<section id="middleware">
+  <h2><span class="section-num">5</span> Middleware Stack</h2>
+  <p class="section-desc">Request processing pipeline. <span class="file-ref">server/src/app.ts:62-347</span></p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Request Processing Pipeline</div>
+    <div class="mermaid">
+graph LR
+    A[HTTP Request] --> B[express.json<br/>10MB limit]
+    B --> C[httpLogger<br/>pino-http]
+    C --> D{Private<br/>hostname<br/>guard}
+    D --> E[actorMiddleware<br/>resolve identity]
+    E --> F{boardMutation<br/>Guard<br/>CSRF check}
+    F --> G[API Router<br/>all /api/* routes]
+    G --> H[Plugin UI<br/>static routes]
+    H --> I[UI Serving<br/>Vite dev / static]
+    I --> J[errorHandler<br/>catch-all]
+    J --> K[HTTP Response]
+
+    style A fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    style K fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    style E fill:#1a1440,stroke:#6c5ce7,color:#e1e4ed
+    style F fill:#3d1a1a,stroke:#ff7675,color:#e1e4ed
+    style G fill:#0d3d3b,stroke:#00cec9,color:#e1e4ed
+    style J fill:#3d3420,stroke:#fdcb6e,color:#e1e4ed
+    </div>
+  </div>
+
+  <h3>Error Handling</h3>
+  <p><span class="file-ref">server/src/middleware/error-handler.ts</span></p>
+  <table>
+    <thead><tr><th>Error Type</th><th>HTTP Status</th><th>Response</th></tr></thead>
+    <tbody>
+      <tr><td><code>HttpError</code></td><td>Custom (400-500)</td><td><code>{ status, error, details? }</code></td></tr>
+      <tr><td><code>ZodError</code></td><td>400</td><td><code>{ status: 400, error: "Validation error", details: errors[] }</code></td></tr>
+      <tr><td>Generic <code>Error</code></td><td>500</td><td><code>{ status: 500, error: "Internal server error" }</code> + telemetry log</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============== SECTION 6: AUTH =============== -->
+<section id="auth">
+  <h2><span class="section-num">6</span> Authentication &amp; Authorization</h2>
+  <p class="section-desc"><span class="file-ref">server/src/middleware/auth.ts</span> &bull; <span class="file-ref">server/src/auth/better-auth.ts</span></p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Actor Resolution Flow</div>
+    <div class="mermaid">
+flowchart TD
+    A[Incoming Request] --> B{Deployment<br/>Mode?}
+    B -->|local_trusted| C["Actor: board<br/>(local-board user)"]
+    B -->|authenticated| D{Bearer<br/>token?}
+    D -->|No| E{Session<br/>cookie?}
+    E -->|Yes| F[Resolve BetterAuth<br/>session]
+    F --> G["Actor: board<br/>(with companyIds, roles)"]
+    E -->|No| H["Actor: none"]
+    D -->|Yes| I{Board API<br/>key?}
+    I -->|Yes| J["Actor: board"]
+    I -->|No| K{Agent API<br/>key?}
+    K -->|Yes| L["Actor: agent<br/>(agentId, companyId)"]
+    K -->|No| M{Local Agent<br/>JWT?}
+    M -->|Yes| N["Actor: agent"]
+    M -->|No| H
+
+    style C fill:#0d3d3b,stroke:#00cec9,color:#e1e4ed
+    style G fill:#0d3d3b,stroke:#00cec9,color:#e1e4ed
+    style J fill:#0d3d3b,stroke:#00cec9,color:#e1e4ed
+    style L fill:#1a1440,stroke:#a29bfe,color:#e1e4ed
+    style N fill:#1a1440,stroke:#a29bfe,color:#e1e4ed
+    style H fill:#3d1a1a,stroke:#ff7675,color:#e1e4ed
+    </div>
+  </div>
+
+  <h3>Authorization Helpers</h3>
+  <p><span class="file-ref">server/src/routes/authz.ts</span></p>
+  <table>
+    <thead><tr><th>Function</th><th>Checks</th></tr></thead>
+    <tbody>
+      <tr><td><code>assertBoard(req)</code></td><td>Requires <code>actor.type === "board"</code></td></tr>
+      <tr><td><code>assertInstanceAdmin(req)</code></td><td>Requires instance admin role</td></tr>
+      <tr><td><code>assertCompanyAccess(req, companyId)</code></td><td>Validates company membership for the actor</td></tr>
+      <tr><td><code>getActorInfo(req)</code></td><td>Extracts actor ID + type for activity logging</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============== SECTION 7: ROUTES =============== -->
+<section id="routes">
+  <h2><span class="section-num">7</span> API Routes</h2>
+  <p class="section-desc">~26 route files in <span class="file-ref">server/src/routes/</span>, all company-scoped, base path <code>/api</code>.</p>
+
+  <table>
+    <thead><tr><th>Route</th><th>File</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>/api/companies</code></td><td><code>companies.ts</code></td><td>Company CRUD, stats, portability import/export</td></tr>
+      <tr><td><code>/api/agents</code></td><td><code>agents.ts</code></td><td>Agent CRUD, wake-up, permissions, config revisions</td></tr>
+      <tr><td><code>/api/issues</code></td><td><code>issues.ts</code></td><td>Issue CRUD, comments, attachments, checkout (2231 lines)</td></tr>
+      <tr><td><code>/api/projects</code></td><td><code>projects.ts</code></td><td>Project CRUD, workspaces, execution config</td></tr>
+      <tr><td><code>/api/goals</code></td><td><code>goals.ts</code></td><td>Goal hierarchy and tracking</td></tr>
+      <tr><td><code>/api/approvals</code></td><td><code>approvals.ts</code></td><td>Approval workflows and resolution</td></tr>
+      <tr><td><code>/api/routines</code></td><td><code>routines.ts</code></td><td>Scheduled automation triggers</td></tr>
+      <tr><td><code>/api/costs</code></td><td><code>costs.ts</code></td><td>Cost tracking and budget management</td></tr>
+      <tr><td><code>/api/adapters</code></td><td><code>adapters.ts</code></td><td>Adapter registry, install/remove/reload</td></tr>
+      <tr><td><code>/api/plugins</code></td><td><code>plugins.ts</code></td><td>Plugin lifecycle, jobs, webhooks</td></tr>
+      <tr><td><code>/api/secrets</code></td><td><code>secrets.ts</code></td><td>Company secrets management (encrypted)</td></tr>
+      <tr><td><code>/api/activity</code></td><td><code>activity.ts</code></td><td>Activity log queries</td></tr>
+      <tr><td><code>/api/access</code></td><td><code>access.ts</code></td><td>Multi-tenancy access, invites, join requests</td></tr>
+      <tr><td><code>/api/dashboard</code></td><td><code>dashboard.ts</code></td><td>Aggregated dashboard data</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Route Pattern</h3>
+  <p>Every route file follows the same factory pattern:</p>
+  <pre><code>export function issueRoutes(db: Db, deps?: { storage? }) {
+  const router = Router();
+  const svc = issueService(db);
+
+  router.get("/:companyId/issues", async (req, res) => {
+    assertCompanyAccess(req, req.params.companyId);
+    const issues = await svc.list(req.params.companyId, req.query);
+    res.json(issues);
+  });
+
+  router.post("/:companyId/issues", validate(createIssueSchema), async (req, res) => {
+    assertCompanyAccess(req, req.params.companyId);
+    const issue = await svc.create(req.params.companyId, req.body, req.actor);
+    logActivity(db, { action: "issue.created", ... });
+    res.json(issue);
+  });
+
+  return router;
+}</code></pre>
+</section>
+
+<!-- =============== SECTION 8: SERVICES =============== -->
+<section id="services">
+  <h2><span class="section-num">8</span> Service Layer</h2>
+  <p class="section-desc">~34 core + ~15 plugin services in <span class="file-ref">server/src/services/</span>. Factory pattern, no classes.</p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Request Lifecycle: Issue Creation</div>
+    <div class="mermaid">
+sequenceDiagram
+    participant UI as Board UI
+    participant MW as Middleware
+    participant RT as Route Handler
+    participant SVC as Issue Service
+    participant DB as Database
+    participant AL as Activity Log
+    participant WS as WebSocket
+
+    UI->>MW: POST /api/issues
+    MW->>MW: httpLogger, actorMiddleware
+    MW->>MW: boardMutationGuard (CSRF)
+    MW->>RT: Validated request
+    RT->>RT: assertCompanyAccess()
+    RT->>RT: validate(createIssueSchema)
+    RT->>SVC: svc.create(companyId, input, actor)
+    SVC->>DB: INSERT INTO issues
+    SVC->>DB: INSERT INTO issueLabels
+    SVC->>DB: INSERT INTO issueDocuments
+    SVC-->>RT: enriched issue object
+    RT->>AL: logActivity(issue.created)
+    AL->>DB: INSERT INTO activityLog
+    AL->>WS: publishLiveEvent()
+    WS-->>UI: Real-time update
+    RT-->>UI: 200 JSON response
+    </div>
+  </div>
+
+  <h3>Service Categories</h3>
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">&#128187;</div>
+        <div class="card-title">Domain Services</div>
+      </div>
+      <div class="card-body">companies, agents, projects, issues, goals, approvals, routines, costs, finance</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon green">&#9881;</div>
+        <div class="card-title">Operations Services</div>
+      </div>
+      <div class="card-body">activity log, documents, assets, company portability, execution workspaces, workspace runtime services</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon orange">&#128272;</div>
+        <div class="card-title">System Services</div>
+      </div>
+      <div class="card-body">access control, instance settings, board auth, heartbeat scheduler, budget enforcement, feedback export</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon blue">&#128268;</div>
+        <div class="card-title">Plugin Services</div>
+      </div>
+      <div class="card-body">plugin-loader, lifecycle, worker-manager, registry, job-store, job-scheduler, tool-dispatcher, event-bus, dev-watcher</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 9: REALTIME =============== -->
+<section id="realtime">
+  <h2><span class="section-num">9</span> Real-time / WebSocket</h2>
+  <p class="section-desc"><span class="file-ref">server/src/realtime/live-events-ws.ts</span></p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">WebSocket Connection Lifecycle</div>
+    <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    participant Auth as Auth Layer
+    participant EM as Event Emitter
+
+    C->>S: GET /api/companies/{id}/events/ws (Upgrade)
+    S->>Auth: authorizeUpgrade(request)
+    Auth-->>S: paperclipUpgradeContext
+    S->>S: wss.handleUpgrade()
+    S-->>C: 101 Switching Protocols
+    S->>EM: subscribeCompanyLiveEvents(companyId)
+
+    loop Every 30s
+        S->>C: ping
+        C-->>S: pong
+    end
+
+    Note over EM: Server mutation happens
+    EM->>S: publishLiveEvent(companyId, event)
+    S->>C: JSON event message
+
+    C->>S: close
+    S->>EM: unsubscribe
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 10: DATABASE =============== -->
+<section id="database">
+  <h2><span class="section-num">10</span> Database Schema</h2>
+  <p class="section-desc">~65 tables in <span class="file-ref">packages/db/src/schema/</span>. Drizzle ORM + PGlite (embedded) or external Postgres.</p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Core Entity Relationships</div>
+    <div class="mermaid">
+erDiagram
+    COMPANIES ||--o{ AGENTS : "has"
+    COMPANIES ||--o{ PROJECTS : "has"
+    COMPANIES ||--o{ ISSUES : "has"
+    COMPANIES ||--o{ GOALS : "has"
+    COMPANIES ||--o{ APPROVALS : "has"
+    COMPANIES ||--o{ ROUTINES : "has"
+    COMPANIES ||--o{ BUDGET_POLICIES : "has"
+
+    AGENTS ||--o{ ISSUES : "assigned to"
+    AGENTS ||--o{ HEARTBEAT_RUNS : "executes"
+    AGENTS ||--o{ AGENT_API_KEYS : "has"
+    AGENTS ||--o| AGENT_RUNTIME_STATE : "has"
+    AGENTS ||--o{ AGENT_WAKEUP_REQUESTS : "receives"
+    AGENTS }o--o| AGENTS : "reports to"
+
+    ISSUES ||--o{ ISSUE_COMMENTS : "has"
+    ISSUES ||--o{ ISSUE_LABELS : "tagged"
+    ISSUES ||--o{ ISSUE_WORK_PRODUCTS : "produces"
+    ISSUES ||--o{ ISSUE_DOCUMENTS : "linked"
+    ISSUES }o--o| ISSUES : "parent of"
+
+    PROJECTS ||--o{ PROJECT_WORKSPACES : "has"
+    PROJECTS ||--o{ EXECUTION_WORKSPACES : "has"
+
+    HEARTBEAT_RUNS ||--o{ HEARTBEAT_RUN_EVENTS : "logs"
+    HEARTBEAT_RUNS ||--o{ COST_EVENTS : "incurs"
+
+    GOALS }o--o| GOALS : "parent of"
+
+    ROUTINES ||--o{ ROUTINE_TRIGGERS : "fired by"
+    ROUTINES ||--o{ ROUTINE_RUNS : "produces"
+
+    COST_EVENTS ||--o{ FINANCE_EVENTS : "billable"
+    BUDGET_POLICIES ||--o{ BUDGET_INCIDENTS : "triggers"
+    </div>
+  </div>
+
+  <h3>Table Groups</h3>
+
+  <h4>Core Domain</h4>
+  <table>
+    <thead><tr><th>Table</th><th>Purpose</th><th>Key Columns</th></tr></thead>
+    <tbody>
+      <tr><td><code>companies</code></td><td>Tenant entity</td><td>name, issuePrefix, budgetMonthlyCents, status</td></tr>
+      <tr><td><code>agents</code></td><td>AI employees</td><td>adapterType, adapterConfig, role, reportsTo, status</td></tr>
+      <tr><td><code>issues</code></td><td>Work items</td><td>status, priority, assigneeAgentId, checkoutRunId, issueNumber</td></tr>
+      <tr><td><code>projects</code></td><td>Execution workspaces</td><td>status, leadAgentId, executionWorkspacePolicy</td></tr>
+      <tr><td><code>goals</code></td><td>OKR hierarchy</td><td>level (task/agent/team/company), parentId, ownerAgentId</td></tr>
+      <tr><td><code>approvals</code></td><td>Governance gates</td><td>type, status, payload, decidedByUserId</td></tr>
+      <tr><td><code>routines</code></td><td>Scheduled automation</td><td>concurrencyPolicy, catchUpPolicy, variables</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Agent Execution</h4>
+  <table>
+    <thead><tr><th>Table</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>heartbeatRuns</code></td><td>Agent execution runs &mdash; status, logs, exit code, usage, session</td></tr>
+      <tr><td><code>heartbeatRunEvents</code></td><td>Per-run event stream (BIGSERIAL for immutable log ordering)</td></tr>
+      <tr><td><code>agentRuntimeState</code></td><td>Session state, total token counts, cost tracking per agent</td></tr>
+      <tr><td><code>agentWakeupRequests</code></td><td>Async invocation queue (queued &rarr; claimed &rarr; completed)</td></tr>
+      <tr><td><code>agentTaskSessions</code></td><td>Stateful task execution tracking per task key</td></tr>
+      <tr><td><code>agentConfigRevisions</code></td><td>Config change audit trail (before/after JSON)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Financial</h4>
+  <table>
+    <thead><tr><th>Table</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>costEvents</code></td><td>Token spend per run (inputTokens, outputTokens, costCents)</td></tr>
+      <tr><td><code>financeEvents</code></td><td>Billing ledger (debit/credit, inference charges, fees)</td></tr>
+      <tr><td><code>budgetPolicies</code></td><td>Spending limits (calendar_month / lifetime, hard-stop toggle)</td></tr>
+      <tr><td><code>budgetIncidents</code></td><td>Violations (soft warn / hard stop, with approvalId link)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Schema Patterns</h3>
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon green">&#128274;</div>
+        <div class="card-title">Company Scoping</div>
+      </div>
+      <div class="card-body">Nearly every table has <code>companyId</code> FK. Multi-tenancy is enforced at the data model level, not just the application layer.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon orange">&#128465;</div>
+        <div class="card-title">Soft Deletes</div>
+      </div>
+      <div class="card-body">No hard deletes. Instead: <code>archivedAt</code>, <code>hiddenAt</code>, <code>pausedAt</code>, <code>revokedAt</code> timestamps for lifecycle state.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon blue">&#128100;</div>
+        <div class="card-title">Dual Audit</div>
+      </div>
+      <div class="card-body"><code>createdByAgentId</code> + <code>createdByUserId</code> on most entities. Track whether a human or AI made the change.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">&#128196;</div>
+        <div class="card-title">JSON Flexibility</div>
+      </div>
+      <div class="card-body"><code>*Json</code> columns (adapterConfig, payload, metadata) for extensible config without schema migrations.</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 11: SHARED =============== -->
+<section id="shared">
+  <h2><span class="section-num">11</span> Shared Packages</h2>
+  <p class="section-desc"><span class="file-ref">packages/shared/src/index.ts</span> &mdash; 600+ exports consumed by server and UI.</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon green">&#128196;</div>
+        <div class="card-title">Types (70+)</div>
+      </div>
+      <div class="card-body">Company, Agent, Issue, Project, Goal, Approval, Routine, CostEvent, FinanceEvent, BudgetPolicy, ExecutionWorkspace, PluginRecord, and more.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon orange">&#9989;</div>
+        <div class="card-title">Zod Validators (60+)</div>
+      </div>
+      <div class="card-body"><code>createIssueSchema</code>, <code>updateAgentSchema</code>, <code>upsertBudgetPolicySchema</code>, etc. Used in server middleware for request validation.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon blue">&#128279;</div>
+        <div class="card-title">API Path Constants</div>
+      </div>
+      <div class="card-body"><code>API.companies</code>, <code>API.agents</code>, <code>API.issues</code>, etc. Single source of truth for endpoint paths shared between UI and server.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">&#128218;</div>
+        <div class="card-title">Enums &amp; Constants</div>
+      </div>
+      <div class="card-body">COMPANY_STATUSES, AGENT_STATUSES, ISSUE_STATUSES, PERMISSION_KEYS, BILLING_TYPES, PLUGIN_CAPABILITIES, etc.</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 12: ADAPTERS =============== -->
+<section id="adapters">
+  <h2><span class="section-num">12</span> Adapter System</h2>
+  <p class="section-desc">The pluggable runtime layer connecting Paperclip to external agent runtimes.</p>
+
+  <div class="quote">
+    Adapters abstract away differences between local tools (Claude Code, OpenCode, Cursor) and remote systems (OpenClaw Gateway, HTTP webhooks). Each adapter implements a consistent interface so the core doesn't need to know about specific backends.
+  </div>
+
+  <h3>Adapter Contract</h3>
+  <p><span class="file-ref">packages/adapter-utils/src/types.ts</span></p>
+  <pre><code>interface ServerAdapterModule {
+  type: string;                    // "claude_local", "opencode_local", etc.
+  execute(ctx): Promise&lt;Result&gt;;   // Core: run the agent
+  testEnvironment(ctx): Promise&lt;TestResult&gt;;  // Health check
+  listSkills?(): Promise&lt;SkillSnapshot&gt;;
+  sessionCodec?: { serialize, deserialize, getDisplayId };
+  models?: AdapterModel[];
+  listModels?(): Promise&lt;AdapterModel[]&gt;;
+  detectModel?(): Promise&lt;{model, provider}&gt;;
+  getConfigSchema?(): Promise&lt;ConfigSchema&gt;;  // Declarative UI form
+  getQuotaWindows?(): Promise&lt;QuotaResult&gt;;
+}</code></pre>
+
+  <h3>Built-in Adapters</h3>
+  <table>
+    <thead><tr><th>Type ID</th><th>Package</th><th>Runtime</th></tr></thead>
+    <tbody>
+      <tr><td><code>claude_local</code></td><td><code>packages/adapters/claude-local</code></td><td>Spawns Claude Code CLI</td></tr>
+      <tr><td><code>opencode_local</code></td><td><code>packages/adapters/opencode-local</code></td><td>Spawns OpenCode CLI (multi-provider)</td></tr>
+      <tr><td><code>codex_local</code></td><td><code>packages/adapters/codex-local</code></td><td>Spawns Codex CLI</td></tr>
+      <tr><td><code>cursor_local</code></td><td><code>packages/adapters/cursor-local</code></td><td>Spawns Cursor IDE agent</td></tr>
+      <tr><td><code>gemini_local</code></td><td><code>packages/adapters/gemini-local</code></td><td>Spawns Gemini CLI</td></tr>
+      <tr><td><code>pi_local</code></td><td><code>packages/adapters/pi-local</code></td><td>Spawns Pi agent CLI</td></tr>
+      <tr><td><code>openclaw_gateway</code></td><td><code>packages/adapters/openclaw-gateway</code></td><td>WebSocket to OpenClaw network</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Dual Registry Architecture</h3>
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Server &amp; UI Adapter Registries</div>
+    <div class="mermaid">
+flowchart LR
+    subgraph Server["Server (registry.ts)"]
+        SR[registerBuiltInAdapters]
+        SR --> SM[adaptersByType Map]
+        EX[External Plugin Loader] --> SM
+        SM --> EXE[execute&#40;&#41;]
+        SM --> TEST[testEnvironment&#40;&#41;]
+    end
+
+    subgraph UI["UI (registry.ts)"]
+        UR[registerBuiltInUIAdapters]
+        UR --> UM[uiAdaptersByType Map]
+        SYNC["syncExternalAdapters()"] --> UM
+        UM --> PARSE["parseStdoutLine()"]
+        UM --> CONFIG["ConfigFields Component"]
+    end
+
+    Server -- "GET /api/adapters" --> SYNC
+    Server -- "GET /api/adapters/:type/ui-parser" --> DYNAMIC[Dynamic Parser Load]
+    DYNAMIC --> UM
+
+    style Server fill:#1a1440,stroke:#6c5ce7,color:#e1e4ed
+    style UI fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 13: EXECUTION FLOW =============== -->
+<section id="execution-flow">
+  <h2><span class="section-num">13</span> End-to-End Agent Execution</h2>
+  <p class="section-desc">From issue creation to agent completion &mdash; the full data flow.</p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Complete Agent Execution Lifecycle</div>
+    <div class="mermaid">
+sequenceDiagram
+    participant U as User (Board UI)
+    participant API as Server API
+    participant HS as Heartbeat Scheduler
+    participant AR as Adapter Registry
+    participant CLI as Agent CLI (e.g. Claude)
+    participant DB as Database
+    participant WS as WebSocket
+
+    U->>API: Create issue + assign to agent
+    API->>DB: INSERT issue (assigneeAgentId)
+    API->>WS: publish issue.created
+
+    HS->>DB: Detect pending assignment
+    HS->>DB: CREATE wakeup request
+    HS->>DB: CREATE heartbeatRun (status: queued)
+    HS->>AR: requireServerAdapter(adapterType)
+    AR-->>HS: adapter module
+
+    HS->>CLI: adapter.execute(context)
+    activate CLI
+
+    loop Streaming
+        CLI->>API: onLog("stdout", chunk)
+        API->>DB: INSERT heartbeatRunEvent
+        API->>WS: publish run event
+        WS-->>U: Live transcript update
+    end
+
+    CLI-->>HS: { exitCode, usage, sessionParams, costUsd }
+    deactivate CLI
+
+    HS->>DB: UPDATE heartbeatRun (succeeded)
+    HS->>DB: INSERT costEvent (tokens, cost)
+    HS->>DB: UPDATE agentRuntimeState (session, totals)
+    HS->>DB: CHECK budgetPolicies
+
+    alt Budget exceeded
+        HS->>DB: CREATE budgetIncident
+        HS->>DB: UPDATE agent (status: paused)
+    end
+
+    HS->>DB: INSERT activityLog
+    HS->>WS: publish run.completed
+    WS-->>U: Dashboard refresh
+    </div>
+  </div>
+
+  <h3>Transcript Parsing</h3>
+  <p>Each adapter defines how raw stdout is parsed into structured entries for the UI:</p>
+  <pre><code>type TranscriptEntry =
+  | { kind: "assistant"; text }        // Agent response text
+  | { kind: "thinking"; text }         // Chain-of-thought
+  | { kind: "tool_call"; name; input } // Tool invocation
+  | { kind: "tool_result"; output }    // Tool response
+  | { kind: "diff"; changeType }       // Code changes
+  | { kind: "result"; tokens; cost }   // Run summary
+  | { kind: "stdout" | "stderr" }      // Raw output</code></pre>
+</section>
+
+<!-- =============== SECTION 14: PLUGINS =============== -->
+<section id="plugins">
+  <h2><span class="section-num">14</span> Plugin System</h2>
+  <p class="section-desc">Extends the Paperclip platform itself. Separate from adapters (which run agents).</p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Plugin State Machine</div>
+    <div class="mermaid">
+stateDiagram-v2
+    [*] --> installed
+    installed --> ready : load success
+    installed --> error : load failure
+    ready --> disabled : user disables
+    ready --> error : runtime failure
+    ready --> upgrade_pending : new version
+    disabled --> ready : user enables
+    error --> ready : retry success
+    upgrade_pending --> ready : upgrade complete
+    ready --> uninstalled : user removes
+    disabled --> uninstalled : user removes
+    error --> uninstalled : user removes
+    uninstalled --> [*]
+    </div>
+  </div>
+
+  <h3>Process Model</h3>
+  <p><span class="file-ref">server/src/services/plugin-worker-manager.ts</span></p>
+  <ul>
+    <li><strong>One child process per plugin</strong> &mdash; isolation via subprocess</li>
+    <li><strong>JSON-RPC 2.0 over stdio</strong> &mdash; structured communication</li>
+    <li><strong>Auto-restart</strong> with exponential backoff (1s &rarr; 5min, max 10 consecutive crashes)</li>
+    <li><strong>Graceful shutdown:</strong> 10s drain &rarr; SIGTERM &rarr; SIGKILL</li>
+  </ul>
+
+  <h3>Plugin Architecture Components</h3>
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon blue">&#128269;</div>
+        <div class="card-title">Plugin Loader</div>
+      </div>
+      <div class="card-body">Discovers plugins from <code>~/.paperclip/plugins/</code> and node_modules. Validates manifests, resolves entry points, spawns workers.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon green">&#128232;</div>
+        <div class="card-title">Event Bus</div>
+      </div>
+      <div class="card-body">In-memory pub/sub. Domain events (issue.created, agent.woke) dispatched to subscribed plugins filtered by entity type.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon orange">&#9200;</div>
+        <div class="card-title">Job Scheduler</div>
+      </div>
+      <div class="card-body">Persisted job queue in <code>pluginJobs</code> table. Cron scheduling, retry with exponential backoff, execution history.</div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">&#128295;</div>
+        <div class="card-title">Tool Dispatcher</div>
+      </div>
+      <div class="card-body">Routes tool invocations from agents to plugins with <code>execute_tool</code> capability. Validates signatures against declarations.</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SECTION 15: UI =============== -->
+<section id="ui">
+  <h2><span class="section-num">15</span> UI Application</h2>
+  <p class="section-desc">React 19 + Vite + Tailwind + Radix UI. <span class="file-ref">ui/src/</span></p>
+
+  <h3>Provider Stack</h3>
+  <p><span class="file-ref">ui/src/main.tsx</span> &mdash; providers nest from outer to inner:</p>
+  <pre><code>QueryClientProvider          // TanStack Query (30s staleTime)
+  &rarr; ThemeProvider            // Dark/light mode
+    &rarr; BrowserRouter          // React Router
+      &rarr; CompanyProvider      // Selected company context
+        &rarr; LiveUpdatesProvider // WebSocket real-time events
+          &rarr; DialogProvider   // Global modal management
+            &rarr; &lt;App /&gt;       // Routing &amp; auth gates</code></pre>
+
+  <h3>Routing &amp; Auth Gate</h3>
+  <p><span class="file-ref">ui/src/App.tsx</span></p>
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">UI Bootstrap Flow</div>
+    <div class="mermaid">
+flowchart TD
+    A[App loads] --> B[Health check]
+    B --> C{Deployment mode?}
+    C -->|local_trusted| F[Render app]
+    C -->|authenticated| D{Session exists?}
+    D -->|No| E[Redirect to /auth]
+    D -->|Yes| G{Bootstrap needed?}
+    G -->|Yes| H[Onboarding wizard]
+    G -->|No| F
+    F --> I{Company selected?}
+    I -->|Yes| J["/:companyPrefix/* routes"]
+    I -->|No| K[Pick first company]
+    K --> J
+    </div>
+  </div>
+
+  <h3>Key Pages</h3>
+  <table>
+    <thead><tr><th>Page</th><th>File</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Dashboard</td><td><code>pages/Dashboard.tsx</code></td><td>Overview: agents, issues, recent activity</td></tr>
+      <tr><td>Agents</td><td><code>pages/Agents.tsx</code></td><td>Agent list, status, quick actions</td></tr>
+      <tr><td>Agent Detail</td><td><code>pages/AgentDetail.tsx</code></td><td>Config, runs, transcript, cost history</td></tr>
+      <tr><td>Issues</td><td><code>pages/Issues.tsx</code></td><td>Issue list with filters, kanban view</td></tr>
+      <tr><td>Issue Detail</td><td><code>pages/IssueDetail.tsx</code></td><td>Full issue with comments, attachments, work products</td></tr>
+      <tr><td>Projects</td><td><code>pages/Projects.tsx</code></td><td>Project list and workspace config</td></tr>
+      <tr><td>Routines</td><td><code>pages/Routines.tsx</code></td><td>Scheduled automation management</td></tr>
+      <tr><td>Costs</td><td><code>pages/Costs.tsx</code></td><td>Cost tracking, budget dashboard</td></tr>
+      <tr><td>Org Chart</td><td><code>pages/OrgChart.tsx</code></td><td>Agent hierarchy visualization</td></tr>
+      <tr><td>Adapter Manager</td><td><code>pages/AdapterManager.tsx</code></td><td>Install, remove, reload adapters</td></tr>
+      <tr><td>Plugin Manager</td><td><code>pages/PluginManager.tsx</code></td><td>Plugin lifecycle management</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============== SECTION 16: UI ADAPTERS =============== -->
+<section id="ui-adapters">
+  <h2><span class="section-num">16</span> UI Adapter Registry</h2>
+  <p class="section-desc"><span class="file-ref">ui/src/adapters/registry.ts</span> &mdash; mirrors the server registry for transcript parsing and config forms.</p>
+
+  <h3>UI Adapter Contract</h3>
+  <pre><code>interface UIAdapterModule {
+  type: string;                    // matches server adapter type
+  label: string;                   // display name
+  parseStdoutLine(line, ts): TranscriptEntry[];  // parse agent output
+  ConfigFields: React.Component;   // adapter-specific config form
+  buildAdapterConfig(values): Record&lt;string, unknown&gt;;  // form &rarr; JSON
+}</code></pre>
+
+  <h3>How Agent Config Flows</h3>
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">Config Flow: UI &rarr; Server &rarr; Adapter</div>
+    <div class="mermaid">
+flowchart LR
+    A["AgentConfigForm<br/>(React)"] --> B["Adapter-specific<br/>ConfigFields"]
+    B --> C["buildAdapterConfig()<br/>form → JSON"]
+    C --> D["POST /api/agents<br/>{ adapterConfig }"]
+    D --> E["DB: agents.adapterConfig<br/>(JSON column)"]
+    E --> F["adapter.execute()<br/>reads config"]
+
+    style A fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    style B fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    style D fill:#1a1440,stroke:#6c5ce7,color:#e1e4ed
+    style E fill:#3d3420,stroke:#fdcb6e,color:#e1e4ed
+    style F fill:#3d1a1a,stroke:#ff7675,color:#e1e4ed
+    </div>
+  </div>
+
+  <h3>External Adapter UI Loading</h3>
+  <p>For external adapters without React components bundled in the UI:</p>
+  <ol>
+    <li>Register <strong>bridge adapter</strong> with fallback parser</li>
+    <li>On first stdout line, fetch <code>/api/adapters/:type/ui-parser</code></li>
+    <li>Load as ES module via Blob URL + dynamic <code>import()</code></li>
+    <li>Replace bridge with real parser (or keep fallback on failure)</li>
+  </ol>
+</section>
+
+<!-- =============== SECTION 17: CLI =============== -->
+<section id="cli">
+  <h2><span class="section-num">17</span> CLI Tool</h2>
+  <p class="section-desc"><span class="file-ref">cli/src/index.ts</span> &mdash; Commander + @clack/prompts.</p>
+
+  <h3>Commands</h3>
+  <table>
+    <thead><tr><th>Category</th><th>Commands</th><th>Key File</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag green">Setup</span></td><td><code>onboard</code>, <code>doctor</code>, <code>run</code>, <code>configure</code></td><td><code>commands/onboard.ts</code> (600+ lines)</td></tr>
+      <tr><td><span class="tag blue">Client</span></td><td><code>issue list/create/update</code>, <code>company</code>, <code>agent</code>, <code>approval</code></td><td><code>commands/client/*.ts</code></td></tr>
+      <tr><td><span class="tag orange">Workspace</span></td><td><code>worktree init/make/env</code></td><td><code>commands/worktree.ts</code> (2500+ lines)</td></tr>
+      <tr><td><span class="tag purple">System</span></td><td><code>db:backup</code>, <code>allowed-hostname</code>, <code>heartbeat run</code></td><td><code>commands/db-backup.ts</code></td></tr>
+      <tr><td><span class="tag red">Auth</span></td><td><code>auth bootstrap-ceo</code>, <code>auth login</code></td><td><code>commands/auth-bootstrap-ceo.ts</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Doctor Checks</h3>
+  <p><span class="file-ref">cli/src/checks/</span> &mdash; 9 diagnostic checks with auto-repair:</p>
+  <ul>
+    <li>Config file existence &amp; validity</li>
+    <li>JWT secret presence</li>
+    <li>Database connectivity</li>
+    <li>LLM provider configuration</li>
+    <li>Secrets provider (encryption key)</li>
+    <li>Storage provider</li>
+    <li>Log directory writability</li>
+    <li>Port availability</li>
+    <li>Deployment auth consistency</li>
+  </ul>
+</section>
+
+<!-- =============== SECTION 18: CI/CD =============== -->
+<section id="cicd">
+  <h2><span class="section-num">18</span> CI/CD &amp; Release</h2>
+  <p class="section-desc"><span class="file-ref">.github/workflows/</span></p>
+
+  <div class="mermaid-wrap">
+    <div class="mermaid-label">CI/CD Pipeline Overview</div>
+    <div class="mermaid">
+flowchart LR
+    subgraph PR["Pull Request"]
+        P1[Policy Check] --> P2[Typecheck]
+        P2 --> P3[Tests]
+        P3 --> P4[Build]
+        P4 --> P5[E2E Tests]
+    end
+
+    subgraph Master["Push to Master"]
+        M1[Verify Canary] --> M2[Publish Canary<br/>npm @canary]
+        M2 --> M3[Docker Build<br/>ghcr.io]
+        M3 --> M4[Refresh Lockfile]
+    end
+
+    subgraph Release["Manual Dispatch"]
+        R1[Verify Stable] --> R2[Publish Stable<br/>npm @latest]
+        R2 --> R3[GitHub Release]
+        R3 --> R4[Release Smoke Test]
+    end
+
+    PR --> Master
+    Master --> Release
+
+    style PR fill:#1a2d3d,stroke:#74b9ff,color:#e1e4ed
+    style Master fill:#0d3d3b,stroke:#00cec9,color:#e1e4ed
+    style Release fill:#1a1440,stroke:#a29bfe,color:#e1e4ed
+    </div>
+  </div>
+
+  <h3>Workflows</h3>
+  <table>
+    <thead><tr><th>Workflow</th><th>Trigger</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>pr.yml</code></td><td>PR to master</td><td>Policy + typecheck + test + build + E2E</td></tr>
+      <tr><td><code>release.yml</code></td><td>Push to master / manual</td><td>Canary auto-publish; stable on dispatch</td></tr>
+      <tr><td><code>docker.yml</code></td><td>Push + tags</td><td>Multi-arch Docker build (amd64, arm64)</td></tr>
+      <tr><td><code>e2e.yml</code></td><td>Manual dispatch</td><td>Full E2E suite with Playwright</td></tr>
+      <tr><td><code>release-smoke.yml</code></td><td>Post-release</td><td>Docker smoke against published version</td></tr>
+      <tr><td><code>refresh-lockfile.yml</code></td><td>Push to master</td><td>CI owns pnpm-lock.yaml (never commit in PRs)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Version Scheme</h3>
+  <ul>
+    <li><strong>Canary:</strong> <code>YYYY.MDD.P-canary.N</code> &mdash; auto-published on every master push</li>
+    <li><strong>Stable:</strong> <code>YYYY.MDD.P</code> &mdash; manual workflow dispatch</li>
+  </ul>
+
+  <h3>PR Requirements</h3>
+  <p>All sections mandatory per <span class="file-ref">.github/PULL_REQUEST_TEMPLATE.md</span>:</p>
+  <ul>
+    <li><strong>Thinking Path</strong> &mdash; trace reasoning from project context to change</li>
+    <li><strong>What Changed</strong> &mdash; concrete bullet list</li>
+    <li><strong>Verification</strong> &mdash; how to confirm it works</li>
+    <li><strong>Risks</strong> &mdash; what could go wrong</li>
+    <li><strong>Model Used</strong> &mdash; AI model + version or "None &mdash; human-authored"</li>
+    <li><strong>Checklist</strong> &mdash; 8 items including Greptile 5/5 score</li>
+  </ul>
+</section>
+
+<!-- =============== SECTION 19: FILE REF =============== -->
+<section id="files">
+  <h2><span class="section-num">19</span> Key File Reference</h2>
+  <p class="section-desc">Quick lookup for the most important files in the codebase.</p>
+
+  <h4>Server</h4>
+  <table>
+    <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>server/src/index.ts</code></td><td>Server startup orchestration (~790 lines)</td></tr>
+      <tr><td><code>server/src/app.ts</code></td><td>Express app, middleware stack, route mounting (~347 lines)</td></tr>
+      <tr><td><code>server/src/middleware/auth.ts</code></td><td>Actor resolution (board/agent/none)</td></tr>
+      <tr><td><code>server/src/middleware/error-handler.ts</code></td><td>Global error transformation</td></tr>
+      <tr><td><code>server/src/routes/issues.ts</code></td><td>Issue CRUD &mdash; largest route file (~2231 lines)</td></tr>
+      <tr><td><code>server/src/routes/authz.ts</code></td><td>Authorization helpers</td></tr>
+      <tr><td><code>server/src/adapters/registry.ts</code></td><td>Adapter discovery &amp; registration</td></tr>
+      <tr><td><code>server/src/adapters/plugin-loader.ts</code></td><td>External adapter loading</td></tr>
+      <tr><td><code>server/src/realtime/live-events-ws.ts</code></td><td>WebSocket server &amp; authorization</td></tr>
+      <tr><td><code>server/src/storage/service.ts</code></td><td>Storage abstraction (local/S3)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Data &amp; Shared</h4>
+  <table>
+    <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>packages/db/src/schema/*.ts</code></td><td>All Drizzle table definitions (~65 tables)</td></tr>
+      <tr><td><code>packages/db/src/migrate.ts</code></td><td>Migration runner (dual-mode)</td></tr>
+      <tr><td><code>packages/db/drizzle.config.ts</code></td><td>Drizzle config (reads compiled JS)</td></tr>
+      <tr><td><code>packages/shared/src/index.ts</code></td><td>600+ type/validator/constant exports</td></tr>
+      <tr><td><code>packages/shared/src/api.ts</code></td><td>API path constants</td></tr>
+      <tr><td><code>packages/adapter-utils/src/types.ts</code></td><td>Adapter contract interfaces</td></tr>
+    </tbody>
+  </table>
+
+  <h4>UI</h4>
+  <table>
+    <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>ui/src/App.tsx</code></td><td>Routing, auth gates, company redirect</td></tr>
+      <tr><td><code>ui/src/main.tsx</code></td><td>Provider stack, bootstrap</td></tr>
+      <tr><td><code>ui/src/adapters/registry.ts</code></td><td>UI adapter registry, external sync</td></tr>
+      <tr><td><code>ui/src/adapters/types.ts</code></td><td>UIAdapterModule contract</td></tr>
+      <tr><td><code>ui/src/api/*.ts</code></td><td>Typed API clients per domain</td></tr>
+      <tr><td><code>ui/src/context/*.tsx</code></td><td>React contexts (company, live updates, dialogs)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>CLI &amp; Docs</h4>
+  <table>
+    <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>cli/src/index.ts</code></td><td>CLI command router</td></tr>
+      <tr><td><code>cli/src/commands/onboard.ts</code></td><td>First-run setup wizard (600+ lines)</td></tr>
+      <tr><td><code>cli/src/commands/worktree.ts</code></td><td>Git worktree isolation (2500+ lines)</td></tr>
+      <tr><td><code>doc/GOAL.md</code></td><td>Product vision &amp; strategy</td></tr>
+      <tr><td><code>doc/SPEC-implementation.md</code></td><td>V1 build contract</td></tr>
+      <tr><td><code>doc/DEVELOPING.md</code></td><td>Developer guide</td></tr>
+      <tr><td><code>AGENTS.md</code></td><td>Engineering rules &amp; conventions</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<hr>
+<p style="text-align:center;color:var(--text-muted);font-size:13px;padding:24px 0;">
+  Generated for Paperclip &mdash; the control plane for autonomous AI companies.
+</p>
+
+</div><!-- /main -->
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1a1440',
+      primaryTextColor: '#e1e4ed',
+      primaryBorderColor: '#6c5ce7',
+      lineColor: '#6c5ce7',
+      secondaryColor: '#0d3d3b',
+      tertiaryColor: '#1c1f2e',
+      fontFamily: 'Inter, sans-serif',
+      fontSize: '13px',
+      edgeLabelBackground: '#161922',
+    },
+    flowchart: { curve: 'basis', htmlLabels: true },
+    sequence: { actorMargin: 40, mirrorActors: false },
+  });
+
+  // Active nav link highlighting
+  const sections = document.querySelectorAll('section[id], div[id]');
+  const navLinks = document.querySelectorAll('.sidebar nav a');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.sidebar nav a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+
+</body>
+</html>

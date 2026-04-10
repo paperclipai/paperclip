@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Long-Term Wiki for Agents · PRD & Solution</title>
+    <style>
+      :root {
+        --bg: #0b0d12;
+        --panel: #11141b;
+        --panel-2: #151924;
+        --ink: #e7ecf3;
+        --ink-dim: #a4adbd;
+        --ink-mute: #6e7688;
+        --brand: #7c9cff;
+        --brand-2: #9bffe4;
+        --accent: #ffb86b;
+        --good: #7ee2a8;
+        --bad: #ff7b8a;
+        --warn: #ffd166;
+        --line: #222634;
+        --radius: 14px;
+        --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { background: var(--bg); color: var(--ink); font-family: var(--sans); margin: 0; padding: 0; line-height: 1.55; }
+      a { color: var(--brand); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      code { font-family: var(--mono); background: #1a1f2c; color: #d6def0; padding: 1px 6px; border-radius: 4px; font-size: 0.88em; }
+      pre { background: #0f1420; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 0.82em; color: #d6def0; }
+      pre code { background: transparent; padding: 0; }
+      h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
+      h1 { font-size: 2.2rem; margin: 0 0 8px; }
+      h2 { font-size: 1.5rem; margin: 48px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+      h3 { font-size: 1.15rem; margin: 28px 0 8px; color: var(--brand); }
+      h4 { font-size: 0.98rem; margin: 18px 0 6px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+      p { color: var(--ink); }
+      ul, ol { padding-left: 22px; }
+      li { margin: 4px 0; }
+      hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
+
+      .page { max-width: 1120px; margin: 0 auto; padding: 48px 32px 96px; }
+
+      .hero {
+        background: radial-gradient(1200px 400px at 10% 0%, rgba(124,156,255,.18), transparent 60%),
+                    radial-gradient(1000px 400px at 90% 0%, rgba(155,255,228,.12), transparent 60%),
+                    var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 36px 40px;
+        margin-bottom: 28px;
+      }
+      .hero .eyebrow { color: var(--brand-2); font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 10px; }
+      .hero h1 { background: linear-gradient(100deg, #fff, #a9c4ff 60%, #9bffe4); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .hero p.lead { color: var(--ink-dim); font-size: 1.05rem; max-width: 800px; margin-top: 8px; }
+      .hero .meta { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 20px; color: var(--ink-mute); font-size: 0.85rem; font-family: var(--mono); }
+      .hero .meta b { color: var(--ink); }
+
+      .grid { display: grid; gap: 16px; }
+      .grid-2 { grid-template-columns: 1fr 1fr; }
+      .grid-3 { grid-template-columns: repeat(3, 1fr); }
+      @media (max-width: 800px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; }
+      .card h3 { margin-top: 0; color: var(--ink); }
+      .card.muted { background: var(--panel-2); }
+      .card.good { border-color: #274d39; background: #12211a; }
+      .card.bad  { border-color: #4d272f; background: #1f1316; }
+      .card.warn { border-color: #4d3e1c; background: #1f1a10; }
+
+      .tag { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-family: var(--mono); letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid var(--line); color: var(--ink-dim); background: var(--panel-2); }
+      .tag.good { color: var(--good); border-color: #274d39; background: #12211a; }
+      .tag.bad  { color: var(--bad);  border-color: #4d272f; background: #1f1316; }
+      .tag.warn { color: var(--warn); border-color: #4d3e1c; background: #1f1a10; }
+      .tag.brand{ color: var(--brand); border-color: #26355e; background: #121828; }
+
+      table { width: 100%; border-collapse: collapse; margin: 10px 0 4px; }
+      th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 0.92rem; vertical-align: top; }
+      th { color: var(--ink-dim); font-weight: 600; background: var(--panel-2); }
+      tr:last-child td { border-bottom: 0; }
+
+      .kbd { font-family: var(--mono); background: #1a1f2c; border: 1px solid var(--line); border-bottom-width: 2px; padding: 1px 7px; border-radius: 4px; font-size: 0.82em; color: #d6def0; }
+
+      .callout { border-left: 3px solid var(--brand); background: var(--panel); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+      .callout.bad  { border-color: var(--bad); }
+      .callout.good { border-color: var(--good); }
+      .callout.warn { border-color: var(--warn); }
+      .callout h4 { margin-top: 0; color: var(--ink); letter-spacing: 0; text-transform: none; font-size: 1rem; }
+
+      /* Diagrams */
+      .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; margin: 18px 0; overflow-x: auto; }
+      .diagram svg { display: block; max-width: 100%; height: auto; }
+      .diagram .title { color: var(--ink-dim); font-size: 0.82rem; font-family: var(--mono); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; }
+
+      /* TOC */
+      .toc { position: sticky; top: 0; background: rgba(11,13,18,0.85); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); padding: 10px 32px; margin: 0 -32px 24px; z-index: 10; display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.85rem; }
+      .toc a { color: var(--ink-dim); }
+      .toc a:hover { color: var(--ink); }
+
+      .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 0.82rem; color: var(--ink-dim); }
+      .legend span { display: flex; align-items: center; gap: 6px; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="eyebrow">PRD · Solution Doc</div>
+        <h1>Long-Term Wiki for Agents</h1>
+        <p class="lead">
+          A file-based, per-agent knowledge store that accumulates across runs — injected into every heartbeat
+          and updated autonomously by the agent after each run via MCP tools. Ships with adapter hardening and
+          hiring-flow fixes discovered along the way.
+        </p>
+        <div class="meta">
+          <div>Branch: <b>feature/addLongTermWikiForAgents</b></div>
+          <div>Author: <b>Ujjwal Gupta</b></div>
+          <div>Status: <b style="color:var(--good)">Ready for review</b></div>
+          <div>Scope: <b>server · adapters · shared · mcp · ui · skills</b></div>
+        </div>
+      </div>
+
+      <div class="toc">
+        <a href="#problem">1. Problem</a>
+        <a href="#goals">2. Goals</a>
+        <a href="#overview">3. Overview</a>
+        <a href="#arch">4. Architecture</a>
+        <a href="#v1">5. V1: Naive Approach</a>
+        <a href="#v2">6. V2: Adapter Synthesis</a>
+        <a href="#flows">7. Flows</a>
+        <a href="#api">8. API & Data</a>
+        <a href="#side">9. Side Fixes</a>
+        <a href="#testing">10. Testing</a>
+        <a href="#future">11. Future</a>
+      </div>
+
+      <!-- 1. PROBLEM -->
+      <h2 id="problem">1. Problem</h2>
+      <div class="grid grid-2">
+        <div class="card bad">
+          <span class="tag bad">Pain Point</span>
+          <h3>Agents are amnesiac</h3>
+          <p>
+            Every heartbeat run starts from scratch. Conventions learned in run <code>N</code> are forgotten
+            by run <code>N+1</code>. The agent re-reads the same files, re-discovers the same patterns,
+            re-asks the same questions.
+          </p>
+        </div>
+        <div class="card bad">
+          <span class="tag bad">Pain Point</span>
+          <h3>Context window is the only memory</h3>
+          <p>
+            Session resume only carries the adapter's internal transcript. There is no <em>structured,
+            queryable, agent-authored</em> place for durable facts like "the repo uses pnpm workspaces" or
+            "DB migrations live in <code>packages/db</code>".
+          </p>
+        </div>
+        <div class="card bad">
+          <span class="tag bad">Pain Point</span>
+          <h3>No cross-session knowledge transfer</h3>
+          <p>
+            When an agent is resumed hours or days later, operationally learned state (ongoing PRs, broken
+            fixtures, who-owns-what) is gone. Humans end up re-priming agents manually in comments.
+          </p>
+        </div>
+        <div class="card bad">
+          <span class="tag bad">Pain Point</span>
+          <h3>Token budget waste</h3>
+          <p>
+            Re-exploring the same codebase every run burns tokens that should be spent on the actual task.
+            The marginal cost of each run stays flat instead of trending down as the agent "learns" the repo.
+          </p>
+        </div>
+      </div>
+
+      <!-- 2. GOALS -->
+      <h2 id="goals">2. Goals & Non-Goals</h2>
+      <div class="grid grid-2">
+        <div class="card good">
+          <h3 style="color:var(--good)">Goals</h3>
+          <ul>
+            <li>Per-agent persistent knowledge store that survives across heartbeats.</li>
+            <li>Zero DB migrations — file-based, living alongside the agent's home directory.</li>
+            <li>Automatic injection into every run's system context.</li>
+            <li>Agent-authored updates — the agent decides what is worth remembering.</li>
+            <li>Opt-out via <code>runtimeConfig.memory.enabled: false</code>; enabled by default.</li>
+            <li>Non-fatal failures — wiki errors must never break a run.</li>
+            <li>Browseable from the UI (new Wiki tab on agent detail).</li>
+          </ul>
+        </div>
+        <div class="card muted">
+          <h3>Non-Goals</h3>
+          <ul>
+            <li>Cross-agent shared knowledge graph (that's a future RAG layer).</li>
+            <li>Full-text search / vector index (markdown + path-based for now).</li>
+            <li>Versioning / diff history of wiki pages (filesystem is the source of truth).</li>
+            <li>Fine-grained permissions on individual pages.</li>
+            <li>Replacing CLAUDE.md / project docs (those are human-authored, project-wide).</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 3. OVERVIEW -->
+      <h2 id="overview">3. Solution at a Glance</h2>
+      <p>
+        Every agent gets a directory: <code>{agentHome}/wiki/</code>. Markdown pages live inside; an auto-rebuilt
+        <code>index.json</code> is the manifest. On every heartbeat, the server loads the wiki and injects a
+        formatted bundle into the adapter prompt. After the run completes, a <strong>second adapter invocation
+        resumes the same session</strong> with MCP write/delete tools exposed — letting the agent synthesize
+        what it just learned into durable pages.
+      </p>
+
+      <div class="diagram">
+        <div class="title">High-level — one heartbeat cycle</div>
+        <svg viewBox="0 0 980 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c9cff" />
+            </marker>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#9bffe4" />
+            </marker>
+          </defs>
+          <style>
+            .lbl { fill: #e7ecf3; font: 600 13px sans-serif; }
+            .sub { fill: #a4adbd; font: 11px ui-monospace, monospace; }
+            .flow { stroke: #7c9cff; stroke-width: 2; fill: none; }
+            .flow2 { stroke: #9bffe4; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+            .box { fill: #151924; stroke: #222634; stroke-width: 1; }
+            .box-hl { fill: #121828; stroke: #26355e; stroke-width: 1.5; }
+            .box-wiki { fill: #12211a; stroke: #274d39; stroke-width: 1.5; }
+          </style>
+
+          <!-- Heartbeat -->
+          <rect x="20" y="120" width="140" height="60" rx="10" class="box" />
+          <text x="90" y="145" text-anchor="middle" class="lbl">Heartbeat</text>
+          <text x="90" y="163" text-anchor="middle" class="sub">service</text>
+
+          <!-- Wiki Load -->
+          <rect x="200" y="40" width="160" height="60" rx="10" class="box-wiki" />
+          <text x="280" y="65" text-anchor="middle" class="lbl">Wiki Load</text>
+          <text x="280" y="83" text-anchor="middle" class="sub">read index + pages</text>
+
+          <!-- Adapter Run 1 -->
+          <rect x="400" y="120" width="180" height="60" rx="10" class="box-hl" />
+          <text x="490" y="145" text-anchor="middle" class="lbl">Adapter.execute()</text>
+          <text x="490" y="163" text-anchor="middle" class="sub">task run · session A</text>
+
+          <!-- Wiki Synth -->
+          <rect x="620" y="120" width="180" height="60" rx="10" class="box-hl" />
+          <text x="710" y="145" text-anchor="middle" class="lbl">Adapter.execute()</text>
+          <text x="710" y="163" text-anchor="middle" class="sub">synth · resume session A</text>
+
+          <!-- Wiki Write -->
+          <rect x="820" y="200" width="140" height="60" rx="10" class="box-wiki" />
+          <text x="890" y="225" text-anchor="middle" class="lbl">Wiki Write</text>
+          <text x="890" y="243" text-anchor="middle" class="sub">MCP tools · .md</text>
+
+          <!-- arrows -->
+          <path class="flow" marker-end="url(#arrow)" d="M 160 150 C 200 150, 220 100, 280 100" />
+          <path class="flow" marker-end="url(#arrow)" d="M 280 100 C 350 100, 360 150, 400 150" />
+          <path class="flow" marker-end="url(#arrow)" d="M 580 150 L 620 150" />
+          <path class="flow2" marker-end="url(#arrow2)" d="M 760 180 C 810 200, 830 200, 870 200" />
+
+          <!-- legend -->
+          <circle cx="30" cy="250" r="6" fill="#7c9cff" />
+          <text x="44" y="254" class="sub" style="fill:#a4adbd">task run (solid)</text>
+          <circle cx="180" cy="250" r="6" fill="#9bffe4" />
+          <text x="194" y="254" class="sub" style="fill:#a4adbd">wiki synthesis (dashed)</text>
+        </svg>
+      </div>
+
+      <!-- 4. ARCHITECTURE -->
+      <h2 id="arch">4. Architecture</h2>
+
+      <h3>4.1 Layer map</h3>
+      <div class="diagram">
+        <div class="title">Components touched in this branch</div>
+        <svg viewBox="0 0 980 420" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .lyr { fill: #11141b; stroke: #222634; }
+            .lyr-ttl { fill: #a4adbd; font: 600 11px ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+            .mod { fill: #151924; stroke: #26355e; stroke-width: 1.2; }
+            .mod-new { fill: #12211a; stroke: #274d39; stroke-width: 1.5; }
+            .mod-ttl { fill: #e7ecf3; font: 600 12px sans-serif; }
+            .mod-sub { fill: #6e7688; font: 10px ui-monospace, monospace; }
+            .line { stroke: #26355e; stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
+          </style>
+
+          <!-- UI layer -->
+          <rect x="20" y="20" width="940" height="70" rx="10" class="lyr" />
+          <text x="34" y="40" class="lyr-ttl">UI · React</text>
+          <rect x="40" y="50" width="200" height="30" rx="6" class="mod-new" />
+          <text x="50" y="69" class="mod-ttl">AgentWikiTab.tsx</text>
+          <rect x="260" y="50" width="200" height="30" rx="6" class="mod" />
+          <text x="270" y="69" class="mod-ttl">AgentDetail · tab</text>
+          <rect x="480" y="50" width="200" height="30" rx="6" class="mod" />
+          <text x="490" y="69" class="mod-ttl">api/agents · wiki fns</text>
+
+          <!-- Server layer -->
+          <rect x="20" y="110" width="940" height="110" rx="10" class="lyr" />
+          <text x="34" y="130" class="lyr-ttl">Server · Express</text>
+          <rect x="40" y="140" width="220" height="30" rx="6" class="mod-new" />
+          <text x="50" y="159" class="mod-ttl">routes/agent-wiki.ts</text>
+          <rect x="280" y="140" width="220" height="30" rx="6" class="mod-new" />
+          <text x="290" y="159" class="mod-ttl">services/agent-wiki.ts</text>
+          <rect x="520" y="140" width="220" height="30" rx="6" class="mod-new" />
+          <text x="530" y="159" class="mod-ttl">services/wiki-synthesizer.ts</text>
+          <rect x="760" y="140" width="180" height="30" rx="6" class="mod" />
+          <text x="770" y="159" class="mod-ttl">services/heartbeat.ts</text>
+          <rect x="40" y="180" width="220" height="30" rx="6" class="mod" />
+          <text x="50" y="199" class="mod-ttl">home-paths.ts · wiki dir</text>
+          <rect x="280" y="180" width="220" height="30" rx="6" class="mod" />
+          <text x="290" y="199" class="mod-ttl">app.ts · route wiring</text>
+
+          <!-- Shared / MCP -->
+          <rect x="20" y="240" width="940" height="70" rx="10" class="lyr" />
+          <text x="34" y="260" class="lyr-ttl">Shared · MCP · Adapter Utils</text>
+          <rect x="40" y="270" width="220" height="30" rx="6" class="mod-new" />
+          <text x="50" y="289" class="mod-ttl">shared/types/wiki.ts</text>
+          <rect x="280" y="270" width="220" height="30" rx="6" class="mod-new" />
+          <text x="290" y="289" class="mod-ttl">adapter-utils/wiki-prompt.ts</text>
+          <rect x="520" y="270" width="220" height="30" rx="6" class="mod-new" />
+          <text x="530" y="289" class="mod-ttl">mcp-server/tools.ts · wiki tools</text>
+          <rect x="760" y="270" width="180" height="30" rx="6" class="mod" />
+          <text x="770" y="289" class="mod-ttl">adapter-utils/types.ts</text>
+
+          <!-- Adapters -->
+          <rect x="20" y="330" width="940" height="70" rx="10" class="lyr" />
+          <text x="34" y="350" class="lyr-ttl">Adapters</text>
+          <rect x="40" y="360" width="260" height="30" rx="6" class="mod" />
+          <text x="50" y="379" class="mod-ttl">claude-local · execute.ts</text>
+          <rect x="320" y="360" width="260" height="30" rx="6" class="mod" />
+          <text x="330" y="379" class="mod-ttl">opencode-local · runtime-config.ts</text>
+          <rect x="600" y="360" width="340" height="30" rx="6" class="mod" />
+          <text x="610" y="379" class="mod-ttl">skills/paperclip-create-agent · SKILL.md</text>
+        </svg>
+        <div class="legend">
+          <span><span class="dot" style="background:#274d39"></span>new file</span>
+          <span><span class="dot" style="background:#26355e"></span>modified</span>
+        </div>
+      </div>
+
+      <h3>4.2 Storage layout on disk</h3>
+      <pre><code>{agentHome}/
+├── wiki/
+│   ├── index.json          # manifest: [{ path, title, updatedAt, bytes }]
+│   ├── conventions.md      # agent-authored markdown pages
+│   ├── ongoing-work.md
+│   └── subdir/
+│       └── db-schema.md    # nested paths are allowed
+└── ...other adapter state</code></pre>
+
+      <ul>
+        <li><code>index.json</code> is <strong>auto-rebuilt</strong> by the service whenever pages change — never trust it, always re-scan when in doubt.</li>
+        <li>Paths are normalized and validated — <code>..</code> traversal, absolute paths, and symlink escapes are rejected.</li>
+        <li>A single agent wiki is capped for sanity (page count + per-page byte limit enforced in <code>services/agent-wiki.ts</code>).</li>
+      </ul>
+
+      <!-- 5. V1 -->
+      <h2 id="v1">5. V1 — Naive Approach <span class="tag bad">reverted</span></h2>
+      <p>
+        The first commit (<code>2c76f301</code>) tried to capture wiki updates by parsing a <code>wikiUpdates</code>
+        field from the adapter's structured <code>resultJson</code>.
+      </p>
+
+      <div class="diagram">
+        <div class="title">V1 — resultJson capture (did not work)</div>
+        <svg viewBox="0 0 980 220" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .b { fill: #151924; stroke: #222634; }
+            .b-bad { fill: #1f1316; stroke: #4d272f; stroke-width: 1.5; }
+            .t { fill: #e7ecf3; font: 600 13px sans-serif; }
+            .s { fill: #a4adbd; font: 11px ui-monospace, monospace; }
+            .l { stroke: #7c9cff; stroke-width: 2; fill: none; }
+            .x { stroke: #ff7b8a; stroke-width: 3; fill: none; }
+          </style>
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#7c9cff"/>
+            </marker>
+          </defs>
+          <rect x="20" y="80" width="160" height="60" rx="10" class="b" />
+          <text x="100" y="105" text-anchor="middle" class="t">Heartbeat</text>
+          <text x="100" y="123" text-anchor="middle" class="s">injects wiki</text>
+
+          <rect x="230" y="80" width="200" height="60" rx="10" class="b" />
+          <text x="330" y="105" text-anchor="middle" class="t">Adapter.execute()</text>
+          <text x="330" y="123" text-anchor="middle" class="s">resultJson returned</text>
+
+          <rect x="480" y="80" width="220" height="60" rx="10" class="b-bad" />
+          <text x="590" y="100" text-anchor="middle" class="t">parseWikiUpdates()</text>
+          <text x="590" y="118" text-anchor="middle" class="s">expects resultJson.wikiUpdates</text>
+          <text x="590" y="134" text-anchor="middle" class="s" style="fill:#ff7b8a">— agent cannot inject this</text>
+
+          <rect x="750" y="80" width="200" height="60" rx="10" class="b" />
+          <text x="850" y="105" text-anchor="middle" class="t">Wiki Write</text>
+          <text x="850" y="123" text-anchor="middle" class="s">never fires</text>
+
+          <path class="l" marker-end="url(#a1)" d="M 180 110 L 230 110" />
+          <path class="l" marker-end="url(#a1)" d="M 430 110 L 480 110" />
+          <line class="x" x1="710" y1="90" x2="760" y2="130"/>
+          <line class="x" x1="710" y1="130" x2="760" y2="90"/>
+        </svg>
+      </div>
+
+      <div class="callout bad">
+        <h4>Why it failed</h4>
+        <p>
+          Structured-output adapters (Claude, Codex) don't let the agent inject arbitrary top-level fields
+          into <code>resultJson</code>. The shape is dictated by the adapter's own tool contract, so
+          <code>wikiUpdates</code> was always <code>undefined</code>. Updates never landed.
+        </p>
+      </div>
+
+      <!-- 6. V2 -->
+      <h2 id="v2">6. V2 — Adapter Synthesis <span class="tag good">shipped</span></h2>
+      <p>
+        Commit <code>a62eab16</code> replaces the broken capture with a second adapter invocation that
+        <strong>resumes the same session</strong>. The agent still has the full run context, but this time is
+        prompted to <em>synthesize wiki updates</em> using MCP tools:
+      </p>
+      <ul>
+        <li><code>paperclipWikiListPages</code> — read-only, available during the main run</li>
+        <li><code>paperclipWikiReadPage</code> — read-only, available during the main run</li>
+        <li><code>paperclipWikiWritePage</code> — write, exposed only during synthesis</li>
+        <li><code>paperclipWikiDeletePage</code> — delete, exposed only during synthesis</li>
+      </ul>
+
+      <div class="diagram">
+        <div class="title">V2 — post-run synthesis via session resume</div>
+        <svg viewBox="0 0 980 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#7c9cff"/>
+            </marker>
+            <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#9bffe4"/>
+            </marker>
+          </defs>
+          <style>
+            .bx { fill: #151924; stroke: #222634; }
+            .bx-hl { fill: #121828; stroke: #26355e; stroke-width: 1.5; }
+            .bx-wk { fill: #12211a; stroke: #274d39; stroke-width: 1.5; }
+            .t { fill: #e7ecf3; font: 600 13px sans-serif; }
+            .s { fill: #a4adbd; font: 11px ui-monospace, monospace; }
+            .l1 { stroke: #7c9cff; stroke-width: 2; fill: none; }
+            .l2 { stroke: #9bffe4; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+          </style>
+
+          <!-- Step 1: load wiki -->
+          <rect x="20" y="40" width="170" height="60" rx="10" class="bx-wk" />
+          <text x="105" y="65" text-anchor="middle" class="t">loadWikiContext</text>
+          <text x="105" y="83" text-anchor="middle" class="s">index.json + pages</text>
+
+          <!-- Step 2: format prompt -->
+          <rect x="220" y="40" width="180" height="60" rx="10" class="bx" />
+          <text x="310" y="65" text-anchor="middle" class="t">formatWikiForPrompt</text>
+          <text x="310" y="83" text-anchor="middle" class="s">inject into system msg</text>
+
+          <!-- Step 3: adapter execute main -->
+          <rect x="430" y="40" width="220" height="60" rx="10" class="bx-hl" />
+          <text x="540" y="65" text-anchor="middle" class="t">adapter.execute()</text>
+          <text x="540" y="83" text-anchor="middle" class="s">task run · session A · read tools</text>
+
+          <!-- Step 4: result -->
+          <rect x="680" y="40" width="170" height="60" rx="10" class="bx" />
+          <text x="765" y="65" text-anchor="middle" class="t">run result</text>
+          <text x="765" y="83" text-anchor="middle" class="s">logs + sessionId</text>
+
+          <!-- Step 5: synth -->
+          <rect x="430" y="170" width="260" height="60" rx="10" class="bx-hl" />
+          <text x="560" y="195" text-anchor="middle" class="t">wikiSynthesizer.run()</text>
+          <text x="560" y="213" text-anchor="middle" class="s">adapter.execute · resume A · write tools</text>
+
+          <!-- Step 6: MCP writes -->
+          <rect x="730" y="170" width="220" height="60" rx="10" class="bx-wk" />
+          <text x="840" y="195" text-anchor="middle" class="t">MCP: write / delete</text>
+          <text x="840" y="213" text-anchor="middle" class="s">/agents/me/wiki/{path}</text>
+
+          <!-- Step 7: disk -->
+          <rect x="430" y="260" width="260" height="60" rx="10" class="bx-wk" />
+          <text x="560" y="285" text-anchor="middle" class="t">{agentHome}/wiki/*.md</text>
+          <text x="560" y="303" text-anchor="middle" class="s">+ index.json rebuild</text>
+
+          <!-- arrows -->
+          <path class="l1" marker-end="url(#a2)" d="M 190 70 L 220 70" />
+          <path class="l1" marker-end="url(#a2)" d="M 400 70 L 430 70" />
+          <path class="l1" marker-end="url(#a2)" d="M 650 70 L 680 70" />
+          <path class="l2" marker-end="url(#a3)" d="M 765 100 C 765 130, 600 130, 560 170" />
+          <path class="l2" marker-end="url(#a3)" d="M 690 200 L 730 200" />
+          <path class="l2" marker-end="url(#a3)" d="M 840 230 C 840 260, 700 280, 690 290" />
+        </svg>
+        <div class="legend">
+          <span><span class="dot" style="background:#7c9cff"></span>main run</span>
+          <span><span class="dot" style="background:#9bffe4"></span>synthesis pass</span>
+        </div>
+      </div>
+
+      <div class="callout good">
+        <h4>Why this works</h4>
+        <p>
+          The agent is the author of its own memory. During synthesis it has <em>full context</em> of what just
+          happened and decides which pages to write, update, or delete using first-class tool calls.
+          Failures in synthesis are swallowed as warnings — the run itself is already complete.
+        </p>
+      </div>
+
+      <!-- 7. FLOWS -->
+      <h2 id="flows">7. End-to-End Sequence</h2>
+      <div class="diagram">
+        <div class="title">Heartbeat · sequence diagram</div>
+        <svg viewBox="0 0 980 500" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="sa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#7c9cff"/>
+            </marker>
+          </defs>
+          <style>
+            .hd { fill: #151924; stroke: #26355e; stroke-width: 1.2; }
+            .ht { fill: #e7ecf3; font: 600 12px sans-serif; }
+            .ln { stroke: #222634; stroke-width: 1; stroke-dasharray: 3 3; }
+            .arr { stroke: #7c9cff; stroke-width: 2; fill: none; }
+            .lbl { fill: #a4adbd; font: 11px ui-monospace, monospace; }
+            .self { stroke: #9bffe4; stroke-width: 2; fill: none; }
+          </style>
+
+          <!-- lanes -->
+          <rect x="40"  y="20" width="140" height="30" rx="6" class="hd"/><text x="110" y="40" text-anchor="middle" class="ht">heartbeat</text>
+          <rect x="220" y="20" width="140" height="30" rx="6" class="hd"/><text x="290" y="40" text-anchor="middle" class="ht">agent-wiki svc</text>
+          <rect x="400" y="20" width="140" height="30" rx="6" class="hd"/><text x="470" y="40" text-anchor="middle" class="ht">adapter</text>
+          <rect x="580" y="20" width="140" height="30" rx="6" class="hd"/><text x="650" y="40" text-anchor="middle" class="ht">wiki-synth</text>
+          <rect x="760" y="20" width="180" height="30" rx="6" class="hd"/><text x="850" y="40" text-anchor="middle" class="ht">MCP · filesystem</text>
+
+          <line class="ln" x1="110" y1="55" x2="110" y2="480" />
+          <line class="ln" x1="290" y1="55" x2="290" y2="480" />
+          <line class="ln" x1="470" y1="55" x2="470" y2="480" />
+          <line class="ln" x1="650" y1="55" x2="650" y2="480" />
+          <line class="ln" x1="850" y1="55" x2="850" y2="480" />
+
+          <!-- messages -->
+          <path class="arr" marker-end="url(#sa)" d="M 110 90 L 290 90" />
+          <text x="200" y="82" text-anchor="middle" class="lbl">1. loadWikiContext(agentId)</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 290 120 L 110 120" />
+          <text x="200" y="112" text-anchor="middle" class="lbl">WikiContextBundle</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 110 155 L 470 155" />
+          <text x="290" y="147" text-anchor="middle" class="lbl">2. adapter.execute(prompt + wikiBundle)</text>
+
+          <path class="self" d="M 470 175 C 540 175, 540 215, 470 215" />
+          <text x="540" y="200" class="lbl">task loop · read tools</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 470 245 L 110 245" />
+          <text x="290" y="237" text-anchor="middle" class="lbl">run result · sessionId</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 110 285 L 650 285" />
+          <text x="380" y="277" text-anchor="middle" class="lbl">3. wikiSynthesizer.runWikiSynthesis(...)</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 650 315 L 470 315" />
+          <text x="560" y="307" text-anchor="middle" class="lbl">adapter.execute · resume session A</text>
+
+          <path class="self" d="M 470 335 C 540 335, 540 375, 470 375" />
+          <text x="540" y="360" class="lbl">synth loop · write tools</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 470 405 L 850 405" />
+          <text x="660" y="397" text-anchor="middle" class="lbl">writePage / deletePage (MCP)</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 850 440 L 290 440" />
+          <text x="570" y="432" text-anchor="middle" class="lbl">PUT /agents/me/wiki/{path}</text>
+
+          <path class="arr" marker-end="url(#sa)" d="M 290 470 L 110 470" />
+          <text x="200" y="462" text-anchor="middle" class="lbl">done (non-fatal on error)</text>
+        </svg>
+      </div>
+
+      <!-- 8. API -->
+      <h2 id="api">8. API Surface & Data Contracts</h2>
+
+      <h3>8.1 HTTP routes <span class="tag brand">new</span></h3>
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET</code></td><td><code>/api/companies/:companyId/agents/:agentId/wiki</code></td><td>board</td><td>List all pages (index view)</td></tr>
+          <tr><td><code>GET</code></td><td><code>/api/companies/:companyId/agents/:agentId/wiki/*</code></td><td>board</td><td>Read a specific page</td></tr>
+          <tr><td><code>GET</code></td><td><code>/api/agents/me/wiki</code></td><td>agent bearer</td><td>Self · list pages (MCP-facing)</td></tr>
+          <tr><td><code>GET</code></td><td><code>/api/agents/me/wiki/*</code></td><td>agent bearer</td><td>Self · read page</td></tr>
+          <tr><td><code>PUT</code></td><td><code>/api/agents/me/wiki/*</code></td><td>agent bearer</td><td>Self · write page (synthesis only)</td></tr>
+          <tr><td><code>DELETE</code></td><td><code>/api/agents/me/wiki/*</code></td><td>agent bearer</td><td>Self · delete page (synthesis only)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>8.2 Shared types</h3>
+      <pre><code>// packages/shared/src/types/wiki.ts
+export interface WikiPageInfo {
+  path: string;        // relative, normalized, posix-style
+  title: string;       // from first markdown heading or path
+  updatedAt: string;   // ISO-8601
+  bytes: number;
+}
+
+export interface WikiContextBundle {
+  pages: WikiPageInfo[];          // index
+  inlinedPages: {                 // small pages inlined into prompt
+    path: string;
+    content: string;
+  }[];
+}
+
+export interface WikiUpdate {
+  kind: "write" | "delete";
+  path: string;
+  content?: string; // required for write
+}</code></pre>
+
+      <h3>8.3 MCP tools <span class="tag brand">new</span></h3>
+      <table>
+        <thead><tr><th>Tool</th><th>Mode</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>paperclipWikiListPages</code></td><td>read</td><td>Returns the current wiki index</td></tr>
+          <tr><td><code>paperclipWikiReadPage</code></td><td>read</td><td>Returns the full content of one page</td></tr>
+          <tr><td><code>paperclipWikiWritePage</code></td><td>write</td><td>Create or overwrite a page (synthesis phase)</td></tr>
+          <tr><td><code>paperclipWikiDeletePage</code></td><td>write</td><td>Remove a page (synthesis phase)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>8.4 Runtime config</h3>
+      <pre><code>runtimeConfig: {
+  memory: {
+    enabled: true           // default; set to false to opt out per agent
+  }
+}</code></pre>
+
+      <h3>8.5 UI</h3>
+      <ul>
+        <li>New <strong>Wiki</strong> tab on <code>AgentDetail</code> showing the page list and rendered markdown.</li>
+        <li><code>AgentWikiTab.tsx</code> — fetches via <code>api/agents.ts</code> wiki helpers, with React Query cache keys in <code>lib/queryKeys.ts</code>.</li>
+      </ul>
+
+      <!-- 9. SIDE FIXES -->
+      <h2 id="side">9. Side Fixes Along the Way</h2>
+
+      <div class="grid grid-2">
+        <div class="card warn">
+          <span class="tag warn">fix</span>
+          <h3>opencode · read-only symlinked config</h3>
+          <p>
+            On NixOS / Home Manager setups, <code>~/.config/opencode</code> is often a symlink into the read-only
+            Nix store. The runtime config copy was failing with <code>EACCES</code> because <code>fs.cp</code>
+            preserved the symlink and its read-only perms.
+          </p>
+          <h4>Fix</h4>
+          <ul>
+            <li><code>dereference: true</code> so file contents are copied, not the symlink.</li>
+            <li>Remove the copied file before writing the merged config (in case it inherits read-only bits).</li>
+          </ul>
+          <p><code>packages/adapters/opencode-local/src/server/runtime-config.ts</code></p>
+        </div>
+
+        <div class="card warn">
+          <span class="tag warn">fix</span>
+          <h3>hiring skill · hardcoded <code>codex_local</code></h3>
+          <p>
+            The <code>paperclip-create-agent</code> skill example had <code>"adapterType": "codex_local"</code>
+            and <code>model: "o4-mini"</code> hardcoded. CEOs/CTOs following the example were hiring software
+            engineers with codex even when the <code>codex</code> CLI wasn't installed, producing:
+          </p>
+          <pre><code>Command not found in PATH: "codex" (adapter_failed)</code></pre>
+          <h4>Fix</h4>
+          <ul>
+            <li>Replaced hardcoded values with <code>&lt;your-adapter-type&gt;</code> / <code>&lt;model&gt;</code> placeholders.</li>
+            <li>Added workflow guidance: "default to your own adapter type unless the role specifically requires a different one".</li>
+          </ul>
+          <p><code>skills/paperclip-create-agent/SKILL.md</code></p>
+        </div>
+      </div>
+
+      <!-- 10. TESTING -->
+      <h2 id="testing">10. Testing</h2>
+      <table>
+        <thead><tr><th>Layer</th><th>Coverage</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Service</td>
+            <td>
+              <code>agent-wiki.test.ts</code> — CRUD, index rebuild, path traversal rejection, absolute path rejection,
+              size caps, missing wiki dir handling, malformed index.json recovery.
+            </td>
+          </tr>
+          <tr>
+            <td>Post-run flow</td>
+            <td>Synthesizer orchestration: adapter resume with write tools, failure non-fatality, opt-out via <code>memory.enabled: false</code>.</td>
+          </tr>
+          <tr>
+            <td>Routes</td>
+            <td>Board-scoped routes + <code>/agents/me/wiki</code> self routes with bearer auth.</td>
+          </tr>
+          <tr>
+            <td>Security</td>
+            <td>Path traversal (<code>../../etc/passwd</code>), symlink escape, company boundary enforcement.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <h4>Verification</h4>
+        <pre><code>pnpm typecheck && pnpm test:run && pnpm build</code></pre>
+      </div>
+
+      <!-- 11. FUTURE -->
+      <h2 id="future">11. Future Work</h2>
+      <div class="grid grid-3">
+        <div class="card">
+          <h3>Shared company wiki</h3>
+          <p>A company-scoped wiki read-only to all agents for cross-agent knowledge transfer (onboarding, shared conventions).</p>
+        </div>
+        <div class="card">
+          <h3>Wiki search tool</h3>
+          <p>MCP <code>paperclipWikiSearch</code> for keyword / embedding retrieval once wikis grow beyond what fits in the prompt.</p>
+        </div>
+        <div class="card">
+          <h3>Decay &amp; compaction</h3>
+          <p>Periodic synthesis pass to merge stale pages, drop low-value notes, and keep prompt injection size bounded.</p>
+        </div>
+        <div class="card">
+          <h3>Human edits</h3>
+          <p>Board-side UI to edit / delete pages directly so humans can correct bad memories.</p>
+        </div>
+        <div class="card">
+          <h3>Audit trail</h3>
+          <p>Activity-log entries for every wiki mutation (who, when, which run produced it).</p>
+        </div>
+        <div class="card">
+          <h3>Adapter coverage</h3>
+          <p>Extend <code>formatWikiForPrompt</code> wiring to codex-local, opencode-local, and other adapters beyond claude-local.</p>
+        </div>
+      </div>
+
+      <hr />
+      <p style="color: var(--ink-mute); font-size: 0.85rem; text-align: center;">
+        Paperclip · Long-Term Wiki for Agents · <span style="font-family:var(--mono)">feature/addLongTermWikiForAgents</span>
+      </p>
+    </div>
+  </body>
+</html>
