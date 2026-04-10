@@ -116,6 +116,23 @@ function buildFailure(stage, error) {
   };
 }
 
+function renderFallbackPrBody(report, error) {
+  const failure = report.failure ?? buildFailure('render-pr-body', error);
+  return [
+    '# Upstream sync',
+    '',
+    `- replay status: \`${report.status}\``,
+    `- branch: \`${report.branchName ?? ''}\``,
+    `- upstream ref/tag: \`${report.upstreamRef}\``,
+    `- maintenance ref: \`${report.maintenanceRef}\``,
+    '',
+    '## Failure',
+    `- stage: \`${failure.stage}\``,
+    `- message: ${failure.message}`,
+    '',
+  ].join('\n');
+}
+
 async function resolveValidationSummary({ config, runValidation, status }) {
   if (status === 'conflict') {
     const summary = createSkippedValidationSummary('replay-conflict', VALIDATION_LOG_PATH);
@@ -170,6 +187,45 @@ export async function runUpstreamSync({
       branchPrefix: config.branchPrefix,
       upstreamRef: config.upstreamRef,
     });
+
+    if (commits.length === 0) {
+      status = 'no-op';
+      localizationResult = createSkippedLocalizationSummary('no-commits');
+      validationSummary = createSkippedValidationSummary('no-commits', VALIDATION_LOG_PATH);
+      await writeValidationArtifact(VALIDATION_LOG_PATH, validationSummary);
+      validationStatus = validationSummary.status;
+      validationLogPath = validationSummary.logPath ?? '';
+
+      const report = buildReport({
+        config,
+        branchName,
+        status,
+        commits,
+        diagnostics,
+        localizationResult,
+        validationSummary,
+        readyForPr,
+        validationLogPath,
+      });
+
+      stage = 'write-report-artifact';
+      await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+      stage = 'render-pr-body';
+      await writeArtifact(prBodyPath, renderPrBodyContent(report));
+
+      return {
+        branchName,
+        commits,
+        reportPath,
+        prBodyPath,
+        status,
+        validationStatus,
+        validationLogPath,
+        readyForPr,
+        diagnostics,
+        report,
+      };
+    }
 
     if (!config.dryRun) {
       stage = 'prepare-bot-branch';
@@ -232,7 +288,9 @@ export async function runUpstreamSync({
       validationLogPath,
     });
 
+    stage = 'write-report-artifact';
     await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    stage = 'render-pr-body';
     await writeArtifact(prBodyPath, renderPrBodyContent(report));
 
     return {
@@ -275,8 +333,16 @@ export async function runUpstreamSync({
       failure: buildFailure(stage, error),
     });
 
+    stage = 'write-report-artifact';
     await writeArtifact(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-    await writeArtifact(prBodyPath, renderPrBodyContent(report));
+    stage = 'render-pr-body';
+    let prBody;
+    try {
+      prBody = renderPrBodyContent(report);
+    } catch (renderError) {
+      prBody = renderFallbackPrBody(report, renderError);
+    }
+    await writeArtifact(prBodyPath, prBody);
 
     return {
       branchName,

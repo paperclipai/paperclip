@@ -170,6 +170,68 @@ test('runUpstreamSync replays commits when not in dry-run mode', async () => {
   }
 });
 
+test('runUpstreamSync returns no-op when there are no maintenance commits to replay', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`no-op-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  let validationCallCount = 0;
+  const { calls, run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': '',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      runValidation: async () => {
+        validationCallCount += 1;
+        return {
+          status: 'passed',
+          uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+          serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+          checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+          checks: [],
+          logPath: 'reports/upstream-sync-validation-log.json',
+        };
+      },
+    });
+
+    assert.equal(result.status, 'no-op');
+    assert.equal(result.readyForPr, false);
+    assert.equal(result.validationStatus, 'not-run');
+    assert.equal(result.validationLogPath, 'reports/upstream-sync-validation-log.json');
+    assert.equal(validationCallCount, 0);
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.validationLogPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.status, 'no-op');
+    assert.equal(report.validationSummary.reason, 'no-commits');
+    assert.deepEqual(calls, [
+      { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
+      { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
+      { command: 'git', args: ['rev-parse', '--short=12', 'origin/master'] },
+    ]);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
 test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', async () => {
   const { sandboxRoot, sandbox } = createSandbox(`conflict-${Date.now()}`);
   const previousCwd = process.cwd();
@@ -461,6 +523,64 @@ test('runUpstreamSync records localization scan failures without losing artifact
     const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
     assert.equal(report.failure.stage, 'scan-localization');
     assert.equal(report.failure.message, 'localization scan failed');
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('runUpstreamSync falls back to a minimal PR body when custom rendering fails', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`render-error-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const { run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+    '{"command":"git","args":["cherry-pick","c1"]}': '',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: false,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      runValidation: async () => ({
+        status: 'passed',
+        uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+        serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+        checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+        checks: [],
+        logPath: 'reports/upstream-sync-validation-log.json',
+      }),
+      renderPrBodyContent: () => {
+        throw new Error('render body failed');
+      },
+    });
+
+    assert.equal(result.status, 'error');
+    assert.equal(result.readyForPr, false);
+    assert.equal(fs.existsSync(path.join(sandbox, result.reportPath)), true);
+    assert.equal(fs.existsSync(path.join(sandbox, result.prBodyPath)), true);
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.failure.stage, 'render-pr-body');
+    assert.equal(report.failure.message, 'render body failed');
+    const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
+    assert.match(prBody, /# Upstream sync/);
+    assert.match(prBody, /## Failure/);
+    assert.match(prBody, /render body failed/);
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
