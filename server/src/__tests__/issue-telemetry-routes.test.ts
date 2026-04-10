@@ -118,6 +118,7 @@ describe("issue telemetry routes", () => {
     await vi.waitFor(() => {
       expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(expect.anything(), {
         agentRole: "engineer",
+        agentId: "agent-1",
       });
     });
   }, 10_000);

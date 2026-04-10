@@ -1661,7 +1661,7 @@ export function issueRoutes(
       if (tc && actor.agentId) {
         const actorAgent = await agentsSvc.getById(actor.agentId);
         if (actorAgent) {
-          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role, agentId: actorAgent.id });
         }
       }
     }
