@@ -1,3 +1,4 @@
+export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -13,6 +14,11 @@ export {
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
   ISSUE_ORIGIN_KINDS,
+  ISSUE_RELATION_TYPES,
+  ISSUE_EXECUTION_POLICY_MODES,
+  ISSUE_EXECUTION_STAGE_TYPES,
+  ISSUE_EXECUTION_STATE_STATUSES,
+  ISSUE_EXECUTION_DECISION_OUTCOMES,
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
@@ -81,6 +87,11 @@ export {
   type IssueStatus,
   type IssuePriority,
   type IssueOriginKind,
+  type IssueRelationType,
+  type IssueExecutionPolicyMode,
+  type IssueExecutionStageType,
+  type IssueExecutionStateStatus,
+  type IssueExecutionDecisionOutcome,
   type GoalLevel,
   type GoalStatus,
   type ProjectStatus,
@@ -228,6 +239,14 @@ export type {
   IssueWorkProductReviewState,
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueRelation,
+  IssueRelationIssueSummary,
+  IssueExecutionPolicy,
+  IssueExecutionState,
+  IssueExecutionStage,
+  IssueExecutionStageParticipant,
+  IssueExecutionStagePrincipal,
+  IssueExecutionDecision,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
@@ -269,6 +288,7 @@ export type {
   DashboardSummary,
   ActivityEvent,
   SidebarBadges,
+  InboxDismissal,
   CompanyMembership,
   PrincipalPermissionGrant,
   Invite,
@@ -351,6 +371,11 @@ export {
 } from "./types/feedback.js";
 
 export {
+  getClosedIsolatedExecutionWorkspaceMessage,
+  isClosedIsolatedExecutionWorkspace,
+} from "./execution-workspace-guards.js";
+
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
@@ -415,6 +440,8 @@ export {
   createIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
@@ -594,19 +621,27 @@ export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from 
 export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
+  SKILL_MENTION_SCHEME,
   buildAgentMentionHref,
   buildProjectMentionHref,
+  buildSkillMentionHref,
   extractAgentMentionIds,
+  extractSkillMentionIds,
   parseAgentMentionHref,
   parseProjectMentionHref,
+  parseSkillMentionHref,
   extractProjectMentionIds,
   type ParsedAgentMention,
   type ParsedProjectMention,
+  type ParsedSkillMention,
 } from "./project-mentions.js";
 
 export {
+  BUILTIN_ROUTINE_VARIABLE_NAMES,
   extractRoutineVariableNames,
+  getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
+  isBuiltinRoutineVariable,
   isValidRoutineVariableName,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,

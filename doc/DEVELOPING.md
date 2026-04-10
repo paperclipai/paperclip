@@ -232,6 +232,39 @@ pnpm paperclipai worktree init --force --seed-mode minimal \
 
 That rewrites the worktree-local `.paperclip/config.json` + `.paperclip/.env`, recreates the isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`, and preserves the git worktree contents themselves.
 
+For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's Paperclip server first so the command can replace the DB safely.
+
+**`pnpm paperclipai worktree reseed [options]`** — Re-seed an existing worktree-local instance from another Paperclip instance or worktree while preserving the target worktree's current config, ports, and instance identity.
+
+| Option | Description |
+|---|---|
+| `--from <worktree>` | Source worktree path, directory name, branch name, or `current` |
+| `--to <worktree>` | Target worktree path, directory name, branch name, or `current` (defaults to `current`) |
+| `--from-config <path>` | Source config.json to seed from |
+| `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
+| `--from-instance <id>` | Source instance id when deriving the source config |
+| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `full`) |
+| `--yes` | Skip the destructive confirmation prompt |
+| `--allow-live-target` | Override the guard that requires the target worktree DB to be stopped first |
+
+Examples:
+
+```sh
+# From the main repo, reseed a worktree from the current default/master instance.
+cd /path/to/paperclip
+pnpm paperclipai worktree reseed \
+  --from current \
+  --to PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat \
+  --seed-mode full \
+  --yes
+
+# From inside a worktree, reseed it from the default instance config.
+cd /path/to/paperclip/.paperclip/worktrees/PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
+pnpm paperclipai worktree reseed \
+  --from-instance default \
+  --seed-mode full
+```
+
 **`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
 | Option | Description |
