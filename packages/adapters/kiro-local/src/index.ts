@@ -2,18 +2,17 @@ export const type = "kiro_local";
 export const label = "Kiro CLI (local)";
 
 export const models = [
-  { id: "auto", label: "Auto — 1.00x credits" },
-  { id: "claude-opus-4.6", label: "Claude Opus 4.6 — 2.20x credits" },
-  { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6 — 1.30x credits" },
-  { id: "claude-opus-4.5", label: "Claude Opus 4.5 — 2.20x credits" },
-  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 — 1.30x credits" },
-  { id: "claude-sonnet-4", label: "Claude Sonnet 4 — 1.30x credits" },
-  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5 — 0.40x credits" },
-  { id: "deepseek-3.2", label: "DeepSeek V3.2 — 0.25x credits" },
-  { id: "minimax-m2.5", label: "MiniMax M2.5 — 0.25x credits" },
-  { id: "minimax-m2.1", label: "MiniMax M2.1 — 0.15x credits" },
-  { id: "glm-5", label: "GLM-5 — 0.50x credits" },
-  { id: "qwen3-coder-next", label: "Qwen3 Coder Next — 0.05x credits" },
+  { id: "claude-opus-4.6", label: "Claude Opus 4.6 (1M ctx, 2.20x)" },
+  { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6 (1M ctx, 1.30x)" },
+  { id: "claude-opus-4.5", label: "Claude Opus 4.5 (200K ctx, 2.20x)" },
+  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 (200K ctx, 1.30x)" },
+  { id: "claude-sonnet-4", label: "Claude Sonnet 4 (200K ctx, 1.30x)" },
+  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5 (200K ctx, 0.40x)" },
+  { id: "deepseek-3.2", label: "DeepSeek V3.2 (164K ctx, 0.25x, experimental)" },
+  { id: "minimax-m2.5", label: "MiniMax M2.5 (196K ctx, 0.25x)" },
+  { id: "minimax-m2.1", label: "MiniMax M2.1 (196K ctx, 0.15x, experimental)" },
+  { id: "glm-5", label: "GLM-5 (200K ctx, 0.50x)" },
+  { id: "qwen3-coder-next", label: "Qwen3 Coder Next (256K ctx, 0.05x, experimental)" },
 ];
 
 export const agentConfigurationDoc = `# kiro_local agent configuration
@@ -33,7 +32,7 @@ Don't use when:
 
 Core fields:
 - cwd (string, optional): absolute working directory for the agent process
-- model (string, optional): Kiro model id (auto, claude-opus-4.6, claude-sonnet-4.6, claude-opus-4.5, claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, deepseek-3.2, minimax-m2.5, minimax-m2.1, glm-5, qwen3-coder-next)
+- model (string, optional): Kiro model id — discovered dynamically via \`kiro-cli chat --list-models\`. Fallback list: auto, claude-opus-4.6, claude-sonnet-4.6, claude-opus-4.5, claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, deepseek-3.2, minimax-m2.5, minimax-m2.1, glm-5, qwen3-coder-next
 - promptTemplate (string, optional): run prompt template
 - trustAllTools (boolean, optional): pass --trust-all-tools to skip tool permission prompts (default: true)
 - command (string, optional): defaults to "kiro-cli"

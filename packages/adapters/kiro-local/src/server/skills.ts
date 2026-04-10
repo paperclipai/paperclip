@@ -9,12 +9,35 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-function resolveKiroSkillsHome(config: Record<string, unknown>) {
+async function findKiroSkillsDir(startDir: string): Promise<string | null> {
+  let dir = path.resolve(startDir);
+  const root = path.parse(dir).root;
+  while (dir !== root) {
+    const candidate = path.join(dir, ".kiro", "skills");
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (stat?.isDirectory()) return candidate;
+    // Also check if it's a symlink to a directory
+    const lstat = stat ? null : await fs.lstat(candidate).catch(() => null);
+    if (lstat?.isSymbolicLink()) {
+      const resolved = await fs.stat(candidate).catch(() => null);
+      if (resolved?.isDirectory()) return candidate;
+    }
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+async function resolveKiroSkillsHome(config: Record<string, unknown>): Promise<string> {
   const cwd =
     typeof config.cwd === "string" && config.cwd.length > 0
       ? config.cwd
       : process.cwd();
-  return path.join(cwd, ".kiro", "skills");
+  // Try configured/current dir first, then walk up to find .kiro/skills/
+  const direct = path.join(cwd, ".kiro", "skills");
+  const stat = await fs.stat(direct).catch(() => null);
+  if (stat?.isDirectory()) return direct;
+  const found = await findKiroSkillsDir(cwd);
+  return found ?? direct;
 }
 
 function parseSkillFrontmatter(content: string): Record<string, string> {
@@ -67,7 +90,7 @@ async function scanKiroSkills(skillsHome: string): Promise<AdapterSkillEntry[]> 
       state: "installed",
       origin: "user_installed",
       originLabel: "Kiro skill",
-      locationLabel: `.kiro/skills/${item.name}`,
+      locationLabel: `.agents/skills/${item.name}`,
       readOnly: true,
       sourcePath: skillDir,
       targetPath: null,
@@ -79,7 +102,7 @@ async function scanKiroSkills(skillsHome: string): Promise<AdapterSkillEntry[]> 
 }
 
 async function buildSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
-  const skillsHome = resolveKiroSkillsHome(config);
+  const skillsHome = await resolveKiroSkillsHome(config);
 
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolvePaperclipDesiredSkillNames(config, paperclipEntries);
@@ -100,11 +123,13 @@ async function buildSnapshot(config: Record<string, unknown>): Promise<AdapterSk
       state: desired ? "configured" : "available",
       origin: entry.required ? "paperclip_required" : "company_managed",
       originLabel: entry.required ? "Required by Paperclip" : "Managed by Paperclip",
-      locationLabel: `.kiro/skills/${entry.runtimeName}`,
+      locationLabel: `.agents/skills/${entry.runtimeName}`,
       readOnly: false,
       sourcePath: entry.source,
       targetPath: null,
       detail: desired ? "Available on the next run via Kiro skill loading." : null,
+      required: Boolean(entry.required),
+      requiredReason: entry.requiredReason ?? null,
     });
   }
 
