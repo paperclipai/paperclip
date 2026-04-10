@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, not } from "drizzle-orm";
+import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns, connections } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";

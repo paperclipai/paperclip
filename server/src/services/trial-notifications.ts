@@ -11,7 +11,7 @@ import { logger } from "../middleware/logger.js";
 
 /**
  * Send trial expiry warning emails for trials ending within the next 3 days.
- * Idempotent — uses a narrow time window to avoid duplicate sends across runs.
+ * Each company receives at most one warning per trial (tracked via trialWarningSentAt).
  *
  * Call this periodically from the scheduler loop (e.g. every hour).
  */
@@ -35,6 +35,7 @@ export async function sendTrialExpiryWarnings(db: Db): Promise<{ sent: number }>
       and(
         eq(companySubscriptions.status, "trialing"),
         isNotNull(companySubscriptions.trialEndsAt),
+        isNull(companySubscriptions.trialWarningSentAt),
         gte(companySubscriptions.trialEndsAt, now),
         lt(companySubscriptions.trialEndsAt, warningWindowEnd),
       ),
@@ -84,6 +85,11 @@ export async function sendTrialExpiryWarnings(db: Db): Promise<{ sent: number }>
           "Questions? Reply to this email and we'll help.",
         ].join("\n"),
       });
+
+      await db
+        .update(companySubscriptions)
+        .set({ trialWarningSentAt: now })
+        .where(eq(companySubscriptions.companyId, trial.companyId));
 
       sent++;
       logger.info(

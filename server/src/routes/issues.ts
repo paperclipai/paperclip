@@ -1300,25 +1300,6 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-
-    const assigneeWillChange =
-      (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
-      (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
-
-    const isAgentReturningIssueToCreator =
-      req.actor.type === "agent" &&
-      !!req.actor.agentId &&
-      existing.assigneeAgentId === req.actor.agentId &&
-      req.body.assigneeAgentId === null &&
-      typeof req.body.assigneeUserId === "string" &&
-      !!existing.createdByUserId &&
-      req.body.assigneeUserId === existing.createdByUserId;
-
-    if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
-      }
-    }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
