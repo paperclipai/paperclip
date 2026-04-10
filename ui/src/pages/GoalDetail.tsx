@@ -196,27 +196,18 @@ export function GoalDetail() {
         </div>
       )}
 
-      <Tabs defaultValue="criteria">
+      <Tabs defaultValue="children">
         <TabsList>
-          <TabsTrigger value="criteria">
-            Acceptance Criteria ({(goal.acceptanceCriteria ?? []).length})
-          </TabsTrigger>
           <TabsTrigger value="children">
             Sub-Goals ({childGoals.length})
+          </TabsTrigger>
+          <TabsTrigger value="criteria">
+            Acceptance Criteria ({(goal.acceptanceCriteria ?? []).length})
           </TabsTrigger>
           <TabsTrigger value="projects">
             Projects ({linkedProjects.length})
           </TabsTrigger>
         </TabsList>
-
-        <TabsContent value="criteria" className="mt-4">
-          <GoalAcceptanceCriteria
-            criteria={goal.acceptanceCriteria ?? []}
-            onUpdate={(next: GoalAcceptanceCriterion[]) =>
-              updateGoal.mutate({ acceptanceCriteria: next })
-            }
-          />
-        </TabsContent>
 
         <TabsContent value="children" className="mt-4 space-y-3">
           <div className="flex items-center justify-start">
@@ -234,6 +225,15 @@ export function GoalDetail() {
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
+        </TabsContent>
+
+        <TabsContent value="criteria" className="mt-4">
+          <GoalAcceptanceCriteria
+            criteria={goal.acceptanceCriteria ?? []}
+            onUpdate={(next: GoalAcceptanceCriterion[]) =>
+              updateGoal.mutate({ acceptanceCriteria: next })
+            }
+          />
         </TabsContent>
 
         <TabsContent value="projects" className="mt-4">

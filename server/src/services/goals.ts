@@ -78,19 +78,23 @@ export function goalService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     /**
-     * Progress summary for a goal, computed from linked issues. Scoped to the
-     * goal's company as defense-in-depth: the calling route already enforces
-     * company access via `assertCompanyAccess`, but the query itself also
-     * filters by `companyId` so a misrouted call cannot leak cross-tenant data.
+     * Progress summary for a goal, computed from linked issues. Scoped to
+     * the goal's company as defense-in-depth: the calling route already
+     * enforces company access via `assertCompanyAccess`, but the query
+     * itself also filters by `companyId` so a misrouted call cannot leak
+     * cross-tenant data.
      *
-     * "Done" here means the issue status is `done` or `cancelled` — both are
-     * terminal states that remove the issue from active work.
+     * Counts only `done` toward completion. Cancelled issues are excluded
+     * from BOTH numerator and denominator — they're abandoned work, not
+     * completed work, so including them would either inflate the
+     * completion percentage (if counted as done) or deflate it (if left
+     * in the total with the cancelled work still open).
      */
     getProgress: async (companyId: string, goalId: string) => {
       const rows = await db
         .select({
-          totalIssues: sql<number>`count(*)::int`,
-          doneIssues: sql<number>`count(*) filter (where ${issues.status} in ('done','cancelled'))::int`,
+          totalIssues: sql<number>`count(*) filter (where ${issues.status} <> 'cancelled')::int`,
+          doneIssues: sql<number>`count(*) filter (where ${issues.status} = 'done')::int`,
         })
         .from(issues)
         .where(and(eq(issues.goalId, goalId), eq(issues.companyId, companyId)));
