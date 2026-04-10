@@ -116,6 +116,14 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
+    packageName: "@paperclipai/plugin-repos",
+    pluginKey: "darwin.repos",
+    displayName: "Repos",
+    description: "Browse and manage Darwin's code repositories — shows all repos with status, open PRs, deploy links, and active worktrees.",
+    localPath: "packages/plugins/plugin-repos",
+    tag: "example",
+  },
+  {
     packageName: "@paperclipai/plugin-hello-world-example",
     pluginKey: "paperclip.hello-world-example",
     displayName: "Hello World Widget (Example)",
