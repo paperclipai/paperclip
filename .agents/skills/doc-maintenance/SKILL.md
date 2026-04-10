@@ -133,7 +133,9 @@ Co-Authored-By: Paperclip <noreply@paperclip.ing>"
 
 git push -u origin "$BRANCH"
 
+# In this Paperclip fork checkout, keep PR actions pinned to ryjm/paperclip.
 gh pr create \
+  --repo ryjm/paperclip \
   --title "docs: periodic documentation accuracy update" \
   --body "$(cat <<'EOF'
 ## Summary

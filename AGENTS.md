@@ -135,7 +135,16 @@ When adding endpoints:
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 10. Fork PR Targeting
+
+This checkout is a fork with `origin=ryjm/paperclip` and `upstream=paperclipai/paperclip`.
+
+- Default repo for agent-authored branches, PRs, edits, and merges in this checkout: `ryjm/paperclip`
+- Do not open, edit, or merge a Paperclip PR against `paperclipai/paperclip` unless the board explicitly instructs that upstream action
+- Before any `gh pr create`, `gh pr edit`, or `gh pr merge` in this repo, pass `--repo ryjm/paperclip` or perform an equivalent explicit repo check
+- If a change needs upstream review, report the branch and commit back in Paperclip and wait for board direction instead of opening the upstream PR yourself
+
+## 11. Definition of Done
 
 A change is done when all are true:
 
