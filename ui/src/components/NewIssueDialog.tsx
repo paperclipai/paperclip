@@ -323,6 +323,9 @@ export function NewIssueDialog() {
   const [companyOpen, setCompanyOpen] = useState(false);
   const [buttonShake, setButtonShake] = useState(false);
   const [showTitleWarning, setShowTitleWarning] = useState(false);
+  const [hasAttempted, setHasAttempted] = useState(false);
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -647,6 +650,8 @@ export function NewIssueDialog() {
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      clearTimeout(shakeTimerRef.current);
+      clearTimeout(warningTimerRef.current);
     };
   }, []);
 
@@ -673,6 +678,11 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    setHasAttempted(false);
+    setButtonShake(false);
+    setShowTitleWarning(false);
+    clearTimeout(shakeTimerRef.current);
+    clearTimeout(warningTimerRef.current);
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -702,10 +712,13 @@ export function NewIssueDialog() {
 
   function handleButtonClick() {
     if (!title.trim()) {
+      setHasAttempted(true);
+      clearTimeout(shakeTimerRef.current);
+      clearTimeout(warningTimerRef.current);
       setButtonShake(true);
-      setTimeout(() => setButtonShake(false), 500);
+      shakeTimerRef.current = setTimeout(() => setButtonShake(false), 500);
       setShowTitleWarning(true);
-      setTimeout(() => setShowTitleWarning(false), 3000);
+      warningTimerRef.current = setTimeout(() => setShowTitleWarning(false), 3000);
       return;
     }
     handleSubmit();
@@ -1111,7 +1124,7 @@ export function NewIssueDialog() {
             }}
             autoFocus
           />
-          {!title.trim() && (
+          {hasAttempted && !title.trim() && (
             <div className="mt-1 text-xs text-destructive">
               Issue title is required
             </div>
