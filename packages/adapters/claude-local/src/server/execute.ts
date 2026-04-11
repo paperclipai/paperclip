@@ -121,9 +121,53 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const legacyCwdOptIn = config.legacyCwdOptIn === true;
+  // Workspace-cwd resolution policy (BLA-164 + BLA-165 v2):
+  //   1. If the operator opted into legacy cwd (adapterConfig.legacyCwdOptIn=true)
+  //      AND adapterConfig.cwd is set, use adapterConfig.cwd UNCONDITIONALLY —
+  //      regardless of whether the server resolved paperclipWorkspace to
+  //      project_primary / task_session / agent_home. legacyCwdOptIn is the
+  //      explicit "give me the pre-workspace-runtime behavior" escape hatch and
+  //      MUST override every workspace-runtime result. This is the only way
+  //      per-agent git worktrees stay honored when stale task_session params
+  //      still point at a shared checkout.
+  //   2. Otherwise, if the server provided a paperclipWorkspace cwd (of any
+  //      source), use it.
+  //   3. Otherwise, if adapterConfig.cwd is set but legacyCwdOptIn is missing,
+  //      warn and fall back to process.cwd(). The operator must explicitly opt
+  //      in to legacy cwd to avoid silently writing outside a managed workspace.
+  //   4. Otherwise, process.cwd().
+  //
+  // Incidents that shaped this policy:
+  //   - 2026-04-10 agent_home fallback silently beat configured per-agent
+  //     worktrees, contaminating the shared checkout on concurrent writes.
+  //   - 2026-04-11 post-reenable tick showed task_session workspaces (saved
+  //     from prior runs) pointing at shared BLACKCORE ALSO beat configured
+  //     worktrees. Both cases require legacyCwdOptIn to override.
+  let cwd: string;
+  if (configuredCwd && legacyCwdOptIn) {
+    cwd = configuredCwd;
+    if (workspaceCwd && workspaceCwd !== configuredCwd) {
+      console.warn(
+        `[paperclip claude-local] Using config.cwd=${JSON.stringify(configuredCwd)} over ` +
+          `paperclipWorkspace.cwd=${JSON.stringify(workspaceCwd)} ` +
+          `(source=${JSON.stringify(workspaceSource ?? null)}, legacyCwdOptIn=true). ` +
+          `This preserves per-agent repo isolation.`,
+      );
+    }
+  } else if (workspaceCwd) {
+    cwd = workspaceCwd;
+  } else if (configuredCwd) {
+    console.warn(
+      `[paperclip claude-local] Ignoring config.cwd=${JSON.stringify(configuredCwd)} because ` +
+        `no paperclipWorkspace was provided and config.legacyCwdOptIn is not set. ` +
+        `Attach this agent to a project with an executionWorkspacePolicy, or set ` +
+        `adapterConfig.legacyCwdOptIn: true to restore prior behavior.`,
+    );
+    cwd = process.cwd();
+  } else {
+    cwd = process.cwd();
+  }
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
@@ -178,8 +222,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
+  // Mirror the final resolved cwd so subprocesses that prefer PAPERCLIP_WORKSPACE_CWD
+  // see the same path the adapter actually launched them in (important after the
+  // BLA-165 precedence fix when we override agent_home fallback with configuredCwd).
+  if (cwd) {
+    env.PAPERCLIP_WORKSPACE_CWD = cwd;
   }
   if (workspaceSource) {
     env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
