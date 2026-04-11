@@ -14,6 +14,16 @@ import type {
 } from "@paperclipai/shared";
 import { api } from "./client";
 
+export interface CostByInvocationSource {
+  invocationSource: "timer" | "assignment" | "on_demand" | "automation" | "unknown";
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  runCount: number;
+  eventCount: number;
+}
+
 function dateParams(from?: string, to?: string): string {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
@@ -31,6 +41,8 @@ export const costsApi = {
     api.get<CostByAgentModel[]>(`/companies/${companyId}/costs/by-agent-model${dateParams(from, to)}`),
   byProject: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProject[]>(`/companies/${companyId}/costs/by-project${dateParams(from, to)}`),
+  byInvocationSource: (companyId: string, from?: string, to?: string) =>
+    api.get<CostByInvocationSource[]>(`/companies/${companyId}/costs/by-invocation-source${dateParams(from, to)}`),
   byProvider: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProviderModel[]>(`/companies/${companyId}/costs/by-provider${dateParams(from, to)}`),
   byBiller: (companyId: string, from?: string, to?: string) =>

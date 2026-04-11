@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -159,6 +159,36 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
+        .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+    },
+
+    byInvocationSource: async (companyId: string, range?: CostDateRange) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const invocationSourceExpr = sql<string>`coalesce(${heartbeatRuns.invocationSource}, 'unknown')`;
+
+      return db
+        .select({
+          invocationSource: invocationSourceExpr.as("invocation_source"),
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+          eventCount: sql<number>`count(*)::int`,
+        })
+        .from(costEvents)
+        .leftJoin(
+          heartbeatRuns,
+          and(
+            eq(costEvents.heartbeatRunId, heartbeatRuns.id),
+            eq(heartbeatRuns.companyId, companyId),
+          ),
+        )
+        .where(and(...conditions))
+        .groupBy(invocationSourceExpr)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
     },
 

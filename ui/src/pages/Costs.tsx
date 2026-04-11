@@ -11,7 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
-import { costsApi } from "../api/costs";
+import { costsApi, type CostByInvocationSource } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -146,6 +146,69 @@ function FinanceSummaryCard({
   );
 }
 
+function invocationSourceLabel(source: CostByInvocationSource["invocationSource"]): string {
+  switch (source) {
+    case "timer":
+      return "Timer heartbeat";
+    case "assignment":
+      return "Assignment wake";
+    case "on_demand":
+      return "On-demand wake";
+    case "automation":
+      return "Routine or automation";
+    default:
+      return "Unknown or unlinked";
+  }
+}
+
+function InvocationSourceCard({
+  rows,
+  totalSpendCents,
+}: {
+  rows: CostByInvocationSource[];
+  totalSpendCents: number;
+}) {
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">Spend by wake source</CardTitle>
+        <CardDescription>
+          Attributed by heartbeat invocation source to separate timer polling from real work triggers.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 px-5 pb-5 pt-2">
+        {rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No invocation-attributed spend in this period.</p>
+        ) : (
+          rows.map((row) => {
+            const sharePct = totalSpendCents > 0 ? Math.round((row.costCents / totalSpendCents) * 100) : 0;
+            const tokenTotal = row.inputTokens + row.cachedInputTokens + row.outputTokens;
+            return (
+              <div key={row.invocationSource} className="border border-border px-3 py-2">
+                <div className="flex items-start justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <div className="font-medium">{invocationSourceLabel(row.invocationSource)}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.runCount} run{row.runCount === 1 ? "" : "s"} · {row.eventCount} cost event{row.eventCount === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <div className="font-medium">
+                      {formatCents(row.costCents)}
+                      <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">{formatTokens(tokenTotal)}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -232,13 +295,14 @@ export function Costs() {
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
     queryFn: async () => {
-      const [summary, byAgent, byProject, byAgentModel] = await Promise.all([
+      const [summary, byAgent, byProject, byAgentModel, byInvocationSource] = await Promise.all([
         costsApi.summary(companyId, from || undefined, to || undefined),
         costsApi.byAgent(companyId, from || undefined, to || undefined),
         costsApi.byProject(companyId, from || undefined, to || undefined),
         costsApi.byAgentModel(companyId, from || undefined, to || undefined),
+        costsApi.byInvocationSource(companyId, from || undefined, to || undefined),
       ]);
-      return { summary, byAgent, byProject, byAgentModel };
+      return { summary, byAgent, byProject, byAgentModel, byInvocationSource };
     },
     enabled: !!selectedCompanyId && customReady,
   });
@@ -704,13 +768,19 @@ export function Costs() {
                   </CardContent>
                 </Card>
 
-                <FinanceSummaryCard
-                  debitCents={financeData?.summary.debitCents ?? 0}
-                  creditCents={financeData?.summary.creditCents ?? 0}
-                  netCents={financeData?.summary.netCents ?? 0}
-                  estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
-                  eventCount={financeData?.summary.eventCount ?? 0}
-                />
+                <div className="space-y-4">
+                  <InvocationSourceCard
+                    rows={spendData?.byInvocationSource ?? []}
+                    totalSpendCents={spendData?.summary.spendCents ?? 0}
+                  />
+                  <FinanceSummaryCard
+                    debitCents={financeData?.summary.debitCents ?? 0}
+                    creditCents={financeData?.summary.creditCents ?? 0}
+                    netCents={financeData?.summary.netCents ?? 0}
+                    estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
+                    eventCount={financeData?.summary.eventCount ?? 0}
+                  />
+                </div>
               </div>
 
               <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">

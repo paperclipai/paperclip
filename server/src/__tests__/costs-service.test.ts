@@ -48,6 +48,7 @@ const mockCostService = vi.hoisted(() => ({
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
+  byInvocationSource: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
   windowSpend: vi.fn().mockResolvedValue([]),
@@ -181,6 +182,18 @@ describe("cost routes", () => {
       .query({ limit: "25" });
     expect(res.status).toBe(200);
     expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25);
+  });
+
+  it("returns invocation-source cost breakdown rows for valid requests", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-invocation-source")
+      .query({ from: "2026-03-01T00:00:00.000Z", to: "2026-03-31T23:59:59.999Z" });
+    expect(res.status).toBe(200);
+    expect(mockCostService.byInvocationSource).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-03-01T00:00:00.000Z"),
+      to: new Date("2026-03-31T23:59:59.999Z"),
+    });
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
