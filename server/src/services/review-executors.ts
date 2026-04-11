@@ -107,11 +107,18 @@ export function reviewExecutorService(db: Db) {
       uiFilePatterns.some((pattern) => pattern.test(f))
     );
 
-    if (!hasUiFiles) {
+    // If no file list available, also check PR title/body for UI keywords
+    const titleAndBody = `${ctx.prTitle ?? ""} ${ctx.prBody ?? ""}`.toLowerCase();
+    const uiKeywords = ["ui", "화면", "프론트", "frontend", "component", "page", "layout", "디자인", "스타일", "css", "tailwind"];
+    const hasUiKeywords = files.length === 0 && uiKeywords.some((kw) => titleAndBody.includes(kw));
+
+    const isUiWork = hasUiFiles || hasUiKeywords;
+
+    if (!isUiWork) {
       return {
         status: "passed",
         summary: "화면 변경 없음 — 스크린샷 불필요",
-        details: { executor: "builtin", handler: "screenshot-required", uiFiles: false },
+        details: { executor: "builtin", handler: "screenshot-required", uiFiles: false, uiKeywords: false },
       };
     }
 
