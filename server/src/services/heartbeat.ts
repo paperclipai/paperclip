@@ -54,6 +54,8 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import { computeHashFromFiles } from "./instructions-hash.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -1000,12 +1002,35 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  async function computeInstructionsBundleHash(
+    agent: typeof agents.$inferSelect,
+  ): Promise<string | null> {
+    try {
+      const svc = agentInstructionsService();
+      const bundle = await svc.getBundle(agent);
+      if (!bundle.files.length || !bundle.rootPath) return null;
+      const fileEntries: { path: string; content: string }[] = [];
+      for (const file of bundle.files) {
+        try {
+          const detail = await svc.readFile(agent, file.path);
+          fileEntries.push({ path: file.path, content: detail.content });
+        } catch {
+          // File unreadable — skip, don't break hashing
+        }
+      }
+      return computeHashFromFiles(fileEntries);
+    } catch {
+      return null;
+    }
+  }
+
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
     sessionId: string | null;
     issueId: string | null;
+    currentInstructionsHash?: string | null;
   }): Promise<SessionCompactionDecision> {
-    const { agent, sessionId, issueId } = input;
+    const { agent, sessionId, issueId, currentInstructionsHash } = input;
     if (!sessionId) {
       return {
         rotate: false,
@@ -1016,7 +1041,10 @@ export function heartbeatService(db: Db) {
     }
 
     const policy = parseSessionCompactionPolicy(agent);
-    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
+    const hasThresholds = policy.enabled && hasSessionCompactionThresholds(policy);
+    const hasHashCheck = currentInstructionsHash != null;
+
+    if (!hasThresholds && !hasHashCheck) {
       return {
         rotate: false,
         reason: null,
@@ -1025,7 +1053,9 @@ export function heartbeatService(db: Db) {
       };
     }
 
-    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const fetchLimit = hasThresholds
+      ? Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4)
+      : 1;
     const runs = await db
       .select({
         id: heartbeatRuns.id,
@@ -1033,6 +1063,7 @@ export function heartbeatService(db: Db) {
         usageJson: heartbeatRuns.usageJson,
         resultJson: heartbeatRuns.resultJson,
         error: heartbeatRuns.error,
+        instructionsHashBefore: heartbeatRuns.instructionsHashBefore,
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
@@ -1049,6 +1080,49 @@ export function heartbeatService(db: Db) {
     }
 
     const latestRun = runs[0] ?? null;
+
+    // Hash-based rotation: runs independently of threshold policy
+    if (
+      hasHashCheck &&
+      latestRun?.instructionsHashBefore != null &&
+      currentInstructionsHash !== latestRun.instructionsHashBefore
+    ) {
+      const reason = "agent instructions changed since last session run";
+      const latestSummary = summarizeHeartbeatRunResultJson(latestRun.resultJson);
+      const latestTextSummary =
+        readNonEmptyString(latestSummary?.summary) ??
+        readNonEmptyString(latestSummary?.result) ??
+        readNonEmptyString(latestSummary?.message) ??
+        readNonEmptyString(latestRun.error);
+
+      const handoffMarkdown = [
+        "Paperclip session handoff:",
+        `- Previous session: ${sessionId}`,
+        issueId ? `- Issue: ${issueId}` : "",
+        `- Rotation reason: ${reason}`,
+        latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
+        "Continue from the current task state. Rebuild only the minimum context you need.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      return {
+        rotate: true,
+        reason,
+        handoffMarkdown,
+        previousRunId: latestRun.id,
+      };
+    }
+
+    if (!hasThresholds) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
     const oldestRun =
       policy.maxSessionAgeHours > 0
         ? await getOldestRunForSession(agent.id, sessionId)
@@ -2542,10 +2616,12 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
 
+    const currentInstructionsHash = await computeInstructionsBundleHash(agent);
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
+      currentInstructionsHash,
     });
     if (sessionCompaction.rotate) {
       context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
@@ -2583,6 +2659,7 @@ export function heartbeatService(db: Db) {
         .set({
           startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          instructionsHashBefore: currentInstructionsHash,
           contextSnapshot: context,
           updatedAt: new Date(),
         })

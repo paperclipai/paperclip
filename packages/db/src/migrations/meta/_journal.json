@@ -351,6 +351,13 @@
       "when": 1775868112157,
       "tag": "0049_military_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775903263181,
+      "tag": "0050_instructions_hash_before",
+      "breakpoints": true
     }
   ]
 }
