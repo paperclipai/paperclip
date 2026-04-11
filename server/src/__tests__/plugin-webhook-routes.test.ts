@@ -41,8 +41,17 @@ async function createApp() {
   ]);
 
   const app = express();
-  app.use(express.urlencoded({ extended: false }));
-  app.use(express.json());
+  app.use(express.urlencoded({
+    extended: false,
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    },
+  }));
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    },
+  }));
   app.use((req, _res, next) => {
     req.actor = {
       type: "board",
@@ -117,6 +126,14 @@ describe("plugin webhook routes", () => {
     expect(res.status).toBe(200);
     expect(res.text).toBe("");
     expect(mockWorkerManager.call).toHaveBeenCalledTimes(1);
+    expect(mockWorkerManager.call).toHaveBeenCalledWith(
+      "plugin-1",
+      "handleWebhook",
+      expect.objectContaining({
+        endpointKey: "slash-command",
+        rawBody: expect.stringContaining("command=%2Fclip"),
+      }),
+    );
   });
 
   it("passes through the Slack url_verification challenge without calling the worker", async () => {
