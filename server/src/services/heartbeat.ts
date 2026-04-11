@@ -6230,18 +6230,30 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
+        let run = null;
+        try {
+          run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          });
+        } catch (error) {
+          // Timer ticks should continue scanning other agents when a specific
+          // invocation is blocked by runtime policy (for example paused company/agent
+          // or budget hard-stop). enqueueWakeup already persisted the skipped request.
+          if (error instanceof HttpError && error.status === 409) {
+            skipped += 1;
+            continue;
+          }
+          throw error;
+        }
         if (run) enqueued += 1;
         else skipped += 1;
       }

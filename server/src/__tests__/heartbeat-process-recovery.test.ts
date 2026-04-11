@@ -296,6 +296,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.error).toBeNull();
   });
 
+  it("continues timer scans when a paused company blocks wakeups", async () => {
+    const now = new Date("2026-03-20T00:00:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paused Company",
+      status: "paused",
+      pauseReason: "manual",
+      pausedAt: now,
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 30,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date(now.getTime() - 31_000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toEqual({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(wakeups[0]?.reason).toBe("budget.blocked");
+    expect(wakeups[0]?.source).toBe("timer");
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
