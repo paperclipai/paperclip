@@ -282,6 +282,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.CODEX_HOME = effectiveCodexHome;
   env.PAPERCLIP_RUN_ID = runId;
+  for (const [k, v] of Object.entries(envConfig)) {
+    if (typeof v === "string") env[k] = v;
+  }
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
@@ -327,6 +330,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
+  if (!wakeTaskId) delete env.PAPERCLIP_TASK_ID;
+  if (!wakeReason) delete env.PAPERCLIP_WAKE_REASON;
+  if (!wakeCommentId) delete env.PAPERCLIP_WAKE_COMMENT_ID;
+  if (!approvalId) delete env.PAPERCLIP_APPROVAL_ID;
+  if (!approvalStatus) delete env.PAPERCLIP_APPROVAL_STATUS;
+  if (linkedIssueIds.length === 0) delete env.PAPERCLIP_LINKED_ISSUE_IDS;
+  if (!wakePayloadJson) delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
   }
@@ -365,9 +375,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
-  }
-  for (const [k, v] of Object.entries(envConfig)) {
-    if (typeof v === "string") env[k] = v;
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;

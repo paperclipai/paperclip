@@ -131,6 +131,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
+  }
 
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -178,6 +181,13 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
+  if (!wakeTaskId) delete env.PAPERCLIP_TASK_ID;
+  if (!wakeReason) delete env.PAPERCLIP_WAKE_REASON;
+  if (!wakeCommentId) delete env.PAPERCLIP_WAKE_COMMENT_ID;
+  if (!approvalId) delete env.PAPERCLIP_APPROVAL_ID;
+  if (!approvalStatus) delete env.PAPERCLIP_APPROVAL_STATUS;
+  if (linkedIssueIds.length === 0) delete env.PAPERCLIP_LINKED_ISSUE_IDS;
+  if (!wakePayloadJson) delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
   }
@@ -216,10 +226,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
-  }
-
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
   }
 
   if (!hasExplicitApiKey && authToken) {

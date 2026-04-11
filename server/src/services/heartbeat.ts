@@ -674,6 +674,116 @@ function parseIssueAssigneeAdapterOverrides(
  */
 const HEARTBEAT_TASK_KEY = "__heartbeat__";
 
+/**
+ * Drops cross-tenant or missing issue/task refs from a heartbeat context snapshot.
+ * Used by executeRun and enqueue paths so coalesced merges cannot resurrect stale UUIDs.
+ * (PAY-114: never propagate a PAPERCLIP_TASK_ID / issue ref that does not belong to `companyId`.)
+ */
+export async function sanitizeHeartbeatContextSnapshotForTenant(
+  db: Db,
+  companyId: string,
+  context: Record<string, unknown>,
+  logCtx: { runId?: string; agentId?: string },
+): Promise<void> {
+  let issueId = readNonEmptyString(context.issueId);
+  let issueContext = issueId
+    ? await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0] ?? null)
+    : null;
+
+  if (issueId && !issueContext) {
+    logger.warn(
+      { ...logCtx, companyId, rejectedIssueId: issueId },
+      "heartbeat context: rejecting issueId not in tenant (cross-tenant or missing issue)",
+    );
+    delete context.issueId;
+    if (readNonEmptyString(context.taskId) === issueId) delete context.taskId;
+    if (readNonEmptyString(context.taskKey) === issueId) delete context.taskKey;
+    delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+
+  const taskIdForTenantCheck = readNonEmptyString(context.taskId);
+  if (taskIdForTenantCheck && taskIdForTenantCheck !== HEARTBEAT_TASK_KEY) {
+    const taskIdAllowed =
+      issueContext && taskIdForTenantCheck === issueContext.id
+        ? true
+        : await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.id, taskIdForTenantCheck), eq(issues.companyId, companyId)))
+            .then((rows) => rows[0] != null);
+    if (!taskIdAllowed) {
+      logger.warn(
+        { ...logCtx, companyId, rejectedTaskId: taskIdForTenantCheck },
+        "heartbeat context: rejecting taskId not in agent tenant (cross-tenant or missing issue)",
+      );
+      delete context.taskId;
+      if (readNonEmptyString(context.taskKey) === taskIdForTenantCheck) delete context.taskKey;
+      delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
+    }
+  }
+
+  issueId = readNonEmptyString(context.issueId);
+  issueContext = issueId
+    ? issueContext && issueContext.id === issueId
+      ? issueContext
+      : await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+          .then((rows) => rows[0] ?? null)
+    : null;
+
+  const taskKeyCandidate = readNonEmptyString(context.taskKey);
+  if (taskKeyCandidate && taskKeyCandidate !== HEARTBEAT_TASK_KEY) {
+    const taskKeyRow = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.id, taskKeyCandidate), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!taskKeyRow) {
+      logger.warn(
+        { ...logCtx, companyId, rejectedTaskKey: taskKeyCandidate },
+        "heartbeat context: rejecting taskKey not in agent tenant",
+      );
+      delete context.taskKey;
+    }
+  }
+
+  const rawIssueIds = context.issueIds;
+  if (Array.isArray(rawIssueIds) && rawIssueIds.length > 0) {
+    const candidates: string[] = [];
+    for (const entry of rawIssueIds) {
+      const id = readNonEmptyString(entry);
+      if (id && !candidates.includes(id)) candidates.push(id);
+    }
+    if (candidates.length === 0) {
+      delete context.issueIds;
+    } else {
+      const rows = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, candidates)));
+      const allowed = rows.map((r) => r.id);
+      if (allowed.length === candidates.length) {
+        context.issueIds = allowed;
+      } else {
+        const allowedSet = new Set(allowed);
+        const rejected = candidates.filter((id) => !allowedSet.has(id));
+        logger.warn(
+          { ...logCtx, companyId, rejectedLinkedIssueIds: rejected },
+          "heartbeat context: filtering issueIds not in agent tenant",
+        );
+        if (allowed.length > 0) context.issueIds = allowed;
+        else delete context.issueIds;
+      }
+    }
+  }
+}
+
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -2144,6 +2254,10 @@ export function heartbeatService(db: Db) {
     now: Date,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
+    await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, contextSnapshot, {
+      runId: run.id,
+      agentId: agent.id,
+    });
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -2641,10 +2755,14 @@ export function heartbeatService(db: Db) {
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
-    const issueContext = issueId
+    await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, context, {
+      runId: run.id,
+      agentId: agent.id,
+    });
+
+    let issueId = readNonEmptyString(context.issueId);
+    let issueContext = issueId
       ? await db
           .select({
             id: issues.id,
@@ -2664,6 +2782,7 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
@@ -3669,6 +3788,10 @@ export function heartbeatService(db: Db) {
           payload: promotedPayload,
         });
 
+        await sanitizeHeartbeatContextSnapshotForTenant(db, deferredAgent.companyId, promotedContextSnapshot, {
+          agentId: deferredAgent.id,
+        });
+
         const sessionBefore =
           readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
           await resolveSessionBeforeForWakeup(deferredAgent, promotedTaskKey);
@@ -3770,6 +3893,12 @@ export function heartbeatService(db: Db) {
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+
+    await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, enrichedContextSnapshot, {
+      agentId: agent.id,
+    });
+    issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
@@ -3953,6 +4082,9 @@ export function heartbeatService(db: Db) {
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
             );
+            await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, mergedContextSnapshot, {
+              agentId: agent.id,
+            });
             const mergedRun = await tx
               .update(heartbeatRuns)
               .set({
@@ -4010,6 +4142,9 @@ export function heartbeatService(db: Db) {
               existingDeferredContext,
               enrichedContextSnapshot,
             );
+            await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, mergedDeferredContext, {
+              agentId: agent.id,
+            });
             const mergedDeferredPayload = {
               ...existingDeferredPayload,
               ...(payload ?? {}),
@@ -4134,8 +4269,11 @@ export function heartbeatService(db: Db) {
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
-        contextSnapshot,
+        enrichedContextSnapshot,
       );
+      await sanitizeHeartbeatContextSnapshotForTenant(db, agent.companyId, mergedContextSnapshot, {
+        agentId: agent.id,
+      });
       const mergedRun = await db
         .update(heartbeatRuns)
         .set({
