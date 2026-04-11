@@ -7,8 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: React.ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({ children, className, disableIssueQuicklook: _disableIssueQuicklook, ...props }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean }) => (
+    <a
+      className={className}
+      data-disable-issue-quicklook={_disableIssueQuicklook ? "true" : undefined}
+      {...props}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -129,6 +135,22 @@ describe("IssueRow", () => {
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
     expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toBe("/issues/PAP-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opts issue quicklook out for dense inbox rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("data-disable-issue-quicklook")).toBe("true");
 
     act(() => {
       root.unmount();

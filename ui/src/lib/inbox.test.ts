@@ -15,6 +15,7 @@ import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
   filterInboxIssues,
+  getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
   getApprovalsForTab,
   getInboxWorkItems,
@@ -24,13 +25,16 @@ import {
   groupInboxWorkItems,
   isInboxEntityDismissed,
   isMineInboxTab,
+  loadInboxFilterPreferences,
   loadInboxIssueColumns,
   loadLastInboxTab,
+  matchesInboxIssueSearch,
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
   resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
+  saveInboxFilterPreferences,
   saveInboxIssueColumns,
   saveLastInboxTab,
   shouldShowInboxSection,
@@ -135,6 +139,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     errorCode: null,
     externalRunId: null,
     processPid: null,
+    processGroupId: null,
     processStartedAt: null,
     retryOfRunId: null,
     processLossRetryCount: 0,
@@ -547,12 +552,157 @@ describe("inbox helpers", () => {
     expect(getUnreadTouchedIssues(recentIssues).map((issue) => issue.id)).toEqual(["1", "2", "3"]);
   });
 
+  it("matches workspace names when inbox issue search includes workspace labels", () => {
+    const issue = makeIssue("workspace", false);
+    issue.projectId = "project-1";
+    issue.projectWorkspaceId = "project-workspace-1";
+    issue.executionWorkspaceId = "execution-workspace-1";
+
+    expect(matchesInboxIssueSearch(
+      issue,
+      "feature",
+      {
+        isolatedWorkspacesEnabled: true,
+        executionWorkspaceById: new Map([
+          ["execution-workspace-1", { name: "Feature Branch", mode: "isolated_workspace" as const, projectWorkspaceId: "project-workspace-1" }],
+        ]),
+        projectWorkspaceById: new Map([
+          ["project-workspace-1", { name: "Primary workspace" }],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-2"]]),
+      },
+    )).toBe(true);
+  });
+
+  it("returns archived search matches that are not already visible in the inbox", () => {
+    const visibleIssue = makeIssue("visible", false);
+    visibleIssue.title = "Alpha visible task";
+
+    const archivedMatch = makeIssue("archived-match", false);
+    archivedMatch.title = "Alpha archived task";
+
+    const archivedMiss = makeIssue("archived-miss", false);
+    archivedMiss.title = "Different task";
+
+    expect(
+      getArchivedInboxSearchIssues({
+        visibleIssues: [visibleIssue],
+        searchableIssues: [visibleIssue, archivedMatch, archivedMiss],
+        query: "alpha",
+      }).map((issue) => issue.id),
+    ).toEqual(["archived-match"]);
+  });
+
+  it("sorts archived search matches by most recent activity", () => {
+    const older = makeIssue("older", false);
+    older.title = "Alpha older";
+    older.lastActivityAt = new Date("2026-03-11T02:00:00.000Z");
+
+    const newer = makeIssue("newer", false);
+    newer.title = "Alpha newer";
+    newer.lastActivityAt = new Date("2026-03-11T03:00:00.000Z");
+
+    expect(
+      getArchivedInboxSearchIssues({
+        visibleIssues: [],
+        searchableIssues: [older, newer],
+        query: "alpha",
+      }).map((issue) => issue.id),
+    ).toEqual(["newer", "older"]);
+  });
+
   it("defaults the remembered inbox tab to mine and persists all", () => {
     localStorage.clear();
     expect(loadLastInboxTab()).toBe("mine");
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
+  });
+
+  it("persists inbox filters per company", () => {
+    saveInboxFilterPreferences("company-1", {
+      allCategoryFilter: "approvals",
+      allApprovalFilter: "resolved",
+      issueFilters: {
+        statuses: ["todo"],
+        priorities: ["high"],
+        assignees: ["agent-1"],
+        labels: ["label-1"],
+        projects: ["project-1"],
+        workspaces: ["workspace-1"],
+        showRoutineExecutions: true,
+      },
+    });
+    saveInboxFilterPreferences("company-2", {
+      allCategoryFilter: "failed_runs",
+      allApprovalFilter: "actionable",
+      issueFilters: {
+        statuses: ["done"],
+        priorities: [],
+        assignees: [],
+        labels: [],
+        projects: [],
+        workspaces: [],
+        showRoutineExecutions: false,
+      },
+    });
+
+    expect(loadInboxFilterPreferences("company-1")).toEqual({
+      allCategoryFilter: "approvals",
+      allApprovalFilter: "resolved",
+      issueFilters: {
+        statuses: ["todo"],
+        priorities: ["high"],
+        assignees: ["agent-1"],
+        labels: ["label-1"],
+        projects: ["project-1"],
+        workspaces: ["workspace-1"],
+        showRoutineExecutions: true,
+      },
+    });
+    expect(loadInboxFilterPreferences("company-2")).toEqual({
+      allCategoryFilter: "failed_runs",
+      allApprovalFilter: "actionable",
+      issueFilters: {
+        statuses: ["done"],
+        priorities: [],
+        assignees: [],
+        labels: [],
+        projects: [],
+        workspaces: [],
+        showRoutineExecutions: false,
+      },
+    });
+  });
+
+  it("normalizes invalid inbox filter storage back to safe defaults", () => {
+    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+      allCategoryFilter: "bogus",
+      allApprovalFilter: "bogus",
+      issueFilters: {
+        statuses: ["todo", 123],
+        priorities: "high",
+        assignees: ["agent-1"],
+        labels: null,
+        projects: ["project-1"],
+        workspaces: ["workspace-1", false],
+        showRoutineExecutions: "yes",
+      },
+    }));
+
+    expect(loadInboxFilterPreferences("company-1")).toEqual({
+      allCategoryFilter: "everything",
+      allApprovalFilter: "all",
+      issueFilters: {
+        statuses: ["todo"],
+        priorities: [],
+        assignees: ["agent-1"],
+        labels: [],
+        projects: ["project-1"],
+        workspaces: ["workspace-1"],
+        showRoutineExecutions: false,
+      },
+    });
   });
 
   it("keeps nesting enabled on desktop when the saved preference is on", () => {

@@ -1056,9 +1056,10 @@ export function NewIssueDialog() {
           </div>
         </div>
 
-        {/* Title */}
-        <div className="px-4 pt-4 pb-2 shrink-0">
-          <textarea
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {/* Title */}
+          <div className="px-4 pt-4 pb-2">
+            <textarea
             className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
             placeholder="Issue title"
             rows={1}
@@ -1094,12 +1095,12 @@ export function NewIssueDialog() {
               }
             }}
             autoFocus
-          />
-        </div>
+            />
+          </div>
 
-        <div className="px-4 pb-2 shrink-0">
-          <div className="overflow-x-auto overscroll-x-contain">
-            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+          <div className="px-4 pb-2">
+            <div className="overflow-x-auto overscroll-x-contain">
+              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span className="w-6 shrink-0 text-center">For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
@@ -1235,14 +1236,14 @@ export function NewIssueDialog() {
                   </button>
                 </PopoverContent>
               </Popover>
+              </div>
             </div>
-          </div>
 
-          {/* Reviewer row */}
-          {showReviewerRow && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-              <span className="w-6 shrink-0 flex items-center justify-center"><Eye className="h-3.5 w-3.5" /></span>
-              <InlineEntitySelector
+            {/* Reviewer row */}
+            {showReviewerRow && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+                <span className="w-6 shrink-0 flex items-center justify-center"><Eye className="h-3.5 w-3.5" /></span>
+                <InlineEntitySelector
                 value={reviewerValue}
                 options={assigneeOptions}
                 placeholder="Reviewer"
@@ -1278,15 +1279,15 @@ export function NewIssueDialog() {
                     </>
                   );
                 }}
-              />
-            </div>
-          )}
+                />
+              </div>
+            )}
 
-          {/* Approver row */}
-          {showApproverRow && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-              <span className="w-6 shrink-0 flex items-center justify-center"><ShieldCheck className="h-3.5 w-3.5" /></span>
-              <InlineEntitySelector
+            {/* Approver row */}
+            {showApproverRow && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+                <span className="w-6 shrink-0 flex items-center justify-center"><ShieldCheck className="h-3.5 w-3.5" /></span>
+                <InlineEntitySelector
                 value={approverValue}
                 options={assigneeOptions}
                 placeholder="Approver"
@@ -1322,13 +1323,13 @@ export function NewIssueDialog() {
                     </>
                   );
                 }}
-              />
-            </div>
-          )}
-        </div>
+                />
+              </div>
+            )}
+          </div>
 
-        {isSubIssueMode ? (
-          <div className="px-4 pb-2 shrink-0">
+          {isSubIssueMode ? (
+            <div className="px-4 pb-2">
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
@@ -1341,11 +1342,11 @@ export function NewIssueDialog() {
                 </div>
               ) : null}
             </div>
-          </div>
-        ) : null}
+            </div>
+          ) : null}
 
-        {currentProject && currentProjectSupportsExecutionWorkspace && (
-          <div className="px-4 py-3 shrink-0 space-y-2">
+          {currentProject && currentProjectSupportsExecutionWorkspace && (
+            <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
               <div className="text-[11px] text-muted-foreground">
@@ -1392,11 +1393,11 @@ export function NewIssueDialog() {
                 </div>
               ) : null}
             </div>
-          </div>
-        )}
+            </div>
+          )}
 
-        {supportsAssigneeOverrides && (
-          <div className="px-4 pb-2 shrink-0">
+          {supportsAssigneeOverrides && (
+            <div className="px-4 pb-2">
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setAssigneeOptionsOpen((open) => !open)}
@@ -1447,39 +1448,39 @@ export function NewIssueDialog() {
                 )}
               </div>
             )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Description */}
-        <div
-          className="min-h-0 flex-1 overflow-y-auto border-t border-border/60 px-4 pb-2 pt-3"
-          onDragEnter={handleFileDragEnter}
-          onDragOver={handleFileDragOver}
-          onDragLeave={handleFileDragLeave}
-          onDrop={handleFileDrop}
-        >
+          {/* Description */}
           <div
-            className={cn(
-              "rounded-md transition-colors",
-              isFileDragOver && "bg-accent/20",
-            )}
+            className="border-t border-border/60 px-4 pb-2 pt-3"
+            onDragEnter={handleFileDragEnter}
+            onDragOver={handleFileDragOver}
+            onDragLeave={handleFileDragLeave}
+            onDrop={handleFileDrop}
           >
-            <MarkdownEditor
-              ref={descriptionEditorRef}
-              value={description}
-              onChange={setDescription}
-              placeholder="Add description..."
-              bordered={false}
-              mentions={mentionOptions}
-              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-              imageUploadHandler={async (file) => {
-                const asset = await uploadDescriptionImage.mutateAsync(file);
-                return asset.contentPath;
-              }}
-            />
-          </div>
-          {stagedFiles.length > 0 ? (
-            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+            <div
+              className={cn(
+                "rounded-md transition-colors",
+                isFileDragOver && "bg-accent/20",
+              )}
+            >
+              <MarkdownEditor
+                ref={descriptionEditorRef}
+                value={description}
+                onChange={setDescription}
+                placeholder="Add description..."
+                bordered={false}
+                mentions={mentionOptions}
+                contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+                imageUploadHandler={async (file) => {
+                  const asset = await uploadDescriptionImage.mutateAsync(file);
+                  return asset.contentPath;
+                }}
+              />
+            </div>
+            {stagedFiles.length > 0 ? (
+              <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
                   <div className="text-xs font-medium text-muted-foreground">Documents</div>
@@ -1546,8 +1547,9 @@ export function NewIssueDialog() {
                   </div>
                 </div>
               ) : null}
-            </div>
-          ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {/* Property chips bar */}

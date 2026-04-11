@@ -55,10 +55,23 @@ pnpm dev:stop
 Tailscale/private-auth dev mode:
 
 ```sh
-pnpm dev --tailscale-auth
+pnpm dev --bind lan
 ```
 
-This runs dev as `authenticated/private` and binds the server to `0.0.0.0` for private-network access.
+This runs dev as `authenticated/private` with a private-network bind preset.
+
+For Tailscale-only reachability on a detected tailnet address:
+
+```sh
+pnpm dev --bind tailnet
+```
+
+Legacy aliases still map to the old broad private-network behavior:
+
+```sh
+pnpm dev --tailscale-auth
+pnpm dev --authenticated-private
+```
 
 Allow additional private hostnames (for example custom Tailscale hostnames):
 
@@ -175,7 +188,7 @@ Seed modes:
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
 
-Provisioned git worktrees also pause all seeded routines in the isolated worktree database by default. This prevents copied daily/cron routines from firing unexpectedly inside the new workspace instance during development.
+Provisioned git worktrees also pause seeded routines that still have enabled schedule triggers in the isolated worktree database by default. This prevents copied daily/cron routines from firing unexpectedly inside the new workspace instance during development without disabling webhook/API-only routines.
 
 That repo-local env also sets:
 

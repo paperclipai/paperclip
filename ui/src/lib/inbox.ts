@@ -6,6 +6,10 @@ import type {
   Issue,
   JoinRequest,
 } from "@paperclipai/shared";
+import {
+  defaultIssueFilterState,
+  type IssueFilterState,
+} from "./issue-filters";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -16,12 +20,34 @@ export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
+export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
+export type InboxCategoryFilter =
+  | "everything"
+  | "issues_i_touched"
+  | "join_requests"
+  | "approvals"
+  | "failed_runs"
+  | "alerts";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
 export type InboxWorkItemGroupBy = "none" | "type";
-export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "parent", "labels", "updated"] as const;
+export const inboxIssueColumns = [
+  "status",
+  "id",
+  "assignee",
+  "project",
+  "workspace",
+  "parent",
+  "labels",
+  "updated",
+] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
 export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "updated"];
+export interface InboxFilterPreferences {
+  allCategoryFilter: InboxCategoryFilter;
+  allApprovalFilter: InboxApprovalFilter;
+  issueFilters: IssueFilterState;
+}
 export type InboxWorkItem =
   | {
       kind: "issue";
@@ -57,6 +83,104 @@ export interface InboxWorkItemGroup {
   key: string;
   label: string | null;
   items: InboxWorkItem[];
+}
+
+const defaultInboxFilterPreferences: InboxFilterPreferences = {
+  allCategoryFilter: "everything",
+  allApprovalFilter: "all",
+  issueFilters: defaultIssueFilterState,
+};
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function normalizeIssueFilterState(value: unknown): IssueFilterState {
+  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
+  const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
+  return {
+    statuses: normalizeStringArray(candidate.statuses),
+    priorities: normalizeStringArray(candidate.priorities),
+    assignees: normalizeStringArray(candidate.assignees),
+    labels: normalizeStringArray(candidate.labels),
+    projects: normalizeStringArray(candidate.projects),
+    workspaces: normalizeStringArray(candidate.workspaces),
+    showRoutineExecutions: candidate.showRoutineExecutions === true,
+  };
+}
+
+function normalizeInboxCategoryFilter(value: unknown): InboxCategoryFilter {
+  return value === "issues_i_touched"
+    || value === "join_requests"
+    || value === "approvals"
+    || value === "failed_runs"
+    || value === "alerts"
+    ? value
+    : "everything";
+}
+
+function normalizeInboxApprovalFilter(value: unknown): InboxApprovalFilter {
+  return value === "actionable" || value === "resolved" ? value : "all";
+}
+
+function getInboxFilterPreferencesStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_FILTER_PREFERENCES_KEY_PREFIX}:${companyId}`;
+}
+
+export function loadInboxFilterPreferences(
+  companyId: string | null | undefined,
+): InboxFilterPreferences {
+  const storageKey = getInboxFilterPreferencesStorageKey(companyId);
+  if (!storageKey) {
+    return {
+      ...defaultInboxFilterPreferences,
+      issueFilters: { ...defaultIssueFilterState },
+    };
+  }
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) {
+      return {
+        ...defaultInboxFilterPreferences,
+        issueFilters: { ...defaultIssueFilterState },
+      };
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      allCategoryFilter: normalizeInboxCategoryFilter(parsed.allCategoryFilter),
+      allApprovalFilter: normalizeInboxApprovalFilter(parsed.allApprovalFilter),
+      issueFilters: normalizeIssueFilterState(parsed.issueFilters),
+    };
+  } catch {
+    return {
+      ...defaultInboxFilterPreferences,
+      issueFilters: { ...defaultIssueFilterState },
+    };
+  }
+}
+
+export function saveInboxFilterPreferences(
+  companyId: string | null | undefined,
+  preferences: InboxFilterPreferences,
+) {
+  const storageKey = getInboxFilterPreferencesStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        allCategoryFilter: normalizeInboxCategoryFilter(preferences.allCategoryFilter),
+        allApprovalFilter: normalizeInboxApprovalFilter(preferences.allApprovalFilter),
+        issueFilters: normalizeIssueFilterState(preferences.issueFilters),
+      }),
+    );
+  } catch {
+    // Ignore localStorage failures.
+  }
 }
 
 export function loadDismissedInboxAlerts(): Set<string> {
@@ -172,6 +296,78 @@ export function shouldIncludeRoutineExecutionIssue(
 export function filterInboxIssues(issues: Issue[], showRoutineExecutions: boolean): Issue[] {
   if (showRoutineExecutions) return issues;
   return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, showRoutineExecutions));
+}
+
+export function matchesInboxIssueSearch(
+  issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  query: string,
+  {
+    isolatedWorkspacesEnabled = false,
+    executionWorkspaceById,
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  }: {
+    isolatedWorkspacesEnabled?: boolean;
+    executionWorkspaceById?: ReadonlyMap<string, {
+      name: string;
+      mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
+      projectWorkspaceId: string | null;
+    }>;
+    projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
+    defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  } = {},
+): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  if (issue.title.toLowerCase().includes(normalizedQuery)) return true;
+  if (issue.identifier?.toLowerCase().includes(normalizedQuery)) return true;
+  if (issue.description?.toLowerCase().includes(normalizedQuery)) return true;
+  if (!isolatedWorkspacesEnabled) return false;
+
+  const workspaceName = resolveIssueWorkspaceName(issue, {
+    executionWorkspaceById,
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  });
+  return workspaceName?.toLowerCase().includes(normalizedQuery) ?? false;
+}
+
+export function getArchivedInboxSearchIssues({
+  visibleIssues,
+  searchableIssues,
+  query,
+  isolatedWorkspacesEnabled = false,
+  executionWorkspaceById,
+  projectWorkspaceById,
+  defaultProjectWorkspaceIdByProjectId,
+}: {
+  visibleIssues: Issue[];
+  searchableIssues: Issue[];
+  query: string;
+  isolatedWorkspacesEnabled?: boolean;
+  executionWorkspaceById?: ReadonlyMap<string, {
+    name: string;
+    mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
+    projectWorkspaceId: string | null;
+  }>;
+  projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
+  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+}): Issue[] {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return [];
+
+  const visibleIssueIds = new Set(visibleIssues.map((issue) => issue.id));
+  return searchableIssues
+    .filter((issue) => !visibleIssueIds.has(issue.id))
+    .filter((issue) =>
+      matchesInboxIssueSearch(issue, normalizedQuery, {
+        isolatedWorkspacesEnabled,
+        executionWorkspaceById,
+        projectWorkspaceById,
+        defaultProjectWorkspaceIdByProjectId,
+      }),
+    )
+    .sort(sortIssuesByMostRecentActivity);
 }
 
 export function resolveIssueWorkspaceName(

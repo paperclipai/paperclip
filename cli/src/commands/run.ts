@@ -22,6 +22,7 @@ interface RunOptions {
   instance?: string;
   repair?: boolean;
   yes?: boolean;
+  bind?: "loopback" | "lan" | "tailnet";
 }
 
 interface StartedServer {
@@ -58,7 +59,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     }
 
     p.log.step("No config found. Starting onboarding...");
-    await onboard({ config: configPath, invokedByRun: true });
+    await onboard({ config: configPath, invokedByRun: true, bind: opts.bind });
   }
 
   p.log.step("Running doctor checks...");

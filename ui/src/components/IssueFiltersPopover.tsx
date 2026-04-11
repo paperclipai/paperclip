@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Filter, X, User } from "lucide-react";
+import { Filter, X, User, HardDrive } from "lucide-react";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 import {
@@ -31,6 +31,11 @@ type LabelOption = {
   color: string;
 };
 
+type WorkspaceOption = {
+  id: string;
+  name: string;
+};
+
 export function IssueFiltersPopover({
   state,
   onChange,
@@ -41,6 +46,8 @@ export function IssueFiltersPopover({
   currentUserId,
   enableRoutineVisibilityFilter = false,
   buttonVariant = "ghost",
+  iconOnly = false,
+  workspaces,
 }: {
   state: IssueFilterState;
   onChange: (patch: Partial<IssueFilterState>) => void;
@@ -51,15 +58,18 @@ export function IssueFiltersPopover({
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
+  iconOnly?: boolean;
+  workspaces?: WorkspaceOption[];
 }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant={buttonVariant} size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
-          <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
-          {activeFilterCount > 0 ? <span className="ml-0.5 text-[10px] font-medium sm:hidden">{activeFilterCount}</span> : null}
-          {activeFilterCount > 0 ? (
+        <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}>
+          <Filter className={iconOnly ? "h-3.5 w-3.5" : "h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1"} />
+          {!iconOnly && <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>}
+          {!iconOnly && activeFilterCount > 0 ? <span className="ml-0.5 text-[10px] font-medium sm:hidden">{activeFilterCount}</span> : null}
+          {iconOnly && activeFilterCount > 0 ? <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">{activeFilterCount}</span> : null}
+          {!iconOnly && activeFilterCount > 0 ? (
             <X
               className="ml-1 hidden h-3 w-3 sm:block"
               onClick={(event) => {
@@ -205,6 +215,24 @@ export function IssueFiltersPopover({
                           onCheckedChange={() => onChange({ projects: toggleIssueFilterValue(state.projects, project.id) })}
                         />
                         <span className="text-sm">{project.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {workspaces && workspaces.length > 0 ? (
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">Workspace</span>
+                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                    {workspaces.map((workspace) => (
+                      <label key={workspace.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                        <Checkbox
+                          checked={state.workspaces.includes(workspace.id)}
+                          onCheckedChange={() => onChange({ workspaces: toggleIssueFilterValue(state.workspaces, workspace.id) })}
+                        />
+                        <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-sm">{workspace.name}</span>
                       </label>
                     ))}
                   </div>

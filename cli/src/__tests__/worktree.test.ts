@@ -2,10 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  agents,
+  companies,
+  createDb,
+  projects,
+  routines,
+  routineTriggers,
+} from "@paperclipai/db";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  pauseSeededScheduledRoutines,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
@@ -28,9 +38,21 @@ import {
   sanitizeWorktreeInstanceId,
 } from "../commands/worktree-lib.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_ENV = { ...process.env };
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres worktree CLI tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);
@@ -820,6 +842,141 @@ describe("worktree helpers", () => {
       process.chdir(originalCwd);
       homedirSpy.mockRestore();
       fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
+  it("pauses only routines with enabled schedule triggers", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-routines-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const agentId = randomUUID();
+    const activeScheduledRoutineId = randomUUID();
+    const activeApiRoutineId = randomUUID();
+    const pausedScheduledRoutineId = randomUUID();
+    const archivedScheduledRoutineId = randomUUID();
+    const disabledScheduleRoutineId = randomUUID();
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Coder",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Project",
+        status: "in_progress",
+      });
+      await db.insert(routines).values([
+        {
+          id: activeScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Active scheduled",
+          status: "active",
+        },
+        {
+          id: activeApiRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Active API",
+          status: "active",
+        },
+        {
+          id: pausedScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Paused scheduled",
+          status: "paused",
+        },
+        {
+          id: archivedScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Archived scheduled",
+          status: "archived",
+        },
+        {
+          id: disabledScheduleRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Disabled schedule",
+          status: "active",
+        },
+      ]);
+      await db.insert(routineTriggers).values([
+        {
+          companyId,
+          routineId: activeScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 9 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: activeApiRoutineId,
+          kind: "api",
+          enabled: true,
+        },
+        {
+          companyId,
+          routineId: pausedScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 10 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: archivedScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 11 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: disabledScheduleRoutineId,
+          kind: "schedule",
+          enabled: false,
+          cronExpression: "0 12 * * *",
+          timezone: "UTC",
+        },
+      ]);
+
+      const pausedCount = await pauseSeededScheduledRoutines(tempDb.connectionString);
+      expect(pausedCount).toBe(1);
+
+      const rows = await db.select({ id: routines.id, status: routines.status }).from(routines);
+      const statusById = new Map(rows.map((row) => [row.id, row.status]));
+      expect(statusById.get(activeScheduledRoutineId)).toBe("paused");
+      expect(statusById.get(activeApiRoutineId)).toBe("active");
+      expect(statusById.get(pausedScheduledRoutineId)).toBe("paused");
+      expect(statusById.get(archivedScheduledRoutineId)).toBe("archived");
+      expect(statusById.get(disabledScheduleRoutineId)).toBe("active");
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
     }
   }, 20_000);
 });
