@@ -74,6 +74,14 @@ jobs:
           branch_name="bot-upgrade/$(git rev-parse --short=12 upstream/master)"
           echo "branch_name=$branch_name" >> "$GITHUB_OUTPUT"
 
+          if git merge-base --is-ancestor upstream/master origin/zh-enterprise; then
+            echo "skip_sync=true" >> "$GITHUB_OUTPUT"
+            echo "existing_pr_url=" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=upstream-already-merged" >> "$GITHUB_OUTPUT"
+            echo "Upstream ref upstream/master is already contained in origin/zh-enterprise"
+            exit 0
+          fi
+
           existing_pr="$(
             gh pr list --state all --base zh-enterprise --head "$branch_name" --json url,headRepositoryOwner,mergedAt,state \
               --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | select(.state == \"OPEN\" or .mergedAt != null) | .url" |
@@ -83,10 +91,12 @@ jobs:
           if [ -n "$existing_pr" ]; then
             echo "skip_sync=true" >> "$GITHUB_OUTPUT"
             echo "existing_pr_url=$existing_pr" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=existing-pr" >> "$GITHUB_OUTPUT"
             echo "Upstream SHA already handled by $existing_pr"
           else
             echo "skip_sync=false" >> "$GITHUB_OUTPUT"
             echo "existing_pr_url=" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Configure git identity
@@ -124,6 +134,7 @@ jobs:
         if: always()
         env:
           SKIP_SYNC: ${{ steps.preflight.outputs.skip_sync }}
+          SKIP_REASON: ${{ steps.preflight.outputs.skip_reason }}
           EXISTING_PR_URL: ${{ steps.preflight.outputs.existing_pr_url }}
           MANUAL_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           BRANCH_NAME: ${{ steps.sync.outputs.branch_name || steps.preflight.outputs.branch_name }}
@@ -135,8 +146,18 @@ jobs:
             echo "## Upstream Sync"
             echo "- branch: \`${BRANCH_NAME:-<unknown>}\`"
             if [ "$SKIP_SYNC" = "true" ] && [ "$MANUAL_DRY_RUN" != "true" ]; then
-              echo "- result: already handled"
-              echo "- existing PR: ${EXISTING_PR_URL}"
+              case "$SKIP_REASON" in
+                existing-pr)
+                  echo "- result: already handled by existing PR"
+                  echo "- existing PR: ${EXISTING_PR_URL}"
+                  ;;
+                upstream-already-merged)
+                  echo "- result: upstream SHA already merged into \`zh-enterprise\`"
+                  ;;
+                *)
+                  echo "- result: already handled"
+                  ;;
+              esac
             else
               if [ "$SKIP_SYNC" = "true" ] && [ -n "$EXISTING_PR_URL" ]; then
                 echo "- preflight: existing PR found, manual dry-run override applied"
