@@ -11,6 +11,7 @@ import {
   companySecrets,
   companySecretVersions,
   issues,
+  teamWorkflowStatuses,
 } from "@paperclipai/db";
 import type { ReviewStepConfig } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -50,7 +51,7 @@ export function reviewPipelineService(db: Db) {
     const now = new Date();
 
     if (existing) {
-      return db
+      const updated = await db
         .update(reviewPipelineTemplates)
         .set({
           ...(data.name !== undefined ? { name: data.name } : {}),
@@ -61,9 +62,15 @@ export function reviewPipelineService(db: Db) {
         .where(eq(reviewPipelineTemplates.id, existing.id))
         .returning()
         .then((rows) => rows[0]);
+
+      if (data.enabled === true && teamId) {
+        await ensureInReviewStatus(companyId, teamId);
+      }
+
+      return updated;
     }
 
-    return db
+    const result = await db
       .insert(reviewPipelineTemplates)
       .values({
         companyId,
@@ -76,6 +83,53 @@ export function reviewPipelineService(db: Db) {
       })
       .returning()
       .then((rows) => rows[0]);
+
+    // Ensure in_review workflow status exists when pipeline is enabled
+    if (result.enabled) {
+      await ensureInReviewStatus(companyId, teamId);
+    }
+
+    return result;
+  }
+
+  /** Add "In Review" status to team workflow if it doesn't exist yet. */
+  async function ensureInReviewStatus(_companyId: string, teamId: string) {
+    const existing = await db
+      .select()
+      .from(teamWorkflowStatuses)
+      .where(
+        and(
+          eq(teamWorkflowStatuses.teamId, teamId),
+          eq(teamWorkflowStatuses.slug, "in_review"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (existing) return;
+
+    // Find the max position in "started" category to insert after
+    const startedStatuses = await db
+      .select()
+      .from(teamWorkflowStatuses)
+      .where(
+        and(
+          eq(teamWorkflowStatuses.teamId, teamId),
+          eq(teamWorkflowStatuses.category, "started"),
+        ),
+      );
+
+    const maxPosition = startedStatuses.reduce(
+      (max, s) => Math.max(max, (s as Record<string, unknown>).position as number ?? 0),
+      0,
+    );
+
+    await db.insert(teamWorkflowStatuses).values({
+      teamId,
+      slug: "in_review",
+      name: "In Review",
+      category: "started",
+      position: maxPosition + 1,
+    });
   }
 
   // --- Review Runs ---
@@ -420,10 +474,32 @@ export function reviewPipelineService(db: Db) {
                 .set({ status: "merged", updatedAt: now })
                 .where(eq(issueWorkProducts.id, workProduct.id));
 
-              // Update issue status to done
+              // Update issue status to completed-category status
+              const issueRow = await db
+                .select({ teamId: issues.teamId })
+                .from(issues)
+                .where(eq(issues.id, run.issueId))
+                .then((rows) => rows[0] ?? null);
+
+              let completedSlug = "done";
+              if (issueRow?.teamId) {
+                const completedStatus = await db
+                  .select({ slug: teamWorkflowStatuses.slug })
+                  .from(teamWorkflowStatuses)
+                  .where(
+                    and(
+                      eq(teamWorkflowStatuses.teamId, issueRow.teamId),
+                      eq(teamWorkflowStatuses.category, "completed"),
+                    ),
+                  )
+                  .limit(1)
+                  .then((rows) => rows[0] ?? null);
+                if (completedStatus) completedSlug = completedStatus.slug;
+              }
+
               await db
                 .update(issues)
-                .set({ status: "done", completedAt: now, updatedAt: now })
+                .set({ status: completedSlug, completedAt: now, updatedAt: now })
                 .where(eq(issues.id, run.issueId));
             }
           }
@@ -468,6 +544,34 @@ export function reviewPipelineService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     if (run) {
+      // Revert issue status to in_progress (started category)
+      const issueRow = await db
+        .select({ teamId: issues.teamId })
+        .from(issues)
+        .where(eq(issues.id, run.issueId))
+        .then((rows) => rows[0] ?? null);
+
+      let startedSlug = "in_progress";
+      if (issueRow?.teamId) {
+        const startedStatus = await db
+          .select({ slug: teamWorkflowStatuses.slug })
+          .from(teamWorkflowStatuses)
+          .where(
+            and(
+              eq(teamWorkflowStatuses.teamId, issueRow.teamId),
+              eq(teamWorkflowStatuses.category, "started"),
+              // Prefer in_progress over in_review for revert
+            ),
+          )
+          .then((rows) => rows.find((r) => r.slug === "in_progress") ?? rows[0] ?? null);
+        if (startedStatus) startedSlug = startedStatus.slug;
+      }
+
+      await db
+        .update(issues)
+        .set({ status: startedSlug, updatedAt: new Date() })
+        .where(eq(issues.id, run.issueId));
+
       await logActivity(db, {
         companyId: run.companyId,
         actorType: "user",

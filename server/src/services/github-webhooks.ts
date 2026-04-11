@@ -392,6 +392,25 @@ export function githubWebhookService(db: Db) {
                   triggeredBy: "github_webhook",
                 });
 
+                // Transition issue to in_review if team has that status
+                const inReviewSlug = await db
+                  .select({ slug: teamWorkflowStatuses.slug })
+                  .from(teamWorkflowStatuses)
+                  .where(
+                    and(
+                      eq(teamWorkflowStatuses.teamId, issueRow.teamId!),
+                      eq(teamWorkflowStatuses.slug, "in_review"),
+                    ),
+                  )
+                  .then((rows) => rows[0]?.slug ?? null);
+
+                if (inReviewSlug && issueRow.status !== inReviewSlug) {
+                  await db
+                    .update(issues)
+                    .set({ status: inReviewSlug, updatedAt: new Date() })
+                    .where(eq(issues.id, issueRow.id));
+                }
+
                 // Execute auto steps fire-and-forget
                 void executeAutoSteps(db, run.id, checks, steps, {
                   companyId,
