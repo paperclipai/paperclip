@@ -1046,7 +1046,6 @@ export function Inbox() {
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "inbox-supplement",
-      issueFilters,
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
