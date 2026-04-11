@@ -12,6 +12,7 @@ export default defineConfig({
       "packages/adapters/gemini-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
+
       "server",
       "ui",
       "cli",

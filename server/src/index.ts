@@ -906,3 +906,4 @@ if (isMainModule(import.meta.url)) {
     process.exit(1);
   });
 }
+// Forced reload to pick up new .env

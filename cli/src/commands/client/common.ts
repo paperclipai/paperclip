@@ -67,6 +67,8 @@ export function resolveCommandContext(
     process.env.PAPERCLIP_COMPANY_ID?.trim() ||
     profile.companyId;
 
+  const runId = process.env.PAPERCLIP_RUN_ID?.trim();
+
   if (opts?.requireCompany && !companyId) {
     throw new Error(
       "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
@@ -76,6 +78,7 @@ export function resolveCommandContext(
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
+    runId,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
       ? undefined
       : async ({ error }) => {
