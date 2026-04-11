@@ -1,0 +1,41 @@
+# Workforce configuration for the Kaizai Trading Agent project
+project:
+  name: "Kaizai Trading Agent"
+  repo: "stepan-korec/trading-agent"
+  default_branch: main
+
+autonomy:
+  dev_qa_mode: "human_on_the_loop"
+  production_mode: "human_in_the_loop"
+
+risk_tiers:
+  high_risk_patterns:
+    - "services/*/auth*"
+    - "services/*/tenant*"
+    - "services/*/migrations/*"
+  protected_patterns:
+    - ".github/workflows/**"
+    - "infra/**"
+    - "contracts/**"
+    - "CLAUDE.md"
+    - "DOCUMENT_REGISTRY.yaml"
+    - "docs/specs/*"
+
+execution:
+  backend: "vps_docker"
+  max_parallel: 1
+  max_retries: 3
+  job_timeout_seconds: 1800
+
+cost_control:
+  monthly_budget_usd: 50.0
+  per_story_alert_usd: 2.0
+  alert_thresholds: [0.5, 0.8, 0.95]
+  hard_stop_at_budget: true
+
+heartbeat:
+  enabled: true
+  interval_seconds: 900
+
+slack:
+  channel: "agent-workforce"
