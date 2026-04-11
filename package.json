@@ -12,6 +12,8 @@
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "neuros:macos:build": "cd apps/neuros-macos && swift build",
     "neuros:macos:bundle": "./scripts/build-neuros-macos-app.sh",
+    "neuros:macos:pkg": "./scripts/package-neuros-macos-pkg.sh",
+    "neuros:macos:dmg": "./scripts/package-neuros-macos-dmg.sh",
     "neuros:macos:install": "./scripts/install-neuros-macos-app.sh",
     "neuros:macos:run": "cd apps/neuros-macos && swift run NeurOSDesktopApp",
     "build": "pnpm -r build",

@@ -53,6 +53,18 @@ Bundle it as a macOS `.app`:
 pnpm neuros:macos:bundle
 ```
 
+Build a local `.pkg` installer:
+
+```sh
+pnpm neuros:macos:pkg
+```
+
+Build a local `.dmg`:
+
+```sh
+pnpm neuros:macos:dmg
+```
+
 Install it locally:
 
 ```sh

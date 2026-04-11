@@ -225,6 +225,8 @@ pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
 pnpm neuros:macos:build  # Build the native neurOS macOS foundation
 pnpm neuros:macos:bundle # Bundle neurOS as a local macOS .app
+pnpm neuros:macos:pkg    # Build a local macOS installer package
+pnpm neuros:macos:dmg    # Build a local drag-and-drop DMG
 pnpm neuros:macos:install # Install the local neurOS macOS app
 pnpm neuros:macos:run    # Run the native neurOS macOS foundation
 pnpm build            # Build all

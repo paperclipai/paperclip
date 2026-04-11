@@ -27,8 +27,10 @@ SwiftUI-native macOS foundation for `neurOS`, the Paperclip evolution in this re
   - native inbox triage over approvals, issues, and runtime signals
   - activity timeline backed by the Paperclip activity API
   - native goal hierarchy with tree selection, owner/status detail, and linked projects
+  - attention callouts for backend failure, degraded connectivity, and dev-server restart requirements
 - persisted server configuration with local/remote/hybrid runtime preference
 - local backend bootstrap managed from the native app, with start/restart/stop controls and process diagnostics
+- metric-first settings and operations layouts aligned to the web control-plane experience
 - native instance settings coverage for:
   - connectivity and local backend control
   - general settings (`censorUsernameInLogs`, `keyboardShortcuts`, `feedbackDataSharingPreference`)
@@ -52,6 +54,18 @@ Build a local `.app` bundle from the repo root:
 
 ```bash
 pnpm neuros:macos:bundle
+```
+
+Build a signed local installer package:
+
+```bash
+pnpm neuros:macos:pkg
+```
+
+Build a drag-and-drop `.dmg`:
+
+```bash
+pnpm neuros:macos:dmg
 ```
 
 Install the app locally:

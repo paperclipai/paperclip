@@ -12,6 +12,7 @@ public struct SettingsView: View {
     @State private var draftAutoStartOnLaunch: Bool
     @State private var draftWorkspaceRootPath: String
     @State private var draftCustomCommand: String
+    private let cardColumns = [GridItem(.adaptive(minimum: 360), spacing: 20)]
 
     public init(appModel: AppModel, coordinator: DesktopBootstrapCoordinator) {
         self.appModel = appModel
@@ -25,17 +26,29 @@ public struct SettingsView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                applicationCard
-                connectionCard
-                localServerCard
-                instanceSettingsCard
-                desktopCard
-                diagnosticsCard
+            VStack(alignment: .leading, spacing: 24) {
+                settingsHero
+                settingsMetrics
+
+                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 20) {
+                    applicationCard
+                    connectionCard
+                    localServerCard
+                    instanceSettingsCard
+                    desktopCard
+                    diagnosticsCard
+                }
             }
-            .padding(24)
+            .padding(28)
         }
         .navigationTitle("Configurações")
+        .background(
+            LinearGradient(
+                colors: [Color.blue.opacity(0.05), Color.cyan.opacity(0.03), .clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .onAppear {
             syncDrafts(from: appModel.serverConfiguration)
         }
@@ -44,20 +57,71 @@ public struct SettingsView: View {
         }
     }
 
+    private var settingsHero: some View {
+        SectionHeroView(
+            title: "Controle da instância",
+            subtitle: "Gerencie conexão, backend local, preferências da instância e sinais de bootstrap do Paperclip sem sair do app."
+        ) {
+            HStack(spacing: 10) {
+                Button("Salvar") {
+                    Task { await saveConfiguration() }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Atualizar") {
+                    Task { await coordinator.refresh(appModel: appModel) }
+                }
+                .buttonStyle(.bordered)
+
+                if draftConfiguration.canManageLocalServer {
+                    Button("Iniciar backend") {
+                        Task { await saveAndStartLocalServer() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var settingsMetrics: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+            MetricTile(title: "API", value: appModel.health?.status.uppercased() ?? "OFFLINE", accent: healthAccent)
+            MetricTile(title: "Conexão", value: connectionMetricLabel, accent: connectionAccent)
+            MetricTile(title: "Backend local", value: appModel.localServerStatus.label, accent: localServerAccent)
+            MetricTile(title: "Bootstrap", value: bootstrapMetricLabel, accent: bootstrapAccent)
+        }
+    }
+
     private var applicationCard: some View {
-        GroupBox("Aplicação") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 10) {
+                Text("Aplicação")
+                    .font(.headline)
                 LabeledContent("Produto", value: appModel.identity.productName)
                 LabeledContent("Versão", value: appModel.identity.version)
                 LabeledContent("Bundle", value: appModel.identity.bundleIdentifier)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var connectionCard: some View {
-        GroupBox("Conectividade") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Conectividade")
+                            .font(.headline)
+                        Text("Defina a origem da API e como o app deve operar entre topologia local e remota.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(label: draftRuntimeMode.rawValue, color: .blue)
+                    if hasUnsavedChanges {
+                        StatusPill(label: "unsaved", color: .orange)
+                    }
+                }
+
                 TextField("http://127.0.0.1:3100", text: $draftBaseURL)
                     .textFieldStyle(.roundedBorder)
 
@@ -96,13 +160,24 @@ public struct SettingsView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var localServerCard: some View {
-        GroupBox("Servidor local") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Servidor local")
+                            .font(.headline)
+                        Text("Bootstrap, restart e diagnóstico do backend local do Paperclip a partir do app.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(label: appModel.localServerStatus.label, color: localServerAccent)
+                }
+
                 Toggle("Iniciar automaticamente quando o app abrir", isOn: $draftAutoStartOnLaunch)
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -180,18 +255,29 @@ public struct SettingsView: View {
                                 .padding(10)
                         }
                         .frame(minHeight: 120, maxHeight: 180)
-                        .background(Color.secondary.opacity(0.08))
+                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var instanceSettingsCard: some View {
-        GroupBox("Configurações da instância") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Preferências da instância")
+                            .font(.headline)
+                        Text("Paridade com os controles gerais e experimentais do board web.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(label: appModel.instanceSettings == nil ? "loading" : "ready", color: appModel.instanceSettings == nil ? .orange : .green)
+                }
+
                 if let settings = appModel.instanceSettings {
                     Toggle(
                         "Ocultar nome de usuário em logs e caminhos locais",
@@ -263,13 +349,14 @@ public struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var desktopCard: some View {
-        GroupBox("Desktop") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 12) {
+                Text("Desktop")
+                    .font(.headline)
                 Toggle("Abrir ao iniciar sessão", isOn: Binding(
                     get: { appModel.launchAtLoginEnabled },
                     set: { enabled in
@@ -282,13 +369,26 @@ public struct SettingsView: View {
                     set: { appModel.notificationsEnabled = $0 }
                 ))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var diagnosticsCard: some View {
-        GroupBox("Diagnóstico") {
+        SurfaceCard {
             VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Diagnóstico")
+                            .font(.headline)
+                        Text("Health, auth, bootstrap e sinais do dev server refletidos a partir da API real.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let health = appModel.health {
+                        StatusPill(label: health.status, color: healthAccent)
+                    }
+                }
+
                 if let health = appModel.health {
                     LabeledContent("Servidor", value: health.status)
                     LabeledContent("Versão API", value: health.version)
@@ -325,7 +425,6 @@ public struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -354,6 +453,59 @@ public struct SettingsView: View {
             return "Esta configuração permite que o app gerencie o backend local do Paperclip."
         }
         return "Use uma URL local para que o app consiga iniciar e monitorar o backend automaticamente."
+    }
+
+    private var connectionMetricLabel: String {
+        switch appModel.connectionState {
+        case .local:
+            "Local"
+        case .remote:
+            "Remota"
+        case .connecting:
+            "Conectando"
+        case .disconnected:
+            "Offline"
+        case .degraded:
+            "Atenção"
+        }
+    }
+
+    private var connectionAccent: Color {
+        switch appModel.connectionState {
+        case .local:
+            .green
+        case .remote:
+            .blue
+        case .connecting:
+            .cyan
+        case .disconnected, .degraded:
+            .orange
+        }
+    }
+
+    private var localServerAccent: Color {
+        switch appModel.localServerStatus.phase {
+        case .idle:
+            .orange
+        case .starting:
+            .blue
+        case .running:
+            .green
+        case .failed:
+            .red
+        }
+    }
+
+    private var healthAccent: Color {
+        statusColor(for: appModel.health?.status ?? "unknown")
+    }
+
+    private var bootstrapMetricLabel: String {
+        humanizeOperationalLabel(appModel.health?.bootstrapStatus ?? "unknown")
+    }
+
+    private var bootstrapAccent: Color {
+        statusColor(for: appModel.health?.bootstrapStatus ?? "unknown")
     }
 
     private func saveConfiguration() async {
