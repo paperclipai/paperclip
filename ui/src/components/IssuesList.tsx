@@ -19,6 +19,7 @@ import {
   type IssueFilterState,
 } from "../lib/issue-filters";
 import {
+  formatIssueSubtaskCount,
   getIssuesCopy,
   issueGroupFieldLabel,
   issuePriorityLabel,
