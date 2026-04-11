@@ -1479,7 +1479,13 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+        if (row.routine.catchUpPolicy === "skip_missed") {
+          runCount = 0;
+          logger.info(
+            { routineId: row.routine.id, triggerId: row.trigger.id, staleNextRunAt: row.trigger.nextRunAt.toISOString(), advancedTo: claimedNextRunAt?.toISOString() ?? null },
+            "scheduler: skipping overdue routine (catchUpPolicy=skip_missed), advancing nextRunAt to next future cron match",
+          );
+        } else if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {

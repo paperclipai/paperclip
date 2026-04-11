@@ -779,4 +779,42 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("skip_missed: does not dispatch and advances nextRunAt when trigger is overdue", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+
+    // Create a schedule trigger — nextRunAt starts in the future.
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "hourly",
+        cronExpression: "0 * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    // Back-date nextRunAt to simulate a server that was offline for 2 hours.
+    const overdueAt = new Date("2026-01-01T08:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: overdueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const now = new Date("2026-01-01T10:05:00.000Z");
+    const result = await svc.tickScheduledTriggers(now);
+
+    // skip_missed: no run should have been dispatched.
+    expect(result.triggered).toBe(0);
+    expect(wakeups).toHaveLength(0);
+
+    // nextRunAt must be advanced past `now`.
+    const [updated] = await db
+      .select({ nextRunAt: routineTriggers.nextRunAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id));
+    expect(updated?.nextRunAt).not.toBeNull();
+    expect(updated!.nextRunAt! > now).toBe(true);
+  });
 });
