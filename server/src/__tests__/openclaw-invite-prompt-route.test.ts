@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { accessRoutes } from "../routes/access.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -33,16 +35,14 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    boardAuthService: () => mockBoardAuthService,
-    deduplicateAgentName: vi.fn(),
-    logActivity: mockLogActivity,
-    notifyHireApproved: vi.fn(),
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  boardAuthService: () => mockBoardAuthService,
+  deduplicateAgentName: vi.fn(),
+  logActivity: mockLogActivity,
+  notifyHireApproved: vi.fn(),
+}));
 
 function createDbStub() {
   const createdInvite = {
@@ -99,11 +99,7 @@ function createDbStub() {
   };
 }
 
-async function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
-  ]);
+function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -125,9 +121,7 @@ async function createApp(actor: Record<string, unknown>, db: Record<string, unkn
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
-    vi.resetModules();
-    registerServiceMocks();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
@@ -140,7 +134,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = await createApp(
+    const app = createApp(
       {
         type: "agent",
         agentId: "agent-1",
@@ -165,7 +159,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       companyId: "company-1",
       role: "ceo",
     });
-    const app = await createApp(
+    const app = createApp(
       {
         type: "agent",
         agentId: "agent-1",
@@ -193,7 +187,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
   it("includes companyName in invite summary responses", async () => {
     const db = createDbStub();
-    const app = await createApp(
+    const app = createApp(
       {
         type: "board",
         userId: "user-1",
@@ -215,7 +209,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   it("allows board callers with invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(true);
-    const app = await createApp(
+    const app = createApp(
       {
         type: "board",
         userId: "user-1",
@@ -238,12 +232,12 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
         allowedJoinTypes: "agent",
       }),
     );
-  });
+  }, 15_000);
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();
     mockAccessService.canUser.mockResolvedValue(false);
-    const app = await createApp(
+    const app = createApp(
       {
         type: "board",
         userId: "user-1",

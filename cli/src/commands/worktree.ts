@@ -39,6 +39,8 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  routines,
+  routineTriggers,
   runDatabaseBackup,
   runDatabaseRestore,
   createEmbeddedPostgresLogBuffer,
@@ -922,6 +924,36 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   };
 }
 
+export async function pauseSeededScheduledRoutines(connectionString: string): Promise<number> {
+  const db = createDb(connectionString);
+  try {
+    const scheduledRoutineIds = await db
+      .selectDistinct({ routineId: routineTriggers.routineId })
+      .from(routineTriggers)
+      .where(and(eq(routineTriggers.kind, "schedule"), eq(routineTriggers.enabled, true)));
+    const idsToPause = scheduledRoutineIds
+      .map((row) => row.routineId)
+      .filter((value): value is string => Boolean(value));
+
+    if (idsToPause.length === 0) {
+      return 0;
+    }
+
+    const paused = await db
+      .update(routines)
+      .set({
+        status: "paused",
+        updatedAt: new Date(),
+      })
+      .where(and(inArray(routines.id, idsToPause), sql`${routines.status} <> 'paused'`, sql`${routines.status} <> 'archived'`))
+      .returning({ id: routines.id });
+
+    return paused.length;
+  } finally {
+    await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+  }
+}
+
 async function seedWorktreeDatabase(input: {
   sourceConfigPath: string;
   sourceConfig: PaperclipConfig;
@@ -959,7 +991,7 @@ async function seedWorktreeDatabase(input: {
     const backup = await runDatabaseBackup({
       connectionString: sourceConnectionString,
       backupDir: path.resolve(input.targetPaths.backupDir, "seed"),
-      retentionDays: 7,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: `${input.instanceId}-seed`,
       includeMigrationJournal: true,
       excludeTables: seedPlan.excludedTables,
@@ -979,6 +1011,7 @@ async function seedWorktreeDatabase(input: {
       backupFile: backup.backupFile,
     });
     await applyPendingMigrations(targetConnectionString);
+    await pauseSeededScheduledRoutines(targetConnectionString);
     const reboundWorkspaces = await rebindSeededProjectWorkspaces({
       targetConnectionString,
       currentCwd: input.targetPaths.cwd,

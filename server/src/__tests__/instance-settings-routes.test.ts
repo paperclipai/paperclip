@@ -11,12 +11,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerRouteMocks() {
-  vi.doMock("../services/index.js", () => ({
-    instanceSettingsService: () => mockInstanceSettingsService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+  logActivity: mockLogActivity,
+}));
 
 async function createApp(actor: any) {
   const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
@@ -37,8 +35,7 @@ async function createApp(actor: any) {
 describe("instance settings routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,

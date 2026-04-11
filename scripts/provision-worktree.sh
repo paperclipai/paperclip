@@ -237,6 +237,8 @@ async function main() {
     server: {
       deploymentMode: sourceConfig?.server?.deploymentMode ?? "local_trusted",
       exposure: sourceConfig?.server?.exposure ?? "private",
+      ...(sourceConfig?.server?.bind ? { bind: sourceConfig.server.bind } : {}),
+      ...(sourceConfig?.server?.customBindHost ? { customBindHost: sourceConfig.server.customBindHost } : {}),
       host: sourceConfig?.server?.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: sourceConfig?.server?.allowedHostnames ?? [],
@@ -320,20 +322,6 @@ if ! run_isolated_worktree_init; then
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
 fi
-
-disable_seeded_routines() {
-  local company_id="${PAPERCLIP_COMPANY_ID:-}"
-  if [[ -z "$company_id" ]]; then
-    echo "PAPERCLIP_COMPANY_ID not set; skipping routine disable post-step." >&2
-    return 0
-  fi
-
-  if ! run_paperclipai_command routines disable-all --config "$worktree_config_path" --company-id "$company_id"; then
-    echo "paperclipai CLI not available in this workspace; skipping routine disable post-step." >&2
-  fi
-}
-
-disable_seeded_routines
 
 list_base_node_modules_paths() {
   cd "$base_cwd" &&
