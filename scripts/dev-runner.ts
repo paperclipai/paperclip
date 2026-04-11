@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { waitForActiveRunsToClear } from "./dev-runner-active-run-guard.ts";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import {
@@ -569,9 +570,14 @@ async function maybeAutoRestartChild() {
     restartInFlight = false;
     return;
   }
+
   if ((devServer.activeRunCount ?? 0) > 0) {
-    restartInFlight = false;
-    return;
+    await waitForActiveRunsToClear({
+      fetchActiveRunCount: async () => {
+        const h = await getDevHealthPayload() as typeof health;
+        return h?.devServer?.activeRunCount ?? 0;
+      },
+    });
   }
 
   try {
