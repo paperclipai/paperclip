@@ -31,7 +31,9 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForCompany: vi.fn(),
+  stopRunningForCompany: vi.fn(),
   invoke: vi.fn(),
+  resumeQueuedRuns: vi.fn(),
 }));
 
 const mockAgentHeartbeatModelService = vi.hoisted(() => ({
@@ -136,6 +138,7 @@ describe("company pause/resume routes", () => {
       company: paused,
       pausedAgentCount: 0,
     });
+    mockHeartbeatService.stopRunningForCompany.mockResolvedValue(2);
 
     const app = createApp({
       type: "board",
@@ -148,13 +151,17 @@ describe("company pause/resume routes", () => {
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("paused");
     expect(mockCompanyService.pause).toHaveBeenCalledWith("company-1");
+    expect(mockHeartbeatService.stopRunningForCompany).toHaveBeenCalledWith(
+      "company-1",
+      "Stopped due to company pause",
+    );
     expect(mockHeartbeatService.cancelActiveForCompany).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         companyId: "company-1",
         action: "company.paused",
-        details: { pausedAgentCount: 0 },
+        details: { pausedAgentCount: 0, stoppedRunCount: 2 },
       }),
     );
   });
@@ -185,6 +192,7 @@ describe("company pause/resume routes", () => {
       "company-1",
       { apply: true },
     );
+    expect(mockHeartbeatService.resumeQueuedRuns).toHaveBeenCalled();
     expect(mockHeartbeatService.invoke).toHaveBeenCalledWith(
       "agent-coo-1",
       "on_demand",
@@ -223,6 +231,7 @@ describe("company pause/resume routes", () => {
 
     expect(response.status).toBe(404);
     expect(response.body.error).toBe("Company not found");
+    expect(mockHeartbeatService.stopRunningForCompany).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelActiveForCompany).not.toHaveBeenCalled();
   });
 });

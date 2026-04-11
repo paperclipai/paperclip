@@ -79,7 +79,7 @@ Archives a company. Archived companies are hidden from default listings.
 POST /api/companies/{companyId}/pause
 ```
 
-Pauses the company at the company scope. Agent-level pause states are unchanged.
+Pauses the company at the company scope. Agent-level pause states are unchanged. Queued work is held and does not start while paused.
 
 ## Resume Company
 
@@ -87,7 +87,7 @@ Pauses the company at the company scope. Agent-level pause states are unchanged.
 POST /api/companies/{companyId}/resume
 ```
 
-Resumes the company at the company scope. Agent-level pause states are unchanged.
+Resumes the company at the company scope. Agent-level pause states are unchanged and queued work can start again.
 On resume, Paperclip also ensures a COO coordinator exists and triggers a COO heartbeat kickoff (best-effort).
 
 ## Company Fields

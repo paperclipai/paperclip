@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -1780,6 +1781,14 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getCompanyStatus(companyId: string) {
+    return db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0]?.status ?? null);
+  }
+
   async function getRun(runId: string) {
     return db
       .select()
@@ -2909,6 +2918,16 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    const companyStatus = await getCompanyStatus(run.companyId);
+    if (!companyStatus) {
+      await cancelRunInternal(run.id, "Cancelled because the company no longer exists");
+      return null;
+    }
+    if (companyStatus === "paused") {
+      // Company-level pause keeps queued work in place until resume.
+      return null;
+    }
+
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
@@ -3253,6 +3272,8 @@ export function heartbeatService(db: Db) {
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
       }
+      const companyStatus = await getCompanyStatus(agent.companyId);
+      if (companyStatus !== "active") return [];
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
@@ -6047,6 +6068,19 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  async function stopRunningForCompanyInternal(companyId: string, reason = "Stopped due to company pause") {
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+
+    for (const run of runs) {
+      await cancelRunInternal(run.id, reason);
+    }
+
+    return runs.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -6267,6 +6301,9 @@ export function heartbeatService(db: Db) {
 
     cancelActiveForCompany: (companyId: string, reason?: string) =>
       cancelActiveForCompanyInternal(companyId, reason),
+
+    stopRunningForCompany: (companyId: string, reason?: string) =>
+      stopRunningForCompanyInternal(companyId, reason),
 
     cancelBudgetScopeWork,
 

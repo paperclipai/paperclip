@@ -460,6 +460,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
 
+    const stoppedRunCount = await heartbeat.stopRunningForCompany(companyId, "Stopped due to company pause");
+
     await logActivity(db, {
       companyId,
       actorType: "user",
@@ -469,6 +471,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: companyId,
       details: {
         pausedAgentCount: result.pausedAgentCount,
+        stoppedRunCount,
       },
     });
 
@@ -489,6 +492,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     let cooHeartbeatTriggered = false;
     let cooAgentId: string | null = null;
     try {
+      await heartbeat.resumeQueuedRuns();
       await heartbeatModel.ensureCompanyHasCooCoordinator(companyId, { apply: true });
       const companyAgents = await agents.list(companyId);
       const cooAgent = companyAgents.find((agent) => agent.role === "coo") ?? null;
