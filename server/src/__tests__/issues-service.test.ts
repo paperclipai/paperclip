@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1134,6 +1136,106 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+
+  it("clears execution locks on release so another agent can check out the issue", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const nextAgentId = randomUUID();
+    const staleRunId = randomUUID();
+    const releaseRunId = randomUUID();
+    const nextRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexMax",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAgentId,
+        companyId,
+        name: "Nano",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-06T00:00:00.000Z"),
+      },
+      {
+        id: releaseRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-11T12:00:00.000Z"),
+      },
+      {
+        id: nextRunId,
+        companyId,
+        agentId: nextAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-11T12:05:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "codexmax",
+      executionLockedAt: new Date("2026-04-06T00:00:00.000Z"),
+      createdByAgentId: assigneeAgentId,
+    });
+
+    const released = await svc.release(issueId, assigneeAgentId, releaseRunId);
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const checkedOut = await svc.checkout(issueId, nextAgentId, ["todo"], nextRunId);
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: nextAgentId,
+      checkoutRunId: nextRunId,
+      executionRunId: nextRunId,
     });
   });
 });
