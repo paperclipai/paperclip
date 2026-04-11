@@ -3641,6 +3641,7 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -3694,6 +3695,25 @@ export function heartbeatService(db: Db) {
               status: "failed",
               finishedAt: new Date(),
               error: "Deferred wake could not be promoted: agent is not invokable",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
+        // Guard: assigneeAgentId is authoritative for ownership. If the issue has been
+        // reassigned to a different agent since this deferred request was queued, skip
+        // promotion — the new assignee will drive execution via their own heartbeat.
+        // Fixes BLA-207 (stale executionAgentNameKey reclaim after reassignment) and
+        // BLA-206 (deferred promotions resurrecting stale ownership after re-routing).
+        if (issue.assigneeAgentId && issue.assigneeAgentId !== deferredAgent.id) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "failed",
+              finishedAt: new Date(),
+              error:
+                "Deferred wake skipped: issue was reassigned to a different agent; assigneeAgentId is authoritative",
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
