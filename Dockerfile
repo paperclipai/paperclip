@@ -28,6 +28,8 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
+COPY packages/blog-pipeline-core/package.json packages/blog-pipeline-core/
+COPY packages/blog-pipeline-policy/package.json packages/blog-pipeline-policy/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
