@@ -60,6 +60,20 @@ public final class DesktopBootstrapCoordinator {
         }
     }
 
+    public func loadIssueDetail(issueID: String, appModel: AppModel) async throws -> IssueConsoleDetail {
+        try await services.console.loadIssueDetail(
+            configuration: appModel.serverConfiguration,
+            issueID: issueID
+        )
+    }
+
+    public func loadAgentDetail(agentID: String, appModel: AppModel) async throws -> AgentConsoleDetail {
+        try await services.console.loadAgentDetail(
+            configuration: appModel.serverConfiguration,
+            agentID: agentID
+        )
+    }
+
     public func loadApprovalDetail(approvalID: String, appModel: AppModel) async throws -> ApprovalDetail {
         try await services.console.loadApprovalDetail(
             configuration: appModel.serverConfiguration,

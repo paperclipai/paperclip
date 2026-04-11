@@ -60,6 +60,8 @@ The current native detail routing in `RootSplitView.swift` maps those sections t
 Notable real interactive consoles already present on macOS:
 
 - approval detail, comments, and decision actions
+- issue detail with dependency and context visibility
+- agent detail with chain-of-command and permission visibility
 - plugin health, logs, enable/disable, and upgrade actions
 - project workspace runtime start/stop/restart actions
 
@@ -84,8 +86,8 @@ Interpretation:
 | Product capability | Web pages | macOS coverage | Status | Evidence |
 |---|---|---|---|---|
 | Operations dashboard | `Dashboard.tsx` | `OperationsHomeView` with metrics, health, queue, projects, agents, runtime summaries | implemented | `OperationsHomeView.swift`, `OperationsPanels.swift` |
-| Issues and operational queue | `Issues.tsx`, `IssueDetail.tsx`, `MyIssues.tsx` | `QueueSectionView` lists issues and key metrics, but no dedicated issue detail or personal issue flow | partial | `QueueSectionView` in `OperationsPanels.swift` |
-| Agents | `Agents.tsx`, `AgentDetail.tsx`, `NewAgent.tsx` | `AgentsSectionView` shows operational list/state/budget summaries, but no native agent detail or creation flow | partial | `AgentsSectionView` in `OperationsPanels.swift` |
+| Issues and operational queue | `Issues.tsx`, `IssueDetail.tsx`, `MyIssues.tsx` | `QueueSectionView` now supports native issue selection with dependency, project, goal, and status detail, but still lacks the personal issue and editing workflows from web | partial | `QueueSectionView` and `IssueDetailPanel` in `OperationsPanels.swift` |
+| Agents | `Agents.tsx`, `AgentDetail.tsx`, `NewAgent.tsx` | `AgentsSectionView` now supports native agent selection with chain-of-command, permissions source, heartbeat, and budget detail, but still lacks creation and configuration flows | partial | `AgentsSectionView` and `AgentDetailPanel` in `OperationsPanels.swift` |
 | Projects and workspaces | `Projects.tsx`, `ProjectDetail.tsx`, `ProjectWorkspaceDetail.tsx`, `ExecutionWorkspaceDetail.tsx` | `ProjectsSectionView` supports project selection, workspace loading, and runtime controls, but not full project/workspace detail parity | partial | `ProjectsSectionView` and `WorkspaceDetailCard` in `OperationsPanels.swift` |
 | Approvals | `Approvals.tsx`, `ApprovalDetail.tsx` | Native queue plus approval detail, payload, linked issues, comments, and decision actions | implemented | `ApprovalsSectionView` in `OperationsPanels.swift` |
 | Runtime and instance health | `ExecutionWorkspaceDetail.tsx`, `RunTranscriptUxLab.tsx` | `RuntimeSectionView` covers health and signals; runtime actions exist inside project workspaces; transcript/lab tooling is absent | partial | `RuntimeSectionView`, `ProjectsSectionView` |
@@ -119,7 +121,7 @@ The macOS app opens at an operational shell, but it still lacks native surfaces 
 
 These are major product areas on web and keep the desktop app from reaching full control-plane coverage.
 
-### 2. Existing sections are mostly list-and-console shaped
+### 2. Existing sections are stronger in operator-read flows than in authoring/configuration flows
 
 The current native app is strongest when the job is:
 
@@ -130,7 +132,6 @@ The current native app is strongest when the job is:
 It is still thinner on:
 
 - object creation
-- full detail pages
 - editing/configuration-heavy workflows
 - structured information architecture beyond the operational shell
 
@@ -147,7 +148,7 @@ The app already shows meaningful organization and plugin state, but it still lac
 
 If the objective is full macOS parity with the current web surface, the most coherent next sequence is:
 
-1. richer `Issues`, `Agents`, and `Projects` detail pages
+1. richer `Projects` detail pages
 2. `Companies` + `Org/OrgChart`
 3. `Plugin settings` + `Adapter manager`
 4. `Costs`
@@ -156,8 +157,8 @@ If the objective is full macOS parity with the current web surface, the most coh
 
 Rationale:
 
-- Steps 1 to 3 close the biggest everyday operator gaps now that `Goals` has a native surface.
-- Steps 4 to 6 close platform management gaps.
+- Step 1 closes the last major detail gap inside the operational shell now that `Goals`, `Issues`, and `Agents` have native detail surfaces.
+- Steps 2 to 6 close platform management gaps.
 - Auth/onboarding should land only after the native app has enough functional breadth to justify a full login flow.
 
 ## Conclusion

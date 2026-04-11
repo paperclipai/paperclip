@@ -12,6 +12,115 @@ public struct ApprovalField: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct IssueConsoleDetail: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var identifier: String
+    public var title: String
+    public var description: String?
+    public var status: String
+    public var priority: String
+    public var assigneeLabel: String
+    public var projectLabel: String?
+    public var goalLabel: String?
+    public var parentLabel: String?
+    public var blockedBy: [IssueQueueSummary]
+    public var blocks: [IssueQueueSummary]
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: String,
+        identifier: String,
+        title: String,
+        description: String?,
+        status: String,
+        priority: String,
+        assigneeLabel: String,
+        projectLabel: String?,
+        goalLabel: String?,
+        parentLabel: String?,
+        blockedBy: [IssueQueueSummary],
+        blocks: [IssueQueueSummary],
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.identifier = identifier
+        self.title = title
+        self.description = description
+        self.status = status
+        self.priority = priority
+        self.assigneeLabel = assigneeLabel
+        self.projectLabel = projectLabel
+        self.goalLabel = goalLabel
+        self.parentLabel = parentLabel
+        self.blockedBy = blockedBy
+        self.blocks = blocks
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct AgentChainEntry: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var role: String
+    public var title: String?
+
+    public init(id: String, name: String, role: String, title: String?) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.title = title
+    }
+}
+
+public struct AgentConsoleDetail: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var role: String
+    public var title: String?
+    public var status: String
+    public var adapterType: String
+    public var budgetMonthlyCents: Int
+    public var spentMonthlyCents: Int
+    public var pauseReason: String?
+    public var lastHeartbeatAt: Date?
+    public var canAssignTasks: Bool
+    public var taskAssignSource: String
+    public var chainOfCommand: [AgentChainEntry]
+
+    public init(
+        id: String,
+        name: String,
+        role: String,
+        title: String?,
+        status: String,
+        adapterType: String,
+        budgetMonthlyCents: Int,
+        spentMonthlyCents: Int,
+        pauseReason: String?,
+        lastHeartbeatAt: Date?,
+        canAssignTasks: Bool,
+        taskAssignSource: String,
+        chainOfCommand: [AgentChainEntry]
+    ) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.title = title
+        self.status = status
+        self.adapterType = adapterType
+        self.budgetMonthlyCents = budgetMonthlyCents
+        self.spentMonthlyCents = spentMonthlyCents
+        self.pauseReason = pauseReason
+        self.lastHeartbeatAt = lastHeartbeatAt
+        self.canAssignTasks = canAssignTasks
+        self.taskAssignSource = taskAssignSource
+        self.chainOfCommand = chainOfCommand
+    }
+}
+
 public struct ApprovalCommentEntry: Identifiable, Hashable, Sendable {
     public let id: String
     public var authorLabel: String

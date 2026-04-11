@@ -20,6 +20,8 @@ SwiftUI-native macOS foundation for `neurOS`, the Paperclip evolution in this re
   - empresa e equipe
 - interactive operational consoles for:
   - approval detail, comments, approve/reject/request-revision/resubmit flows
+  - issue detail with dependency context, project/goal linkage, and operational timeline facts
+  - agent detail with chain of command, permissions source, heartbeat, and budget visibility
   - plugin health, logs, enable/disable, and upgrade actions
   - project workspace runtime start/stop/restart controls
   - native inbox triage over approvals, issues, and runtime signals

@@ -9,6 +9,16 @@ public protocol OperationsSnapshotProviding: Sendable {
 }
 
 public protocol OperationsConsoleProviding: Sendable {
+    func loadIssueDetail(
+        configuration: ServerConnectionConfiguration,
+        issueID: String
+    ) async throws -> IssueConsoleDetail
+
+    func loadAgentDetail(
+        configuration: ServerConnectionConfiguration,
+        agentID: String
+    ) async throws -> AgentConsoleDetail
+
     func loadApprovalDetail(
         configuration: ServerConnectionConfiguration,
         approvalID: String

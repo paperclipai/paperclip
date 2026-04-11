@@ -289,6 +289,10 @@ struct ActiveAgentsView: View {
 public struct QueueSectionView: View {
     let appModel: AppModel
     let coordinator: DesktopBootstrapCoordinator
+    @State private var selectedIssueID: String?
+    @State private var issueDetail: IssueConsoleDetail?
+    @State private var isLoadingDetail = false
+    @State private var errorMessage: String?
 
     public init(appModel: AppModel, coordinator: DesktopBootstrapCoordinator) {
         self.appModel = appModel
@@ -307,28 +311,85 @@ public struct QueueSectionView: View {
             MetricTile(title: "Alta prioridade", value: "\(appModel.issues.filter { $0.priority == "high" }.count)", accent: .orange)
             MetricTile(title: "Em revisão", value: "\(appModel.issues.filter { $0.status.contains("review") }.count)", accent: .yellow)
         } content: {
-            SurfaceCard {
-                Text("Issues abertas")
-                    .font(.headline)
-                if appModel.issues.isEmpty {
-                    EmptyCollectionState(message: "Nenhuma issue ativa encontrada.")
-                } else {
-                    ForEach(appModel.issues) { issue in
-                        SummaryRow(
-                            title: "\(issue.identifier) · \(issue.title)",
-                            detail: "\(issue.assigneeLabel) · prioridade \(issue.priority)",
-                            trailing: issue.updatedAt.formatted(date: .abbreviated, time: .shortened)
-                        )
+            HStack(alignment: .top, spacing: 20) {
+                SurfaceCard {
+                    Text("Issues abertas")
+                        .font(.headline)
+                    if appModel.issues.isEmpty {
+                        EmptyCollectionState(message: "Nenhuma issue ativa encontrada.")
+                    } else {
+                        ForEach(appModel.issues) { issue in
+                            SelectableRow(
+                                title: "\(issue.identifier) · \(issue.title)",
+                                detail: "\(issue.assigneeLabel) · prioridade \(humanizeOperationalLabel(issue.priority))",
+                                trailing: issue.status.uppercased(),
+                                trailingColor: statusColor(for: issue.status),
+                                isSelected: selectedIssueID == issue.id
+                            ) {
+                                selectedIssueID = issue.id
+                            }
+                        }
                     }
                 }
+
+                SurfaceCard {
+                    if let errorMessage {
+                        InlineErrorView(message: errorMessage)
+                    }
+
+                    if isLoadingDetail {
+                        ProgressView("Carregando issue...")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if let issueDetail {
+                        IssueDetailPanel(detail: issueDetail)
+                    } else {
+                        EmptyCollectionState(message: "Selecione uma issue para abrir o detalhe operacional.")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .task(id: appModel.issues.map(\.id).joined(separator: "|")) {
+            syncSelectedIssue()
+        }
+        .task(id: selectedIssueID) {
+            await loadSelectedIssue()
+        }
+    }
+
+    @MainActor
+    private func syncSelectedIssue() {
+        if let selectedIssueID, appModel.issues.contains(where: { $0.id == selectedIssueID }) {
+            return
+        }
+        selectedIssueID = appModel.issues.first?.id
+    }
+
+    @MainActor
+    private func loadSelectedIssue() async {
+        guard let selectedIssueID else {
+            issueDetail = nil
+            return
+        }
+
+        isLoadingDetail = true
+        errorMessage = nil
+        do {
+            issueDetail = try await coordinator.loadIssueDetail(issueID: selectedIssueID, appModel: appModel)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoadingDetail = false
     }
 }
 
 public struct AgentsSectionView: View {
     let appModel: AppModel
     let coordinator: DesktopBootstrapCoordinator
+    @State private var selectedAgentID: String?
+    @State private var agentDetail: AgentConsoleDetail?
+    @State private var isLoadingDetail = false
+    @State private var errorMessage: String?
 
     public init(appModel: AppModel, coordinator: DesktopBootstrapCoordinator) {
         self.appModel = appModel
@@ -347,8 +408,76 @@ public struct AgentsSectionView: View {
             MetricTile(title: "Pausados", value: "\(appModel.dashboard?.pausedAgents ?? 0)", accent: .orange)
             MetricTile(title: "Erros", value: "\(appModel.dashboard?.erroredAgents ?? 0)", accent: .red)
         } content: {
-            ActiveAgentsView(appModel: appModel)
+            HStack(alignment: .top, spacing: 20) {
+                SurfaceCard {
+                    Text("Agentes ativos")
+                        .font(.headline)
+
+                    if appModel.agents.isEmpty {
+                        EmptyCollectionState(message: "Nenhum agente retornado pelo backend.")
+                    } else {
+                        ForEach(appModel.agents) { agent in
+                            SelectableRow(
+                                title: agent.name,
+                                detail: "\(agent.role) · \(agent.issueLabel)",
+                                trailing: agent.stateLabel,
+                                trailingColor: statusColor(for: agent.stateLabel),
+                                isSelected: selectedAgentID == agent.id
+                            ) {
+                                selectedAgentID = agent.id
+                            }
+                        }
+                    }
+                }
+
+                SurfaceCard {
+                    if let errorMessage {
+                        InlineErrorView(message: errorMessage)
+                    }
+
+                    if isLoadingDetail {
+                        ProgressView("Carregando agente...")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if let agentDetail {
+                        AgentDetailPanel(detail: agentDetail)
+                    } else {
+                        EmptyCollectionState(message: "Selecione um agente para abrir o detalhe operacional.")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .task(id: appModel.agents.map(\.id).joined(separator: "|")) {
+            syncSelectedAgent()
+        }
+        .task(id: selectedAgentID) {
+            await loadSelectedAgent()
+        }
+    }
+
+    @MainActor
+    private func syncSelectedAgent() {
+        if let selectedAgentID, appModel.agents.contains(where: { $0.id == selectedAgentID }) {
+            return
+        }
+        selectedAgentID = appModel.agents.first?.id
+    }
+
+    @MainActor
+    private func loadSelectedAgent() async {
+        guard let selectedAgentID else {
+            agentDetail = nil
+            return
+        }
+
+        isLoadingDetail = true
+        errorMessage = nil
+        do {
+            agentDetail = try await coordinator.loadAgentDetail(agentID: selectedAgentID, appModel: appModel)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoadingDetail = false
     }
 }
 
@@ -1180,6 +1309,155 @@ struct EmptyCollectionState: View {
     }
 }
 
+private struct DetailFactRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(label.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct IssueDetailPanel: View {
+    let detail: IssueConsoleDetail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(detail.identifier) · \(detail.title)")
+                        .font(.title3.weight(.bold))
+                    Text(detail.assigneeLabel)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 8) {
+                    StatusPill(label: detail.status, color: statusColor(for: detail.status))
+                    StatusPill(label: detail.priority, color: priorityColor(for: detail.priority))
+                }
+            }
+
+            if let description = detail.description, description.isEmpty == false {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Sem descrição registrada para esta issue.")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                if let projectLabel = detail.projectLabel {
+                    DetailFactRow(label: "Projeto", value: projectLabel)
+                }
+                if let goalLabel = detail.goalLabel {
+                    DetailFactRow(label: "Meta", value: goalLabel)
+                }
+                if let parentLabel = detail.parentLabel {
+                    DetailFactRow(label: "Contexto pai", value: parentLabel)
+                }
+                DetailFactRow(label: "Criada em", value: detail.createdAt.formatted(date: .abbreviated, time: .shortened))
+                DetailFactRow(label: "Atualizada em", value: detail.updatedAt.formatted(date: .abbreviated, time: .shortened))
+            }
+
+            Divider()
+
+            Text("Dependências")
+                .font(.headline)
+
+            if detail.blockedBy.isEmpty && detail.blocks.isEmpty {
+                EmptyCollectionState(message: "Nenhuma dependência registrada para esta issue.")
+            } else {
+                if detail.blockedBy.isEmpty == false {
+                    Text("Bloqueada por")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(detail.blockedBy) { relatedIssue in
+                        SummaryRow(
+                            title: "\(relatedIssue.identifier) · \(relatedIssue.title)",
+                            detail: relatedIssue.assigneeLabel,
+                            trailing: relatedIssue.status.uppercased()
+                        )
+                    }
+                }
+
+                if detail.blocks.isEmpty == false {
+                    Text("Bloqueia")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(detail.blocks) { relatedIssue in
+                        SummaryRow(
+                            title: "\(relatedIssue.identifier) · \(relatedIssue.title)",
+                            detail: relatedIssue.assigneeLabel,
+                            trailing: relatedIssue.status.uppercased()
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct AgentDetailPanel: View {
+    let detail: AgentConsoleDetail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(detail.name)
+                        .font(.title3.weight(.bold))
+                    Text(detail.title ?? detail.role)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 8) {
+                    StatusPill(label: detail.status, color: statusColor(for: detail.status))
+                    StatusPill(label: detail.adapterType, color: .blue)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                DetailFactRow(label: "Role", value: detail.role)
+                DetailFactRow(label: "Budget mensal", value: formatCurrency(detail.budgetMonthlyCents))
+                DetailFactRow(label: "Consumido", value: formatCurrency(detail.spentMonthlyCents))
+                DetailFactRow(label: "Pode delegar", value: detail.canAssignTasks ? "Sim" : "Não")
+                DetailFactRow(label: "Origem do grant", value: humanizeOperationalLabel(detail.taskAssignSource))
+                if let pauseReason = detail.pauseReason, pauseReason.isEmpty == false {
+                    DetailFactRow(label: "Pausa", value: humanizeOperationalLabel(pauseReason))
+                }
+                if let lastHeartbeatAt = detail.lastHeartbeatAt {
+                    DetailFactRow(label: "Último heartbeat", value: lastHeartbeatAt.formatted(date: .abbreviated, time: .shortened))
+                }
+            }
+
+            Divider()
+
+            Text("Cadeia de comando")
+                .font(.headline)
+
+            if detail.chainOfCommand.isEmpty {
+                EmptyCollectionState(message: "Nenhuma cadeia de comando retornada pela API.")
+            } else {
+                ForEach(detail.chainOfCommand) { entry in
+                    SummaryRow(
+                        title: entry.name,
+                        detail: entry.title ?? entry.role,
+                        trailing: humanizeOperationalLabel(entry.role)
+                    )
+                }
+            }
+        }
+    }
+}
+
 private struct InlineErrorView: View {
     let message: String
 
@@ -1328,4 +1606,16 @@ func formatCurrency(_ cents: Int) -> String {
     formatter.locale = Locale(identifier: "pt_BR")
     let value = NSNumber(value: Double(cents) / 100.0)
     return formatter.string(from: value) ?? "R$ 0,00"
+}
+
+func humanizeOperationalLabel(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "_", with: " ")
+        .replacingOccurrences(of: "-", with: " ")
+        .split(separator: " ")
+        .map { segment in
+            let lowercased = segment.lowercased()
+            return lowercased.prefix(1).uppercased() + lowercased.dropFirst()
+        }
+        .joined(separator: " ")
 }

@@ -90,6 +90,55 @@ private struct IssueDTO: Decodable, Sendable {
     let updatedAt: Date
 }
 
+private struct IssueReferenceDTO: Decodable, Sendable {
+    let id: String
+    let identifier: String?
+    let title: String
+    let status: String
+    let priority: String
+    let assigneeAgentId: String?
+    let assigneeUserId: String?
+}
+
+private struct IssueAncestorDTO: Decodable, Sendable {
+    struct GoalDTO: Decodable, Sendable {
+        let id: String
+        let title: String
+    }
+
+    let id: String
+    let title: String
+    let goal: GoalDTO?
+}
+
+private struct IssueDetailDTO: Decodable, Sendable {
+    struct ProjectDTO: Decodable, Sendable {
+        let id: String
+        let name: String
+    }
+
+    struct GoalDTO: Decodable, Sendable {
+        let id: String
+        let title: String
+    }
+
+    let id: String
+    let title: String
+    let description: String?
+    let status: String
+    let priority: String
+    let identifier: String?
+    let assigneeAgentId: String?
+    let assigneeUserId: String?
+    let ancestors: [IssueAncestorDTO]?
+    let blockedBy: [IssueReferenceDTO]?
+    let blocks: [IssueReferenceDTO]?
+    let project: ProjectDTO?
+    let goal: GoalDTO?
+    let createdAt: Date
+    let updatedAt: Date
+}
+
 private struct GoalDTO: Decodable, Sendable {
     let id: String
     let title: String
@@ -127,6 +176,33 @@ private struct PluginDTO: Decodable, Sendable {
     let version: String
     let status: String
     let manifestJson: ManifestDTO?
+}
+
+private struct AgentChainEntryDTO: Decodable, Sendable {
+    let id: String
+    let name: String
+    let role: String
+    let title: String?
+}
+
+private struct AgentAccessDTO: Decodable, Sendable {
+    let canAssignTasks: Bool
+    let taskAssignSource: String
+}
+
+private struct AgentDetailDTO: Decodable, Sendable {
+    let id: String
+    let name: String
+    let role: String
+    let title: String?
+    let status: String
+    let adapterType: String
+    let budgetMonthlyCents: Int
+    let spentMonthlyCents: Int
+    let pauseReason: String?
+    let lastHeartbeatAt: Date?
+    let chainOfCommand: [AgentChainEntryDTO]
+    let access: AgentAccessDTO
 }
 
 private struct PluginDetailDTO: Decodable, Sendable {
@@ -279,6 +355,10 @@ private actor PaperclipAPIClient {
         try await get("approvals/\(id)")
     }
 
+    func issue(id: String) async throws -> IssueDetailDTO {
+        try await get("issues/\(id)")
+    }
+
     func approvalIssues(id: String) async throws -> [IssueDTO] {
         try await get("approvals/\(id)/issues")
     }
@@ -319,6 +399,10 @@ private actor PaperclipAPIClient {
 
     func agents(companyId: String) async throws -> [AgentDTO] {
         try await get("companies/\(companyId)/agents")
+    }
+
+    func agent(id: String) async throws -> AgentDetailDTO {
+        try await get("agents/\(id)")
     }
 
     func issues(companyId: String) async throws -> [IssueDTO] {
@@ -621,6 +705,24 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         return Self.mapApprovalDetail(approval, issues: issues, comments: comments)
     }
 
+    public func loadIssueDetail(
+        configuration: ServerConnectionConfiguration,
+        issueID: String
+    ) async throws -> IssueConsoleDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let issue = try await client.issue(id: issueID)
+        return Self.mapIssueDetail(issue)
+    }
+
+    public func loadAgentDetail(
+        configuration: ServerConnectionConfiguration,
+        agentID: String
+    ) async throws -> AgentConsoleDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let agent = try await client.agent(id: agentID)
+        return Self.mapAgentDetail(agent)
+    }
+
     public func addApprovalComment(
         configuration: ServerConnectionConfiguration,
         approvalID: String,
@@ -799,6 +901,60 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
             authorLabel: dto.authorAgentId ?? dto.authorUserId ?? "Board",
             body: dto.body,
             createdAt: dto.createdAt
+        )
+    }
+
+    private static func mapIssueReference(_ dto: IssueReferenceDTO) -> IssueQueueSummary {
+        IssueQueueSummary(
+            id: dto.id,
+            identifier: dto.identifier ?? dto.id,
+            title: dto.title,
+            status: dto.status,
+            priority: dto.priority,
+            assigneeLabel: dto.assigneeAgentId ?? dto.assigneeUserId ?? "Em fila operacional",
+            updatedAt: .now
+        )
+    }
+
+    private static func mapIssueDetail(_ dto: IssueDetailDTO) -> IssueConsoleDetail {
+        let parentLabel = dto.ancestors?.last?.title
+        let goalLabel = dto.goal?.title ?? dto.ancestors?.compactMap(\.goal?.title).last
+
+        return IssueConsoleDetail(
+            id: dto.id,
+            identifier: dto.identifier ?? dto.id,
+            title: dto.title,
+            description: dto.description,
+            status: dto.status,
+            priority: dto.priority,
+            assigneeLabel: dto.assigneeAgentId ?? dto.assigneeUserId ?? "Em fila operacional",
+            projectLabel: dto.project?.name,
+            goalLabel: goalLabel,
+            parentLabel: parentLabel,
+            blockedBy: (dto.blockedBy ?? []).map(Self.mapIssueReference),
+            blocks: (dto.blocks ?? []).map(Self.mapIssueReference),
+            createdAt: dto.createdAt,
+            updatedAt: dto.updatedAt
+        )
+    }
+
+    private static func mapAgentDetail(_ dto: AgentDetailDTO) -> AgentConsoleDetail {
+        AgentConsoleDetail(
+            id: dto.id,
+            name: dto.name,
+            role: dto.role,
+            title: dto.title,
+            status: dto.status,
+            adapterType: dto.adapterType,
+            budgetMonthlyCents: dto.budgetMonthlyCents,
+            spentMonthlyCents: dto.spentMonthlyCents,
+            pauseReason: dto.pauseReason,
+            lastHeartbeatAt: dto.lastHeartbeatAt,
+            canAssignTasks: dto.access.canAssignTasks,
+            taskAssignSource: dto.access.taskAssignSource,
+            chainOfCommand: dto.chainOfCommand.map {
+                AgentChainEntry(id: $0.id, name: $0.name, role: $0.role, title: $0.title)
+            }
         )
     }
 

@@ -182,6 +182,64 @@ public actor PreviewOperationsSnapshotProvider: OperationsSnapshotProviding, Ope
         )
     }
 
+    public func loadIssueDetail(
+        configuration: ServerConnectionConfiguration,
+        issueID: String
+    ) async throws -> IssueConsoleDetail {
+        _ = configuration
+        return IssueConsoleDetail(
+            id: issueID,
+            identifier: "GN-52",
+            title: "Revisar fila de aprovações",
+            description: "Conferir pendências do board, alinhar prioridade e destravar decisões críticas.",
+            status: "in_review",
+            priority: "high",
+            assigneeLabel: "Clara",
+            projectLabel: "Growth Engine",
+            goalLabel: "Aumentar taxa de resposta do inbound",
+            parentLabel: "Expandir a operação comercial",
+            blockedBy: [
+                IssueQueueSummary(
+                    id: "issue-blocker-1",
+                    identifier: "GN-48",
+                    title: "Subir campanha da semana",
+                    status: "in_progress",
+                    priority: "critical",
+                    assigneeLabel: "Nina",
+                    updatedAt: .now.addingTimeInterval(-1_200)
+                )
+            ],
+            blocks: [],
+            createdAt: .now.addingTimeInterval(-86_400 * 3),
+            updatedAt: .now
+        )
+    }
+
+    public func loadAgentDetail(
+        configuration: ServerConnectionConfiguration,
+        agentID: String
+    ) async throws -> AgentConsoleDetail {
+        _ = configuration
+        return AgentConsoleDetail(
+            id: agentID,
+            name: "Clara",
+            role: "COO Agent",
+            title: "Chief Operating Officer",
+            status: "active",
+            adapterType: "codex_local",
+            budgetMonthlyCents: 200_000,
+            spentMonthlyCents: 120_000,
+            pauseReason: nil,
+            lastHeartbeatAt: .now.addingTimeInterval(-300),
+            canAssignTasks: true,
+            taskAssignSource: "agent_creator",
+            chainOfCommand: [
+                AgentChainEntry(id: "agent-1", name: "Clara", role: "COO Agent", title: "Chief Operating Officer"),
+                AgentChainEntry(id: "agent-2", name: "Nina", role: "Creative Lead", title: "Creative Lead")
+            ]
+        )
+    }
+
     public func addApprovalComment(
         configuration: ServerConnectionConfiguration,
         approvalID: String,

@@ -1,7 +1,7 @@
 {
   "name": "@goldneuron/neuros-macos",
   "private": true,
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Native SwiftUI macOS app for neurOS.",
   "productName": "neurOS",
   "bundleIdentifier": "io.goldneuron.neurOS",
