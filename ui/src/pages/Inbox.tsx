@@ -1964,6 +1964,7 @@ export function Inbox() {
                       elements.push(wrapItem(approvalKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={approvalKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(approvalKey)}
@@ -2002,6 +2003,7 @@ export function Inbox() {
                       elements.push(wrapItem(runKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={runKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(runKey)}
@@ -2037,6 +2039,7 @@ export function Inbox() {
                       elements.push(wrapItem(joinKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={joinKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(joinKey)}
@@ -2064,6 +2067,7 @@ export function Inbox() {
                     elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
                       <SwipeToArchive
                         key={`issue:${issue.id}`}
+                        archiveLabel={copy.archive}
                         selected={isSelected}
                         disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
                         onArchive={() => archiveIssueMutation.mutate(issue.id)}
@@ -2092,6 +2096,7 @@ export function Inbox() {
                             {canArchiveFromTab ? (
                               <SwipeToArchive
                                 key={`issue:${child.id}`}
+                                archiveLabel={copy.archive}
                                 selected={isChildSelected}
                                 disabled={isChildArchiving || archiveIssueMutation.isPending}
                                 onArchive={() => archiveIssueMutation.mutate(child.id)}

@@ -51,7 +51,7 @@ describe("SwipeToArchive", () => {
 
     act(() => {
       root.render(
-        <SwipeToArchive onArchive={onArchive}>
+        <SwipeToArchive onArchive={onArchive} archiveLabel="Archive">
           <button type="button" onClick={onClick}>
             Open issue
           </button>
@@ -100,7 +100,7 @@ describe("SwipeToArchive", () => {
 
     act(() => {
       root.render(
-        <SwipeToArchive onArchive={onArchive}>
+        <SwipeToArchive onArchive={onArchive} archiveLabel="Archive">
           <button type="button" onClick={onClick}>
             Open issue
           </button>
@@ -128,7 +128,7 @@ describe("SwipeToArchive", () => {
 
     act(() => {
       root.render(
-        <SwipeToArchive onArchive={() => {}} selected>
+        <SwipeToArchive onArchive={() => {}} archiveLabel="Archive" selected>
           <button type="button">Open issue</button>
         </SwipeToArchive>,
       );
@@ -141,6 +141,24 @@ describe("SwipeToArchive", () => {
     expect(surface?.className).not.toContain("bg-card");
     expect(surface?.style.backgroundColor).toBe("");
     expect(surface?.style.boxShadow).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the provided archive label", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <SwipeToArchive onArchive={() => {}} archiveLabel="归档">
+          <button type="button">Open issue</button>
+        </SwipeToArchive>,
+      );
+    });
+
+    expect(container.textContent).toContain("归档");
 
     act(() => {
       root.unmount();
