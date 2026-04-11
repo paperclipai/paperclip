@@ -72,17 +72,19 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-function createApp() {
+function createApp(
+  actor: Record<string, unknown> = {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes(mockDb as any, {} as any));
@@ -182,6 +184,46 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("rejects agent PATCH comments on closed issues unless reopening", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    const app = createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "still working" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "Issue is closed. Reopen it before posting agent updates." });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent POST comments on closed issues unless reopening", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    const app = createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "still working" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "Issue is closed. Reopen it before posting agent updates." });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("does not wake assignees when reassignment keeps the issue cancelled", async () => {

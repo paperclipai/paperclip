@@ -53,6 +53,12 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockNormalizeRuntimeConfigForCooHeartbeatModel = vi.hoisted(() =>
+  vi.fn(({ runtimeConfig }: { runtimeConfig?: Record<string, unknown> }) => runtimeConfig ?? {}),
+);
+const mockResolveRoleForCooCoordinatorModel = vi.hoisted(() =>
+  vi.fn(({ role }: { role?: string }) => role ?? "general"),
+);
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
@@ -79,6 +85,8 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => ({}),
   logActivity: mockLogActivity,
+  normalizeRuntimeConfigForCooHeartbeatModel: mockNormalizeRuntimeConfigForCooHeartbeatModel,
+  resolveRoleForCooCoordinatorModel: mockResolveRoleForCooCoordinatorModel,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,

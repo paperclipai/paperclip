@@ -268,7 +268,14 @@ function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getDefaultValue(field: ConfigFieldSchema): unknown {
+export function resolveSchemaFieldDefaultValue(
+  field: ConfigFieldSchema,
+  adapterType?: string,
+): unknown {
+  // Hermes runs should default to no timeout even if external schema reports 300.
+  if (adapterType === "hermes_local" && field.key === "timeoutSec") {
+    return 0;
+  }
   if (field.default !== undefined) return field.default;
   switch (field.type) {
     case "toggle":
@@ -303,7 +310,7 @@ export function SchemaConfigFields({
     if (!schema || !isCreate || defaultsApplied) return;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
-      const def = getDefaultValue(field);
+      const def = resolveSchemaFieldDefaultValue(field, adapterType);
       if (def !== undefined && def !== "") {
         defaults[field.key] = def;
       }
@@ -320,10 +327,10 @@ export function SchemaConfigFields({
 
   function readValue(field: ConfigFieldSchema): unknown {
     if (isCreate) {
-      return values?.adapterSchemaValues?.[field.key] ?? getDefaultValue(field);
+      return values?.adapterSchemaValues?.[field.key] ?? resolveSchemaFieldDefaultValue(field, adapterType);
     }
     const stored = config[field.key];
-    return eff("adapterConfig", field.key, (stored ?? getDefaultValue(field)) as string);
+    return eff("adapterConfig", field.key, (stored ?? resolveSchemaFieldDefaultValue(field, adapterType)) as string);
   }
 
   function writeValue(field: ConfigFieldSchema, value: unknown): void {

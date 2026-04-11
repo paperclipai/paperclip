@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  agentHeartbeatModelService,
   feedbackService,
   heartbeatService,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -499,6 +500,47 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
+  }
+
+  try {
+    const heartbeatModel = agentHeartbeatModelService(db as any);
+    const coverage = await heartbeatModel.backfillMissingCooCoordinators({ apply: true });
+    if (coverage.createdAgents > 0) {
+      logger.info(
+        {
+          scannedCompanies: coverage.scannedCompanies,
+          createdAgents: coverage.createdAgents,
+          createdCompanies: coverage.createdCompanyIds.length,
+          skippedNoCeo: coverage.companiesSkippedNoCeo,
+        },
+        "backfilled missing COO coordinator agents",
+      );
+    }
+    const report = await heartbeatModel.alignCooCoordinatorHeartbeats({ apply: true });
+    if (report.updatedAgents > 0) {
+      logger.info(
+        {
+          scannedAgents: report.scannedAgents,
+          updatedAgents: report.updatedAgents,
+          touchedCompanies: report.touchedCompanyIds.length,
+        },
+        "aligned agent heartbeat model to COO-coordinator defaults",
+      );
+    }
+    const instructionsReport = await heartbeatModel.syncCooCoordinatorInstructions({ apply: true });
+    if (instructionsReport.updatedAgents > 0) {
+      logger.info(
+        {
+          scannedCooAgents: instructionsReport.scannedCooAgents,
+          updatedAgents: instructionsReport.updatedAgents,
+          touchedCompanies: instructionsReport.touchedCompanyIds.length,
+          skippedExternalBundles: instructionsReport.skippedExternalBundles,
+        },
+        "synchronized COO instructions bundles to managed default",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "failed to align COO coordinator startup defaults");
   }
   
   const listenPort = await detectPort(config.port);

@@ -2,6 +2,12 @@ export { companyService } from "./companies.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
+export {
+  COO_COORDINATOR_DEFAULT_INTERVAL_SEC,
+  resolveRoleForCooCoordinatorModel,
+  normalizeRuntimeConfigForCooHeartbeatModel,
+  agentHeartbeatModelService,
+} from "./agent-heartbeat-model.js";
 export { agentRoleMigrationService } from "./agent-role-migration.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";

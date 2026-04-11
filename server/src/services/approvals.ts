@@ -5,6 +5,10 @@ import { canonicalizeAgentRole } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
+import {
+  normalizeRuntimeConfigForCooHeartbeatModel,
+  resolveRoleForCooCoordinatorModel,
+} from "./agent-heartbeat-model.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -206,6 +210,11 @@ export function approvalService(db: Db) {
           hireApprovedAgentId = payloadAgentId;
         } else {
           const adapterType = String(payload.adapterType ?? "process");
+          const normalizedRole = resolveRoleForCooCoordinatorModel({
+            role: payload.role,
+            name: payload.name,
+            title: payload.title,
+          });
           try {
             const normalizedAdapterConfig =
               prevalidatedAdapterConfig !== null
@@ -223,12 +232,21 @@ export function approvalService(db: Db) {
                 });
             const created = await agentsSvc.create(updated.companyId, {
               name: String(payload.name ?? "New Agent"),
-              role: canonicalizeAgentRole(String(payload.role ?? "general")),
+              role: normalizedRole,
               title: typeof payload.title === "string" ? payload.title : null,
               reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
               capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
               adapterType,
               adapterConfig: normalizedAdapterConfig,
+              runtimeConfig: normalizeRuntimeConfigForCooHeartbeatModel({
+                role: normalizedRole,
+                name: payload.name,
+                title: payload.title,
+                runtimeConfig:
+                  typeof payload.runtimeConfig === "object" && payload.runtimeConfig !== null
+                    ? (payload.runtimeConfig as Record<string, unknown>)
+                    : {},
+              }),
               budgetMonthlyCents:
                 typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
               metadata:

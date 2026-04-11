@@ -1223,6 +1223,18 @@ export function issueRoutes(
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
+    const reopensClosedIssueViaStatus =
+      typeof updateFields.status === "string" && !["done", "cancelled"].includes(updateFields.status);
+    if (
+      commentBody &&
+      isClosed &&
+      req.actor.type === "agent" &&
+      reopenRequested !== true &&
+      !reopensClosedIssueViaStatus
+    ) {
+      res.status(409).json({ error: "Issue is closed. Reopen it before posting agent updates." });
+      return;
+    }
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
@@ -1896,6 +1908,10 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = issue.status === "done" || issue.status === "cancelled";
+    if (isClosed && reopenRequested !== true && req.actor.type === "agent") {
+      res.status(409).json({ error: "Issue is closed. Reopen it before posting agent updates." });
+      return;
+    }
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;

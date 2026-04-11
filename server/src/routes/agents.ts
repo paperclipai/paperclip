@@ -32,6 +32,8 @@ import { validate } from "../middleware/validate.js";
 import {
   agentService,
   agentInstructionsService,
+  resolveRoleForCooCoordinatorModel,
+  normalizeRuntimeConfigForCooHeartbeatModel,
   accessService,
   approvalService,
   companySkillService,
@@ -1234,9 +1236,22 @@ export function agentRoutes(db: Db) {
       strictMode: strictSecretsMode,
       secretsSvc,
     });
+    const normalizedRole = resolveRoleForCooCoordinatorModel({
+      role: hireInput.role,
+      name: hireInput.name,
+      title: hireInput.title,
+    });
+    const normalizedRuntimeConfig = normalizeRuntimeConfigForCooHeartbeatModel({
+      role: normalizedRole,
+      name: hireInput.name,
+      title: hireInput.title,
+      runtimeConfig: hireInput.runtimeConfig ?? {},
+    });
     const normalizedHireInput = {
       ...hireInput,
+      role: normalizedRole,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizedRuntimeConfig,
     };
 
     const company = await db
@@ -1396,10 +1411,23 @@ export function agentRoutes(db: Db) {
       strictMode: strictSecretsMode,
       secretsSvc,
     });
+    const normalizedRole = resolveRoleForCooCoordinatorModel({
+      role: createInput.role,
+      name: createInput.name,
+      title: createInput.title,
+    });
+    const normalizedRuntimeConfig = normalizeRuntimeConfigForCooHeartbeatModel({
+      role: normalizedRole,
+      name: createInput.name,
+      title: createInput.title,
+      runtimeConfig: createInput.runtimeConfig ?? {},
+    });
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
+      role: normalizedRole,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizedRuntimeConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,

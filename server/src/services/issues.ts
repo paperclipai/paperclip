@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   assets,
   companies,
   companyMemberships,
@@ -1123,6 +1124,89 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function supersedeQueuedExecutionRunForCheckout(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedStatuses: string[];
+    expectedExecutionRunId: string;
+  }) {
+    const now = new Date();
+    const cancellationReason = `Cancelled because queued execution was superseded by newer issue checkout ${input.actorRunId}`;
+
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where id = ${input.issueId} for update`,
+      );
+      await tx.execute(
+        sql`select id from heartbeat_runs where id = ${input.expectedExecutionRunId} for update`,
+      );
+
+      const queuedRun = await tx
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.expectedExecutionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!queuedRun || queuedRun.status !== "queued" || queuedRun.agentId !== input.actorAgentId) {
+        return null;
+      }
+
+      const adopted = await tx
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          status: "in_progress",
+          startedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            inArray(issues.status, input.expectedStatuses),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            isNull(issues.checkoutRunId),
+            eq(issues.executionRunId, input.expectedExecutionRunId),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!adopted) return null;
+
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: cancellationReason,
+          errorCode: "cancelled",
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, queuedRun.id), eq(heartbeatRuns.status, "queued")));
+
+      if (queuedRun.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: cancellationReason,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, queuedRun.wakeupRequestId));
+      }
+
+      return adopted;
+    });
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -2149,6 +2233,26 @@ export function issueService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (adopted) return adopted;
+      }
+
+      if (
+        checkoutRunId &&
+        current.assigneeAgentId === agentId &&
+        current.checkoutRunId == null &&
+        current.status !== "in_progress" &&
+        current.executionRunId
+      ) {
+        const adopted = await supersedeQueuedExecutionRunForCheckout({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedStatuses,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          return enriched;
+        }
       }
 
       if (

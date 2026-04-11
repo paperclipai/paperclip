@@ -64,6 +64,17 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
 
+const COO_SEED_STRIPPED_ADAPTER_CONFIG_KEYS = [
+  "instructionsBundleMode",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsFilePath",
+  "agentsMdPath",
+  "promptTemplate",
+  "bootstrapPromptTemplate",
+  "paperclipRuntimeSkills"
+] as const;
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -345,6 +356,40 @@ export function OnboardingWizard() {
     return config;
   }
 
+  function buildCooSeedAdapterConfig(adapterConfig: unknown): Record<string, unknown> {
+    const record =
+      typeof adapterConfig === "object" &&
+      adapterConfig !== null &&
+      !Array.isArray(adapterConfig)
+        ? { ...(adapterConfig as Record<string, unknown>) }
+        : {};
+    for (const key of COO_SEED_STRIPPED_ADAPTER_CONFIG_KEYS) {
+      delete record[key];
+    }
+    return record;
+  }
+
+  async function maybeSeedCompanyCooCoordinator(
+    companyId: string,
+    ceo: { id: string; adapterType: string; adapterConfig: unknown },
+  ) {
+    const existingAgents = await agentsApi.list(companyId);
+    const hasCoo = existingAgents.some(
+      (agent) => agent.status !== "terminated" && agent.role === "coo"
+    );
+    if (hasCoo) return;
+
+    await agentsApi.create(companyId, {
+      name: "COO",
+      role: "coo",
+      title: "COO",
+      reportsTo: ceo.id,
+      adapterType: ceo.adapterType,
+      adapterConfig: buildCooSeedAdapterConfig(ceo.adapterConfig),
+      runtimeConfig: {}
+    });
+  }
+
   async function runAdapterEnvironmentTest(
     adapterConfigOverride?: Record<string, unknown>
   ): Promise<AdapterEnvironmentTestResult | null> {
@@ -460,16 +505,13 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType,
         adapterConfig: buildAdapterConfig(),
-        runtimeConfig: {
-          heartbeat: {
-            enabled: true,
-            intervalSec: 3600,
-            wakeOnDemand: true,
-            cooldownSec: 10,
-            maxConcurrentRuns: 1
-          }
-        }
+        runtimeConfig: {}
       });
+      try {
+        await maybeSeedCompanyCooCoordinator(createdCompanyId, agent);
+      } catch {
+        // Keep onboarding flow resilient; startup backfill will repair missing COOs.
+      }
       setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)

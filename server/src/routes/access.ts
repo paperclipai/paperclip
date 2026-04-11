@@ -46,6 +46,7 @@ import {
   boardAuthService,
   deduplicateAgentName,
   logActivity,
+  normalizeRuntimeConfigForCooHeartbeatModel,
   prepareAdapterConfigForPersistence,
   secretService,
   notifyHireApproved
@@ -2687,7 +2688,10 @@ export function accessRoutes(
           capabilities: existing.capabilities ?? null,
           adapterType,
           adapterConfig: normalizedAdapterConfig,
-          runtimeConfig: {},
+          runtimeConfig: normalizeRuntimeConfigForCooHeartbeatModel({
+            role: "general",
+            runtimeConfig: {},
+          }),
           budgetMonthlyCents: 0,
           spentMonthlyCents: 0,
           permissions: {},

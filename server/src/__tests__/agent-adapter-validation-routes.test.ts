@@ -61,6 +61,12 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockNormalizeRuntimeConfigForCooHeartbeatModel = vi.hoisted(() =>
+  vi.fn(({ runtimeConfig }: { runtimeConfig?: Record<string, unknown> }) => runtimeConfig ?? {}),
+);
+const mockResolveRoleForCooCoordinatorModel = vi.hoisted(() =>
+  vi.fn(({ role }: { role?: string }) => role ?? "general"),
+);
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -73,6 +79,8 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => ({}),
   logActivity: mockLogActivity,
+  normalizeRuntimeConfigForCooHeartbeatModel: mockNormalizeRuntimeConfigForCooHeartbeatModel,
+  resolveRoleForCooCoordinatorModel: mockResolveRoleForCooCoordinatorModel,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => ({}),

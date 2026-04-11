@@ -5,9 +5,11 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1497,5 +1499,159 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([secondCommentId]);
+  });
+});
+
+describeEmbeddedPostgres("issueService.checkout queued execution handoff", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("lets a newer run checkout a todo issue when the only lock is a queued execution run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const queuedWakeupRequestId = randomUUID();
+    const queuedRunId = randomUUID();
+    const actorRunId = randomUUID();
+    const now = new Date("2026-04-10T21:54:53.723Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CMO",
+      role: "cmo",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "operations_assignment",
+      payload: { issueId },
+      status: "queued",
+      runId: queuedRunId,
+      updatedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: queuedRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: queuedWakeupRequestId,
+        contextSnapshot: { issueId, wakeReason: "operations_assignment" },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: null,
+        contextSnapshot: { issueId: randomUUID(), wakeReason: "operations_recovery_reissue" },
+        startedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued execution checkout conflict",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: queuedRunId,
+      executionLockedAt: now,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+      updatedAt: now,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "in_review"], actorRunId);
+
+    expect(checkedOut).toEqual(expect.objectContaining({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: actorRunId,
+      executionRunId: actorRunId,
+    }));
+
+    const supersededRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(supersededRun).toEqual(expect.objectContaining({
+      status: "cancelled",
+      errorCode: "cancelled",
+    }));
+
+    const supersededWakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, queuedWakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(supersededWakeup).toEqual(expect.objectContaining({
+      status: "cancelled",
+    }));
+    expect(supersededWakeup?.error).toContain("superseded");
   });
 });

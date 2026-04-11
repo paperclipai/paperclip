@@ -109,6 +109,15 @@ export function NewAgent() {
   }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (effectiveRole !== "coo") return;
+    setConfigValues((current) => (
+      current.heartbeatEnabled
+        ? current
+        : { ...current, heartbeatEnabled: true }
+    ));
+  }, [effectiveRole]);
+
+  useEffect(() => {
     const requested = presetAdapterType;
     if (!requested) return;
     if (!isValidAdapterType(requested)) return;
