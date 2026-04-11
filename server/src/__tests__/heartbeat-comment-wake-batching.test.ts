@@ -225,6 +225,11 @@ describe("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterAll(async () => {
+    const sqlClient = (db as unknown as { $client?: { end?: (options?: { timeout?: number }) => Promise<unknown> } })
+      .$client;
+    if (sqlClient?.end) {
+      await sqlClient.end({ timeout: 5 });
+    }
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });
