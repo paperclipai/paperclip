@@ -624,15 +624,27 @@ export async function startServer(): Promise<StartedServer> {
   
 async function withSchedulerLock(db: any, fn: () => Promise<void>) {
   const LOCK_ID = 73297; // arbitrary unique constant for the scheduler
-  const result = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID}) AS acquired`);
-  // drizzle execute() returns rows directly as an array
-  const row = Array.isArray(result) ? result[0] : result?.rows?.[0];
-  if (!row?.acquired) return;
-  try {
+  // Run the whole critical section inside a single transaction so the
+  // advisory lock acquire and release happen on the same postgres-js pool
+  // connection. The previous implementation issued two separate
+  // db.execute() calls; with a connection pool the pg_try_advisory_lock()
+  // and pg_advisory_unlock() can land on different connections, leaving
+  // the session-level lock orphaned on the acquiring connection (and
+  // emitting `you don't own a lock of type ExclusiveLock` warnings on the
+  // releasing connection). Once orphaned the lock is only released when
+  // the holding connection is recycled, so every subsequent tick silently
+  // fails to acquire it and the scheduler stops enqueuing runs.
+  //
+  // pg_try_advisory_xact_lock() is transaction-scoped and auto-releases at
+  // COMMIT/ROLLBACK — no explicit unlock call, so there is nothing that
+  // can land on the wrong connection.
+  await db.transaction(async (tx: any) => {
+    const result = await tx.execute(sql`SELECT pg_try_advisory_xact_lock(${LOCK_ID}) AS acquired`);
+    // drizzle execute() returns rows directly as an array
+    const row = Array.isArray(result) ? result[0] : result?.rows?.[0];
+    if (!row?.acquired) return;
     await fn();
-  } finally {
-    await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID})`);
-  }
+  });
 }
 
   if (config.heartbeatSchedulerEnabled) {
