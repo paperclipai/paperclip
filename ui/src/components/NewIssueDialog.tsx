@@ -1451,11 +1451,11 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+          {/* Labels chip — disabled, not wired up yet */}
+          {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
             <Tag className="h-3 w-3" />
             Labels
-          </button>
+          </button> */}
 
           <input
             ref={stageFileInputRef}
