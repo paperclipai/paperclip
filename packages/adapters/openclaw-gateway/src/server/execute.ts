@@ -332,8 +332,8 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-function resolveClaimedApiKeyPath(value: unknown): string {
-  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+function resolveClaimedApiKeyPath(value: unknown): string | null {
+  return nonEmpty(value) ?? null;
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
