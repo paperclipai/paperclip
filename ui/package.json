@@ -57,7 +57,10 @@
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.1.5",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.4.1"
+    "tailwind-merge": "^3.4.1",
+    "i18next": "^23.16.8",
+    "react-i18next": "^15.4.1",
+    "i18next-browser-languagedetector": "^8.0.4"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.7",

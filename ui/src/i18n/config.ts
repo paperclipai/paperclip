@@ -8,7 +8,7 @@ import en from './locales/en/translation.json';
 export const SUPPORTED_LANGUAGES = ['zh', 'en'] as const;
 export type SupportedLanguage = typeof SUPPORTED_LANGUAGES[number];
 
-export const DEFAULT_LANGUAGE: SupportedLanguage = 'zh';
+export const DEFAULT_LANGUAGE: SupportedLanguage = 'en';
 
 const resources = {
   zh: { translation: zh },
