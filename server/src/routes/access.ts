@@ -817,16 +817,11 @@ export function normalizeAgentDefaultsForJoin(input: {
       typeof issueBlockEscalation.targetRole === "string"
         ? issueBlockEscalation.targetRole.trim()
         : "";
-    if (enabled) {
       normalized.issueBlockEscalation = {
         enabled: true,
         ...(targetRole ? { targetRole } : {}),
+        ...(Array.isArray(issueBlockEscalation.openStatuses) ? { openStatuses: issueBlockEscalation.openStatuses } : {}),
       };
-      diagnostics.push({
-        code: "openclaw_gateway_issue_block_escalation_configured",
-        level: "info",
-        message: `issueBlockEscalation enabled${targetRole ? ` for target role ${targetRole}` : ""}`,
-      });
     }
   }
 
