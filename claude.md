@@ -472,12 +472,14 @@ Agents follow a forward-only state machine. Terminal states (done, cancelled) ca
 3. Assignment policy
 4. Checkout ownership
 5. Transition gate — status state machine
-6. Delivery gate — work product requirements (+ hotfix commit fallback)
-7. **Engineer evidence gate** — screenshot for `in_review` (code issues)
-8. **Review cycle gate** — code issues must have been in `in_review` before `done`
-9. QA gate — QA PASS requirement
-10. **QA browse evidence gate** — screenshot from QA reviewer for `done` (code issues)
-11. Comment-required gate
+6. Cancellation replacement gate — replacement ref or waiver for task cancellations
+7. Initiative active children guard — blocks closing initiatives with active work
+8. Delivery gate — work product requirements (+ hotfix commit fallback)
+9. **Engineer evidence gate** — screenshot for `in_review` (code issues)
+10. **Review cycle gate** — code issues must have been in `in_review` before `done`
+11. QA gate — QA PASS requirement
+12. **QA browse evidence gate** — screenshot from QA reviewer for `done` (code issues)
+13. Comment-required gate
 
 This ensures the handoff check runs before any other validation, and evidence gates run adjacent to their related quality gates.
 
@@ -562,6 +564,7 @@ Board users bypass all URL validation.
 - `server/src/__tests__/mention-agent-matching.test.ts` — 19 mention resolution tests
 - `server/src/__tests__/work-product-verification.test.ts` — 11 work product URL verification tests
 - `server/src/__tests__/browse-evidence-gate.test.ts` — 15 browse evidence gate tests (8 engineer + 7 QA)
+- `server/src/__tests__/cancellation-replacement-gate.test.ts` — 8 cancellation replacement gate tests
 - `server/src/services/workspace-runtime.ts` — workspace ready comment
 - `server/src/onboarding-assets/default/AGENTS.md` — Code Delivery Protocol (with work product registration curl examples) + QA Approval Protocol (with screenshot upload workflow + QA timing) + Assignment Policy
 - `server/src/onboarding-assets/ceo/HEARTBEAT.md` — CEO delivery/QA enforcement guidance
@@ -721,6 +724,29 @@ Agents transitioning an issue to `in_review` **must** hand off to a different as
 **Key files:**
 - `server/src/routes/issues.ts` — inline gate logic (not a separate function)
 - `server/src/__tests__/review-handoff-gate.test.ts` — 8 dedicated tests
+
+---
+
+## Cancellation replacement gate (`assertCancellationReplacement`)
+
+When an agent cancels a task, the comment must contain either a replacement issue reference (e.g. `DLD-123`) or the explicit waiver `no-replacement-needed` (case-insensitive). This prevents silent phase loss in initiative chains. Since all tasks require an initiative parent (`task_requires_initiative_parent` gate), this effectively covers all task cancellations.
+
+| Field | Value |
+|-------|-------|
+| Gate name | `cancellation_replacement_required` |
+| Activity log action | `issue.cancellation_replacement_blocked` |
+| Actor scope | Agent only (board users bypass) |
+| Issue type scope | Tasks only (initiatives bypass) |
+| Transition scope | `→ cancelled` only |
+| Replacement pattern | `/\b[A-Z]+-\d+\b/` |
+| Waiver pattern | `/\bno-replacement-needed\b/i` |
+| Comment handling | Missing comments fall through to `comment_required` gate |
+
+**Gate ordering:** Fires after `assertAgentTransition`, before `initiative_has_active_children`.
+
+**Key files:**
+- `server/src/routes/issues.ts` — `assertCancellationReplacement()` function + PATCH wiring
+- `server/src/__tests__/cancellation-replacement-gate.test.ts` — 8 tests
 
 ---
 

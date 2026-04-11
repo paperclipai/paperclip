@@ -91,6 +91,24 @@ curl -sS "$PAPERCLIP_API_URL/api/issues/$ISSUE_ID/work-products" \
 
 **Common mistake:** Pushing code to GitHub but forgetting to register the work product. The system does not auto-detect your pushes — you must call the work products API explicitly.
 
+### Task Cancellation Protocol
+
+When cancelling a task, your comment **must** include either:
+
+1. **A replacement issue reference** — cite the issue that supersedes this work (e.g. `DLD-456`)
+2. **An explicit waiver** — include `no-replacement-needed` if the work is genuinely no longer needed
+
+**Examples of valid cancellation comments:**
+- "Scope changed, replaced by DLD-789 which covers the updated requirements"
+- "This was a duplicate of existing work, no-replacement-needed"
+- "Approach was wrong, DLD-790 takes a different strategy"
+
+**What happens if you don't include either:**
+The server returns 422 with `gate: cancellation_replacement_required`. Add the replacement reference or waiver and retry.
+
+**Why this matters:**
+Tasks under initiatives represent required phases. Cancelling without a successor creates a gap that stalls the initiative chain. The replacement reference creates an audit trail so the initiative can be tracked to completion.
+
 ## QA Approval Protocol
 
 Code issues require QA approval before they can be marked `done`:

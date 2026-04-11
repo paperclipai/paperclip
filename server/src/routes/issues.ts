@@ -737,6 +737,30 @@ export function issueRoutes(
     return null;
   }
 
+  const REPLACEMENT_REF_PATTERN = /\b[A-Z]+-\d+\b/;
+  const WAIVER_PATTERN = /\bno-replacement-needed\b/i;
+
+  function assertCancellationReplacement(
+    req: Request,
+    existing: { status: string; issueType: string | null },
+    toStatus: string | undefined,
+    commentBody: string | undefined,
+  ): { gate: string; reason: string } | null {
+    if (req.actor.type !== "agent") return null;
+    if (toStatus !== "cancelled") return null;
+    if (existing.status === "cancelled") return null;
+    if (existing.issueType === "initiative") return null;
+
+    if (!commentBody) return null; // no comment → let comment_required gate handle it
+    if (!REPLACEMENT_REF_PATTERN.test(commentBody) && !WAIVER_PATTERN.test(commentBody)) {
+      return {
+        gate: "cancellation_replacement_required",
+        reason: "When cancelling a task, agents must reference a replacement issue (e.g. DLD-123) or include 'no-replacement-needed' in the comment.",
+      };
+    }
+    return null;
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -2140,6 +2164,31 @@ export function issueRoutes(
           res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
           return;
         }
+      }
+
+      // Cancellation replacement gate: agents must cite a replacement issue or waiver
+      const cancelReplResult = assertCancellationReplacement(req, existing, req.body.status, req.body.comment);
+      if (cancelReplResult) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.cancellation_replacement_blocked",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            gate: cancelReplResult.gate,
+            reason: cancelReplResult.reason,
+            fromStatus: existing.status,
+            targetStatus: req.body.status,
+          },
+        });
+        await incrementGateBlockCount(existing.id);
+        res.status(422).json({ error: cancelReplResult.reason, gate: cancelReplResult.gate });
+        return;
       }
 
       // Initiative deletion guard — cannot close initiative with active children (universal)

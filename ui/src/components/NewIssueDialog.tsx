@@ -425,7 +425,14 @@ export function NewIssueDialog() {
     queryKey: queryKeys.issues.list(effectiveCompanyId!),
     queryFn: () => issuesApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
-    select: (data: Issue[]) => data.filter((i) => i.issueType === "initiative"),
+    select: (data: Issue[]) =>
+      data
+        .filter((i) => i.issueType === "initiative")
+        .sort((a, b) => {
+          const numA = a.identifier ? parseInt(a.identifier.replace(/\D/g, ""), 10) : 0;
+          const numB = b.identifier ? parseInt(b.identifier.replace(/\D/g, ""), 10) : 0;
+          return numA - numB;
+        }),
   });
   const initiatives = companyIssues ?? [];
   const { data: session } = useQuery({
