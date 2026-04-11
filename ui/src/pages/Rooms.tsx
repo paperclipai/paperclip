@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Send, Trash2, Check, CheckCheck, X, Zap, Paperclip, FileIcon, Download, Plus } from "lucide-react";
+import { Send, ArrowUp, Trash2, Check, CheckCheck, X, Zap, Paperclip, FileIcon, Download, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { roomsApi, type Room, type RoomMessage, type RoomParticipant, type RoomAttachment } from "../api/rooms";
 import { agentsApi } from "../api/agents";
@@ -10,8 +10,11 @@ import { authApi } from "../api/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
@@ -224,8 +227,8 @@ function renderMessageBody(
   return (
     <div>
       {m.body && (
-        <div className="text-[14px] text-foreground/90 leading-relaxed break-words whitespace-pre-wrap">
-          {highlightMentions(m.body)}
+        <div className="text-[14px] text-foreground leading-relaxed break-words prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1 prose-headings:my-2 prose-code:before:content-none prose-code:after:content-none [&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:text-[13px] [&_pre]:overflow-x-auto [&_code]:rounded [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-[13px] [&_code]:font-mono">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.body}</ReactMarkdown>
         </div>
       )}
       {m.attachments && <Attachments list={m.attachments} />}
@@ -345,16 +348,47 @@ export function RoomDetailPage() {
     initialDataUpdatedAt: 0,
   });
 
+  const [olderMessages, setOlderMessages] = useState<RoomMessage[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+
+  // Reset older messages when switching rooms
+  useEffect(() => {
+    setOlderMessages([]);
+    setHasMore(true);
+  }, [roomId]);
+
   const messages = useQuery({
     queryKey: ["room-messages", selectedCompanyId, roomId],
     queryFn: () => roomsApi.listMessages(selectedCompanyId!, roomId!),
     enabled: !!selectedCompanyId && !!roomId,
-    // 300ms polling gives chat-like UX without the complexity of a
-    // per-socket room membership cache. Phase 3c (WS push) can replace
-    // this once the backplane/fan-out story is decided.
     refetchInterval: 300,
     placeholderData: keepPreviousData,
   });
+
+  const loadOlderMessages = async () => {
+    if (!selectedCompanyId || !roomId || loadingOlder || !hasMore) return;
+    setLoadingOlder(true);
+    const allCurrent = [...olderMessages, ...(messages.data ?? [])];
+    const oldest = allCurrent[0];
+    if (!oldest) { setLoadingOlder(false); return; }
+    const older = await roomsApi.listMessages(selectedCompanyId, roomId, {
+      limit: 50,
+      before: oldest.createdAt,
+    });
+    if (older.length === 0) setHasMore(false);
+    else setOlderMessages((prev) => [...older, ...prev]);
+    setLoadingOlder(false);
+  };
+
+  const allMessages = useMemo(() => {
+    const recent = messages.data ?? [];
+    if (olderMessages.length === 0) return recent;
+    // Deduplicate by id
+    const seen = new Set(recent.map((m) => m.id));
+    const unique = olderMessages.filter((m) => !seen.has(m.id));
+    return [...unique, ...recent];
+  }, [messages.data, olderMessages]);
 
   const participants = useQuery({
     queryKey: ["room-participants", selectedCompanyId, roomId],
@@ -401,12 +435,18 @@ export function RoomDetailPage() {
   });
   const currentUserId = session.data?.user?.id ?? session.data?.session?.userId ?? null;
 
-  // Auto-scroll on new messages
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const latestMessageId = allMessages.length > 0 ? allMessages[allMessages.length - 1].id : null;
+  // Auto-scroll when the newest message changes
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.data?.length]);
+    const el = messagesContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [latestMessageId]);
 
   const [body, setBody] = useState("");
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [msgType, setMsgType] = useState<"text" | "action">("text");
   const [actionTarget, setActionTarget] = useState<string>("");
   // Phase 5.2f UI polish — when a human composes an action message they
@@ -414,6 +454,38 @@ export function RoomDetailPage() {
   // companion `approvals` row. Only meaningful for action messages;
   // reset to false when the user flips back to text.
   const [requiresApproval, setRequiresApproval] = useState(false);
+
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const agents = (allAgents.data ?? []) as Array<{ id: string; name: string }>;
+    const participantIds = new Set(
+      (participants.data ?? []).map((p: RoomParticipant) => p.agentId).filter(Boolean),
+    );
+    const roomAgents = agents.filter((a) => participantIds.has(a.id));
+    if (!mentionQuery) return roomAgents;
+    const q = mentionQuery.toLowerCase();
+    return roomAgents.filter((a) => a.name.toLowerCase().includes(q));
+  }, [mentionQuery, allAgents.data, participants.data]);
+
+  const insertMention = (name: string) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const cursor = ta.selectionStart;
+    // Find the @ that started this mention
+    const before = body.slice(0, cursor);
+    const atIdx = before.lastIndexOf("@");
+    if (atIdx === -1) return;
+    const newBody = body.slice(0, atIdx) + `@${name} ` + body.slice(cursor);
+    setBody(newBody);
+    setMentionQuery(null);
+    setMentionIndex(0);
+    // Restore focus + cursor
+    setTimeout(() => {
+      ta.focus();
+      const pos = atIdx + name.length + 2;
+      ta.setSelectionRange(pos, pos);
+    }, 0);
+  };
   const [pendingAttachments, setPendingAttachments] = useState<RoomAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -436,10 +508,10 @@ export function RoomDetailPage() {
   });
 
   const sendMessageMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (capturedBody: string) =>
       roomsApi.sendMessage(selectedCompanyId!, roomId!, {
         type: msgType,
-        body,
+        body: capturedBody,
         attachments: pendingAttachments.length > 0 ? pendingAttachments : null,
         actionTargetAgentId: msgType === "action" ? actionTarget || null : null,
         actionPayload: msgType === "action" ? { source: "ui" } : null,
@@ -450,7 +522,6 @@ export function RoomDetailPage() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["room-messages", selectedCompanyId, roomId] });
-      setBody("");
       setPendingAttachments([]);
       setRequiresApproval(false);
     },
@@ -525,7 +596,7 @@ export function RoomDetailPage() {
 
   // Group consecutive messages by sender within 5 minutes + day header
   const groups = useMemo<MessageGroup[]>(() => {
-    const msgs = messages.data ?? [];
+    const msgs = allMessages;
     const out: MessageGroup[] = [];
     let prevDay = "";
     for (const m of msgs) {
@@ -566,7 +637,7 @@ export function RoomDetailPage() {
       }
     }
     return out;
-  }, [messages.data, allAgents.data]);
+  }, [allMessages, allAgents.data]);
 
   const linkedAgentIds = new Set(
     (participants.data ?? []).map((p: RoomParticipant) => p.agentId).filter((x): x is string => !!x),
@@ -597,9 +668,21 @@ export function RoomDetailPage() {
 
         {/* === Messages (Slack/Mattermost pattern — all-left, grouped) === */}
         <div
+          ref={messagesContainerRef}
           data-testid="room-messages"
           className="flex-1 overflow-y-auto py-2 pr-2 mb-3 min-h-0"
         >
+          {hasMore && allMessages.length > 0 && (
+            <div className="flex justify-center py-3">
+              <button
+                onClick={loadOlderMessages}
+                disabled={loadingOlder}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors px-4 py-1.5 rounded-full border border-border hover:bg-accent"
+              >
+                {loadingOlder ? "불러오는 중..." : "이전 메시지 더 보기"}
+              </button>
+            </div>
+          )}
           {groups.length === 0 ? (
             <p className="text-sm text-muted-foreground italic text-center mt-8">
               {t("empty.noMessages")}
@@ -627,18 +710,18 @@ export function RoomDetailPage() {
                 ) : (() => {
                   const isMe = currentUserId != null && g.senderKey === `u:${currentUserId}`;
                   return isMe ? (
-                    /* ── My messages: right-aligned, no background ── */
-                    <div className="group/grp mt-3 first:mt-0 flex flex-col items-end">
-                      <div className="max-w-[75%]">
-                        <div className="flex items-baseline gap-2 mb-0.5 justify-end">
+                    /* ── My messages: right-aligned with subtle bg ── */
+                    <div className="group/grp mt-4 first:mt-0 flex flex-col items-end px-2">
+                      <div className="max-w-[70%]">
+                        <div className="flex items-baseline gap-2 mb-1 justify-end">
                           <span className="text-[11px] text-muted-foreground">
                             {formatTime(g.firstAt)}
                           </span>
-                          <span className="text-[14px] font-bold text-foreground">
+                          <span className="text-[13px] font-semibold text-foreground">
                             {t("room.you")}
                           </span>
                         </div>
-                        <div className="text-left">
+                        <div className="bg-primary/10 rounded-2xl rounded-tr-sm px-4 py-2.5">
                           {renderMessageBody(
                             g.messages[0],
                             agentName,
@@ -648,7 +731,7 @@ export function RoomDetailPage() {
                           )}
                         </div>
                         {g.messages.slice(1).map((m) => (
-                          <div key={m.id} className="text-left mt-0.5 group/msg">
+                          <div key={m.id} className="bg-primary/10 rounded-2xl rounded-tr-sm px-4 py-2.5 mt-1 group/msg">
                             {renderMessageBody(
                               m,
                               agentName,
@@ -661,52 +744,56 @@ export function RoomDetailPage() {
                       </div>
                     </div>
                   ) : (
-                    /* ── Other sender: left-aligned with avatar ── */
-                    <div className="group/grp mt-3 first:mt-0">
-                      <div className="flex items-start gap-3 px-2 py-1 hover:bg-accent/20 rounded">
+                    /* ── Other sender: left-aligned with avatar, Claude-style ── */
+                    <div className="group/grp mt-4 first:mt-0">
+                      <div className="flex items-start gap-3 px-2 py-1.5 rounded-lg hover:bg-accent/30 transition-colors">
                         <div
-                          className="shrink-0 h-9 w-9 rounded-md flex items-center justify-center text-[12px] font-bold text-white mt-0.5"
+                          className="shrink-0 h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white mt-0.5 shadow-sm"
                           style={{ backgroundColor: g.senderColor }}
                           title={g.senderName}
                         >
                           {initials(g.senderName)}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-baseline gap-2 mb-0.5">
-                            <span className="text-[14px] font-bold text-foreground">
+                          <div className="flex items-baseline gap-2 mb-1">
+                            <span className="text-[13px] font-semibold text-foreground">
                               {g.senderName}
                             </span>
                             <span className="text-[11px] text-muted-foreground">
                               {formatTime(g.firstAt)}
                             </span>
                           </div>
-                          {renderMessageBody(
-                            g.messages[0],
-                            agentName,
-                            updateActionStatusMutation,
-                            (id) => (id ? approvalStatusById.get(id) ?? null : null),
-                            t,
-                          )}
-                        </div>
-                      </div>
-                      {g.messages.slice(1).map((m) => (
-                        <div
-                          key={m.id}
-                          className="flex items-start gap-3 px-2 py-0.5 hover:bg-accent/20 rounded group/msg"
-                        >
-                          <div className="shrink-0 h-0 w-9 relative">
-                            <span className="absolute right-0 top-1 text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                              {formatTime(m.createdAt)}
-                            </span>
-                          </div>
-                          <div className="flex-1 min-w-0">
+                          <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-4 py-2.5">
                             {renderMessageBody(
-                              m,
+                              g.messages[0],
                               agentName,
                               updateActionStatusMutation,
                               (id) => (id ? approvalStatusById.get(id) ?? null : null),
                               t,
                             )}
+                          </div>
+                        </div>
+                      </div>
+                      {g.messages.slice(1).map((m) => (
+                        <div
+                          key={m.id}
+                          className="flex items-start gap-3 px-2 py-0.5 rounded-lg group/msg"
+                        >
+                          <div className="shrink-0 h-0 w-8 relative">
+                            <span className="absolute right-0 top-1 text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                              {formatTime(m.createdAt)}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-4 py-2.5">
+                              {renderMessageBody(
+                                m,
+                                agentName,
+                                updateActionStatusMutation,
+                                (id) => (id ? approvalStatusById.get(id) ?? null : null),
+                                t,
+                              )}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -722,8 +809,8 @@ export function RoomDetailPage() {
         {/* === Compose === */}
         <div
           className={cn(
-            "rounded-lg border border-border bg-background p-2 transition-colors",
-            isDragging && "border-primary bg-primary/5",
+            "p-2 transition-colors",
+            isDragging && "bg-primary/5",
           )}
           onDragEnter={(e) => {
             e.preventDefault();
@@ -782,52 +869,11 @@ export function RoomDetailPage() {
             </div>
           )}
           <form
-            className="flex gap-2 items-center"
+            className="rounded-2xl border border-border bg-card shadow-sm overflow-hidden"
             onSubmit={(e) => {
               e.preventDefault();
-              if (body.trim() || pendingAttachments.length > 0) sendMessageMutation.mutate();
             }}
           >
-            <select
-              data-testid="room-msg-type"
-              className="text-sm border border-border rounded px-2 py-1 bg-background h-9"
-              value={msgType}
-              onChange={(e) => setMsgType(e.target.value as any)}
-            >
-              <option value="text">text</option>
-              <option value="action">action</option>
-            </select>
-            {msgType === "action" && (
-              <>
-                <select
-                  data-testid="room-action-target"
-                  className="text-sm border border-border rounded px-2 py-1 bg-background h-9"
-                  value={actionTarget}
-                  onChange={(e) => setActionTarget(e.target.value)}
-                  required
-                >
-                  <option value="">target agent…</option>
-                  {(allAgents.data ?? []).map((a: any) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-                <label
-                  className="flex items-center gap-1 text-[11px] text-muted-foreground select-none cursor-pointer"
-                  title="Gate the 'Mark executed' transition on a human approval"
-                >
-                  <input
-                    type="checkbox"
-                    data-testid="room-requires-approval"
-                    className="h-3.5 w-3.5 accent-amber-500"
-                    checked={requiresApproval}
-                    onChange={(e) => setRequiresApproval(e.target.checked)}
-                  />
-                  Require approval
-                </label>
-              </>
-            )}
             <input
               ref={fileInputRef}
               type="file"
@@ -838,36 +884,165 @@ export function RoomDetailPage() {
                 e.target.value = "";
               }}
             />
-            <button
-              type="button"
-              data-testid="room-attach-button"
-              onClick={() => fileInputRef.current?.click()}
-              className="h-9 w-9 flex items-center justify-center rounded border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-              title="Attach file"
-            >
-              <Paperclip className="h-4 w-4" />
-            </button>
-            <Input
-              data-testid="room-msg-body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              onPaste={handlePaste}
-              placeholder={
-                isDragging
-                  ? "Drop files to attach…"
-                  : msgType === "action"
-                    ? "Action description..."
-                    : t("room.compose")
-              }
-              className="flex-1 h-9"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              disabled={!body.trim() && pendingAttachments.length === 0}
-            >
-              <Send className="h-4 w-4" />
-            </Button>
+            {/* Mention dropdown */}
+            {mentionQuery !== null && mentionCandidates.length > 0 && (
+              <div className="border-b border-border px-2 py-1.5 max-h-40 overflow-y-auto">
+                {mentionCandidates.map((a, i) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-2 w-full px-3 py-1.5 text-sm rounded-md text-left transition-colors",
+                      i === mentionIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                    )}
+                    onMouseDown={(e) => {
+                      e.preventDefault(); // Prevent textarea blur
+                      insertMention(a.name);
+                    }}
+                  >
+                    <span className="font-medium">@{a.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Textarea area */}
+            <div className="px-4 pt-3 pb-2">
+              <Textarea
+                ref={textareaRef}
+                data-testid="room-msg-body"
+                value={body}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setBody(val);
+                  // Detect @mention
+                  const cursor = e.target.selectionStart;
+                  const before = val.slice(0, cursor);
+                  const atMatch = before.match(/@(\w*)$/);
+                  if (atMatch) {
+                    setMentionQuery(atMatch[1]);
+                    setMentionIndex(0);
+                  } else {
+                    setMentionQuery(null);
+                  }
+                }}
+                onPaste={handlePaste}
+                onKeyDown={(e) => {
+                  if (mentionQuery !== null && mentionCandidates.length > 0) {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setMentionIndex((i) => Math.min(i + 1, mentionCandidates.length - 1));
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setMentionIndex((i) => Math.max(i - 1, 0));
+                      return;
+                    }
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      insertMention(mentionCandidates[mentionIndex].name);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setMentionQuery(null);
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    if (!sendMessageMutation.isPending && (body.trim() || pendingAttachments.length > 0)) {
+                      const msg = body;
+                      setBody("");
+                      setMentionQuery(null);
+                      sendMessageMutation.mutate(msg);
+                    }
+                  }
+                }}
+                placeholder={
+                  isDragging
+                    ? "Drop files to attach…"
+                    : msgType === "action"
+                      ? "Action description..."
+                      : t("room.compose")
+                }
+                className="w-full min-h-[44px] max-h-40 resize-none border-none bg-transparent p-0 text-[14px] placeholder:text-muted-foreground/60 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none outline-none"
+                rows={1}
+              />
+            </div>
+            {/* Bottom toolbar */}
+            <div className="flex items-center gap-1 px-3 pb-2.5 pt-0">
+              {/* Left side controls */}
+              <select
+                data-testid="room-msg-type"
+                className="text-[12px] text-muted-foreground bg-transparent border-0 rounded px-1.5 py-1 hover:bg-accent cursor-pointer focus:ring-0"
+                value={msgType}
+                onChange={(e) => setMsgType(e.target.value as any)}
+              >
+                <option value="text">text</option>
+                <option value="action">action</option>
+              </select>
+              {msgType === "action" && (
+                <>
+                  <select
+                    data-testid="room-action-target"
+                    className="text-[12px] text-muted-foreground bg-transparent border-0 rounded px-1.5 py-1 hover:bg-accent cursor-pointer focus:ring-0"
+                    value={actionTarget}
+                    onChange={(e) => setActionTarget(e.target.value)}
+                    required
+                  >
+                    <option value="">target…</option>
+                    {(allAgents.data ?? []).map((a: any) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-1 text-[11px] text-muted-foreground select-none cursor-pointer px-1">
+                    <input
+                      type="checkbox"
+                      data-testid="room-requires-approval"
+                      className="h-3 w-3 accent-amber-500"
+                      checked={requiresApproval}
+                      onChange={(e) => setRequiresApproval(e.target.checked)}
+                    />
+                    Approval
+                  </label>
+                </>
+              )}
+              <button
+                type="button"
+                data-testid="room-attach-button"
+                onClick={() => fileInputRef.current?.click()}
+                className="h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                title="Attach file"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+
+              {/* Right side: send button */}
+              <div className="ml-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!sendMessageMutation.isPending && (body.trim() || pendingAttachments.length > 0)) {
+                      const msg = body;
+                      setBody("");
+                      sendMessageMutation.mutate(msg);
+                    }
+                  }}
+                  disabled={!body.trim() && pendingAttachments.length === 0}
+                  className={cn(
+                    "h-7 w-7 flex items-center justify-center rounded-full transition-colors",
+                    body.trim() || pendingAttachments.length > 0
+                      ? "bg-foreground text-background hover:bg-foreground/90"
+                      : "bg-muted text-muted-foreground cursor-not-allowed",
+                  )}
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
           </form>
         </div>
       </div>
@@ -912,7 +1087,7 @@ export function RoomDetailPage() {
                   {t("room.addAgent")}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-48 p-1" align="start">
+              <PopoverContent className="w-48 p-1 max-h-60 overflow-y-auto" align="start">
                 {linkableAgents.map((a: any) => (
                   <button
                     key={a.id}

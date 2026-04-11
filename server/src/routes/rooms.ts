@@ -209,7 +209,8 @@ export function roomRoutes(
     const room = await loadRoomForAccess(db, svc, req, res);
     if (!room) return;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
-    res.json(await svc.listMessages(room.id, { limit }));
+    const before = req.query.before as string | undefined;
+    res.json(await svc.listMessages(room.id, { limit, before }));
   });
 
   // Upload an attachment for a room. Returns asset metadata the client

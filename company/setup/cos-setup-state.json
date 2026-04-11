@@ -1,0 +1,24 @@
+{
+  "current_step": "1.5",
+  "started_at": "2026-04-01T21:55:00+09:00",
+  "steps": {
+    "0.1": { "status": "done", "at": "2026-04-01T21:56:00+09:00" },
+    "0.2": { "status": "done", "at": "2026-04-01T22:00:00+09:00" },
+    "0.3": { "status": "done", "at": "2026-04-01T22:10:00+09:00" },
+    "0.4": { "status": "done", "at": "2026-04-01T22:15:00+09:00", "notes": "flotter git auth 만료 — fetch 없이 로컬 develop에서 생성" },
+    "0.5": { "status": "done", "at": "2026-04-01T22:40:00+09:00", "notes": "App ID: A0AQ2F6V67M, channels: C0AQ8U2FWEN,C0AQ2GV065R,C0AQ6S884GN,C0AQ8U2UTLJ,C0APTEV170F,C0AQ5G24LPP" },
+    "0.6": { "status": "done", "at": "2026-04-01T22:50:00+09:00" },
+    "0.7": { "status": "done", "at": "2026-04-01T22:55:00+09:00" },
+    "0.8": { "status": "done", "at": "2026-04-01T23:00:00+09:00" },
+    "0.9": { "status": "done", "at": "2026-04-01T23:05:00+09:00", "notes": "Redis 8.6.2 installed via brew, running as service" },
+    "0.10": { "status": "done", "at": "2026-04-02T13:40:00+09:00", "notes": "6개 CLI Listening 확인, Slack 응답 정상, 브리핑 동작 확인. 24h 형식적 soak 대신 실전 테스트로 검증." },
+    "1.1": { "status": "done", "at": "2026-04-02T12:30:00+09:00", "notes": "Linear MCP @hatcloud/linear-mcp, 팀 6개 조회 성공" },
+    "1.2": { "status": "done", "at": "2026-04-02T12:30:00+09:00", "notes": "Notion MCP @notionhq/notion-mcp-server 연결 확인" },
+    "1.3": { "status": "done", "at": "2026-04-02T13:37:00+09:00", "notes": "4개 브리핑(dawn/morning/afternoon/evening) Slack mrkdwn 포맷, 에이전트 현황+직책 포함" },
+    "1.4": { "status": "done", "at": "2026-04-02T13:30:00+09:00", "notes": "cron 4개(06/10/14/18시) 동작 확인, zsh 경로 /bin/zsh로 수정, cd PROJECT_DIR 추가" },
+    "1.5": { "status": "in_progress", "started_at": "2026-04-02T13:40:00+09:00", "notes": "5일 안정성 검증 시작. 추가 MCP: n8n, PostHog(mcp-remote). 자동 ack(👀 리액션). Slack App 권한 확장(reactions:write 등)." }
+  },
+  "phase_verified": {
+    "0": { "verdict": "passed", "at": "2026-04-02T13:40:00+09:00", "notes": "실전 테스트로 검증 — .mcp.json 배포 누락/채널명 변경/zsh 경로/cd 누락 전부 수정 완료" }
+  }
+}

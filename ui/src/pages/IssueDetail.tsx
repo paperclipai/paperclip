@@ -10,6 +10,8 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { roomsApi } from "../api/rooms";
+import { teamsApi } from "../api/teams";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -59,15 +61,20 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Activity as ActivityIcon,
   Check,
   ChevronRight,
   Copy,
   EyeOff,
+  GitBranch,
   Hexagon,
+  Link2,
   ListTree,
   MessageSquare,
   MoreHorizontal,
@@ -289,6 +296,100 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
+function ActionIconButton({
+  label,
+  shortcut,
+  icon: Icon,
+  checkedIcon: CheckedIcon,
+  checked,
+  onClick,
+}: {
+  label: string;
+  shortcut?: string;
+  icon: React.ComponentType<{ className?: string }>;
+  checkedIcon?: React.ComponentType<{ className?: string }>;
+  checked?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon-xs" onClick={onClick}>
+          {checked && CheckedIcon ? (
+            <CheckedIcon className="h-3.5 w-3.5 text-green-500" />
+          ) : (
+            <Icon className="h-3.5 w-3.5" />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="flex items-center gap-2">
+        <span>{label}</span>
+        {shortcut && (
+          <kbd className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+            {shortcut}
+          </kbd>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCreateRoom: () => void }) {
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
+  const [copiedBranch, setCopiedBranch] = useState(false);
+
+  return (
+    <TooltipProvider>
+      <ActionIconButton
+        label="Copy issue URL"
+        shortcut="⌘⇧,"
+        icon={Link2}
+        checkedIcon={Check}
+        checked={copiedUrl}
+        onClick={() => {
+          navigator.clipboard.writeText(window.location.href);
+          setCopiedUrl(true);
+          setTimeout(() => setCopiedUrl(false), 1500);
+        }}
+      />
+      <ActionIconButton
+        label="Copy issue ID"
+        icon={Copy}
+        checkedIcon={Check}
+        checked={copiedId}
+        onClick={() => {
+          navigator.clipboard.writeText(issue.identifier ?? issue.id.slice(0, 8));
+          setCopiedId(true);
+          setTimeout(() => setCopiedId(false), 1500);
+        }}
+      />
+      <ActionIconButton
+        label="Copy branch name"
+        shortcut="⌘⇧."
+        icon={GitBranch}
+        checkedIcon={Check}
+        checked={copiedBranch}
+        onClick={() => {
+          const id = (issue.identifier ?? issue.id.slice(0, 8)).toLowerCase();
+          const slug = issue.title.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+          const branch = `feature/${id}-${slug}`;
+          navigator.clipboard.writeText(branch);
+          setCopiedBranch(true);
+          setTimeout(() => setCopiedBranch(false), 1500);
+        }}
+      />
+      {issue.teamId && (
+        <ActionIconButton
+          label="Create room"
+          icon={MessageSquare}
+          onClick={onCreateRoom}
+        />
+      )}
+    </TooltipProvider>
+  );
+}
+
 export function IssueDetail() {
   const { t } = useT();
   const { issueId } = useParams<{ issueId: string }>();
@@ -314,6 +415,8 @@ export function IssueDetail() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
+  const [createRoomOpen, setCreateRoomOpen] = useState(false);
+  const [selectedLeaders, setSelectedLeaders] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -334,6 +437,57 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId,
+  });
+
+  // Team members for "create room" leader picker
+  const { data: teamMembers } = useQuery({
+    queryKey: ["team-members", resolvedCompanyId, issue?.teamId],
+    queryFn: () => teamsApi.listMembers(resolvedCompanyId!, issue!.teamId!),
+    enabled: !!resolvedCompanyId && !!issue?.teamId && createRoomOpen,
+  });
+
+  // All agents to resolve adapter type (leader = claude_local)
+  const { data: allAgentsForRoom } = useQuery({
+    queryKey: queryKeys.agents.list(resolvedCompanyId!),
+    queryFn: () => agentsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId && createRoomOpen,
+  });
+
+  const teamLeaders = useMemo(() => {
+    if (!teamMembers || !allAgentsForRoom) return [];
+    const agentMap = new Map(allAgentsForRoom.map((a: any) => [a.id, a]));
+    return teamMembers
+      .filter((m: any) => m.agentId && agentMap.get(m.agentId)?.adapterType === "claude_local")
+      .map((m: any) => ({ ...agentMap.get(m.agentId)!, memberRole: m.role }));
+  }, [teamMembers, allAgentsForRoom]);
+
+  const createRoomFromIssueMutation = useMutation({
+    mutationFn: async () => {
+      if (!resolvedCompanyId || !issue) throw new Error("Missing data");
+      const roomName = `${issue.identifier ?? issue.id.slice(0, 8)} ${issue.title}`.slice(0, 100);
+      const room = await roomsApi.create(resolvedCompanyId, { name: roomName });
+      try {
+        await roomsApi.linkIssue(resolvedCompanyId, room.id, issue.id);
+        await Promise.all(
+          [...selectedLeaders].map((agentId) =>
+            roomsApi.addParticipant(resolvedCompanyId, room.id, { agentId }),
+          ),
+        );
+      } catch (err) {
+        // Clean up orphan room
+        await roomsApi.archive(resolvedCompanyId, room.id).catch(() => {});
+        throw err;
+      }
+      return room;
+    },
+    onSuccess: (room) => {
+      setCreateRoomOpen(false);
+      setSelectedLeaders(new Set());
+      navigate(`/rooms/${room.id}`);
+    },
+    onError: () => {
+      pushToast({ title: "룸 생성에 실패했습니다", tone: "error" });
+    },
   });
 
   const { data: activity } = useQuery({
@@ -1093,7 +1247,9 @@ export function IssueDetail() {
         childIssues={childIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
-      />
+        onCreateRoom={() => setCreateRoomOpen(true)}
+      />,
+      <IssuePropertiesPanelActions issue={issue} onCreateRoom={() => setCreateRoomOpen(true)} />,
     );
     return () => closePanel();
   }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
@@ -1377,7 +1533,7 @@ export function IssueDetail() {
             </Button>
           </div>
 
-          <div className="hidden md:flex items-center md:ml-auto shrink-0">
+          <div className="hidden md:flex items-center md:ml-auto shrink-0 gap-0.5">
             <Button
               variant="ghost"
               size="icon-xs"
@@ -1886,6 +2042,7 @@ export function IssueDetail() {
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
+                onCreateRoom={() => setCreateRoomOpen(true)}
                 inline
               />
             </div>
@@ -1893,6 +2050,67 @@ export function IssueDetail() {
         </SheetContent>
       </Sheet>
       <ScrollToBottom />
+
+      {/* Create room from issue dialog */}
+      <Dialog open={createRoomOpen} onOpenChange={(open) => {
+        setCreateRoomOpen(open);
+        if (!open) setSelectedLeaders(new Set());
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>이슈에서 룸 만들기</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-muted-foreground mb-1">룸 이름</p>
+              <p className="text-sm font-medium">
+                {issue?.identifier} {issue?.title?.slice(0, 60)}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground mb-2">참여할 리더 에이전트</p>
+              {teamLeaders.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">팀에 리더 에이전트가 없습니다</p>
+              ) : (
+                <div className="space-y-2">
+                  {teamLeaders.map((agent: any) => (
+                    <label
+                      key={agent.id}
+                      className="flex items-center gap-2 text-sm cursor-pointer hover:bg-accent/50 rounded px-2 py-1.5 -mx-2"
+                    >
+                      <Checkbox
+                        checked={selectedLeaders.has(agent.id)}
+                        onCheckedChange={(checked) => {
+                          setSelectedLeaders((prev) => {
+                            const next = new Set(prev);
+                            if (checked) next.add(agent.id);
+                            else next.delete(agent.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span>{agent.name}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{agent.title ?? agent.role}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setCreateRoomOpen(false)}>
+                취소
+              </Button>
+              <Button
+                size="sm"
+                disabled={selectedLeaders.size === 0 || createRoomFromIssueMutation.isPending}
+                onClick={() => createRoomFromIssueMutation.mutate()}
+              >
+                {createRoomFromIssueMutation.isPending ? "생성 중..." : "룸 만들기"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

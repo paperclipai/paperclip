@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV_PYTHON="$ROOT_DIR/.venv-quote/bin/python"
+
+if [[ -x "$VENV_PYTHON" ]]; then
+  "$VENV_PYTHON" "$SCRIPT_DIR/quote_finalize.py" "$@"
+else
+  python3 "$SCRIPT_DIR/quote_finalize.py" "$@"
+fi

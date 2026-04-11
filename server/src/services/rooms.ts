@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, lt, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -620,16 +620,20 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
 
     // === Messages ===
 
-    listMessages: (roomId: string, opts?: { limit?: number; before?: Date }) => {
-      const limit = Math.min(opts?.limit ?? 100, 500);
+    listMessages: async (roomId: string, opts?: { limit?: number; before?: string }) => {
+      const limit = Math.min(opts?.limit ?? 50, 500);
       const conds = [eq(roomMessages.roomId, roomId)];
-      // Note: 'before' filter omitted in this slice; UI fetches latest 100.
-      return db
+      if (opts?.before) {
+        conds.push(lt(roomMessages.createdAt, new Date(opts.before)));
+      }
+      // Fetch newest N, then reverse so UI gets chronological order.
+      const rows = await db
         .select()
         .from(roomMessages)
         .where(and(...conds))
-        .orderBy(asc(roomMessages.createdAt))
+        .orderBy(desc(roomMessages.createdAt))
         .limit(limit);
+      return rows.reverse();
     },
 
     sendMessage: async (

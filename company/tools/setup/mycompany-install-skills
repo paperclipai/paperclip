@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+
+link_skills() {
+  local base_dir="$1"
+  local source_dir="$PROJECT_ROOT/$base_dir/skills"
+  local target_dir="$HOME/$base_dir/skills"
+  local parent_dir="$HOME/$base_dir"
+
+  mkdir -p "$parent_dir"
+
+  if [ ! -d "$source_dir" ]; then
+    echo "source not found: $source_dir" >&2
+    exit 1
+  fi
+
+  if [ -L "$target_dir" ]; then
+    local current_target
+    current_target="$(readlink "$target_dir")"
+    if [ "$current_target" = "$source_dir" ]; then
+      echo "already linked: $target_dir -> $source_dir"
+      return
+    fi
+    rm "$target_dir"
+  elif [ -e "$target_dir" ]; then
+    mv "$target_dir" "${target_dir}.backup-$TIMESTAMP"
+    echo "backup created: ${target_dir}.backup-$TIMESTAMP"
+  fi
+
+  ln -s "$source_dir" "$target_dir"
+  echo "linked: $target_dir -> $source_dir"
+}
+
+link_skills ".agents"
+link_skills ".codex"
+
+echo
+echo "project-managed skills are now active from:"
+echo "  $PROJECT_ROOT/.agents/skills"
+echo "  $PROJECT_ROOT/.codex/skills"

@@ -84,8 +84,12 @@ export const roomsApi = {
       `/companies/${companyId}/rooms/${roomId}/participants/${participantId}`,
     ),
 
-  listMessages: (companyId: string, roomId: string, limit = 100) =>
-    api.get<RoomMessage[]>(`/companies/${companyId}/rooms/${roomId}/messages?limit=${limit}`),
+  listMessages: (companyId: string, roomId: string, opts?: { limit?: number; before?: string }) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts?.limit ?? 50));
+    if (opts?.before) params.set("before", opts.before);
+    return api.get<RoomMessage[]>(`/companies/${companyId}/rooms/${roomId}/messages?${params}`);
+  },
   sendMessage: (
     companyId: string,
     roomId: string,

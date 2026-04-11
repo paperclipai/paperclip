@@ -4445,6 +4445,10 @@ export function heartbeatService(db: Db) {
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        // Leader agents (claude_local) have a persistent CLI managed by
+        // leaderProcessService — skip heartbeat to avoid --print mode
+        // prompt-too-long errors from large repo .claude/ directories.
+        if (agent.adapterType === "claude_local") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 

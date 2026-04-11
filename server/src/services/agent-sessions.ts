@@ -124,12 +124,10 @@ export function createAgentSessionService(db: Db): AgentSessionService {
         )
         .limit(1);
       if (existing[0]) {
-        // If project-scoped, ensure the workspace path is up-to-date with
-        // the current project_workspace.cwd (may have changed since session
-        // creation, e.g. workspace added after first start).
         if (projectId) {
+          // Ensure workspace path (cwd) is up-to-date
           const currentCwd = await resolveWorkspacePath(db, agentId, existing[0].id, companyId, projectId);
-          if (currentCwd !== existing[0].workspacePath) {
+          if (currentCwd !== existing[0].workspacePath || existing[0].claudeProjectDir !== currentCwd) {
             const [updated] = await db
               .update(agentSessions)
               .set({

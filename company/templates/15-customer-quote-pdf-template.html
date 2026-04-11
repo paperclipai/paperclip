@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>비브라이트코드 개발 견적서 템플릿</title>
+    <style>
+      @page {
+        size: A4;
+        margin: 14mm;
+      }
+
+      :root {
+        --text: #111827;
+        --muted: #6b7280;
+        --line: #d1d5db;
+        --soft: #f8fafc;
+        --brand: #0f172a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background: #fff;
+        font-family: "Pretendard Variable", "Apple SD Gothic Neo", "Noto Sans KR",
+          sans-serif;
+        font-size: 10.5pt;
+        line-height: 1.5;
+      }
+
+      .page {
+        width: 100%;
+      }
+
+      .title {
+        margin: 0 0 14px;
+        text-align: center;
+        font-size: 22pt;
+        letter-spacing: 0.18em;
+      }
+
+      .sub-title {
+        margin: 0 0 18px;
+        text-align: center;
+        font-size: 11pt;
+        color: var(--muted);
+      }
+
+      .top-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+      }
+
+      .card h2 {
+        margin: 0;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        background: var(--soft);
+        font-size: 10pt;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border: 1px solid var(--line);
+        padding: 7px 8px;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--soft);
+        text-align: left;
+        font-size: 9.5pt;
+      }
+
+      .info-table td:first-child {
+        width: 112px;
+        background: #fafafa;
+        font-weight: 600;
+      }
+
+      .quote-table th:nth-child(1),
+      .quote-table td:nth-child(1) {
+        width: 56px;
+        text-align: center;
+      }
+
+      .quote-table th:nth-child(2),
+      .quote-table td:nth-child(2) {
+        width: 128px;
+      }
+
+      .quote-table th:nth-child(4),
+      .quote-table td:nth-child(4) {
+        width: 88px;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .quote-table th:nth-child(5),
+      .quote-table td:nth-child(5) {
+        width: 112px;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .summary {
+        margin-top: 14px;
+        margin-left: auto;
+        width: 280px;
+      }
+
+      .summary td:first-child {
+        background: #fafafa;
+        font-weight: 600;
+      }
+
+      .summary td:last-child {
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .notes {
+        margin-top: 16px;
+        border: 1px solid var(--line);
+        padding: 10px 12px;
+      }
+
+      .notes h2 {
+        margin: 0 0 8px;
+        font-size: 10pt;
+      }
+
+      .notes ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      .notes li + li {
+        margin-top: 4px;
+      }
+
+      .footer {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 9pt;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <h1 class="title">개발 견 적 서</h1>
+      <p class="sub-title">기관 / 법인 / 개인 고객 공통 발송용 표준 포맷</p>
+
+      <div class="top-grid">
+        <section class="card">
+          <h2>견적 정보</h2>
+          <table class="info-table">
+            <tbody>
+              <tr>
+                <td>견적일자</td>
+                <td>YYYY.MM.DD</td>
+              </tr>
+              <tr>
+                <td>고객명</td>
+                <td>고객명 또는 기관명</td>
+              </tr>
+              <tr>
+                <td>프로젝트명</td>
+                <td>프로젝트명</td>
+              </tr>
+              <tr>
+                <td>유효기간</td>
+                <td>발송일 기준 14일</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>공급자 정보</h2>
+          <table class="info-table">
+            <tbody>
+              <tr>
+                <td>상호</td>
+                <td>(주)비브라이트코드</td>
+              </tr>
+              <tr>
+                <td>사업자번호</td>
+                <td>111-87-03249</td>
+              </tr>
+              <tr>
+                <td>대표자</td>
+                <td>김대환</td>
+              </tr>
+              <tr>
+                <td>사업장소재지</td>
+                <td>서울시 강서구 마곡동 800-3 우성에스비2차 1005호</td>
+              </tr>
+              <tr>
+                <td>연락처</td>
+                <td>010-6622-5361</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <section>
+        <table class="quote-table">
+          <thead>
+            <tr>
+              <th>구분</th>
+              <th>분류</th>
+              <th>항목</th>
+              <th>기간</th>
+              <th>공급가액</th>
+              <th>비고</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>랜딩 및 브랜드 웹</td>
+              <td>메인 페이지, 소개 섹션, 포트폴리오/사례, 문의 페이지, 반응형, 기본 SEO</td>
+              <td>협의</td>
+              <td>₩2,500,000</td>
+              <td>기본 골격</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>관리자 및 운영시스템</td>
+              <td>관리자 로그인, 문의 목록/상세, 상태 관리, 운영 메모, 기본 운영 대시보드</td>
+              <td>협의</td>
+              <td>₩2,000,000</td>
+              <td>기본 골격</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>블로그 / CMS</td>
+              <td>블로그 목록/상세, 작성/수정, 발행 관리, 카테고리/태그, SEO 기본 필드</td>
+              <td>선택</td>
+              <td>₩2,000,000</td>
+              <td>선택 기능</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>인증</td>
+              <td>카카오싱크 연동 또는 기본 회원 로그인 확장</td>
+              <td>선택</td>
+              <td>₩800,000~</td>
+              <td>정형화 feature</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>콘텐츠 관리</td>
+              <td>FAQ, 공지사항, 게시판, 후기/사례, 포트폴리오 관리 중 선택</td>
+              <td>선택</td>
+              <td>₩300,000~</td>
+              <td>정형화 feature</td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>문의 / 리드 운영</td>
+              <td>문의 저장 API, DB 연결, 문의 관리 확장, 견적 문의 운영 기능</td>
+              <td>선택</td>
+              <td>₩700,000~</td>
+              <td>정형화 또는 가산</td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>외부 연동</td>
+              <td>Slack 웹훅, 알림 연동, 정형화된 연동 기능 묶음</td>
+              <td>선택</td>
+              <td>₩400,000~</td>
+              <td>정형화 feature</td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td>맞춤형 기능</td>
+              <td>고객 전용 운영 로직, 전용 관리자 흐름, 예외 처리 많은 기능</td>
+              <td>협의</td>
+              <td>별도 산정</td>
+              <td>커스텀</td>
+            </tr>
+            <tr>
+              <td>9</td>
+              <td>AI 연동</td>
+              <td>AI 상담, 자동분류, 요약, 추천, 내부 데이터 기반 LLM 기능</td>
+              <td>협의</td>
+              <td>컨설팅 후 별도 산정</td>
+              <td>AI</td>
+            </tr>
+            <tr>
+              <td>10</td>
+              <td>인프라 / 배포 환경</td>
+              <td>Git, DB, NeonDB, Vercel, 기본 배포 환경 구성</td>
+              <td>협의</td>
+              <td>₩1,500,000</td>
+              <td>기본 골격</td>
+            </tr>
+            <tr>
+              <td>11</td>
+              <td>QA 및 안정화</td>
+              <td>주요 플로우 점검, 오류 수정, 배포 후 기본 안정화 작업</td>
+              <td>기본 포함</td>
+              <td>포함</td>
+              <td>별도 청구 없음</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <table class="summary">
+        <tbody>
+          <tr>
+            <td>공급가액 합계</td>
+            <td>프로젝트별 산정</td>
+          </tr>
+          <tr>
+            <td>부가세</td>
+            <td>공급가액의 10%</td>
+          </tr>
+          <tr>
+            <td>총계</td>
+            <td>VAT 포함 금액 기준</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <section class="notes">
+        <h2>비고 / 안내사항</h2>
+        <ul>
+          <li>금액은 페이지 수가 아니라 카테고리 기준으로 산정합니다.</li>
+          <li>정형화된 기능은 낮게, 맞춤형 운영 로직과 안정성이 필요한 기능은 별도 산정합니다.</li>
+          <li>외부 서비스 사용료, 유료 API 비용, 별도 라이선스 비용은 견적에 포함되지 않습니다.</li>
+          <li>고객 검토 및 피드백 반영은 기본 2회 기준입니다.</li>
+          <li>최종 발송은 PDF 기준으로 진행합니다.</li>
+        </ul>
+      </section>
+
+      <div class="footer">
+        비브라이트코드 고객 발송용 표준 견적 포맷
+      </div>
+    </main>
+  </body>
+</html>

@@ -3096,6 +3096,90 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
+function CliLogsPanel({ companyId, agentId }: { companyId: string; agentId: string }) {
+  const [logKind, setLogKind] = useState<"out" | "err">("out");
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ["cli-logs", companyId, agentId, logKind],
+    queryFn: () => leaderProcessesApi.logs(companyId, agentId, { kind: logKind, lines: 200 }),
+    refetchInterval: 3000,
+  });
+  const { data: cliStatus } = useQuery({
+    queryKey: ["cli-status", companyId, agentId],
+    queryFn: () => leaderProcessesApi.status(companyId, agentId),
+    refetchInterval: 5000,
+  });
+
+  const alive = cliStatus?.alive ?? false;
+  const pm2Name = cliStatus?.row?.pm2Name ?? null;
+
+  // Strip ANSI escape codes for clean display
+  const cleanLines = useMemo(() => {
+    if (!logs?.lines) return [];
+    return logs.lines.map((line) =>
+      line.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\[[\d;]*m/g, "").replace(/\[\d+\|cos-def \| \]?/g, "").trim()
+    ).filter(Boolean);
+  }, [logs?.lines]);
+
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [cleanLines.length]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className={cn(
+            "h-2 w-2 rounded-full",
+            alive ? "bg-green-500 animate-pulse" : "bg-muted-foreground/40",
+          )} />
+          <span className="text-sm font-medium">CLI {alive ? "Running" : "Stopped"}</span>
+          {pm2Name && <span className="text-xs text-muted-foreground font-mono">{pm2Name}</span>}
+        </div>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => setLogKind("out")}
+            className={cn(
+              "px-2 py-0.5 text-xs rounded transition-colors",
+              logKind === "out" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            stdout
+          </button>
+          <button
+            onClick={() => setLogKind("err")}
+            className={cn(
+              "px-2 py-0.5 text-xs rounded transition-colors",
+              logKind === "err" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            stderr
+          </button>
+        </div>
+      </div>
+      <div
+        ref={containerRef}
+        className="bg-muted/50 rounded-lg border border-border p-4 font-mono text-[12px] leading-5 overflow-y-auto max-h-[70vh] min-h-[200px]"
+      >
+        {isLoading ? (
+          <p className="text-muted-foreground">Loading...</p>
+        ) : cleanLines.length === 0 ? (
+          <p className="text-muted-foreground">No logs available.</p>
+        ) : (
+          cleanLines.map((line, i) => (
+            <div key={i} className="text-foreground/80 hover:text-foreground hover:bg-accent/20 px-1 -mx-1 rounded whitespace-pre-wrap break-all">
+              {line}
+            </div>
+          ))
+        )}
+        <div ref={logsEndRef} />
+      </div>
+    </div>
+  );
+}
+
 function RunsTab({
   runs,
   companyId,
@@ -3114,6 +3198,11 @@ function RunsTab({
   adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
+
+  // Leader agents (claude_local) use persistent CLI — show CLI logs instead of heartbeat runs
+  if (adapterType === "claude_local") {
+    return <CliLogsPanel companyId={companyId} agentId={agentId} />;
+  }
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;

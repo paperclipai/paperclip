@@ -171,7 +171,7 @@ function TeamBranch({
   onHoverPrefetch: (teamId: string) => void;
   activeIssueTeamId: string | null;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>

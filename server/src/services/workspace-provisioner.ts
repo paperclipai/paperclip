@@ -165,12 +165,21 @@ export function createWorkspaceProvisioner(
       agentId: string;
       session: AgentSessionRecord;
     }): Promise<WorkspaceSpec & { agentKeyId: string | null }> {
-      const root = session.workspacePath;
+      const cwd = session.workspacePath;
+      // MCP config lives in a session-specific directory so multiple agents
+      // sharing the same project repo cwd don't collide on .mcp.json.
+      // CLAUDE_PROJECT_DIR = cwd so the CLI reads the repo's CLAUDE.md,
+      // .claude/agents/, .claude/skills/, etc.
+      const agentShort = agentId.slice(0, 8);
+      const sessionShort = session.id.slice(0, 8);
+      const mcpConfigDir = path.join(
+        os.homedir(), ".cos-v2", "leaders", `${agentShort}-${sessionShort}`,
+      );
 
-      // 1. Ensure workspace + logs dir exists with restrictive perms
-      await fs.mkdir(path.join(root, "logs"), { recursive: true });
+      // 1. Ensure mcp config dir + logs dir exists with restrictive perms
+      await fs.mkdir(path.join(mcpConfigDir, "logs"), { recursive: true });
       try {
-        await fs.chmod(root, 0o700);
+        await fs.chmod(mcpConfigDir, 0o700);
       } catch {
         // Some file systems (e.g. network FS) don't support chmod.
         // Log-worthy but not fatal.
@@ -194,13 +203,13 @@ export function createWorkspaceProvisioner(
               COS_COMPANY_ID: companyId,
               COS_AGENT_ID: agentId,
               COS_AGENT_KEY: agentKeyToken,
-              COS_WORKSPACE: root,
+              COS_WORKSPACE: cwd,
               COS_SESSION_ID: session.id,
             },
           },
         },
       };
-      const mcpJsonPath = path.join(root, ".mcp.json");
+      const mcpJsonPath = path.join(mcpConfigDir, "mcp-bridge.json");
       await fs.writeFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), {
         mode: 0o600,
       });
@@ -211,6 +220,8 @@ export function createWorkspaceProvisioner(
         "--dangerously-skip-permissions",
         "--dangerously-load-development-channels",
         "server:channel-bridge",
+        "--mcp-config",
+        mcpJsonPath,
       ];
       // Env allowlist — never spread `...process.env`. Leaking the
       // server's full environment (DB URLs, secrets, other agent keys
@@ -225,14 +236,14 @@ export function createWorkspaceProvisioner(
       if (process.env.LANG) env.LANG = process.env.LANG;
       if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
       if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
-      env.CLAUDE_PROJECT_DIR = root;
+      env.CLAUDE_PROJECT_DIR = cwd;
       env.COS_API_URL = apiUrl;
       env.COS_COMPANY_ID = companyId;
       env.COS_AGENT_ID = agentId;
       env.COS_SESSION_ID = session.id;
 
       return {
-        root,
+        root: cwd,
         binary,
         args,
         env,

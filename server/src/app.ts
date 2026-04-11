@@ -222,7 +222,10 @@ export async function createApp(
   // buses created above so SSE + CLI start/stop share a single object graph.
   const agentSessions = createAgentSessionService(db);
   const processBackend = createPm2Backend();
-  const workspaceProvisioner = createWorkspaceProvisioner({ db });
+  const workspaceProvisioner = createWorkspaceProvisioner({
+    db,
+    apiUrl: `http://127.0.0.1:${opts.serverPort}`,
+  });
   const leaderProcess = createLeaderProcessService({
     db,
     sessions: agentSessions,

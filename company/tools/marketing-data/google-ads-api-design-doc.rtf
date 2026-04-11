@@ -1,0 +1,65 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Courier;}}
+\f0\fs22
+Google Ads API Tool Design Document\par
+\par
+1. Tool name\par
+BBrightcode Marketing Snapshot Tool\par
+\par
+2. Purpose\par
+This internal tool collects marketing performance data from Google Ads, GA4, and PostHog.\par
+Its purpose is to create a weekly operating snapshot for BBrightcode.\par
+The Google Ads API portion is used only for internal reporting and campaign monitoring.\par
+\par
+3. Business use\par
+BBrightcode is a software company.\par
+We use Google Ads to acquire leads for our software development services.\par
+We need a simple internal reporting tool to review cost, clicks, conversions, and campaign level performance.\par
+\par
+4. Users\par
+Only internal users will have access to this tool.\par
+Primary users are the founder and internal operators who review weekly marketing results.\par
+The tool is not offered to the public and is not offered to external clients.\par
+\par
+5. Data access pattern\par
+The tool reads campaign performance data from Google Ads API.\par
+It does not create campaigns, edit bids, change budgets, or manage customer accounts.\par
+It is a read-only reporting workflow.\par
+\par
+6. Main workflow\par
+1. Load credentials from the local environment.\par
+2. Request an access token through OAuth.\par
+3. Call Google Ads API searchStream for the target customer account.\par
+4. Collect campaign id, campaign name, status, impressions, clicks, cost, and conversions.\par
+5. Normalize the response into a JSON snapshot.\par
+6. Combine the Google Ads result with GA4 and PostHog results for internal reporting.\par
+\par
+7. Data stored\par
+The tool stores only summary reporting output.\par
+Examples: impressions, clicks, cost, conversions, sessions, and key event counts.\par
+It does not store end-user personal data from Google Ads.\par
+\par
+8. Security and access control\par
+Credentials are stored locally and used only by internal operators.\par
+The tool runs in BBrightcode's internal environment.\par
+No public user interface is exposed.\par
+No external customer access is provided.\par
+\par
+9. Technical implementation\par
+Current implementation file:\par
+tools/marketing-data/fetch_marketing_snapshot.py\par
+\par
+The script calls Google Ads API, GA4 Data API, and PostHog query API.\par
+Results are returned as JSON for internal use.\par
+\par
+10. Scope of Google Ads API usage\par
+Read-only reporting for BBrightcode's own Google Ads account.\par
+No third-party management platform.\par
+No resale or redistribution.\par
+No bulk account creation.\par
+No policy circumvention.\par
+\par
+11. Planned outcome\par
+The tool helps BBrightcode review weekly channel performance quickly and accurately.\par
+It reduces manual reporting work and supports better marketing decisions.\par
+}

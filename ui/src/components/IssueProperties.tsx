@@ -20,7 +20,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check, MessageSquare } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { useT } from "../i18n";
 
@@ -78,6 +78,7 @@ interface IssuePropertiesProps {
   childIssues?: Issue[];
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
+  onCreateRoom?: () => void;
   inline?: boolean;
 }
 
@@ -157,6 +158,7 @@ export function IssueProperties({
   childIssues = [],
   onAddSubIssue,
   onUpdate,
+  onCreateRoom,
   inline,
 }: IssuePropertiesProps) {
   const { t } = useT();

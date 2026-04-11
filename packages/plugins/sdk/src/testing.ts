@@ -354,6 +354,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const record: Issue = {
           id: randomUUID(),
           companyId: input.companyId,
+          teamId: (input as any).teamId ?? null,
           projectId: input.projectId ?? null,
           projectWorkspaceId: null,
           goalId: input.goalId ?? null,
