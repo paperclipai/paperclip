@@ -89,6 +89,12 @@ jobs:
             echo "existing_pr_url=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Configure git identity
+        if: steps.preflight.outputs.skip_sync != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
+
       - name: Run upstream sync
         id: sync
         if: steps.preflight.outputs.skip_sync != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
@@ -141,12 +147,6 @@ jobs:
               echo "- ready_for_pr: \`${READY_FOR_PR:-false}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Configure git identity
-        if: steps.sync.outputs.ready_for_pr == 'true'
-        run: |
-          git config user.name "upstream-sync-bot"
-          git config user.email "upstream-sync-bot@users.noreply.github.com"
 
       - name: Require PR automation token
         if: steps.sync.outputs.ready_for_pr == 'true'
