@@ -2,9 +2,12 @@
 FROM python:3.12-slim
 
 # Install system dependencies
+# git is needed for DeerFlow pre-flight research to read repo history and
+# explore codebases mounted from the host via /workspace or /paperclip/Projects.
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for DooD: allows starting sandbox containers via host Docker socket)

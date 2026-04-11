@@ -884,6 +884,23 @@ export function heartbeatService(db: Db) {
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return null;
 
+    // Bail early if the workspace directory doesn't exist on the server's
+    // filesystem. If the server can't see it, the DeerFlow container almost
+    // certainly can't either — the agent would spend 180s floundering before
+    // timing out. Skipping saves a full pre-flight timeout.
+    const workspace = parseObject(context.paperclipWorkspace);
+    const workspaceCwd = readNonEmptyString(workspace.cwd);
+    if (workspaceCwd) {
+      const cwdExists = await fs.stat(workspaceCwd).then(() => true).catch(() => false);
+      if (!cwdExists) {
+        await onLog(
+          "stderr",
+          `[preflight] Workspace cwd "${workspaceCwd}" not accessible from server — skipping DeerFlow pre-flight\n`,
+        );
+        return null;
+      }
+    }
+
     // Check for existing research comment (dedup)
     const existingComments = await db
       .select({ body: issueComments.body })
