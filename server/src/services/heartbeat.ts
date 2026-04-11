@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -334,6 +334,8 @@ const heartbeatRunListColumns = {
   processStartedAt: heartbeatRuns.processStartedAt,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
+  lowMemoryRetryCount: heartbeatRuns.lowMemoryRetryCount,
+  scheduledAt: heartbeatRuns.scheduledAt,
   contextSnapshot: heartbeatRuns.contextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
@@ -2926,7 +2928,16 @@ export function heartbeatService(db: Db) {
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "queued"),
+            or(
+              isNull(heartbeatRuns.scheduledAt),
+              lte(heartbeatRuns.scheduledAt, new Date()),
+            ),
+          ),
+        )
         .orderBy(asc(heartbeatRuns.createdAt))
         .limit(availableSlots);
       if (queuedRuns.length === 0) return [];
@@ -2962,13 +2973,7 @@ export function heartbeatService(db: Db) {
     }
 
     activeRunExecutions.add(run.id);
-    const metricsOn = isMetricsEnabled();
-    const runStartMs = run.startedAt ? (new Date(run.startedAt).getTime() || Date.now()) : Date.now();
-    if (metricsOn) {
-      heartbeatRunsActive.inc();
-    }
 
-    try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await setRunStatus(runId, "failed", {
@@ -2982,9 +2987,67 @@ export function heartbeatService(db: Db) {
       });
       const failedRun = await getRun(runId);
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      activeRunExecutions.delete(run.id);
       return;
     }
 
+    // Memory pre-flight: defer if available memory is below threshold to avoid OOM kills.
+    // Uses MemAvailable from /proc/meminfo on Linux (includes reclaimable page cache)
+    // instead of os.freemem() (MemFree), which is always near zero on Linux due to caching.
+    // Done early to avoid expensive setup (workspace realization, log creation) when we can't run.
+    const availMemBytes = await getAvailableMemBytes();
+    if (availMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
+      const availMemMB = Math.round(availMemBytes / (1024 * 1024));
+      const totalMemMB = Math.round(os.totalmem() / (1024 * 1024));
+      const nextLowMemoryRetryCount = (run.lowMemoryRetryCount ?? 0) + 1;
+      // Exponential backoff: 5s, 10s, 20s, 40s, 1m, 1m, ... (max 1 minute)
+      const delayMs = Math.min(Math.pow(2, nextLowMemoryRetryCount - 1) * 5000, 60000);
+      const scheduledAt = new Date(Date.now() + delayMs);
+
+      logger.warn(
+        { runId: run.id, agentId: agent.id, availMemMB, totalMemMB, nextLowMemoryRetryCount, delayMs },
+        "low memory: deferring run back to queued with exponential backoff",
+      );
+      const deferred = await db
+        .update(heartbeatRuns)
+        .set({ 
+          status: "queued", 
+          lowMemoryRetryCount: nextLowMemoryRetryCount,
+          scheduledAt,
+          updatedAt: new Date() 
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (deferred) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Deferred: insufficient available memory (${availMemMB} MB available of ${totalMemMB} MB total); retrying in ${Math.round(delayMs / 1000)}s (retry #${nextLowMemoryRetryCount})`,
+          payload: { availMemBytes, totalMemBytes: os.totalmem(), lowMemoryRetryCount: nextLowMemoryRetryCount, scheduledAt },
+        });
+      }
+      activeRunExecutions.delete(run.id);
+      return;
+    }
+
+    // Reset low memory retry count if we pass the pre-flight
+    if ((run.lowMemoryRetryCount ?? 0) > 0 || run.scheduledAt) {
+      await db
+        .update(heartbeatRuns)
+        .set({ lowMemoryRetryCount: 0, scheduledAt: null, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
+
+    const metricsOn = isMetricsEnabled();
+    const runStartMs = run.startedAt ? (new Date(run.startedAt).getTime() || Date.now()) : Date.now();
+    if (metricsOn) {
+      heartbeatRunsActive.inc();
+    }
+
+    try {
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
@@ -3592,33 +3655,7 @@ export function heartbeatService(db: Db) {
           `Fix: ensure PAPERCLIP_AGENT_JWT_SECRET is set in server config.`,
         );
       }
-      // Memory pre-flight: defer if available memory is below threshold to avoid OOM kills.
-      // Uses MemAvailable from /proc/meminfo on Linux (includes reclaimable page cache)
-      // instead of os.freemem() (MemFree), which is always near zero on Linux due to caching.
-      const availMemBytes = await getAvailableMemBytes();
-      if (availMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
-        const availMemMB = Math.round(availMemBytes / (1024 * 1024));
-        const totalMemMB = Math.round(os.totalmem() / (1024 * 1024));
-        logger.warn(
-          { runId: run.id, agentId: agent.id, availMemMB, totalMemMB },
-          "low memory: deferring run back to queued",
-        );
-        await db
-          .update(heartbeatRuns)
-          .set({ status: "queued", updatedAt: new Date() })
-          .where(eq(heartbeatRuns.id, run.id));
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: `Deferred: insufficient available memory (${availMemMB} MB available of ${totalMemMB} MB total); will retry on next scheduler tick`,
-          payload: { availMemBytes, totalMemBytes: os.totalmem() },
-        });
-        activeRunExecutions.delete(run.id);
-        return;
-      }
       let executedAdapterType = agent.adapterType;
-
       let adapterResult = await adapter.execute({
         runId: run.id,
         agent,

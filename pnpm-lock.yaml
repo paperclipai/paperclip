@@ -22,12 +22,18 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.0.5
         version: 3.2.4(vitest@3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0))
+      chokidar:
+        specifier: ^4.0.3
+        version: 4.0.3
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
       esbuild:
         specifier: ^0.27.3
         version: 0.27.3
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -40,39 +46,9 @@ importers:
       '@clack/prompts':
         specifier: ^0.10.0
         version: 0.10.1
-      '@paperclipai/adapter-claude-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/claude-local
-      '@paperclipai/adapter-codex-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/codex-local
-      '@paperclipai/adapter-cursor-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-gemini-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/gemini-local
-      '@paperclipai/adapter-openclaw-gateway':
-        specifier: workspace:*
-        version: link:../packages/adapters/openclaw-gateway
-      '@paperclipai/adapter-opencode-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/opencode-local
-      '@paperclipai/adapter-pi-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../packages/adapter-utils
-      '@paperclipai/db':
-        specifier: workspace:*
-        version: link:../packages/db
       '@paperclipai/server':
-        specifier: workspace:*
-        version: link:../server
-      '@paperclipai/shared':
-        specifier: workspace:*
-        version: link:../packages/shared
+        specifier: 0.3.1
+        version: 0.3.1(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(drizzle-kit@0.31.9)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0))
       commander:
         specifier: ^13.1.0
         version: 13.1.0
@@ -88,18 +64,34 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.8
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
     devDependencies:
-      '@types/node':
-        specifier: ^22.12.0
-        version: 22.19.11
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
+
+  packages/adapter-utils:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/adapter-utils:
+  packages/adapters/anvil-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
@@ -157,6 +149,22 @@ importers:
         version: 5.9.3
 
   packages/adapters/gemini-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/ollama-local:
     dependencies:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
@@ -543,6 +551,9 @@ importers:
       '@opentelemetry/sdk-node':
         specifier: ^0.57.2
         version: 0.57.2(@opentelemetry/api@1.9.1)
+      '@paperclipai/adapter-anvil-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/anvil-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -555,6 +566,9 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+      '@paperclipai/adapter-ollama-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/ollama-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -712,6 +726,9 @@ importers:
       '@mdxeditor/editor':
         specifier: ^3.52.4
         version: 3.52.4(@codemirror/language@6.12.1)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.29)
+      '@paperclipai/adapter-anvil-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/anvil-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -2753,8 +2770,41 @@ packages:
     peerDependencies:
       '@opentelemetry/api': ^1.1.0
 
+  '@paperclipai/adapter-claude-local@0.3.1':
+    resolution: {integrity: sha512-GEXmVG1t+P+PH+DQX2fZtatd/+yy5ymw/CDRsZE4z7gXKlpujVCdTCsk5T0eygwU/fMhKYJz+4rZ3OTL1L+XIw==}
+
+  '@paperclipai/adapter-codex-local@0.3.1':
+    resolution: {integrity: sha512-t8ZqnnXSrRfzYrjDS1WzBtrXFpVQ8o7WSEnj5Wj2YPgsWieriRFw3/JJ97S6IhUv9raLaxcB9JCxcLs064LZPw==}
+
+  '@paperclipai/adapter-cursor-local@0.3.1':
+    resolution: {integrity: sha512-ei6fW01XFp6rY5zD7MfTuoyDYQAGgfAWphbbK+gQegCBZineGLVMqXOJeRoNygdjUMcVpDptF87Q8P2W61t16Q==}
+
+  '@paperclipai/adapter-gemini-local@0.3.1':
+    resolution: {integrity: sha512-EG0mB836gPqHDxbiHzZJJrywL8L3DG1e2A4tyZAOGREKXJ9U0stsQXD2okpEgcVSdAjuhUFhblWEVzx6vLhyow==}
+
+  '@paperclipai/adapter-openclaw-gateway@0.3.1':
+    resolution: {integrity: sha512-K3z6JgeuRDTstmNkPlYCnM/R6SIKCaJNkOkTjuGWcDbskkAPJdlb3Dj7ChTjEHjDum5mZ+GJvlLuTICP88BMCQ==}
+
+  '@paperclipai/adapter-opencode-local@0.3.1':
+    resolution: {integrity: sha512-wKxm5xS8grWGAOGoZ66OfOt6vKvrVEmoJV0V+kyIoNNfTlswPBj8riYsAR9krMv1Bw9VE73/r09LcnzoNoE8fw==}
+
+  '@paperclipai/adapter-pi-local@0.3.1':
+    resolution: {integrity: sha512-el+VIoUdz4f2pC1T4Cm9WchuNJfyAy4q9qH5jZpMR3hbTfFuupVfQBp20osXVMQuAtr3wJYvaWCGciKJWMXCAg==}
+
+  '@paperclipai/adapter-utils@0.3.1':
+    resolution: {integrity: sha512-W66k+hJkQE8ma0asM/Sd90AC8HHy/BLG/sd0aOC+rDWw+gOasQyUkTnDoPv1zhQuTyKEEvLFV6ByOOKqEiAz/A==}
+
   '@paperclipai/adapter-utils@2026.325.0':
     resolution: {integrity: sha512-YDVSAgjkeJ0PvxXDJVN9MZDX7oYRzidLtGHmGgRGd6gSk/bF2ygAKvND4FI1YxDc/cRLQjqAFCpCYaC/9wqIEA==}
+
+  '@paperclipai/db@0.3.1':
+    resolution: {integrity: sha512-9RjzmHVZQx6Ol2qN4d/WFnvolSFBFtxFmwByB6ELWFKKW5a+Y56+QIp9ksLVcK8wGSYwafLDoztFJ/uFoHkIfw==}
+
+  '@paperclipai/server@0.3.1':
+    resolution: {integrity: sha512-nqK/fyUJmAdz1XnxEPg1ui0/MB2yPNzOHYNNtSXqpZwZ2cK2opsXIKO3D6MDX+Db/0Grn/iZ0b5tDcyVmd7wjQ==}
+
+  '@paperclipai/shared@0.3.1':
+    resolution: {integrity: sha512-ezo1DTqH2OeW4w1BvDKhtMAep7ZxO25ITD62lCw24ez7diy2sPXSHwiNDovG6OsDFqgjMXsxK63r4GndWVjhDA==}
 
   '@paralleldrive/cuid2@2.3.1':
     resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
@@ -4197,9 +4247,6 @@ packages:
 
   '@types/mysql@2.15.26':
     resolution: {integrity: sha512-DSLCOXhkvfS5WNNPbfn2KdICAmk8lLc+/PNvnPnF7gOdMZCxopXduqv0OQ13y/yA/zXTSikZZqVgybUxOEg6YQ==}
-
-  '@types/node@22.19.11':
-    resolution: {integrity: sha512-BH7YwL6rA93ReqeQS1c4bsPpcfOmJasG+Fkr6Y59q83f9M1WcBRHR2vM+P9eOisYRcN3ujQoiZY8uk5W+1WL8w==}
 
   '@types/node@24.12.0':
     resolution: {integrity: sha512-GYDxsZi3ChgmckRT9HPU0WEhKLP08ev/Yfcq2AstjrDASOYCSXeyjDsHg4v5t4jOj7cyDX3vmprafKlWIG9MXQ==}
@@ -6809,9 +6856,6 @@ packages:
   ufo@1.6.3:
     resolution: {integrity: sha512-yDJTmhydvl5lJzBmy/hyOAA0d+aqCBuwl818haVdYCRrWV84o7YyeVm4QlVHStqNrrJSTb6jKuFAVqAFsr+K3Q==}
 
-  undici-types@6.21.0:
-    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
-
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
 
@@ -7904,7 +7948,7 @@ snapshots:
       nanostores: 1.1.0
       zod: 4.3.6
 
-  '@better-auth/telemetry@1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))':
+  '@better-auth/telemetry@1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@4.3.6))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))':
     dependencies:
       '@better-auth/core': 1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0)
       '@better-auth/utils': 0.3.0
@@ -9815,7 +9859,161 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 1.30.1(@opentelemetry/api@1.9.1)
 
+  '@paperclipai/adapter-claude-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-codex-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-cursor-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-gemini-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-openclaw-gateway@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+      ws: 8.19.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@paperclipai/adapter-opencode-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-pi-local@0.3.1':
+    dependencies:
+      '@paperclipai/adapter-utils': 0.3.1
+      picocolors: 1.1.1
+
+  '@paperclipai/adapter-utils@0.3.1': {}
+
   '@paperclipai/adapter-utils@2026.325.0': {}
+
+  '@paperclipai/db@0.3.1(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(react@19.2.4)':
+    dependencies:
+      '@paperclipai/shared': 0.3.1
+      drizzle-orm: 0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
+      postgres: 3.4.8
+    transitivePeerDependencies:
+      - '@aws-sdk/client-rds-data'
+      - '@cloudflare/workers-types'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@libsql/client-wasm'
+      - '@neondatabase/serverless'
+      - '@op-engineering/op-sqlite'
+      - '@opentelemetry/api'
+      - '@planetscale/database'
+      - '@prisma/client'
+      - '@tidbcloud/serverless'
+      - '@types/better-sqlite3'
+      - '@types/pg'
+      - '@types/react'
+      - '@types/sql.js'
+      - '@vercel/postgres'
+      - '@xata.io/client'
+      - better-sqlite3
+      - bun-types
+      - expo-sqlite
+      - knex
+      - kysely
+      - mysql2
+      - pg
+      - prisma
+      - react
+      - sql.js
+      - sqlite3
+
+  '@paperclipai/server@0.3.1(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(drizzle-kit@0.31.9)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0))':
+    dependencies:
+      '@aws-sdk/client-s3': 3.994.0
+      '@paperclipai/adapter-claude-local': 0.3.1
+      '@paperclipai/adapter-codex-local': 0.3.1
+      '@paperclipai/adapter-cursor-local': 0.3.1
+      '@paperclipai/adapter-gemini-local': 0.3.1
+      '@paperclipai/adapter-openclaw-gateway': 0.3.1
+      '@paperclipai/adapter-opencode-local': 0.3.1
+      '@paperclipai/adapter-pi-local': 0.3.1
+      '@paperclipai/adapter-utils': 0.3.1
+      '@paperclipai/db': 0.3.1(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(react@19.2.4)
+      '@paperclipai/shared': 0.3.1
+      better-auth: 1.4.18(drizzle-kit@0.31.9)(drizzle-orm@0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0))
+      detect-port: 2.1.0
+      dotenv: 17.3.1
+      drizzle-orm: 0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
+      embedded-postgres: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
+      express: 5.2.1
+      multer: 2.1.1
+      open: 11.0.0
+      pino: 9.14.0
+      pino-http: 10.5.0
+      pino-pretty: 13.1.3
+      ws: 8.19.0
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@aws-sdk/client-rds-data'
+      - '@cloudflare/workers-types'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@libsql/client-wasm'
+      - '@lynx-js/react'
+      - '@neondatabase/serverless'
+      - '@op-engineering/op-sqlite'
+      - '@opentelemetry/api'
+      - '@planetscale/database'
+      - '@prisma/client'
+      - '@sveltejs/kit'
+      - '@tanstack/react-start'
+      - '@tanstack/solid-start'
+      - '@tidbcloud/serverless'
+      - '@types/better-sqlite3'
+      - '@types/pg'
+      - '@types/react'
+      - '@types/sql.js'
+      - '@vercel/postgres'
+      - '@xata.io/client'
+      - aws-crt
+      - better-sqlite3
+      - bufferutil
+      - bun-types
+      - drizzle-kit
+      - expo-sqlite
+      - knex
+      - kysely
+      - mongodb
+      - mysql2
+      - next
+      - pg
+      - pg-native
+      - postgres
+      - prisma
+      - react
+      - react-dom
+      - solid-js
+      - sql.js
+      - sqlite3
+      - supports-color
+      - svelte
+      - utf-8-validate
+      - vitest
+      - vue
+
+  '@paperclipai/shared@0.3.1':
+    dependencies:
+      zod: 3.25.76
 
   '@paralleldrive/cuid2@2.3.1':
     dependencies:
@@ -11386,10 +11584,6 @@ snapshots:
     dependencies:
       '@types/node': 25.2.3
 
-  '@types/node@22.19.11':
-    dependencies:
-      undici-types: 6.21.0
-
   '@types/node@24.12.0':
     dependencies:
       undici-types: 7.16.0
@@ -11638,7 +11832,7 @@ snapshots:
   better-auth@1.4.18(drizzle-kit@0.31.9)(drizzle-orm@0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)):
     dependencies:
       '@better-auth/core': 1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0)
-      '@better-auth/telemetry': 1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))
+      '@better-auth/telemetry': 1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@4.3.6))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))
       '@better-auth/utils': 0.3.0
       '@better-fetch/fetch': 1.1.21
       '@noble/ciphers': 2.1.1
@@ -11656,6 +11850,28 @@ snapshots:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
       vitest: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
+
+  better-auth@1.4.18(drizzle-kit@0.31.9)(drizzle-orm@0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)):
+    dependencies:
+      '@better-auth/core': 1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0)
+      '@better-auth/telemetry': 1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@4.3.6))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))
+      '@better-auth/utils': 0.3.0
+      '@better-fetch/fetch': 1.1.21
+      '@noble/ciphers': 2.1.1
+      '@noble/hashes': 2.0.1
+      better-call: 1.1.8(zod@4.3.6)
+      defu: 6.1.4
+      jose: 6.1.3
+      kysely: 0.28.11
+      nanostores: 1.1.0
+      zod: 4.3.6
+    optionalDependencies:
+      drizzle-kit: 0.31.9
+      drizzle-orm: 0.38.4(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
+      pg: 8.18.0
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+      vitest: 3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
 
   better-call@1.1.8(zod@4.3.6):
     dependencies:
@@ -14456,8 +14672,6 @@ snapshots:
   typescript@5.9.3: {}
 
   ufo@1.6.3: {}
-
-  undici-types@6.21.0: {}
 
   undici-types@7.16.0: {}
 
