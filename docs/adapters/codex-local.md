@@ -30,9 +30,9 @@ Set only `OPENROUTER_API_KEY` in the agent's `env` config:
 
 ```json
 {
+  "model": "openai/gpt-4o",
   "env": {
-    "OPENROUTER_API_KEY": "sk-or-v1-…",
-    "model": "openai/gpt-4o"
+    "OPENROUTER_API_KEY": "sk-or-v1-…"
   }
 }
 ```
