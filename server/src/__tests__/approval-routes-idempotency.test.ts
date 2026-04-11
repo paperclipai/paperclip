@@ -39,7 +39,7 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
 }));
 
-function createApp() {
+function createApp(actorOverrides: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -49,6 +49,7 @@ function createApp() {
       companyIds: ["company-1"],
       source: "session",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -84,6 +85,14 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "approved",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
     mockApprovalService.approve.mockResolvedValue({
       approval: {
         id: "approval-1",
@@ -107,6 +116,13 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "rejected",
+      payload: {},
+    });
     mockApprovalService.reject.mockResolvedValue({
       approval: {
         id: "approval-1",
@@ -124,6 +140,40 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(200);
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval decisions for companies outside the caller scope", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-2",
+      companyId: "company-2",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-2/approve")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval revision requests for companies outside the caller scope", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-3",
+      companyId: "company-2",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-3/request-revision")
+      .send({ decisionNote: "Need changes" });
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {

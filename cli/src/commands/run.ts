@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -146,11 +147,35 @@ function maybeEnableUiDevMiddleware(entrypoint: string): void {
   }
 }
 
+function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
+  const buildScript = path.resolve(projectRoot, "scripts/ensure-plugin-build-deps.mjs");
+  if (!fs.existsSync(buildScript)) return;
+
+  const result = spawnSync(process.execPath, [buildScript], {
+    cwd: projectRoot,
+    stdio: "inherit",
+    timeout: 120_000,
+  });
+
+  if (result.error) {
+    throw new Error(
+      `Failed to prepare workspace build artifacts before starting the Paperclip dev server.\n${formatError(result.error)}`,
+    );
+  }
+
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(
+      "Failed to prepare workspace build artifacts before starting the Paperclip dev server.",
+    );
+  }
+}
+
 async function importServerEntry(): Promise<StartedServer> {
   // Dev mode: try local workspace path (monorepo with tsx)
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const devEntry = path.resolve(projectRoot, "server/src/index.ts");
   if (fs.existsSync(devEntry)) {
+    ensureDevWorkspaceBuildDeps(projectRoot);
     maybeEnableUiDevMiddleware(devEntry);
     const mod = await import(pathToFileURL(devEntry).href);
     return await startServerFromModule(mod, devEntry);

@@ -320,7 +320,10 @@ describe("claude execute", () => {
       expect(captured[1]?.appendedSystemPromptFilePath).not.toBe(instructionsFile);
       expect(captured[1]?.appendedSystemPromptFileContents).toContain("# Agent instructions");
       expect(captured[1]?.appendedSystemPromptFileContents).toContain(
-        `The above agent instructions were loaded from ${instructionsFile}. Resolve any relative file references from ${path.dirname(instructionsFile)}/.`,
+        `The above agent instructions were loaded from ${instructionsFile}. ` +
+        `Resolve any relative file references from ${path.dirname(instructionsFile)}/. ` +
+        `This base directory is authoritative for sibling instruction files such as ` +
+        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`,
       );
       expect(metaEvents).toHaveLength(2);
       expect(metaEvents[0]?.commandNotes).toHaveLength(0);

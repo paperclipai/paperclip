@@ -59,6 +59,8 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
+  getRun: vi.fn(),
+  cancelRun: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -396,5 +398,27 @@ describe("agent permission routes", () => {
         status: "todo",
       },
     ]);
+  });
+
+  it("rejects heartbeat cancellation outside the caller company scope", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "33333333-3333-4333-8333-333333333333",
+      agentId,
+      status: "running",
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).post("/api/heartbeat-runs/run-1/cancel").send({});
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 });
