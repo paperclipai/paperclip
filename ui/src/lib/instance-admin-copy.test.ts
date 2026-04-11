@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { formatHeartbeatSummary, getInstanceAdminCopy } from "./instance-admin-copy";
+import {
+  formatHeartbeatSummary,
+  formatInstanceAdminJobTriggerLabel,
+  formatInstanceAdminStatusLabel,
+  getInstanceAdminCopy,
+} from "./instance-admin-copy";
 
 describe("instance-admin-copy", () => {
   it("returns Chinese heartbeats and backup labels", () => {
@@ -21,5 +26,11 @@ describe("instance-admin-copy", () => {
     expect(formatHeartbeatSummary({ active: 2, disabled: 3, companies: 1, locale: "zh-CN" })).toBe(
       "2 个启用 · 3 个停用 · 1 个公司",
     );
+  });
+
+  it("localizes job triggers and status labels", () => {
+    expect(formatInstanceAdminJobTriggerLabel("manual", "zh-CN")).toBe("手动");
+    expect(formatInstanceAdminJobTriggerLabel("schedule", "zh-CN")).toBe("计划");
+    expect(formatInstanceAdminStatusLabel("failed", "zh-CN")).toBe("失败");
   });
 });

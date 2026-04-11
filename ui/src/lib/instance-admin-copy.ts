@@ -567,6 +567,20 @@ export function formatInstanceAdminStatusLabel(status: string, locale: InstanceA
   }
 }
 
+export function formatInstanceAdminJobTriggerLabel(trigger: string, locale: InstanceAdminCopyLocale) {
+  if (locale !== "zh-CN") return trigger;
+  switch (trigger) {
+    case "manual":
+      return "手动";
+    case "schedule":
+      return "计划";
+    case "retry":
+      return "重试";
+    default:
+      return trigger;
+  }
+}
+
 export function formatInstanceAdminUptime(uptimeMs: number | null, locale: InstanceAdminCopyLocale) {
   if (uptimeMs == null) return "—";
   const totalSeconds = Math.floor(uptimeMs / 1000);

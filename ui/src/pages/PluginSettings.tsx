@@ -10,6 +10,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   formatInstanceAdminDuration,
+  formatInstanceAdminJobTriggerLabel,
   formatInstanceAdminRelativeTime,
   formatInstanceAdminStatusLabel,
   formatInstanceAdminUptime,
@@ -351,12 +352,12 @@ export function PluginSettings() {
                                 className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
                               >
                                 <div className="flex min-w-0 items-center gap-2">
-                                  <JobStatusDot status={run.status} />
+                                  <JobStatusDot status={run.status} locale={locale} />
                                   <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
                                   <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                                    {run.trigger}
+                                    {formatInstanceAdminJobTriggerLabel(run.trigger, locale)}
                                   </Badge>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
@@ -386,7 +387,7 @@ export function PluginSettings() {
                                 className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
                               >
                                 <div className="flex min-w-0 items-center gap-2">
-                                  <DeliveryStatusDot status={delivery.status} />
+                                  <DeliveryStatusDot status={delivery.status} locale={locale} />
                                   <span className="truncate font-mono text-xs" title={delivery.webhookKey}>
                                     {delivery.webhookKey}
                                   </span>
@@ -783,7 +784,7 @@ function formatTimestamp(epochMs: number): string {
 /**
  * Status indicator dot for job run statuses.
  */
-function JobStatusDot({ status }: { status: string }) {
+function JobStatusDot({ status, locale }: { status: string; locale: string | null | undefined }) {
   const colorClass =
     status === "success" || status === "succeeded"
       ? "bg-green-500"
@@ -797,7 +798,7 @@ function JobStatusDot({ status }: { status: string }) {
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
+      title={formatInstanceAdminStatusLabel(status, locale)}
     />
   );
 }
@@ -805,7 +806,7 @@ function JobStatusDot({ status }: { status: string }) {
 /**
  * Status indicator dot for webhook delivery statuses.
  */
-function DeliveryStatusDot({ status }: { status: string }) {
+function DeliveryStatusDot({ status, locale }: { status: string; locale: string | null | undefined }) {
   const colorClass =
     status === "processed" || status === "success"
       ? "bg-green-500"
@@ -817,7 +818,7 @@ function DeliveryStatusDot({ status }: { status: string }) {
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
+      title={formatInstanceAdminStatusLabel(status, locale)}
     />
   );
 }
