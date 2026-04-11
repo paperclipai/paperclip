@@ -216,17 +216,17 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   }
 
   while (true) {
-      const events = await api.get<HeartbeatRunEvent[]>(
-        `/api/heartbeat-runs/${activeRunId}/events?afterSeq=${lastEventSeq}&limit=100`,
-      );
+    const events = await api.get<HeartbeatRunEvent[]>(
+      `/heartbeat-runs/${activeRunId}/events?afterSeq=${lastEventSeq}&limit=100`,
+    );
     for (const event of Array.isArray(events) ? (events as HeartbeatRunEventRecord[]) : []) {
       handleEvent(event);
     }
 
-      const runList = (await api.get<(HeartbeatRun | null)[]>(
-        `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}`,
-      )) || [];
-      const currentRun = runList.find((r) => r && r.id === activeRunId) ?? null;
+    const runList = (await api.get<(HeartbeatRun | null)[]>(
+      `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}`,
+    )) || [];
+    const currentRun = runList.find((r) => r && r.id === activeRunId) ?? null;
 
     if (!currentRun) {
       console.error(pc.red("Heartbeat run disappeared"));
@@ -254,7 +254,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
     }
 
     const logResult = await api.get<{ content: string; nextOffset?: number }>(
-      `/api/heartbeat-runs/${activeRunId}/log?offset=${logOffset}&limitBytes=16384`,
+      `/heartbeat-runs/${activeRunId}/log?offset=${logOffset}&limitBytes=16384`,
       { ignoreNotFound: true },
     );
     if (logResult && logResult.content) {
