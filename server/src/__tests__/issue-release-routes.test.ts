@@ -27,6 +27,15 @@ vi.mock("../services/index.js", () => ({
   feedbackService: () => ({}),
   goalService: () => ({}),
   heartbeatService: () => ({
+    getRun: vi.fn(async (runId: string) =>
+      runId === "run-1"
+        ? {
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "agent-1",
+          status: "running",
+        }
+        : null),
     reportRunActivity: vi.fn(async () => undefined),
   }),
   instanceSettingsService: () => ({}),

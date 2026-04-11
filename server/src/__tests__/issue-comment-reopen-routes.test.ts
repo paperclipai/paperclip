@@ -203,7 +203,25 @@ describe("issue comment reopen routes", () => {
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
-    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockImplementation(async (runId: string) => {
+      if (runId === "run-1") {
+        return {
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          status: "running",
+        };
+      }
+      if (runId === "run-2") {
+        return {
+          id: "run-2",
+          companyId: "company-1",
+          agentId: "33333333-3333-4333-8333-333333333333",
+          status: "running",
+        };
+      }
+      return null;
+    });
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);

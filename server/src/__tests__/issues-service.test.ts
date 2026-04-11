@@ -1507,6 +1507,103 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
     );
   });
 
+  it("preserves live checkout-only ownership when update has no owning run authority", async () => {
+    const companyId = randomUUID();
+    const qaAgentId = randomUUID();
+    const staffAgentId = randomUUID();
+    const qaRunId = randomUUID();
+    const staffRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QA Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: staffAgentId,
+        companyId,
+        name: "Staff Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: qaRunId,
+        companyId,
+        agentId: qaAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-11T21:00:00.000Z"),
+      },
+      {
+        id: staffRunId,
+        companyId,
+        agentId: staffAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-11T21:01:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout-only live owner",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      checkoutRunId: qaRunId,
+      executionRunId: null,
+      executionAgentNameKey: "qa-engineer",
+      executionLockedAt: new Date("2026-04-11T21:00:00.000Z"),
+    });
+
+    const rerouted = await svc.update(issueId, {
+      status: "in_review",
+      assigneeAgentId: staffAgentId,
+    });
+
+    expect(rerouted).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_review",
+        assigneeAgentId: staffAgentId,
+        checkoutRunId: qaRunId,
+        executionRunId: null,
+        executionAgentNameKey: "qa-engineer",
+      }),
+    );
+
+    await expect(svc.checkout(issueId, staffAgentId, ["in_review"], staffRunId)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
   it("preserves execution ownership when a local board run id belongs to a different live agent", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();

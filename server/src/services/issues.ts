@@ -909,17 +909,32 @@ export function issueService(db: Db) {
     existing: typeof issues.$inferSelect,
     actor?: IssueUpdateActor,
   ) {
-    if (!existing.executionRunId) return true;
+    const actorRunId = actor?.actorRunId ?? null;
+    const actorAgentId = actor?.actorAgentId ?? null;
+    const checkedRuns = new Map<string, Awaited<ReturnType<typeof getHeartbeatRun>>>();
 
-    if (actor?.actorRunId && existing.executionRunId === actor.actorRunId) {
-      const run = await getHeartbeatRun(reader, actor.actorRunId);
+    const getCheckedRun = async (runId: string) => {
+      if (!checkedRuns.has(runId)) {
+        checkedRuns.set(runId, await getHeartbeatRun(reader, runId));
+      }
+      return checkedRuns.get(runId) ?? null;
+    };
+
+    const canClearRun = async (runId: string | null) => {
+      if (!runId) return true;
+      const run = await getCheckedRun(runId);
       if (!run || TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+      if (actorRunId !== runId) return false;
       if (run.agentId !== existing.assigneeAgentId) return false;
-      if (actor.actorAgentId && run.agentId !== actor.actorAgentId) return false;
+      if (actorAgentId && run.agentId !== actorAgentId) return false;
       return true;
-    }
+    };
 
-    return isTerminalOrMissingHeartbeatRun(reader, existing.executionRunId);
+    const [checkoutClearable, executionClearable] = await Promise.all([
+      canClearRun(existing.checkoutRunId),
+      canClearRun(existing.executionRunId),
+    ]);
+    return checkoutClearable && executionClearable;
   }
 
   async function getReleaseLockClearance(

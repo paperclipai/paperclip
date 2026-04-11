@@ -398,9 +398,20 @@ export function issueRoutes(
     return null;
   }
 
-  function trustedRunIdForUpdateClearance(req: Request, runId: string | null) {
-    if (req.actor.type === "agent") return runId;
-    if (req.actor.type === "board" && req.actor.source === "local_implicit") return runId;
+  async function trustedRunIdForUpdateClearance(req: Request, runId: string | null, companyId?: string | null) {
+    if (!runId) return null;
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) return null;
+      const run = await heartbeat.getRun(runId);
+      if (!run || run.agentId !== req.actor.agentId) return null;
+      if (companyId && run.companyId !== companyId) return null;
+      return runId;
+    }
+    if (req.actor.type === "board" && req.actor.source === "local_implicit") {
+      if (!companyId) return runId;
+      const run = await heartbeat.getRun(runId);
+      return run?.companyId === companyId ? runId : null;
+    }
     return null;
   }
 
@@ -896,6 +907,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const trustedActorRunId = await trustedRunIdForUpdateClearance(req, actor.runId ?? null, issue.companyId);
     const result = await documentsSvc.upsertIssueDocument({
       issueId: issue.id,
       key: keyParsed.data,
@@ -906,7 +918,7 @@ export function issueRoutes(
       baseRevisionId: req.body.baseRevisionId ?? null,
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-      createdByRunId: actor.runId ?? null,
+      createdByRunId: trustedActorRunId,
     });
     const doc = result.document;
 
@@ -915,7 +927,7 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: trustedActorRunId,
       action: result.created ? "issue.document_created" : "issue.document_updated",
       entityType: "issue",
       entityId: issue.id,
@@ -1382,7 +1394,7 @@ export function issueRoutes(
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
-    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
+    const trustedActorRunId = await trustedRunIdForUpdateClearance(req, actor.runId ?? null, existing.companyId);
     const isClosed = isClosedIssueStatus(existing.status);
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
@@ -2045,7 +2057,7 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
-    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
+    const trustedActorRunId = await trustedRunIdForUpdateClearance(req, actor.runId ?? null, issue.companyId);
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2106,7 +2118,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
+    const trustedActorRunId = await trustedRunIdForUpdateClearance(req, actor.runId ?? null, released.companyId);
     await logActivity(db, {
       companyId: released.companyId,
       actorType: actor.actorType,
@@ -2334,7 +2346,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
+    const trustedActorRunId = await trustedRunIdForUpdateClearance(req, actor.runId ?? null, issue.companyId);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);

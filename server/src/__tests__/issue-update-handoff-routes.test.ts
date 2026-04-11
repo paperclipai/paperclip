@@ -9,8 +9,10 @@ import {
   agents,
   companies,
   createDb,
+  documentRevisions,
   heartbeatRuns,
   instanceUserRoles,
+  issueExecutionDecisions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -63,6 +65,9 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       await tx.execute(sql`
         TRUNCATE TABLE
           activity_log,
+          document_revisions,
+          issue_documents,
+          documents,
           issue_comments,
           issue_inbox_archives,
           issues,
@@ -507,14 +512,6 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(expect.objectContaining({
-      id: issueId,
-      status: "in_review",
-      assigneeAgentId: staffAgentId,
-      checkoutRunId: builderRunId,
-      executionRunId: builderRunId,
-      executionAgentNameKey: "builder",
-    }));
 
     await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
       status: "in_review",
@@ -586,14 +583,40 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
     expect(mockReportRunActivity).not.toHaveBeenCalled();
 
+    const documentRes = await request(createRouteApp({
+      deploymentMode: "authenticated",
+      resolveSession: async () => ({
+        session: { id: "session-1", userId },
+        user: { id: userId },
+      }),
+    }))
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .set("Origin", "http://localhost:3100")
+      .set("X-Paperclip-Run-Id", qaRunId)
+      .send({
+        title: "Plan",
+        format: "markdown",
+        body: "Audit-only board document",
+        baseRevisionId: null,
+      });
+
+    expect(documentRes.status).toBe(201);
+    expect(mockReportRunActivity).not.toHaveBeenCalled();
+
+    const revisionRows = await db.select().from(documentRevisions);
+    expect(revisionRows).toHaveLength(1);
+    expect(revisionRows[0]?.createdByRunId).toBeNull();
+
     const activityRows = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     const updateActivity = activityRows.find((row) => row.action === "issue.updated");
     const commentActivity = activityRows.find((row) => row.action === "issue.comment_added");
+    const documentActivity = activityRows.find((row) => row.action === "issue.document_created");
     expect(updateActivity?.runId).toBeNull();
     expect(commentActivity?.runId).toBeNull();
+    expect(documentActivity?.runId).toBeNull();
   });
 
   it("keeps authenticated board run headers audit-only when reopening from a comment", async () => {
@@ -714,6 +737,140 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       executionAgentNameKey: "builder",
       executionLockedAt: lockedAt,
     }));
+  });
+
+  it("keeps forged agent API-key run headers out of execution decision provenance", async () => {
+    const companyId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const builderAgentId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const participantId = randomUUID();
+    const foreignRunId = randomUUID();
+    const agentToken = "reviewer-agent-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: builderAgentId,
+        companyId,
+        name: "Builder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(agentApiKeys).values({
+      agentId: reviewerAgentId,
+      companyId,
+      name: "reviewer key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId,
+      agentId: builderAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-11T20:50:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review decision provenance",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            id: stageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [
+              {
+                id: participantId,
+                type: "agent",
+                agentId: reviewerAgentId,
+                userId: null,
+              },
+            ],
+          },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: {
+          type: "agent",
+          agentId: reviewerAgentId,
+          userId: null,
+        },
+        returnAssignee: {
+          type: "agent",
+          agentId: builderAgentId,
+          userId: null,
+        },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const res = await request(createRouteApp({ deploymentMode: "authenticated" }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", foreignRunId)
+      .send({
+        status: "done",
+        comment: "Approved.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockReportRunActivity).not.toHaveBeenCalled();
+
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]?.createdByRunId).toBeNull();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activityRows.find((row) => row.action === "issue.updated")?.runId).toBeNull();
+    expect(activityRows.find((row) => row.action === "issue.comment_added")?.runId).toBeNull();
   });
 
   it("rejects agent checkout adoption when the run header belongs to a foreign live execution owner", async () => {
