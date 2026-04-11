@@ -94,8 +94,8 @@ const BUNDLED_PLUGINS: BundledPlugin[] = [
     isLocalPath: true,
     pluginKey: "paperclip-plugin-research",
   },
-  // Lucitra Capital — equity market data (Tiingo IEX quotes + daily OHLCV).
-  // Owned data infrastructure, not a SaaS wrapper. Sibling in lucitra-dev.
+  // Lucitra Capital — equity market data (Alpaca quotes + daily bars, Yahoo
+  // fallback, Frankfurter/ECB FX). Owned data infrastructure, not a SaaS wrapper.
   {
     packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-market-data"),
     isLocalPath: true,
@@ -159,11 +159,11 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
 async function autoSeedResearchSecrets() {
   const fredKey = process.env.FRED_API_KEY?.trim();
   const secEdgarAgent = process.env.SEC_EDGAR_USER_AGENT?.trim();
-  const tiingoEnv = process.env.TIINGO_API_KEY?.trim();
-  const finnhubEnv = process.env.FINNHUB_API_KEY?.trim();
+  const alpacaKeyId = process.env.ALPACA_API_KEY_ID?.trim();
+  const alpacaSecret = process.env.ALPACA_SECRET_KEY?.trim();
 
   // Only proceed if at least one key is set
-  if (!fredKey && !secEdgarAgent && !tiingoEnv && !finnhubEnv) return;
+  if (!fredKey && !secEdgarAgent && !alpacaKeyId) return;
 
   const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -228,10 +228,8 @@ async function autoSeedResearchSecrets() {
     };
 
     // Create secrets for this company
-    const tiingoKey = process.env.TIINGO_API_KEY?.trim();
-    const finnhubKey = process.env.FINNHUB_API_KEY?.trim();
-    if (finnhubKey) await createSecret("market-data-finnhub-api-key", finnhubKey);
-    if (tiingoKey) await createSecret("market-data-tiingo-api-key", tiingoKey);
+    if (alpacaKeyId) await createSecret("market-data-alpaca-key-id", alpacaKeyId);
+    if (alpacaSecret) await createSecret("market-data-alpaca-secret", alpacaSecret);
     if (fredKey) await createSecret("research-fred-api-key", fredKey);
 
     logger.info({ companyId: company.id }, "auto-seed: secrets seeded for company");
@@ -239,9 +237,6 @@ async function autoSeedResearchSecrets() {
 
   // Build research plugin config using the first company's secret IDs
   const configJson: Record<string, unknown> = {};
-  if (secretIdsByName["market-data-tiingo-api-key"]) {
-    configJson.tiingoApiKeyRef = secretIdsByName["market-data-tiingo-api-key"];
-  }
   if (secretIdsByName["research-fred-api-key"]) {
     configJson.fredApiKeyRef = secretIdsByName["research-fred-api-key"];
   }
@@ -258,13 +253,13 @@ async function autoSeedResearchSecrets() {
     logger.info({ keys: Object.keys(configJson) }, "auto-seed research: config saved");
   }
 
-  // Save market-data plugin config (Finnhub primary + Tiingo for FX/history)
+  // Save market-data plugin config (Alpaca key+secret — Yahoo + Frankfurter need no keys)
   const marketDataConfig: Record<string, unknown> = {};
-  if (secretIdsByName["market-data-finnhub-api-key"]) {
-    marketDataConfig.finnhubApiKeyRef = secretIdsByName["market-data-finnhub-api-key"];
+  if (secretIdsByName["market-data-alpaca-key-id"]) {
+    marketDataConfig.alpacaKeyIdRef = secretIdsByName["market-data-alpaca-key-id"];
   }
-  if (secretIdsByName["market-data-tiingo-api-key"]) {
-    marketDataConfig.tiingoApiKeyRef = secretIdsByName["market-data-tiingo-api-key"];
+  if (secretIdsByName["market-data-alpaca-secret"]) {
+    marketDataConfig.alpacaSecretRef = secretIdsByName["market-data-alpaca-secret"];
   }
   if (Object.keys(marketDataConfig).length > 0) {
     const marketData = plugins.find((p) => p.pluginKey === "paperclip-plugin-market-data");
