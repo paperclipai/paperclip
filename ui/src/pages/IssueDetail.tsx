@@ -38,6 +38,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { describeIssueUpdateError } from "../lib/issue-update-errors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread } from "../components/IssueChatThread";
@@ -119,6 +120,32 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const QA_DIMENSION_TITLES = [
+  { key: "codeQuality", label: "Code Quality" },
+  { key: "errorHandling", label: "Error Handling" },
+  { key: "testCoverage", label: "Test Coverage" },
+  { key: "commentQuality", label: "Comment Quality" },
+  { key: "docsImpact", label: "Docs Impact" },
+] as const;
+const QA_GATE_REASON_LABELS: Record<string, string> = {
+  qa_gate_requires_in_review: "Issue must be in QA before shipping.",
+  qa_gate_missing_qa_pass: "Latest QA comment is missing [QA PASS].",
+  qa_gate_missing_release_confirmation: "Latest QA comment is missing [RELEASE CONFIRMED].",
+};
+
+function qaStateBadgeClass(value: string) {
+  if (value === "pass") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  if (value === "warn") return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+  if (value === "fail") return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400";
+  if (value === "na") return "border-slate-500/40 bg-slate-500/10 text-slate-500";
+  return "border-muted bg-muted/40 text-muted-foreground";
+}
+
+function formatQaState(value: string) {
+  if (value === "na") return "N/A";
+  if (value === "unknown") return "Unknown";
+  return value.toUpperCase();
+}
 
 function humanizeValue(value: unknown): string {
   if (typeof value !== "string") return String(value ?? "none");
@@ -689,6 +716,14 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
     },
+    onError: (err) => {
+      const parsed = describeIssueUpdateError(err);
+      pushToast({
+        title: parsed.title,
+        body: parsed.body,
+        tone: "error",
+      });
+    },
   });
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
@@ -1240,6 +1275,16 @@ export function IssueDetail() {
       </Button>
     </>
   );
+  const qaGate = issue.qaGate ?? null;
+  const qaDimensions = qaGate
+    ? QA_DIMENSION_TITLES.map(({ key, label }) => ({
+      key,
+      label,
+      value: qaGate.review[key],
+    }))
+    : [];
+  const qaGateMissing = qaGate?.missingRequirements ?? [];
+  const canAttemptQaShip = issue.status === "in_review";
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -1435,6 +1480,55 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      {qaGate && qaGate.isDeliveryScoped && (
+        <div className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold">Smart Review</h3>
+            <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", qaStateBadgeClass(qaGate.review.overall))}>
+              {formatQaState(qaGate.review.overall)}
+            </span>
+            {qaGate.review.stale && (
+              <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                Stale
+              </span>
+            )}
+            <span className="ml-auto text-[11px] text-muted-foreground">
+              {qaGate.lastQaSummaryAt ? `Last summary ${relativeTime(qaGate.lastQaSummaryAt)}` : "No QA summary yet"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {qaDimensions.map((dimension) => (
+              <div key={dimension.key} className="flex items-center justify-between rounded-md border border-border px-2 py-1.5 text-xs">
+                <span className="text-muted-foreground">{dimension.label}</span>
+                <span className={cn("rounded-full border px-1.5 py-0.5 text-[10px] font-medium", qaStateBadgeClass(dimension.value))}>
+                  {formatQaState(dimension.value)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {qaGateMissing.length > 0 && (
+            <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-xs text-amber-700 dark:text-amber-300">
+              {qaGateMissing.map((reasonCode) => (
+                <p key={reasonCode}>{QA_GATE_REASON_LABELS[reasonCode] ?? reasonCode}</p>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end">
+            <Button
+              size="sm"
+              variant={qaGate.canShip ? "default" : "outline"}
+              disabled={!canAttemptQaShip || updateIssue.isPending}
+              onClick={() => updateIssue.mutate({ status: "done" })}
+            >
+              QA Ship
+            </Button>
+          </div>
+        </div>
+      )}
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

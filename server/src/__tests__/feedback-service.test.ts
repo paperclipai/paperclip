@@ -18,6 +18,7 @@ import {
   ensurePostgresDatabase,
   feedbackExports,
   feedbackVotes,
+  getEmbeddedPostgresTestSupport,
   heartbeatRuns,
   instanceSettings,
   issueComments,
@@ -92,7 +93,16 @@ async function startTempDatabase() {
   return { connectionString, dataDir, instance };
 }
 
-describe("feedbackService.saveIssueVote", () => {
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres feedback service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;
   let instance: EmbeddedPostgresInstance | null = null;

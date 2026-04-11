@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
+import { executiveSummaryApi } from "../api/executiveSummary";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -23,8 +24,15 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, CompanyKpiTrend, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+
+type KpiDraftRow = {
+  label: string;
+  value: string;
+  trend: CompanyKpiTrend;
+  note: string;
+};
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -35,10 +43,12 @@ export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
+  const [kpiDraftRows, setKpiDraftRows] = useState<KpiDraftRow[]>([]);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -78,6 +88,45 @@ export function Dashboard() {
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: executiveSummary, error: executiveSummaryError } = useQuery({
+    queryKey: queryKeys.executiveSummary.detail(selectedCompanyId!),
+    queryFn: () => executiveSummaryApi.getSummary(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    if (!executiveSummary) {
+      setKpiDraftRows([]);
+      return;
+    }
+    setKpiDraftRows(
+      executiveSummary.manualKpis.map((kpi) => ({
+        label: kpi.label,
+        value: kpi.value,
+        trend: kpi.trend,
+        note: kpi.note ?? "",
+      })),
+    );
+  }, [executiveSummary]);
+
+  const saveKpisMutation = useMutation({
+    mutationFn: async () =>
+      executiveSummaryApi.replaceKpis(
+        selectedCompanyId!,
+        kpiDraftRows
+          .map((row) => ({
+            label: row.label.trim(),
+            value: row.value.trim(),
+            trend: row.trend,
+            note: row.note.trim() || null,
+          }))
+          .filter((row) => row.label.length > 0 && row.value.length > 0),
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.executiveSummary.detail(selectedCompanyId!) });
+    },
   });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
@@ -185,6 +234,20 @@ export function Dashboard() {
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
 
+  function updateKpiRow(index: number, patch: Partial<KpiDraftRow>) {
+    setKpiDraftRows((current) =>
+      current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
+    );
+  }
+
+  function removeKpiRow(index: number) {
+    setKpiDraftRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function addKpiRow() {
+    setKpiDraftRows((current) => [...current, { label: "", value: "", trend: "none", note: "" }]);
+  }
+
   return (
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -281,6 +344,169 @@ export function Dashboard() {
                 </span>
               }
             />
+          </div>
+
+          <div className="rounded-lg border border-border bg-card px-4 py-4 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Executive Summary
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Manual KPIs plus deterministic top changes used for daily executive summary emails.
+                </p>
+              </div>
+              {executiveSummary ? (
+                <div className="text-right text-xs text-muted-foreground">
+                  <div>
+                    Last send: {executiveSummary.dispatch.lastSentAt ? new Date(executiveSummary.dispatch.lastSentAt).toLocaleString() : "Never"}
+                  </div>
+                  <div>
+                    Status: {executiveSummary.dispatch.lastStatus ?? "n/a"}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {executiveSummaryError ? (
+              <p className="text-xs text-destructive">
+                {executiveSummaryError instanceof Error ? executiveSummaryError.message : "Failed to load executive summary"}
+              </p>
+            ) : null}
+
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-md border border-border px-3 py-2">
+                <p className="text-xs text-muted-foreground">Month spend</p>
+                <p className="mt-1 text-sm font-medium">
+                  {formatCents(executiveSummary?.computedKpis.monthSpendCents ?? 0)}
+                </p>
+              </div>
+              <div className="rounded-md border border-border px-3 py-2">
+                <p className="text-xs text-muted-foreground">Budget utilization</p>
+                <p className="mt-1 text-sm font-medium">
+                  {executiveSummary?.computedKpis.monthUtilizationPercent ?? 0}%
+                </p>
+              </div>
+              <div className="rounded-md border border-border px-3 py-2">
+                <p className="text-xs text-muted-foreground">Tasks (open / blocked)</p>
+                <p className="mt-1 text-sm font-medium">
+                  {(executiveSummary?.computedKpis.tasksOpen ?? 0)} / {(executiveSummary?.computedKpis.tasksBlocked ?? 0)}
+                </p>
+              </div>
+              <div className="rounded-md border border-border px-3 py-2">
+                <p className="text-xs text-muted-foreground">Pending approvals</p>
+                <p className="mt-1 text-sm font-medium">
+                  {executiveSummary?.computedKpis.pendingApprovals ?? 0}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Published KPIs</p>
+                <button
+                  type="button"
+                  onClick={addKpiRow}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+                >
+                  Add KPI
+                </button>
+              </div>
+              {kpiDraftRows.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No KPIs yet. Add KPI rows and publish them.</p>
+              ) : (
+                <div className="space-y-2">
+                  {kpiDraftRows.map((row, index) => (
+                    <div key={`${index}:${row.label}`} className="grid gap-2 rounded-md border border-border px-3 py-3 md:grid-cols-[1.1fr_1fr_120px_1.2fr_auto]">
+                      <input
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        placeholder="Label"
+                        value={row.label}
+                        onChange={(event) => updateKpiRow(index, { label: event.target.value })}
+                      />
+                      <input
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        placeholder="Value"
+                        value={row.value}
+                        onChange={(event) => updateKpiRow(index, { value: event.target.value })}
+                      />
+                      <select
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        value={row.trend}
+                        onChange={(event) => updateKpiRow(index, { trend: event.target.value as CompanyKpiTrend })}
+                      >
+                        <option value="none">none</option>
+                        <option value="up">up</option>
+                        <option value="down">down</option>
+                        <option value="flat">flat</option>
+                      </select>
+                      <input
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        placeholder="Optional note"
+                        value={row.note}
+                        onChange={(event) => updateKpiRow(index, { note: event.target.value })}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeKpiRow(index)}
+                        className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => saveKpisMutation.mutate()}
+                  disabled={saveKpisMutation.isPending || !selectedCompanyId}
+                  className="rounded-md bg-foreground px-3 py-1.5 text-xs text-background disabled:opacity-60"
+                >
+                  {saveKpisMutation.isPending ? "Publishing..." : "Publish KPIs"}
+                </button>
+                {saveKpisMutation.isError ? (
+                  <span className="text-xs text-destructive">
+                    {saveKpisMutation.error instanceof Error ? saveKpisMutation.error.message : "Failed to publish KPIs"}
+                  </span>
+                ) : null}
+                {saveKpisMutation.isSuccess ? (
+                  <span className="text-xs text-muted-foreground">Published</span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="grid gap-2 lg:grid-cols-2">
+              <div className="rounded-md border border-border px-3 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Top issue transitions (24h)</p>
+                {(executiveSummary?.topChanges.issueTransitions.length ?? 0) === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">No notable issue transitions.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {executiveSummary?.topChanges.issueTransitions.map((entry) => (
+                      <li key={`${entry.issueId}:${entry.updatedAt}`}>
+                        {(entry.issueIdentifier ?? entry.issueId)} · {entry.fromStatus ?? "unknown"} → {entry.toStatus}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="rounded-md border border-border px-3 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Failed runs (24h)</p>
+                {(executiveSummary?.topChanges.failedRuns.length ?? 0) === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">No failed or timed-out runs.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {executiveSummary?.topChanges.failedRuns.map((entry) => (
+                      <li key={entry.runId}>
+                        {(entry.agentName ?? entry.agentId)} · {entry.status}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

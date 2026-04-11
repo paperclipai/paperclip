@@ -37,6 +37,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      dailyExecutiveSummarySendHour: 8,
+      dailyExecutiveSummarySendMinute: 0,
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -48,6 +50,8 @@ describe("instance settings routes", () => {
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
+        dailyExecutiveSummarySendHour: 9,
+        dailyExecutiveSummarySendMinute: 30,
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -118,6 +122,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
+      dailyExecutiveSummarySendHour: 8,
+      dailyExecutiveSummarySendMinute: 0,
     });
 
     const patchRes = await request(app)
@@ -126,6 +132,8 @@ describe("instance settings routes", () => {
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
+        dailyExecutiveSummarySendHour: 9,
+        dailyExecutiveSummarySendMinute: 30,
       });
 
     expect(patchRes.status).toBe(200);
@@ -133,6 +141,8 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: true,
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
+      dailyExecutiveSummarySendHour: 9,
+      dailyExecutiveSummarySendMinute: 30,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });

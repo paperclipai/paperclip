@@ -170,6 +170,7 @@ function RoutineListRow({
   onRunNow,
   onToggleEnabled,
   onToggleArchived,
+  onDelete,
 }: {
   routine: RoutineListItem;
   projectById: Map<string, { name: string; color?: string | null }>;
@@ -180,6 +181,7 @@ function RoutineListRow({
   onRunNow: (routine: RoutineListItem) => void;
   onToggleEnabled: (routine: RoutineListItem, enabled: boolean) => void;
   onToggleArchived: (routine: RoutineListItem) => void;
+  onDelete: (routine: RoutineListItem) => void;
 }) {
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
@@ -262,6 +264,14 @@ function RoutineListRow({
               disabled={isStatusPending}
             >
               {routine.status === "archived" ? "Restore" : "Archive"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => onDelete(routine)}
+              disabled={isStatusPending}
+            >
+              Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -447,6 +457,24 @@ export function Routines() {
     },
   });
 
+  const deleteRoutine = useMutation({
+    mutationFn: (id: string) => routinesApi.delete(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
+      pushToast({
+        title: "Routine deleted",
+        tone: "success",
+      });
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Failed to delete routine",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not delete the routine.",
+        tone: "error",
+      });
+    },
+  });
+
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -542,6 +570,11 @@ export function Routines() {
       id: routine.id,
       status: routine.status === "archived" ? "active" : "archived",
     });
+  }
+
+  function handleDeleteRoutine(routine: RoutineListItem) {
+    if (!window.confirm(`Delete routine "${routine.title}"? This cannot be undone.`)) return;
+    deleteRoutine.mutate(routine.id);
   }
 
   if (!selectedCompanyId) {
@@ -948,6 +981,7 @@ export function Routines() {
                         onRunNow={handleRunNow}
                         onToggleEnabled={handleToggleEnabled}
                         onToggleArchived={handleToggleArchived}
+                        onDelete={handleDeleteRoutine}
                       />
                     ))}
                   </CollapsibleContent>

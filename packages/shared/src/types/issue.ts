@@ -180,6 +180,33 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export type IssueQaReviewDimension = "pass" | "warn" | "fail" | "na" | "unknown";
+export type IssueQaReviewOverall = "pass" | "warn" | "fail" | "unknown";
+export type IssueQaGateReasonCode =
+  | "invalid_status_transition"
+  | "qa_gate_requires_in_review"
+  | "qa_gate_missing_qa_pass"
+  | "qa_gate_missing_release_confirmation";
+
+export interface IssueQaReviewState {
+  codeQuality: IssueQaReviewDimension;
+  errorHandling: IssueQaReviewDimension;
+  testCoverage: IssueQaReviewDimension;
+  commentQuality: IssueQaReviewDimension;
+  docsImpact: IssueQaReviewDimension;
+  overall: IssueQaReviewOverall;
+  stale: boolean;
+  latestDecisionOutcome: IssueExecutionDecisionOutcome | null;
+}
+
+export interface IssueQaGate {
+  isDeliveryScoped: boolean;
+  canShip: boolean;
+  missingRequirements: IssueQaGateReasonCode[];
+  lastQaSummaryAt: Date | null;
+  review: IssueQaReviewState;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -233,6 +260,7 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  qaGate?: IssueQaGate | null;
   createdAt: Date;
   updatedAt: Date;
 }

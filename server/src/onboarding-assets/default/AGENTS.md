@@ -13,3 +13,10 @@ Keep the work moving until it is done. Do not let work sit without visible issue
 - `In Review` means the issue is waiting for QA.
 - `Done` means QA passed and the release is confirmed.
 - A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state. Do not cancel it just because a continuation issue exists.
+
+## Role Charter Baseline
+
+This function charter is based on `./ROLE_TEMPLATE.md`.
+When redefining this function:
+- Keep the baseline section structure intact.
+- Only customize for this company's operational needs (domain, tools, constraints, terminology).

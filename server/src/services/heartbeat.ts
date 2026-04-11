@@ -166,7 +166,30 @@ function normalizePriorityRank(priority: string | null | undefined) {
   }
 }
 
-function classifyIssueTruthFromCommentBody(body: string | null | undefined): "completion" | "blocker" | "handoff" | null {
+function isOperationsAutomationCommentBody(body: string | null | undefined): boolean {
+  if (!body) return false;
+  return (
+    body.includes(OPERATIONS_IDLE_WAKE_MARKER)
+    || body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
+    || body.includes(OPERATIONS_REQUEUE_MARKER)
+    || body.includes(OPERATIONS_ASSIGNMENT_MARKER)
+  );
+}
+
+export function resolveOperationsTruthComment<T extends { body: string | null | undefined }>(input: {
+  latestComment: T | null | undefined;
+  latestNonOperationsComment: T | null | undefined;
+}): T | null {
+  const latestComment = input.latestComment ?? null;
+  const latestNonOperationsComment = input.latestNonOperationsComment ?? null;
+  if (!latestComment) return latestNonOperationsComment;
+  if (isOperationsAutomationCommentBody(latestComment.body) && latestNonOperationsComment) {
+    return latestNonOperationsComment;
+  }
+  return latestComment;
+}
+
+export function classifyIssueTruthFromCommentBody(body: string | null | undefined): "completion" | "blocker" | "handoff" | null {
   if (!body) return null;
   const text = body.toLowerCase();
 
@@ -182,18 +205,34 @@ function classifyIssueTruthFromCommentBody(body: string | null | undefined): "co
     /(^|\n)\s*blocked\s*:/,
     /(^|\n)\s*blocker\s*:/,
     /(^|\n)\s*waiting on\s*:/,
+    /(^|\n)\s*#{1,6}\s*blocked\b/,
   ];
   const handoffSignals = [
     /\b(status|outcome)\s*:\s*(handoff|needs_review|needs_handoff)\b/,
     /(^|\n)\s*handoff\s*:/,
     /(^|\n)\s*needs review\s*:/,
     /\bready for review\b/,
+    /(^|\n)\s*#{1,6}\s*reassigned\b/,
+    /\breassign(?:ed|ing)\s+to\b/,
   ];
 
   if (completionSignals.some((rx) => rx.test(text))) return "completion";
   if (blockerSignals.some((rx) => rx.test(text))) return "blocker";
   if (handoffSignals.some((rx) => rx.test(text))) return "handoff";
   return null;
+}
+
+export function shouldSuppressOperationsRecoveryTarget(input: {
+  status: string;
+  latestCommentBody: string | null | undefined;
+  latestCommentAgeHours: number;
+  hasBlockers: boolean;
+}): boolean {
+  const truthType = classifyIssueTruthFromCommentBody(input.latestCommentBody);
+  const hasFreshTruth = (truthType === "blocker" || truthType === "handoff") && input.latestCommentAgeHours < 6;
+  if (!hasFreshTruth) return false;
+  if (truthType === "handoff") return true;
+  return input.status === "blocked" && input.hasBlockers;
 }
 
 function hasWaitStateTruthFromCommentBody(body: string | null | undefined): boolean {
@@ -360,7 +399,55 @@ async function resolveOperationsHeartbeatTargets(
             .where(and(eq(issueComments.companyId, input.companyId), inArray(issueComments.issueId, issueIds)))
             .orderBy(issueComments.issueId, desc(issueComments.createdAt))
         : [];
+    const latestNonOperationsCommentRows =
+      issueIds.length > 0
+        ? await db
+            .selectDistinctOn([issueComments.issueId], {
+              issueId: issueComments.issueId,
+              createdAt: issueComments.createdAt,
+              authorAgentId: issueComments.authorAgentId,
+              body: issueComments.body,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, input.companyId),
+                inArray(issueComments.issueId, issueIds),
+                sql`${issueComments.body} not like ${`${OPERATIONS_IDLE_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_RECOVERY_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
+              ),
+            )
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+        : [];
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
+    const latestNonOperationsCommentByIssueId = new Map(
+      latestNonOperationsCommentRows.map((row) => [row.issueId, row]),
+    );
+    const effectiveLatestCommentByIssueId = new Map(
+      issueIds.map((issueId) => [
+        issueId,
+        resolveOperationsTruthComment({
+          latestComment: latestCommentByIssueId.get(issueId),
+          latestNonOperationsComment: latestNonOperationsCommentByIssueId.get(issueId),
+        }),
+      ]),
+    );
+    const blockerRows =
+      issueIds.length > 0
+        ? await db
+            .select({ issueId: issueRelations.relatedIssueId })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, input.companyId),
+                eq(issueRelations.type, "blocks"),
+                inArray(issueRelations.relatedIssueId, issueIds),
+              ),
+            )
+        : [];
+    const issuesWithBlockers = new Set(blockerRows.map((row) => row.issueId));
 
     const watchdogIssueIds = openAssignedIssues
       .filter((issue) => {
@@ -400,12 +487,13 @@ async function resolveOperationsHeartbeatTargets(
     const ranked = openAssignedIssues
       .map((issue) => {
         const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
-        const latestComment = latestCommentByIssueId.get(issue.id);
+        const latestComment = effectiveLatestCommentByIssueId.get(issue.id);
         const issueAgeHours = Math.floor((now - issue.updatedAt.getTime()) / (60 * 60 * 1000));
         const latestCommentAgeHours = latestComment
           ? Math.floor((now - latestComment.createdAt.getTime()) / (60 * 60 * 1000))
           : Number.POSITIVE_INFINITY;
         const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
+        const hasBlockers = issuesWithBlockers.has(issue.id);
         const isOperationsOwned = issue.assigneeAgentId === input.operationsAgentId;
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
         const isWatchdogIssue = isWatchdogIssueLabel(watchdogLabel);
@@ -429,6 +517,26 @@ async function resolveOperationsHeartbeatTargets(
         const hasContradictoryTruthSignals =
           (truthType === "completion" && issue.status !== "in_review")
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
+        const suppressRecovery = shouldSuppressOperationsRecoveryTarget({
+          status: issue.status,
+          latestCommentBody: latestComment?.body,
+          latestCommentAgeHours,
+          hasBlockers,
+        });
+
+        if (suppressRecovery) {
+          return {
+            issue,
+            score: -200,
+            reasons: ["fresh blocker/handoff truth already covers the current wait state"],
+            issueAgeHours,
+            isOperationsOwned,
+            isWatchdogIssue,
+            hasStuckAssignedSignals: false,
+            hasFalseCompleteSignals,
+            hasContradictoryTruthSignals,
+          };
+        }
 
         if (issue.status === "in_progress" && !issue.executionRunId) {
           score += 180;
@@ -3264,7 +3372,7 @@ export function heartbeatService(db: Db) {
       new Set(openAssignedIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
     );
 
-    const [liveRunRows, latestAssigneeRunRows, latestCommentRows, latestOpsCommentRows] = await Promise.all([
+    const [liveRunRows, latestAssigneeRunRows, latestCommentRows, latestNonOperationsCommentRows, latestOpsCommentRows] = await Promise.all([
       assigneeAgentIds.length > 0
         ? db
             .select({ agentId: heartbeatRuns.agentId })
@@ -3320,6 +3428,26 @@ export function heartbeatService(db: Db) {
             .where(
               and(
                 eq(issueComments.companyId, companyId),
+                inArray(issueComments.issueId, issueIds),
+                sql`${issueComments.body} not like ${`${OPERATIONS_IDLE_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_RECOVERY_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
+              ),
+            )
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+        : Promise.resolve([]),
+      issueIds.length > 0
+        ? db
+            .selectDistinctOn([issueComments.issueId], {
+              issueId: issueComments.issueId,
+              body: issueComments.body,
+              createdAt: issueComments.createdAt,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, companyId),
                 eq(issueComments.authorAgentId, input.agent.id),
                 inArray(issueComments.issueId, issueIds),
               ),
@@ -3331,6 +3459,18 @@ export function heartbeatService(db: Db) {
     const activeAssigneeIds = new Set(liveRunRows.map((row) => row.agentId));
     const latestRunByAssigneeId = new Map(latestAssigneeRunRows.map((row) => [row.agentId, row]));
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
+    const latestNonOperationsCommentByIssueId = new Map(
+      latestNonOperationsCommentRows.map((row) => [row.issueId, row]),
+    );
+    const effectiveLatestCommentByIssueId = new Map(
+      issueIds.map((issueId) => [
+        issueId,
+        resolveOperationsTruthComment({
+          latestComment: latestCommentByIssueId.get(issueId),
+          latestNonOperationsComment: latestNonOperationsCommentByIssueId.get(issueId),
+        }),
+      ]),
+    );
     const latestOpsCommentByIssueId = new Map(latestOpsCommentRows.map((row) => [row.issueId, row]));
     const autoReissueTargetIssueIds = new Set(
       targets
@@ -3351,7 +3491,7 @@ export function heartbeatService(db: Db) {
       if (assigneeUnavailable) return false;
       if (activeAssigneeIds.has(assigneeAgentId)) return false;
 
-      const latestComment = latestCommentByIssueId.get(issue.id);
+      const latestComment = effectiveLatestCommentByIssueId.get(issue.id);
       const hasTruth =
         classifyIssueTruthFromCommentBody(latestComment?.body) !== null ||
         hasWaitStateTruthFromCommentBody(latestComment?.body);
@@ -5894,6 +6034,19 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  async function cancelActiveForCompanyInternal(companyId: string, reason = "Cancelled due to company pause") {
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+    for (const run of runs) {
+      await cancelRunInternal(run.id, reason);
+    }
+
+    return runs.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -6099,6 +6252,9 @@ export function heartbeatService(db: Db) {
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+
+    cancelActiveForCompany: (companyId: string, reason?: string) =>
+      cancelActiveForCompanyInternal(companyId, reason),
 
     cancelBudgetScopeWork,
 

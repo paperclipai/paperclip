@@ -34,6 +34,7 @@ export const companiesApi = {
         | "budgetMonthlyCents"
         | "requireBoardApprovalForNewAgents"
         | "feedbackDataSharingEnabled"
+        | "dailyExecutiveSummaryEnabled"
         | "brandColor"
         | "logoAssetId"
       >
@@ -42,6 +43,8 @@ export const companiesApi = {
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
+  pause: (companyId: string) => api.post<Company>(`/companies/${companyId}/pause`, {}),
+  resume: (companyId: string) => api.post<Company>(`/companies/${companyId}/resume`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (
     companyId: string,

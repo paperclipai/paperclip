@@ -8,6 +8,8 @@ export const instanceGeneralSettingsSchema = z.object({
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
+  dailyExecutiveSummarySendHour: z.number().int().min(0).max(23).default(8),
+  dailyExecutiveSummarySendMinute: z.number().int().min(0).max(59).default(0),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();

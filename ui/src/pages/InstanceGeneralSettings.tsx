@@ -16,6 +16,8 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [summaryHourDraft, setSummaryHourDraft] = useState("8");
+  const [summaryMinuteDraft, setSummaryMinuteDraft] = useState("00");
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -67,6 +69,26 @@ export function InstanceGeneralSettings() {
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
+  const dailyExecutiveSummarySendHour = generalQuery.data?.dailyExecutiveSummarySendHour ?? 8;
+  const dailyExecutiveSummarySendMinute = generalQuery.data?.dailyExecutiveSummarySendMinute ?? 0;
+
+  useEffect(() => {
+    setSummaryHourDraft(String(dailyExecutiveSummarySendHour));
+    setSummaryMinuteDraft(String(dailyExecutiveSummarySendMinute).padStart(2, "0"));
+  }, [dailyExecutiveSummarySendHour, dailyExecutiveSummarySendMinute]);
+
+  const parsedSummaryHour = Number(summaryHourDraft);
+  const parsedSummaryMinute = Number(summaryMinuteDraft);
+  const scheduleInputValid =
+    Number.isInteger(parsedSummaryHour) &&
+    Number.isInteger(parsedSummaryMinute) &&
+    parsedSummaryHour >= 0 &&
+    parsedSummaryHour <= 23 &&
+    parsedSummaryMinute >= 0 &&
+    parsedSummaryMinute <= 59;
+  const scheduleDirty =
+    scheduleInputValid &&
+    (parsedSummaryHour !== dailyExecutiveSummarySendHour || parsedSummaryMinute !== dailyExecutiveSummarySendMinute);
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -120,6 +142,57 @@ export function InstanceGeneralSettings() {
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
           />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Executive summary send time</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Global daily send time used for company executive summary emails. This uses the server's local timezone.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-muted-foreground">
+              Hour (0-23)
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={summaryHourDraft}
+                onChange={(event) => setSummaryHourDraft(event.target.value)}
+                className="mt-1 block w-24 rounded-md border border-border bg-background px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Minute (0-59)
+              <input
+                type="number"
+                min={0}
+                max={59}
+                value={summaryMinuteDraft}
+                onChange={(event) => setSummaryMinuteDraft(event.target.value)}
+                className="mt-1 block w-24 rounded-md border border-border bg-background px-2 py-1 text-sm"
+              />
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              disabled={updateGeneralMutation.isPending || !scheduleInputValid || !scheduleDirty}
+              onClick={() =>
+                updateGeneralMutation.mutate({
+                  dailyExecutiveSummarySendHour: parsedSummaryHour,
+                  dailyExecutiveSummarySendMinute: parsedSummaryMinute,
+                } satisfies PatchInstanceGeneralSettings)
+              }
+            >
+              {updateGeneralMutation.isPending ? "Saving..." : "Save schedule"}
+            </Button>
+          </div>
+          {!scheduleInputValid ? (
+            <p className="text-xs text-destructive">Enter a valid 24-hour time.</p>
+          ) : null}
         </div>
       </section>
 

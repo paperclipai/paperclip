@@ -1195,6 +1195,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       return true;
     },
 
+    delete: async (id: string): Promise<boolean> => {
+      const routine = await getRoutineById(id);
+      if (!routine) return false;
+      const liveIssue = await findLiveExecutionIssue(routine);
+      if (liveIssue) {
+        throw conflict("Routine has an active execution run and cannot be deleted");
+      }
+      await db.delete(routines).where(eq(routines.id, id));
+      return true;
+    },
+
     rotateTriggerSecret: async (
       id: string,
       actor: Actor,

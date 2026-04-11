@@ -24,6 +24,7 @@ import {
   Target,
   LayoutDashboard,
   Inbox,
+  Flag,
   DollarSign,
   History,
   SquarePen,
@@ -169,6 +170,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
             Costs
+          </CommandItem>
+          <CommandItem onSelect={() => go("/roadmap")}>
+            <Flag className="mr-2 h-4 w-4" />
+            Roadmap
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />

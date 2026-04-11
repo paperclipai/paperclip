@@ -40,8 +40,13 @@ const ACTION_VERBS: Record<string, string> = {
   "cost.recorded": "recorded cost for",
   "company.created": "created company",
   "company.updated": "updated company",
+  "company.paused": "paused",
+  "company.resumed": "resumed",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
+  "routine.created": "created",
+  "routine.updated": "updated",
+  "routine.deleted": "deleted",
 };
 
 function humanizeValue(value: unknown): string {
@@ -75,6 +80,7 @@ function entityLink(entityType: string, entityId: string, name?: string | null):
     case "project": return `/projects/${deriveProjectUrlKey(name, entityId)}`;
     case "goal": return `/goals/${entityId}`;
     case "approval": return `/approvals/${entityId}`;
+    case "routine": return `/routines/${entityId}`;
     default: return null;
   }
 }

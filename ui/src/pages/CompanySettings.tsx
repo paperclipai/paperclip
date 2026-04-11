@@ -84,6 +84,16 @@ export function CompanySettings() {
     }
   });
 
+  const executiveSummaryMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        dailyExecutiveSummaryEnabled: enabled,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
   const feedbackSharingMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       companiesApi.update(selectedCompanyId!, {
@@ -293,6 +303,7 @@ export function CompanySettings() {
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
+                status={selectedCompany.status}
                 className="rounded-[14px]"
               />
             </div>
@@ -414,6 +425,27 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Executive Summary
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="Email daily executive summary"
+            hint="Sends a daily KPI and top-changes summary to active company members with email addresses."
+            checked={!!selectedCompany.dailyExecutiveSummaryEnabled}
+            onChange={(enabled) => executiveSummaryMutation.mutate(enabled)}
+          />
+          {executiveSummaryMutation.isError ? (
+            <p className="mt-2 text-xs text-destructive">
+              {executiveSummaryMutation.error instanceof Error
+                ? executiveSummaryMutation.error.message
+                : "Failed to update daily summary setting"}
+            </p>
+          ) : null}
         </div>
       </div>
 

@@ -194,6 +194,8 @@ export const updateIssueSchema = createIssueCoreSchema
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  forceDone: z.boolean().optional(),
+  overrideReason: z.string().trim().min(1).max(1000).optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
   recovery: issueRecoverySchema.optional(),
 });

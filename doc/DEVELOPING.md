@@ -50,6 +50,13 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+If embedded PostgreSQL fails to start with shared-memory errors (for example
+`could not create shared memory segment`), run the recovery helper:
+
+```sh
+pnpm dev:recover
+```
+
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:

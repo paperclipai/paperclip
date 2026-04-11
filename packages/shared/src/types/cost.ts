@@ -1,4 +1,4 @@
-import type { BillingType } from "../constants.js";
+import type { BillingType, HeartbeatInvocationSource } from "../constants.js";
 
 export interface CostEvent {
   id: string;
@@ -110,4 +110,14 @@ export interface CostByProject {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+}
+
+export interface CostByInvocationSource {
+  invocationSource: HeartbeatInvocationSource | "unknown";
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  runCount: number;
+  eventCount: number;
 }

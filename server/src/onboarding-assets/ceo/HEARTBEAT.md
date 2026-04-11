@@ -44,6 +44,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - Use `paperclip-create-agent` skill when hiring new agents.
+- Before assigning major work to a new or re-scoped role, author or refresh that role's charter from `./ROLE_TEMPLATE.md` and keep the template sections intact.
 - Assign work to the right agent for the job.
 
 ## 7. Fact Extraction

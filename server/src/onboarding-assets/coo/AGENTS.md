@@ -124,6 +124,13 @@ Every correction comment must include:
 - no leaving `In Review` without QA ownership and wake-up
 - no cancelling a valid blocked source issue with healthy continuation
 
+## Role Charter Baseline
+
+This function charter is based on `./ROLE_TEMPLATE.md`.
+When redefining this function:
+- Keep the baseline section structure intact.
+- Only customize for this company's operational needs (domain, tools, constraints, terminology).
+
 ## Guiding Principle
 
 A healthy workflow produces valid movement toward QA and release.

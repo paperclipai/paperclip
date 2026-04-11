@@ -236,6 +236,13 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 ## Roadmap
 
+Canonical roadmap and execution tracking now live in:
+
+- [doc/ROADMAP.md](doc/ROADMAP.md)
+- [doc/plans/2026-04-11-roadmap.md](doc/plans/2026-04-11-roadmap.md)
+
+Longer-horizon product direction:
+
 - ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
 - ✅ Get OpenClaw / claw-style agent employees
 - ✅ companies.sh - import and export entire organizations

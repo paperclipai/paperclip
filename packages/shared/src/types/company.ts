@@ -1,4 +1,4 @@
-import type { CompanyStatus, PauseReason } from "../constants.js";
+import type { CompanyStatus, ExecutiveSummarySendStatus, PauseReason } from "../constants.js";
 
 export interface Company {
   id: string;
@@ -16,6 +16,10 @@ export interface Company {
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  dailyExecutiveSummaryEnabled: boolean;
+  dailyExecutiveSummaryLastSentAt: Date | null;
+  dailyExecutiveSummaryLastStatus: ExecutiveSummarySendStatus | null;
+  dailyExecutiveSummaryLastError: string | null;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

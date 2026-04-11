@@ -33,6 +33,18 @@ const boardStatuses = [
   "cancelled",
 ];
 
+function qaBadgeClass(value: string) {
+  if (value === "pass") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  if (value === "warn") return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+  if (value === "fail") return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400";
+  return "border-muted bg-muted/40 text-muted-foreground";
+}
+
+function formatQaBadge(value: string) {
+  if (value === "unknown") return "Review";
+  return value.toUpperCase();
+}
+
 interface Agent {
   id: string;
   name: string;
@@ -161,6 +173,18 @@ function KanbanCard({
           )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
+        {issue.status === "in_review" && issue.qaGate?.review && (
+          <div className="mb-2 flex items-center gap-1.5">
+            <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${qaBadgeClass(issue.qaGate.review.overall)}`}>
+              {formatQaBadge(issue.qaGate.review.overall)}
+            </span>
+            {issue.qaGate.review.stale && (
+              <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                Stale
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {

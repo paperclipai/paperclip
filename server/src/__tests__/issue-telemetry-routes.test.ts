@@ -56,7 +56,7 @@ function makeIssue(status: "todo" | "done") {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
-    assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    assigneeAgentId: "ops-1",
     assigneeUserId: null,
     createdByUserId: "local-board",
     identifier: "PAP-1018",
@@ -80,6 +80,17 @@ describe("issue telemetry routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "ops-1") {
+        return {
+          id: "ops-1",
+          companyId: "company-1",
+          role: "operations",
+          adapterType: "codex_local",
+        };
+      }
+      return null;
+    });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -90,11 +101,24 @@ describe("issue telemetry routes", () => {
   });
 
   it("emits task-completed telemetry with the agent role", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "company-1",
-      role: "engineer",
-      adapterType: "codex_local",
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "ops-1") {
+        return {
+          id: "ops-1",
+          companyId: "company-1",
+          role: "operations",
+          adapterType: "codex_local",
+        };
+      }
+      if (id === "agent-1") {
+        return {
+          id: "agent-1",
+          companyId: "company-1",
+          role: "engineer",
+          adapterType: "codex_local",
+        };
+      }
+      return null;
     });
 
     const res = await request(createApp({
@@ -125,6 +149,6 @@ describe("issue telemetry routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockTrackAgentTaskCompleted).not.toHaveBeenCalled();
-    expect(mockAgentService.getById).not.toHaveBeenCalled();
+    expect(mockAgentService.getById).toHaveBeenCalledWith("ops-1");
   });
 });

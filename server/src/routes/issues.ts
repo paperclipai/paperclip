@@ -4,6 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { issueExecutionDecisions } from "@paperclipai/db";
+import type { IssueExecutionDecisionOutcome, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -21,6 +22,7 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  type IssueComment,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
@@ -58,8 +60,12 @@ import {
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
+import { buildIssueQaGate, issueQaGateReasonMessage } from "../services/qa-gate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const AUTO_FIX_ATTEMPT_MARKER = "[AUTO-FIX ATTEMPT]";
+const AUTO_FIX_MAX_ATTEMPTS = 2;
+const AUTO_FIX_WINDOW_MS = 24 * 60 * 60 * 1000;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -125,6 +131,215 @@ export function issueRoutes(
     const lower = normalized.toLowerCase();
     if (lower === "null" || lower === "undefined") return undefined;
     return normalized;
+  }
+
+  function respondIssueUpdate422(
+    res: Response,
+    reasonCode: IssueQaGateReasonCode,
+    message = issueQaGateReasonMessage(reasonCode),
+  ) {
+    res.status(422).json({
+      error: message,
+      message,
+      reasonCode,
+    });
+  }
+
+  const agentRoleCache = new Map<string, Promise<string | null>>();
+
+  async function getAgentRole(agentId: string, companyId: string) {
+    if (typeof (agentsSvc as { getById?: unknown }).getById !== "function") return null;
+    const key = `${companyId}:${agentId}`;
+    const cached = agentRoleCache.get(key);
+    if (cached) return cached;
+    const promise = Promise.resolve((agentsSvc as { getById: (id: string) => unknown }).getById(agentId))
+      .then((agent) => {
+        const candidate = agent as { companyId?: unknown; role?: unknown } | null;
+        if (!candidate || typeof candidate.companyId !== "string") return null;
+        if (candidate.companyId !== companyId) return null;
+        return typeof candidate.role === "string" ? candidate.role : null;
+      })
+      .catch(() => null);
+    agentRoleCache.set(key, promise);
+    return promise;
+  }
+
+  async function listQaCommentsForIssue(input: { issueId: string; companyId: string; limit: number }) {
+    if (typeof (svc as { listComments?: unknown }).listComments !== "function") {
+      return [] as IssueComment[];
+    }
+    const comments = await svc.listComments(input.issueId, {
+      order: "desc",
+      limit: input.limit,
+    });
+    const authorIds = [...new Set(
+      comments
+        .map((comment) => comment.authorAgentId)
+        .filter((agentId): agentId is string => typeof agentId === "string" && agentId.length > 0),
+    )];
+    const roleByAuthorId = new Map<string, string | null>();
+    await Promise.all(
+      authorIds.map(async (authorId) => {
+        roleByAuthorId.set(authorId, await getAgentRole(authorId, input.companyId));
+      }),
+    );
+    return comments.filter((comment) => {
+      if (!comment.authorAgentId) return false;
+      return roleByAuthorId.get(comment.authorAgentId) === "qa";
+    }) satisfies IssueComment[];
+  }
+
+  async function computeIssueQaGate(
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+    },
+    opts?: { commentLimit?: number },
+  ) {
+    const assigneeRole = issue.assigneeAgentId
+      ? await getAgentRole(issue.assigneeAgentId, issue.companyId)
+      : null;
+    const qaComments = await listQaCommentsForIssue({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      limit: opts?.commentLimit ?? MAX_ISSUE_COMMENT_LIMIT,
+    });
+    const latestDecisionOutcome =
+      issue.executionState && typeof issue.executionState === "object"
+        ? (issue.executionState.lastDecisionOutcome ?? null)
+        : null;
+    return buildIssueQaGate({
+      issue: { status: issue.status as IssueStatus },
+      assigneeRole,
+      qaComments,
+      latestDecisionOutcome,
+    });
+  }
+
+  async function computeIssueQaGateSafe(
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+    },
+    opts?: { commentLimit?: number },
+  ) {
+    try {
+      return await computeIssueQaGate(issue, opts);
+    } catch (err) {
+      logger.warn({ err, issueId: issue.id, companyId: issue.companyId }, "failed to synthesize qa gate");
+      return null;
+    }
+  }
+
+  async function maybeTriggerQaAutoFix(
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+      identifier?: string | null;
+      title?: string;
+    },
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+    },
+    source: "patch_update" | "comment",
+  ) {
+    if (!issue.assigneeAgentId) return;
+    if (issue.status !== "in_review") return;
+    if (typeof (svc as { listComments?: unknown }).listComments !== "function") return;
+
+    const qaGate = await computeIssueQaGateSafe(issue);
+    if (!qaGate) return;
+    if (!qaGate.isDeliveryScoped) return;
+    if (qaGate.review.overall !== "fail") return;
+
+    const comments = await svc.listComments(issue.id, {
+      order: "desc",
+      limit: MAX_ISSUE_COMMENT_LIMIT,
+    });
+    const now = Date.now();
+    const recentAttempts = comments.filter((comment) => {
+      if (typeof comment.body !== "string" || !comment.body.includes(AUTO_FIX_ATTEMPT_MARKER)) return false;
+      const createdAt = new Date(comment.createdAt).getTime();
+      return Number.isFinite(createdAt) && now - createdAt <= AUTO_FIX_WINDOW_MS;
+    });
+    if (recentAttempts.length >= AUTO_FIX_MAX_ATTEMPTS) return;
+
+    const attemptNumber = recentAttempts.length + 1;
+    const commands = ["pnpm -r typecheck", "pnpm test:run", "pnpm build"];
+    const summaryBody = [
+      `${AUTO_FIX_ATTEMPT_MARKER} ${attemptNumber}/${AUTO_FIX_MAX_ATTEMPTS}`,
+      "Automatic fix attempt requested from QA failure synthesis.",
+      `Source: ${source}`,
+      "",
+      "Required verification commands:",
+      ...commands.map((command) => `- ${command}`),
+      "",
+      "Rules:",
+      "- Keep issue status in in_review if all verification commands pass.",
+      "- If any verification command fails, move issue to in_progress and post a blocker summary with failed command output.",
+      "- Never auto-close this issue to done.",
+      "- Stop if runtime reaches 30 minutes.",
+      "",
+      "Expected completion comment: [AUTO-FIX READY FOR QA] or [AUTO-FIX BLOCKED].",
+    ].join("\n");
+
+    await svc.addComment(issue.id, summaryBody, {});
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.qa_autofix_triggered",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier ?? null,
+        source,
+        attempt: attemptNumber,
+        maxAttempts: AUTO_FIX_MAX_ATTEMPTS,
+        maxDurationMinutes: 30,
+        commands,
+      },
+    });
+
+    await heartbeat
+      .wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "qa_autofix_requested",
+        payload: {
+          issueId: issue.id,
+          attempt: attemptNumber,
+          maxAttempts: AUTO_FIX_MAX_ATTEMPTS,
+          maxDurationMinutes: 30,
+          commands,
+          qaReview: qaGate.review,
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "qa_autofix_requested",
+          source: "issue.qa_autofix",
+          qaReview: qaGate.review,
+        },
+      })
+      .catch((err) =>
+        logWakeupFailure(err, { issueId: issue.id, agentId: issue.assigneeAgentId ?? undefined }, "failed to wake assignee for qa auto-fix"));
   }
 
   function logWakeupFailure(
@@ -426,7 +641,16 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
     });
-    res.json(result);
+    const withQaGate = await Promise.all(
+      result.map(async (issue) => ({
+        ...issue,
+        qaGate:
+          issue.status === "in_review" || issue.status === "done"
+            ? await computeIssueQaGateSafe(issue, { commentLimit: 120 })
+            : null,
+      })),
+    );
+    res.json(withQaGate);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -505,6 +729,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const qaGate = await computeIssueQaGateSafe(issue);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -517,6 +742,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      qaGate,
     });
   });
 
@@ -1175,9 +1401,13 @@ export function issueRoutes(
       comment: commentBody,
       reopen: reopenRequested,
       interrupt: interruptRequested,
+      forceDone: forceDoneRaw,
+      overrideReason: overrideReasonRaw,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    const forceDoneRequested = forceDoneRaw === true;
+    const overrideReason = typeof overrideReasonRaw === "string" ? overrideReasonRaw.trim() : "";
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
@@ -1219,6 +1449,25 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (forceDoneRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can override QA gate shipping" });
+        return;
+      }
+      if (!overrideReason) {
+        res.status(400).json({ error: "overrideReason is required when forceDone=true" });
+        return;
+      }
+      if (reopenRequested) {
+        res.status(400).json({ error: "reopen cannot be combined with forceDone" });
+        return;
+      }
+      if (typeof updateFields.status === "string" && updateFields.status !== "done") {
+        res.status(400).json({ error: "forceDone only supports status=done transitions" });
+        return;
+      }
+      updateFields.status = "done";
     }
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
@@ -1270,6 +1519,24 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (forceDoneRequested) {
+      updateFields.status = "done";
+    }
+
+    const requestedNextStatus =
+      typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    const isDoneTransition = existing.status !== "done" && requestedNextStatus === "done";
+    let qaGateSnapshot = null as Awaited<ReturnType<typeof computeIssueQaGate>> | null;
+    if (isDoneTransition) {
+      qaGateSnapshot = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
+      if (qaGateSnapshot.isDeliveryScoped && !forceDoneRequested) {
+        const gateFailure = qaGateSnapshot.missingRequirements[0] ?? null;
+        if (gateFailure) {
+          respondIssueUpdate422(res, gateFailure);
+          return;
+        }
+      }
+    }
 
     let issue;
     try {
@@ -1311,6 +1578,16 @@ export function issueRoutes(
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
+        const reasonCode =
+          err.details &&
+          typeof err.details === "object" &&
+          typeof (err.details as Record<string, unknown>).reasonCode === "string"
+            ? ((err.details as Record<string, unknown>).reasonCode as string)
+            : null;
+        if (reasonCode === "invalid_status_transition") {
+          respondIssueUpdate422(res, "invalid_status_transition");
+          return;
+        }
         logger.warn(
           {
             issueId: id,
@@ -1390,6 +1667,27 @@ export function issueRoutes(
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    if (forceDoneRequested && existing.status !== "done" && issue.status === "done") {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.qa_gate_overridden",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          overrideReason,
+          previousStatus: existing.status,
+          appliedStatus: issue.status,
+          isDeliveryScoped: qaGateSnapshot?.isDeliveryScoped ?? true,
+          missingRequirements: qaGateSnapshot?.missingRequirements ?? [],
+        },
+      });
+    }
 
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
@@ -1604,8 +1902,11 @@ export function issueRoutes(
           .catch((err) => logWakeupFailure(err, { issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
+    void maybeTriggerQaAutoFix(issue, actor, "patch_update").catch((err) =>
+      logger.warn({ err, issueId: issue.id }, "failed to trigger qa auto-fix after issue update"));
 
-    res.json({ ...issueResponse, comment });
+    const qaGate = await computeIssueQaGateSafe(issue);
+    res.json({ ...issueResponse, qaGate, comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -2096,6 +2397,8 @@ export function issueRoutes(
             logWakeupFailure(err, { issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();
+    void maybeTriggerQaAutoFix(currentIssue, actor, "comment").catch((err) =>
+      logger.warn({ err, issueId: currentIssue.id }, "failed to trigger qa auto-fix after issue comment"));
 
     res.status(201).json(comment);
   });

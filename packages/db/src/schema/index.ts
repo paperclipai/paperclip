@@ -1,4 +1,5 @@
 export { companies } from "./companies.js";
+export { companyKpis } from "./company_kpis.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";

@@ -4,6 +4,8 @@ export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
+  dailyExecutiveSummarySendHour: number;
+  dailyExecutiveSummarySendMinute: number;
 }
 
 export interface InstanceExperimentalSettings {

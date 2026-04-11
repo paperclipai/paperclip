@@ -723,6 +723,25 @@ export function RoutineDetail() {
     },
   });
 
+  const deleteRoutine = useMutation({
+    mutationFn: () => routinesApi.delete(routineId!),
+    onSuccess: async () => {
+      pushToast({
+        title: "Routine deleted",
+        tone: "success",
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
+      navigate("/routines");
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to delete routine",
+        body: error instanceof Error ? error.message : "Paperclip could not delete the routine.",
+        tone: "error",
+      });
+    },
+  });
+
   const rotateTrigger = useMutation({
     mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
     onSuccess: async (result) => {
@@ -864,6 +883,20 @@ export function RoutineDetail() {
           <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
             {automationLabel}
           </span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={() => {
+              if (!routine) return;
+              if (!window.confirm(`Delete routine "${routine.title}"? This cannot be undone.`)) return;
+              deleteRoutine.mutate();
+            }}
+            disabled={deleteRoutine.isPending}
+            aria-label="Delete routine"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 

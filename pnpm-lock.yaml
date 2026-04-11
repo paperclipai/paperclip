@@ -12,7 +12,7 @@ patchedDependencies:
     hash: 55uhvnotpqyiy37rn3pqpukhei
     path: patches/embedded-postgres@18.1.0-beta.16.patch
   hermes-paperclip-adapter@0.2.0:
-    hash: f6wdaqr3dpxdjlr7tj7e4bobzm
+    hash: 37736zp54vmgifcvuyzz5prcr4
     path: patches/hermes-paperclip-adapter@0.2.0.patch
 
 importers:
@@ -533,13 +533,16 @@ importers:
         version: 5.2.1
       hermes-paperclip-adapter:
         specifier: ^0.2.0
-        version: 0.2.0(patch_hash=f6wdaqr3dpxdjlr7tj7e4bobzm)
+        version: 0.2.0(patch_hash=37736zp54vmgifcvuyzz5prcr4)
       jsdom:
         specifier: ^28.1.0
         version: 28.1.0(@noble/hashes@2.0.1)
       multer:
         specifier: ^2.1.1
         version: 2.1.1
+      nodemailer:
+        specifier: ^7.0.3
+        version: 7.0.13
       open:
         specifier: ^11.0.0
         version: 11.0.0
@@ -672,7 +675,7 @@ importers:
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       hermes-paperclip-adapter:
         specifier: ^0.2.0
-        version: 0.2.0(patch_hash=f6wdaqr3dpxdjlr7tj7e4bobzm)
+        version: 0.2.0(patch_hash=37736zp54vmgifcvuyzz5prcr4)
       lexical:
         specifier: 0.35.0
         version: 0.35.0
@@ -5180,6 +5183,10 @@ packages:
 
   node-releases@2.0.27:
     resolution: {integrity: sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==}
+
+  nodemailer@7.0.13:
+    resolution: {integrity: sha512-PNDFSJdP+KFgdsG3ZzMXCgquO7I6McjY2vlqILjtJd0hy8wEvtugS9xKRF2NWlPNGxvLCXlTNIae4serI7dinw==}
+    engines: {node: '>=6.0.0'}
 
   object-assign@4.1.1:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
@@ -10682,7 +10689,7 @@ snapshots:
 
   help-me@5.0.0: {}
 
-  hermes-paperclip-adapter@0.2.0(patch_hash=f6wdaqr3dpxdjlr7tj7e4bobzm):
+  hermes-paperclip-adapter@0.2.0(patch_hash=37736zp54vmgifcvuyzz5prcr4):
     dependencies:
       '@paperclipai/adapter-utils': 2026.325.0
       picocolors: 1.1.1
@@ -11500,6 +11507,8 @@ snapshots:
   next-tick@1.1.0: {}
 
   node-releases@2.0.27: {}
+
+  nodemailer@7.0.13: {}
 
   object-assign@4.1.1: {}
 

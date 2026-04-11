@@ -22,12 +22,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+      dailyExecutiveSummarySendHour: parsed.data.dailyExecutiveSummarySendHour ?? 8,
+      dailyExecutiveSummarySendMinute: parsed.data.dailyExecutiveSummarySendMinute ?? 0,
     };
   }
   return {
     censorUsernameInLogs: false,
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+    dailyExecutiveSummarySendHour: 8,
+    dailyExecutiveSummarySendMinute: 0,
   };
 }
 

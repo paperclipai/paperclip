@@ -25,6 +25,13 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  companyKpiTrendSchema,
+  companyKpiInputSchema,
+  replaceCompanyKpisSchema,
+  type CompanyKpiInput,
+  type ReplaceCompanyKpis,
+} from "./executive-summary.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,

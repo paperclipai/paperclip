@@ -1,6 +1,12 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const EXECUTIVE_SUMMARY_SEND_STATUSES = ["ok", "failed", "skipped"] as const;
+export type ExecutiveSummarySendStatus = (typeof EXECUTIVE_SUMMARY_SEND_STATUSES)[number];
+
+export const COMPANY_KPI_TRENDS = ["up", "down", "flat", "none"] as const;
+export type CompanyKpiTrend = (typeof COMPANY_KPI_TRENDS)[number];
+
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 

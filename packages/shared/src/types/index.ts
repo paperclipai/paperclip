@@ -1,5 +1,15 @@
 export type { Company } from "./company.js";
 export type {
+  CompanyKpi,
+  CompanyKpiInput,
+  ExecutiveSummaryComputedKpis,
+  ExecutiveSummaryIssueTransition,
+  ExecutiveSummaryFailedRun,
+  ExecutiveSummaryTopChanges,
+  ExecutiveSummaryDispatchState,
+  ExecutiveSummary,
+} from "./executive-summary.js";
+export type {
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
@@ -105,6 +115,11 @@ export type {
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
+  IssueQaGate,
+  IssueQaReviewState,
+  IssueQaReviewDimension,
+  IssueQaReviewOverall,
+  IssueQaGateReasonCode,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
@@ -149,7 +164,17 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type {
+  CostEvent,
+  CostSummary,
+  CostByAgent,
+  CostByProviderModel,
+  CostByBiller,
+  CostByAgentModel,
+  CostWindowSpendRow,
+  CostByProject,
+  CostByInvocationSource,
+} from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,

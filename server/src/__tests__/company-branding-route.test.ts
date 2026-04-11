@@ -40,6 +40,12 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockExecutiveSummaryService = vi.hoisted(() => ({
+  listKpis: vi.fn(),
+  replaceKpis: vi.fn(),
+  buildExecutiveSummary: vi.fn(),
+  tickDaily: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -47,6 +53,7 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
+  executiveSummaryService: () => mockExecutiveSummaryService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
 }));
@@ -63,6 +70,10 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    dailyExecutiveSummaryEnabled: false,
+    dailyExecutiveSummaryLastSentAt: null,
+    dailyExecutiveSummaryLastStatus: null,
+    dailyExecutiveSummaryLastError: null,
     brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",

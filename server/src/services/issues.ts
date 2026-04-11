@@ -44,6 +44,15 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ISSUE_STATUS_TRANSITIONS: Record<string, Set<string>> = {
+  backlog: new Set(["todo", "in_progress", "in_review", "blocked", "done", "cancelled"]),
+  todo: new Set(["backlog", "in_progress", "in_review", "blocked", "done", "cancelled"]),
+  in_progress: new Set(["todo", "in_review", "blocked", "done", "cancelled"]),
+  in_review: new Set(["todo", "in_progress", "blocked", "done", "cancelled"]),
+  blocked: new Set(["todo", "in_progress", "in_review", "done", "cancelled"]),
+  done: new Set(["todo", "cancelled"]),
+  cancelled: new Set(["todo"]),
+};
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const RECOVERY_RELATION_TYPE = "recovered_by" as const;
 const RECOVERY_DISPOSITIONS_REQUIRING_SUCCESSOR = new Set(["superseded", "recovered_by_reissue", "blocked"]);
@@ -65,8 +74,19 @@ const RECOVERY_DISPOSITION_LABEL: Record<IssueRecoveryDisposition, string> = {
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
-  if (!ALL_ISSUE_STATUSES.includes(to)) {
-    throw conflict(`Unknown issue status: ${to}`);
+  if (!ALL_ISSUE_STATUSES.includes(from) || !ALL_ISSUE_STATUSES.includes(to)) {
+    throw unprocessable("Invalid issue status transition", {
+      reasonCode: "invalid_status_transition",
+      from,
+      to,
+    });
+  }
+  if (!ISSUE_STATUS_TRANSITIONS[from]?.has(to)) {
+    throw unprocessable("Invalid issue status transition", {
+      reasonCode: "invalid_status_transition",
+      from,
+      to,
+    });
   }
 }
 

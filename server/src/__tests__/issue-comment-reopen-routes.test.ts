@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -108,6 +109,13 @@ function makeIssue(status: "todo" | "done" | "cancelled") {
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      role: id === "agent-qa" ? "qa" : "pm",
+      name: "Operator",
+    }));
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -323,6 +331,18 @@ describe("issue comment reopen routes", () => {
       updatedAt: new Date(),
       _tx: tx,
     }));
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "qa-comment-1",
+        companyId: "company-1",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        authorAgentId: "agent-qa",
+        authorUserId: null,
+        body: "[QA PASS]\n[RELEASE CONFIRMED]",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
 
     const res = await request(createApp())
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")

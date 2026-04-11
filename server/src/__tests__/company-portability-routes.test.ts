@@ -38,6 +38,12 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockExecutiveSummaryService = vi.hoisted(() => ({
+  listKpis: vi.fn(),
+  replaceKpis: vi.fn(),
+  buildExecutiveSummary: vi.fn(),
+  tickDaily: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -45,6 +51,7 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
+  executiveSummaryService: () => mockExecutiveSummaryService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
 }));

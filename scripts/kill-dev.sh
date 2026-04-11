@@ -160,13 +160,15 @@ fi
 
 leftover_pg_pids=()
 leftover_pg_data_dirs=()
-for i in "${!pg_pids[@]:-}"; do
-  pid="${pg_pids[$i]}"
-  if is_pid_running "$pid"; then
-    leftover_pg_pids+=("$pid")
-    leftover_pg_data_dirs+=("${pg_data_dirs[$i]}")
-  fi
-done
+if [[ ${#pg_pids[@]} -gt 0 ]]; then
+  for i in "${!pg_pids[@]}"; do
+    pid="${pg_pids[$i]}"
+    if is_pid_running "$pid"; then
+      leftover_pg_pids+=("$pid")
+      leftover_pg_data_dirs+=("${pg_data_dirs[$i]}")
+    fi
+  done
+fi
 
 if [[ ${#leftover_pg_pids[@]} -gt 0 ]]; then
   echo "Sending SIGTERM to leftover embedded PostgreSQL processes..."
