@@ -23,7 +23,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
+import { InitiativeBoard } from "./InitiativeBoard";
+import { FlowAnalytics } from "./FlowAnalytics";
+import { CHAIN_STALL_THRESHOLD_MS, TERMINAL_ISSUE_STATUSES } from "@paperclipai/shared";
 import type { Issue } from "@paperclipai/shared";
+import { BarChart3 } from "lucide-react";
 
 /* ── Helpers ── */
 
@@ -44,8 +48,8 @@ export type IssueViewState = {
   projects: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "none";
-  viewMode: "list" | "board";
+  groupBy: "status" | "priority" | "assignee" | "initiative" | "none";
+  viewMode: "list" | "board" | "initiatives" | "analytics";
   collapsedGroups: string[];
 };
 
@@ -326,6 +330,44 @@ export function IssuesList({
         .filter((p) => groups[p]?.length)
         .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
     }
+    if (viewState.groupBy === "initiative") {
+      // Only show tasks, grouped by their parent initiative
+      const tasks = filtered.filter((i) => i.issueType !== "initiative");
+      const initiatives = filtered.filter((i) => i.issueType === "initiative");
+      const initiativeMap = new Map(initiatives.map((init) => [init.id, init]));
+      const groups = groupBy(tasks, (i) => i.parentId ?? "__no_initiative");
+      const result: Array<{ key: string; label: string | null; items: Issue[]; healthDot?: string; healthSummary?: string }> = [];
+
+      for (const init of initiatives) {
+        const children = groups[init.id] ?? [];
+        const doneCount = children.filter((c) => TERMINAL_ISSUE_STATUSES.includes(c.status as typeof TERMINAL_ISSUE_STATUSES[number])).length;
+        const blockedCount = children.filter((c) => c.status === "blocked").length;
+        let lastMoved: Date | null = null;
+        for (const c of children) {
+          const u = new Date(c.updatedAt);
+          if (!lastMoved || u > lastMoved) lastMoved = u;
+        }
+        const elapsed = lastMoved ? Date.now() - lastMoved.getTime() : Infinity;
+        const dot = elapsed > CHAIN_STALL_THRESHOLD_MS ? "red" : blockedCount > 0 ? "yellow" : "green";
+        const movedLabel = lastMoved ? timeAgo(lastMoved) : "never";
+        const summary = `${doneCount}/${children.length} complete${blockedCount > 0 ? ` · ${blockedCount} blocked` : ""} · last moved ${movedLabel}`;
+        result.push({
+          key: init.id,
+          label: `${init.identifier ? init.identifier + " " : ""}${init.title}`,
+          items: children,
+          healthDot: dot,
+          healthSummary: summary,
+        });
+      }
+
+      // Orphan tasks
+      const orphans = groups["__no_initiative"] ?? [];
+      if (orphans.length > 0) {
+        result.push({ key: "__no_initiative", label: "No initiative", items: orphans });
+      }
+
+      return result;
+    }
     // assignee
     const groups = groupBy(
       filtered,
@@ -394,6 +436,20 @@ export function IssuesList({
               title="Board view"
             >
               <Columns3 className="h-3.5 w-3.5" />
+            </button>
+            <button
+              className={`p-1.5 transition-colors ${viewState.viewMode === "initiatives" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => updateView({ viewMode: "initiatives" })}
+              title="Initiative swimlanes"
+            >
+              <Layers className="h-3.5 w-3.5" />
+            </button>
+            <button
+              className={`p-1.5 transition-colors ${viewState.viewMode === "analytics" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => updateView({ viewMode: "analytics" })}
+              title="Analytics"
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -626,6 +682,7 @@ export function IssuesList({
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
+                    ["initiative", "Initiative"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -658,7 +715,16 @@ export function IssuesList({
         />
       )}
 
-      {viewState.viewMode === "board" ? (
+      {viewState.viewMode === "analytics" ? (
+        <FlowAnalytics issues={issues} />
+      ) : viewState.viewMode === "initiatives" ? (
+        <InitiativeBoard
+          issues={filtered}
+          agents={agents}
+          liveIssueIds={liveIssueIds}
+          onUpdateIssue={onUpdateIssue}
+        />
+      ) : viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
           agents={agents}
@@ -682,9 +748,20 @@ export function IssuesList({
               <div className="flex items-center py-1.5 pl-1 pr-3">
                 <CollapsibleTrigger className="flex items-center gap-1.5">
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+                  {"healthDot" in group && (group as { healthDot?: string }).healthDot && (
+                    <span className={`h-2 w-2 rounded-full shrink-0 ${
+                      (group as { healthDot?: string }).healthDot === "red" ? "bg-red-500" :
+                      (group as { healthDot?: string }).healthDot === "yellow" ? "bg-yellow-500" : "bg-green-500"
+                    }`} />
+                  )}
                   <span className="text-sm font-semibold uppercase tracking-wide">
                     {group.label}
                   </span>
+                  {"healthSummary" in group && (group as { healthSummary?: string }).healthSummary && (
+                    <span className="text-xs font-normal normal-case text-muted-foreground ml-1.5">
+                      {(group as { healthSummary?: string }).healthSummary}
+                    </span>
+                  )}
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"

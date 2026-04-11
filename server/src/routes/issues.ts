@@ -1661,6 +1661,95 @@ export function issueRoutes(
       }
     }
 
+    // Issue type hierarchy gate — UNIVERSAL enforcement (agents AND board users)
+    const issueType: string = req.body.issueType;
+    if (issueType === "initiative" && req.body.parentId) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.hierarchy_gate_blocked",
+        entityType: "issue",
+        entityId: actor.agentId ?? actor.actorId,
+        details: { issueType, parentId: req.body.parentId, reason: "initiative_cannot_have_parent" },
+      });
+      res.status(422).json({
+        error: "initiative_cannot_have_parent",
+        gate: "initiative_cannot_have_parent",
+        message: "Initiatives are top-level containers and cannot have a parentId.",
+      });
+      return;
+    }
+    if (issueType === "task" && !req.body.parentId) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.hierarchy_gate_blocked",
+        entityType: "issue",
+        entityId: actor.agentId ?? actor.actorId,
+        details: { issueType, reason: "task_requires_initiative_parent" },
+      });
+      res.status(422).json({
+        error: "task_requires_initiative_parent",
+        gate: "task_requires_initiative_parent",
+        message: "Tasks must have a parentId pointing to an existing initiative.",
+      });
+      return;
+    }
+    if (issueType === "task" && req.body.parentId) {
+      const parentIssue = await svc.getIssueTypeById(req.body.parentId);
+      if (!parentIssue) {
+        res.status(422).json({
+          error: "parent_not_found",
+          gate: "parent_not_found",
+          message: `Parent issue ${req.body.parentId} does not exist.`,
+        });
+        return;
+      }
+      if (parentIssue.issueType !== "initiative") {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.hierarchy_gate_blocked",
+          entityType: "issue",
+          entityId: actor.agentId ?? actor.actorId,
+          details: { issueType, parentId: req.body.parentId, parentType: parentIssue.issueType, reason: "parent_must_be_initiative" },
+        });
+        res.status(422).json({
+          error: "parent_must_be_initiative",
+          gate: "parent_must_be_initiative",
+          message: "Tasks can only be children of initiatives, not other tasks.",
+        });
+        return;
+      }
+
+      // Department consistency gate: task's dept label must match parent initiative's dept label
+      if (req.body.labelIds?.length) {
+        const deptLabelIds = await svc.getDepartmentLabelIds(companyId);
+        const taskDeptLabel = (req.body.labelIds as string[]).find((id: string) => deptLabelIds.has(id));
+        if (taskDeptLabel) {
+          const parentLabels = await svc.getLabelsByIssueId(req.body.parentId);
+          const parentDeptLabel = parentLabels.find((l: { labelId: string }) => deptLabelIds.has(l.labelId));
+          if (parentDeptLabel && parentDeptLabel.labelId !== taskDeptLabel) {
+            res.status(422).json({
+              error: "department_mismatch",
+              gate: "department_mismatch",
+              message: "Task's department label must match its parent initiative's department label.",
+            });
+            return;
+          }
+        }
+      }
+    }
+
     // Relay-duplication blocker: if an agent is creating an issue with the same
     // parentId and a similar title to an existing open issue, reject with 409.
     if (actor.actorType === "agent" && req.body.parentId && req.body.title) {
@@ -2049,6 +2138,25 @@ export function issueRoutes(
           });
           await incrementGateBlockCount(existing.id);
           res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
+          return;
+        }
+      }
+
+      // Initiative deletion guard — cannot close initiative with active children (universal)
+      if (
+        (req.body.status === "done" || req.body.status === "cancelled") &&
+        existing.issueType === "initiative"
+      ) {
+        const { count, identifiers } = await svc.getActiveChildCount(existing.id);
+        if (count > 0) {
+          await incrementGateBlockCount(existing.id);
+          res.status(422).json({
+            error: "initiative_has_active_children",
+            gate: "initiative_has_active_children",
+            message: `Cannot close initiative with ${count} active child task(s). Complete or cancel children first.`,
+            activeChildCount: count,
+            activeChildIdentifiers: identifiers,
+          });
           return;
         }
       }

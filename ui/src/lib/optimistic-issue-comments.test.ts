@@ -133,6 +133,7 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: null,
         goalId: null,
         parentId: null,
+    issueType: "task",
         title: "Fix comment flow",
         description: null,
         status: "done",

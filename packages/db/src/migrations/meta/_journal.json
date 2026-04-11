@@ -372,6 +372,13 @@
       "when": 1774483201000,
       "tag": "0052_gate_block_count",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1774483202000,
+      "tag": "0053_issue_type",
+      "breakpoints": true
     }
   ]
 }

@@ -731,6 +731,17 @@ export async function startServer(): Promise<StartedServer> {
           .catch((err) => {
             logger.error({ err }, "db-bypass closure detection sweep failed");
           });
+
+        void heartbeat
+          .detectChainHealth()
+          .then((result) => {
+            if (result.degraded > 0 || result.stalled > 0 || result.autoClosed > 0) {
+              logger.info({ ...result }, "chain health sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "chain health sweep failed");
+          });
       }
 
       // --- Every 20 ticks (~10m) — owner liveness SLA ---

@@ -361,7 +361,7 @@ describe("task-bound scope enforcement", () => {
 
     const res = await request(createAgentApp())
       .post("/api/companies/company-1/issues")
-      .send({ title: "New sub-task", status: "todo", labelIds: ["d0000000-0000-4000-8000-000000000001"] });
+      .send({ title: "New sub-task", status: "todo", issueType: "initiative", labelIds: ["d0000000-0000-4000-8000-000000000001"] });
 
     expect(res.status).toBe(201);
   });

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { and, asc, desc, eq, gte, gt, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import { CHAIN_STALL_THRESHOLD_MS, TERMINAL_ISSUE_STATUSES } from "@paperclipai/shared";
 import {
   activityLog,
   agents,
@@ -5428,6 +5429,173 @@ export function heartbeatService(db: Db) {
         logger.info({ warned, escalated, reawakened }, "idle owner SLA sweep completed");
       }
       return { warned, escalated, reawakened };
+    },
+
+    /**
+     * Detect chain health issues for active initiatives.
+     *
+     * - **Degraded**: Any child task is blocked
+     * - **Stalled**: No child task has had a status transition within CHAIN_STALL_THRESHOLD_MS
+     * - **Auto-close**: All children are terminal and the last transition was >5 min ago
+     *
+     * Precedence: stalled > degraded > healthy.
+     * Dedup: Only logs one event per initiative per detection cycle (checks for recent events).
+     */
+    async detectChainHealth(): Promise<{ degraded: number; stalled: number; autoClosed: number }> {
+      const terminalStatuses = [...TERMINAL_ISSUE_STATUSES] as string[];
+
+      // Find all active initiatives
+      const activeInitiatives = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.issueType, "initiative"),
+            sql`${issues.status} NOT IN ('done', 'cancelled')`,
+          ),
+        );
+
+      let degraded = 0;
+      let stalled = 0;
+      let autoClosed = 0;
+
+      for (const initiative of activeInitiatives) {
+        // Get all children
+        const children = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            status: issues.status,
+            completedAt: issues.completedAt,
+            cancelledAt: issues.cancelledAt,
+            startedAt: issues.startedAt,
+          })
+          .from(issues)
+          .where(eq(issues.parentId, initiative.id));
+
+        if (children.length === 0) continue; // Skip empty initiatives
+
+        const activeChildren = children.filter(c => !terminalStatuses.includes(c.status));
+        const blockedChildren = children.filter(c => c.status === "blocked");
+
+        // Auto-close: all children are terminal
+        if (activeChildren.length === 0) {
+          // Debounce: check if the most recent child terminal transition was >5 min ago
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+          const latestTerminalTimestamp = children.reduce((latest, c) => {
+            const ts = c.completedAt || c.cancelledAt;
+            if (ts && new Date(ts) > latest) return new Date(ts);
+            return latest;
+          }, new Date(0));
+
+          if (latestTerminalTimestamp > fiveMinAgo) continue; // Too recent, skip
+
+          // Auto-close the initiative
+          await db
+            .update(issues)
+            .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+            .where(eq(issues.id, initiative.id));
+
+          await logActivity(db, {
+            companyId: initiative.companyId,
+            actorType: "system",
+            actorId: "chain-health-sweeper",
+            action: "issue.initiative_auto_closed",
+            entityType: "issue",
+            entityId: initiative.id,
+            details: {
+              childCount: children.length,
+              note: "Initiative closure reflects conclusion of the work stream, not success of individual tasks.",
+            },
+          });
+
+          publishLiveEvent({
+            companyId: initiative.companyId,
+            type: "activity.logged",
+            payload: { issueId: initiative.id, action: "issue.initiative_auto_closed" },
+          });
+
+          autoClosed++;
+          continue;
+        }
+
+        // Check for recent status transitions on children
+        const stallThresholdDate = new Date(Date.now() - CHAIN_STALL_THRESHOLD_MS);
+        const [recentTransition] = await db
+          .select({ id: activityLog.id })
+          .from(activityLog)
+          .where(
+            and(
+              inArray(activityLog.entityId, children.map(c => c.id)),
+              eq(activityLog.action, "issue.updated"),
+              gte(activityLog.createdAt, stallThresholdDate),
+              sql`${activityLog.details}->>'status' IS NOT NULL`,
+            ),
+          )
+          .limit(1);
+
+        const isStalled = !recentTransition;
+        const isDegraded = blockedChildren.length > 0;
+
+        if (!isStalled && !isDegraded) continue;
+
+        // Dedup: check for existing event within the last hour
+        const dedupWindow = new Date(Date.now() - 60 * 60 * 1000);
+        const eventAction = isStalled ? "issue.chain_stalled" : "issue.chain_degraded";
+        const [existingEvent] = await db
+          .select({ id: activityLog.id })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.entityId, initiative.id),
+              eq(activityLog.action, eventAction),
+              gte(activityLog.createdAt, dedupWindow),
+            ),
+          )
+          .limit(1);
+        if (existingEvent) continue;
+
+        if (isStalled) {
+          // We know movement was at least CHAIN_STALL_THRESHOLD_MS ago (no transitions found since)
+          const minHoursSinceMovement = Math.round(CHAIN_STALL_THRESHOLD_MS / (60 * 60 * 1000));
+          await logActivity(db, {
+            companyId: initiative.companyId,
+            actorType: "system",
+            actorId: "chain-health-sweeper",
+            action: "issue.chain_stalled",
+            entityType: "issue",
+            entityId: initiative.id,
+            details: {
+              minHoursSinceLastStatusMovement: minHoursSinceMovement,
+              childCount: children.length,
+              activeChildCount: activeChildren.length,
+            },
+          });
+          stalled++;
+        } else if (isDegraded) {
+          await logActivity(db, {
+            companyId: initiative.companyId,
+            actorType: "system",
+            actorId: "chain-health-sweeper",
+            action: "issue.chain_degraded",
+            entityType: "issue",
+            entityId: initiative.id,
+            details: {
+              blockedChildIdentifiers: blockedChildren.map(c => c.identifier).filter(Boolean),
+              blockedChildCount: blockedChildren.length,
+              childCount: children.length,
+            },
+          });
+          degraded++;
+        }
+      }
+
+      return { degraded, stalled, autoClosed };
     },
   };
 }

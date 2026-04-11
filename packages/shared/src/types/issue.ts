@@ -103,6 +103,7 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  issueType: string;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;

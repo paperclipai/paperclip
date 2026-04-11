@@ -147,7 +147,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Missing dept label" });
+      .send({ title: "Missing dept label", issueType: "initiative" });
 
     expect(res.status).toBe(422);
     expect(res.body.gate).toBe("department_label_required");
@@ -162,7 +162,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Wrong label type", labelIds: [NON_DEPT_LABEL_ID] });
+      .send({ title: "Wrong label type", issueType: "initiative", labelIds: [NON_DEPT_LABEL_ID] });
 
     expect(res.status).toBe(422);
     expect(res.body.gate).toBe("department_label_required");
@@ -175,7 +175,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Good issue", labelIds: [DEPT_ENG_LABEL_ID] });
+      .send({ title: "Good issue", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID] });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.create).toHaveBeenCalled();
@@ -187,7 +187,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Mixed labels", labelIds: [DEPT_ENG_LABEL_ID, NON_DEPT_LABEL_ID] });
+      .send({ title: "Mixed labels", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID, NON_DEPT_LABEL_ID] });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.create).toHaveBeenCalled();
@@ -197,7 +197,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Two depts", labelIds: [DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID] });
+      .send({ title: "Two depts", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID, DEPT_QA_LABEL_ID] });
 
     expect(res.status).toBe(422);
     expect(res.body.gate).toBe("department_label_required");
@@ -215,7 +215,7 @@ describe("department label gate", () => {
     const app = createBoardApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Board bypass" });
+      .send({ title: "Board bypass", issueType: "initiative" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.getDepartmentLabelIds).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe("department label gate", () => {
     const app = createAgentApp();
     await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "No dept label" });
+      .send({ title: "No dept label", issueType: "initiative" });
 
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -258,7 +258,7 @@ describe("department-wide dedup gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Draft blog post on cold calling", labelIds: [DEPT_ENG_LABEL_ID] });
+      .send({ title: "Draft blog post on cold calling", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID] });
 
     expect(res.status).toBe(409);
     expect(res.body.gate).toBe("department_dedup_blocker");
@@ -272,7 +272,7 @@ describe("department-wide dedup gate", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Completely unique task", labelIds: [DEPT_ENG_LABEL_ID] });
+      .send({ title: "Completely unique task", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID] });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.findDepartmentDuplicate).toHaveBeenCalledWith(
@@ -292,7 +292,7 @@ describe("department-wide dedup gate", () => {
     const app = createAgentApp();
     await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Existing task again", labelIds: [DEPT_ENG_LABEL_ID] });
+      .send({ title: "Existing task again", issueType: "initiative", labelIds: [DEPT_ENG_LABEL_ID] });
 
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -309,7 +309,7 @@ describe("department-wide dedup gate", () => {
     const app = createBoardApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Board can create duplicates" });
+      .send({ title: "Board can create duplicates", issueType: "initiative" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.findDepartmentDuplicate).not.toHaveBeenCalled();

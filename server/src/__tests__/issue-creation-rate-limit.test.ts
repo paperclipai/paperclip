@@ -149,7 +149,7 @@ describe("issue creation rate limit", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Spam issue" });
+      .send({ title: "Spam issue", issueType: "initiative" });
 
     expect(res.status).toBe(429);
     expect(res.body.error).toBe("rate_limited");
@@ -164,7 +164,7 @@ describe("issue creation rate limit", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Test issue", labelIds: [DEPT_LABEL_ID] });
+      .send({ title: "Test issue", issueType: "initiative", labelIds: [DEPT_LABEL_ID] });
 
     expect(res.status).toBe(201);
     expect(res.body.identifier).toBe("PAP-999");
@@ -177,7 +177,7 @@ describe("issue creation rate limit", () => {
     const app = createBoardApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Board issue" });
+      .send({ title: "Board issue", issueType: "initiative" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.countRecentByAgent).not.toHaveBeenCalled();
@@ -191,7 +191,7 @@ describe("issue creation rate limit", () => {
     const app = createAgentApp();
     const res = await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Test issue", labelIds: [DEPT_LABEL_ID] });
+      .send({ title: "Test issue", issueType: "initiative", labelIds: [DEPT_LABEL_ID] });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.create).toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("issue creation rate limit", () => {
     const app = createAgentApp();
     await request(app)
       .post("/api/companies/company-1/issues")
-      .send({ title: "Spam issue" });
+      .send({ title: "Spam issue", issueType: "initiative" });
 
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

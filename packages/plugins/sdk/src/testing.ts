@@ -358,6 +358,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           projectWorkspaceId: null,
           goalId: input.goalId ?? null,
           parentId: input.parentId ?? null,
+          issueType: (input as any).issueType ?? "task",
           title: input.title,
           description: input.description ?? null,
           status: "todo",

@@ -22,6 +22,34 @@ If a tool fails, classify the blocker precisely:
 
 Do not report a generic "Composio is not set up" blocker unless you have verified the shared `rube` server itself is unavailable.
 
+## Initiative/Task Hierarchy
+
+Every issue has an `issueType`: either `"initiative"` (top-level work container) or `"task"` (child work item). This is a strict 2-level hierarchy enforced at the API level for ALL actors.
+
+**Rules:**
+- `initiative`: Must NOT have a parentId. Represents a work stream or project initiative.
+- `task`: MUST have a parentId pointing to an existing initiative. No orphan tasks allowed.
+- Tasks cannot be parents of other tasks. Only initiatives can have children.
+- A task's department label must match its parent initiative's department label.
+- Initiatives cannot be cancelled or completed while they have active (non-terminal) children.
+
+**When creating an issue via API:**
+```bash
+# Create an initiative
+curl -sS "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/issues" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Improve onboarding flow", "issueType": "initiative", "labelIds": ["<dept-label-id>"]}'
+
+# Create a task under an initiative
+curl -sS "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/issues" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Fix validation bug", "issueType": "task", "parentId": "<initiative-id>", "labelIds": ["<dept-label-id>"]}'
+```
+
+**Before creating a task:** Search for existing initiatives in your department. If one fits your work, attach your task to it. If not, create a new initiative first, then your task under it.
+
 ## Code Delivery Protocol
 
 If your task involves writing code (you have an execution workspace), you MUST deliver your work through GitHub AND register it as a work product before changing the issue status:

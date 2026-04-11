@@ -24,6 +24,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    issueType: "task",
     title: "Inbox item",
     description: null,
     status: "todo",

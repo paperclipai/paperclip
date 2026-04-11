@@ -53,6 +53,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import type { Issue } from "@paperclipai/shared";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -278,6 +279,8 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
+  const [issueType, setIssueType] = useState<"initiative" | "task">("task");
+  const [parentId, setParentId] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
@@ -332,6 +335,13 @@ export function NewIssueDialog() {
       }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(projectId),
   });
+  const { data: companyIssues } = useQuery({
+    queryKey: queryKeys.issues.list(effectiveCompanyId!),
+    queryFn: () => issuesApi.list(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+    select: (data: Issue[]) => data.filter((i) => i.issueType === "initiative"),
+  });
+  const initiatives = companyIssues ?? [];
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -597,6 +607,8 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
+    setIssueType("task");
+    setParentId("");
     setAssigneeValue("");
     setProjectId("");
     setProjectWorkspaceId("");
@@ -663,6 +675,8 @@ export function NewIssueDialog() {
       description: description.trim() || undefined,
       status,
       priority: priority || "medium",
+      issueType,
+      ...(issueType === "task" && parentId ? { parentId } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(projectId ? { projectId } : {}),
@@ -975,6 +989,52 @@ export function NewIssueDialog() {
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
+          </div>
+        </div>
+
+        {/* Issue type toggle */}
+        <div className="px-4 pt-3 pb-1 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center border border-border rounded-md overflow-hidden text-xs">
+              <button
+                type="button"
+                className={cn(
+                  "px-3 py-1 transition-colors",
+                  issueType === "task"
+                    ? "bg-accent text-foreground font-medium"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => { setIssueType("task"); }}
+              >
+                Task
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "px-3 py-1 transition-colors",
+                  issueType === "initiative"
+                    ? "bg-accent text-foreground font-medium"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => { setIssueType("initiative"); setParentId(""); }}
+              >
+                Initiative
+              </button>
+            </div>
+            {issueType === "task" && initiatives.length > 0 && (
+              <select
+                className="text-xs border border-border rounded-md px-2 py-1 bg-transparent text-foreground max-w-[240px] truncate"
+                value={parentId}
+                onChange={(e) => setParentId(e.target.value)}
+              >
+                <option value="">No parent initiative</option>
+                {initiatives.map((init) => (
+                  <option key={init.id} value={init.id}>
+                    {init.identifier ? `${init.identifier}: ` : ""}{init.title}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 

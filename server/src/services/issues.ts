@@ -1657,6 +1657,27 @@ export function issueService(db: Db) {
       ) ?? null;
     },
 
+    getIssueTypeById: async (issueId: string): Promise<{ id: string; issueType: string; companyId: string } | null> => {
+      const [row] = await db
+        .select({ id: issues.id, issueType: issues.issueType, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      return row ?? null;
+    },
+
+    getLabelsByIssueId: async (issueId: string): Promise<Array<{ labelId: string }>> => {
+      return db.select({ labelId: issueLabels.labelId }).from(issueLabels).where(eq(issueLabels.issueId, issueId));
+    },
+
+    getActiveChildCount: async (issueId: string): Promise<{ count: number; identifiers: string[] }> => {
+      const children = await db
+        .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+        .from(issues)
+        .where(eq(issues.parentId, issueId));
+      const active = children.filter(c => c.status !== "done" && c.status !== "cancelled");
+      return { count: active.length, identifiers: active.map(c => c.identifier).filter(Boolean) as string[] };
+    },
+
     getLabelById: (id: string) =>
       db
         .select()

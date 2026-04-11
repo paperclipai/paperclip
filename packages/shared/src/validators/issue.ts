@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES, REOPEN_REASON_CODES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, REOPEN_REASON_CODES } from "../constants.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -41,6 +41,7 @@ export const createIssueSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  issueType: z.enum(ISSUE_TYPES),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),

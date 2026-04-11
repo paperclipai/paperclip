@@ -143,6 +143,13 @@ export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
+export const ISSUE_TYPES = ["initiative", "task"] as const;
+export type IssueType = (typeof ISSUE_TYPES)[number];
+
+export const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+
+export const CHAIN_STALL_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
+
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
