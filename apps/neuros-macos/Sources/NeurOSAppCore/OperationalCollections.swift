@@ -81,6 +81,7 @@ public struct ProjectSummary: Identifiable, Hashable, Sendable {
     public let id: String
     public var name: String
     public var status: String
+    public var goalIDs: [String]
     public var workspaceCount: Int
     public var goalCount: Int
     public var targetDateLabel: String
@@ -89,6 +90,7 @@ public struct ProjectSummary: Identifiable, Hashable, Sendable {
         id: String,
         name: String,
         status: String,
+        goalIDs: [String],
         workspaceCount: Int,
         goalCount: Int,
         targetDateLabel: String
@@ -96,9 +98,44 @@ public struct ProjectSummary: Identifiable, Hashable, Sendable {
         self.id = id
         self.name = name
         self.status = status
+        self.goalIDs = goalIDs
         self.workspaceCount = workspaceCount
         self.goalCount = goalCount
         self.targetDateLabel = targetDateLabel
+    }
+}
+
+public struct GoalSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var title: String
+    public var description: String?
+    public var level: String
+    public var status: String
+    public var parentID: String?
+    public var ownerLabel: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: String,
+        title: String,
+        description: String?,
+        level: String,
+        status: String,
+        parentID: String?,
+        ownerLabel: String,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.level = level
+        self.status = status
+        self.parentID = parentID
+        self.ownerLabel = ownerLabel
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
@@ -133,6 +170,7 @@ public struct OperationsSnapshot: Sendable {
     public var signals: [OperationsSignal]
     public var agents: [AgentRuntimeSummary]
     public var issues: [IssueQueueSummary]
+    public var goals: [GoalSummary]
     public var projects: [ProjectSummary]
     public var plugins: [PluginSummary]
     public var health: ServerHealthSummary?
@@ -146,6 +184,7 @@ public struct OperationsSnapshot: Sendable {
         signals: [OperationsSignal],
         agents: [AgentRuntimeSummary],
         issues: [IssueQueueSummary],
+        goals: [GoalSummary],
         projects: [ProjectSummary],
         plugins: [PluginSummary],
         health: ServerHealthSummary?
@@ -158,6 +197,7 @@ public struct OperationsSnapshot: Sendable {
         self.signals = signals
         self.agents = agents
         self.issues = issues
+        self.goals = goals
         self.projects = projects
         self.plugins = plugins
         self.health = health

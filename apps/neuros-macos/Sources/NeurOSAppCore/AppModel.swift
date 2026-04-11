@@ -18,6 +18,7 @@ public final class AppModel {
     public var signals: [OperationsSignal]
     public var agents: [AgentRuntimeSummary]
     public var issues: [IssueQueueSummary]
+    public var goals: [GoalSummary]
     public var projects: [ProjectSummary]
     public var plugins: [PluginSummary]
     public var isBootstrapping: Bool
@@ -41,6 +42,7 @@ public final class AppModel {
         signals: [OperationsSignal] = [],
         agents: [AgentRuntimeSummary] = [],
         issues: [IssueQueueSummary] = [],
+        goals: [GoalSummary] = [],
         projects: [ProjectSummary] = [],
         plugins: [PluginSummary] = [],
         isBootstrapping: Bool = true,
@@ -63,6 +65,7 @@ public final class AppModel {
         self.signals = signals
         self.agents = agents
         self.issues = issues
+        self.goals = goals
         self.projects = projects
         self.plugins = plugins
         self.isBootstrapping = isBootstrapping
@@ -110,6 +113,7 @@ public final class AppModel {
         signals = snapshot.signals
         agents = snapshot.agents
         issues = snapshot.issues
+        goals = snapshot.goals
         projects = snapshot.projects
         plugins = snapshot.plugins
         health = snapshot.health
@@ -129,6 +133,7 @@ public final class AppModel {
             signals: signals,
             agents: agents,
             issues: issues,
+            goals: goals,
             projects: projects,
             plugins: plugins,
             health: health
@@ -222,9 +227,44 @@ public final class AppModel {
                 IssueQueueSummary(id: "issue-1", identifier: "GN-52", title: "Revisar fila de aprovações", status: "in_review", priority: "high", assigneeLabel: "Clara", updatedAt: .now),
                 IssueQueueSummary(id: "issue-2", identifier: "GN-48", title: "Subir campanha da semana", status: "in_progress", priority: "critical", assigneeLabel: "Nina", updatedAt: .now),
             ],
+            goals: [
+                GoalSummary(
+                    id: "goal-1",
+                    title: "Expandir a operação comercial",
+                    description: "Coordenar aquisição, onboarding e retenção com foco em previsibilidade operacional.",
+                    level: "company",
+                    status: "active",
+                    parentID: nil,
+                    ownerLabel: "Clara",
+                    createdAt: .now.addingTimeInterval(-86_400 * 14),
+                    updatedAt: .now.addingTimeInterval(-7_200)
+                ),
+                GoalSummary(
+                    id: "goal-2",
+                    title: "Aumentar taxa de resposta do inbound",
+                    description: "Padronizar SLA, triagem e redistribuição entre agentes de growth.",
+                    level: "team",
+                    status: "active",
+                    parentID: "goal-1",
+                    ownerLabel: "Nina",
+                    createdAt: .now.addingTimeInterval(-86_400 * 10),
+                    updatedAt: .now.addingTimeInterval(-3_600)
+                ),
+                GoalSummary(
+                    id: "goal-3",
+                    title: "Fechar backlog de follow-up crítico",
+                    description: "Eliminar contatos críticos sem retorno em até 24 horas.",
+                    level: "task",
+                    status: "planned",
+                    parentID: "goal-2",
+                    ownerLabel: "Kai",
+                    createdAt: .now.addingTimeInterval(-86_400 * 5),
+                    updatedAt: .now.addingTimeInterval(-1_800)
+                ),
+            ],
             projects: [
-                ProjectSummary(id: "project-1", name: "Growth Engine", status: "in_progress", workspaceCount: 2, goalCount: 1, targetDateLabel: "2026-04-18"),
-                ProjectSummary(id: "project-2", name: "Ops Reliability", status: "planned", workspaceCount: 1, goalCount: 2, targetDateLabel: "Sem data"),
+                ProjectSummary(id: "project-1", name: "Growth Engine", status: "in_progress", goalIDs: ["goal-2"], workspaceCount: 2, goalCount: 1, targetDateLabel: "2026-04-18"),
+                ProjectSummary(id: "project-2", name: "Ops Reliability", status: "planned", goalIDs: ["goal-1", "goal-3"], workspaceCount: 1, goalCount: 2, targetDateLabel: "Sem data"),
             ],
             plugins: [
                 PluginSummary(id: "plugin-1", displayName: "Central Operações", packageName: "@paperclip/central-operacoes", version: "0.8.3", status: "ready"),

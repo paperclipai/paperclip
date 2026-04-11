@@ -90,6 +90,18 @@ private struct IssueDTO: Decodable, Sendable {
     let updatedAt: Date
 }
 
+private struct GoalDTO: Decodable, Sendable {
+    let id: String
+    let title: String
+    let description: String?
+    let level: String
+    let status: String
+    let parentId: String?
+    let ownerAgentId: String?
+    let createdAt: Date
+    let updatedAt: Date
+}
+
 private struct ProjectDTO: Decodable, Sendable {
     let id: String
     let name: String
@@ -313,6 +325,10 @@ private actor PaperclipAPIClient {
         try await get("companies/\(companyId)/issues")
     }
 
+    func goals(companyId: String) async throws -> [GoalDTO] {
+        try await get("companies/\(companyId)/goals")
+    }
+
     func projects(companyId: String) async throws -> [ProjectDTO] {
         try await get("companies/\(companyId)/projects")
     }
@@ -488,6 +504,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
                 signals: [],
                 agents: [],
                 issues: [],
+                goals: [],
                 projects: [],
                 plugins: plugins.map(Self.mapPlugin),
                 health: Self.mapHealth(health)
@@ -499,6 +516,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         async let activityTask = client.activity(companyId: selectedID)
         async let agentsTask = client.agents(companyId: selectedID)
         async let issuesTask = client.issues(companyId: selectedID)
+        async let goalsTask = client.goals(companyId: selectedID)
         async let projectsTask = client.projects(companyId: selectedID)
 
         let dashboard = try await dashboardTask
@@ -506,6 +524,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         let activity = try await activityTask
         let agents = try await agentsTask
         let issues = try await issuesTask
+        let goals = try await goalsTask
         let projects = try await projectsTask
         let health = try await healthTask
         let plugins = try await pluginsTask
@@ -538,6 +557,15 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         }
 
         let signals = Self.buildSignals(health: health, dashboard: dashboard, approvals: approvals, issueCount: issues.count)
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0.name) })
+        let goalSummaries = goals
+            .sorted(by: { lhs, rhs in
+                if lhs.createdAt == rhs.createdAt {
+                    return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.createdAt < rhs.createdAt
+            })
+            .map { Self.mapGoal($0, agentNamesByID: agentNamesByID) }
 
         return OperationsSnapshot(
             companies: mappedCompanies,
@@ -570,6 +598,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
                 .sorted(by: { $0.updatedAt > $1.updatedAt })
                 .prefix(24)
                 .map(Self.mapIssue),
+            goals: goalSummaries,
             projects: projects.map(Self.mapProject),
             plugins: plugins.map(Self.mapPlugin),
             health: Self.mapHealth(health)
@@ -785,11 +814,26 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         )
     }
 
+    private static func mapGoal(_ dto: GoalDTO, agentNamesByID: [String: String]) -> GoalSummary {
+        GoalSummary(
+            id: dto.id,
+            title: dto.title,
+            description: dto.description,
+            level: dto.level,
+            status: dto.status,
+            parentID: dto.parentId,
+            ownerLabel: dto.ownerAgentId.flatMap { agentNamesByID[$0] } ?? dto.ownerAgentId ?? "Sem owner",
+            createdAt: dto.createdAt,
+            updatedAt: dto.updatedAt
+        )
+    }
+
     private static func mapProject(_ dto: ProjectDTO) -> ProjectSummary {
         ProjectSummary(
             id: dto.id,
             name: dto.name,
             status: dto.status,
+            goalIDs: dto.goalIds,
             workspaceCount: dto.workspaces.count,
             goalCount: dto.goalIds.count,
             targetDateLabel: dto.targetDate ?? "Sem data"

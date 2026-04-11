@@ -23,6 +23,8 @@ public struct RootSplitView: View {
                     InboxSectionView(appModel: appModel, coordinator: coordinator)
                 case .activity:
                     ActivitySectionView(appModel: appModel, coordinator: coordinator)
+                case .goals:
+                    GoalsSectionView(appModel: appModel, coordinator: coordinator)
                 case .queue:
                     QueueSectionView(appModel: appModel, coordinator: coordinator)
                 case .agents:

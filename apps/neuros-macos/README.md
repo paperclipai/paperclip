@@ -10,6 +10,7 @@ SwiftUI-native macOS foundation for `neurOS`, the Paperclip evolution in this re
   - central operacional
   - inbox
   - atividade
+  - metas
   - fila e issues
   - agentes
   - aprovações
@@ -23,6 +24,7 @@ SwiftUI-native macOS foundation for `neurOS`, the Paperclip evolution in this re
   - project workspace runtime start/stop/restart controls
   - native inbox triage over approvals, issues, and runtime signals
   - activity timeline backed by the Paperclip activity API
+  - native goal hierarchy with tree selection, owner/status detail, and linked projects
 - persisted server configuration with local/remote/hybrid runtime preference
 - native desktop service layer prepared for:
   - notifications

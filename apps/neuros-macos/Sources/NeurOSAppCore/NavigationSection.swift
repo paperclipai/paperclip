@@ -4,6 +4,7 @@ public enum NavigationSection: String, CaseIterable, Identifiable, Sendable {
     case operations
     case inbox
     case activity
+    case goals
     case queue
     case agents
     case projects
@@ -20,6 +21,7 @@ public enum NavigationSection: String, CaseIterable, Identifiable, Sendable {
         case .operations: "Central Operacional"
         case .inbox: "Inbox"
         case .activity: "Atividade"
+        case .goals: "Metas"
         case .queue: "Fila e Issues"
         case .agents: "Agentes"
         case .projects: "Projetos e Workspaces"

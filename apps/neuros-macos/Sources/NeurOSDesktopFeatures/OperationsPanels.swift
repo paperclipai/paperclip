@@ -1303,10 +1303,11 @@ private struct WorkspaceDetailCard: View {
 
 func statusColor(for value: String) -> Color {
     switch value.lowercased() {
-    case "ok", "ready", "active", "running", "pronta", "monitorando": .green
+    case "ok", "ready", "active", "running", "achieved", "completed", "pronta", "monitorando": .green
     case "in_progress", "executando", "connecting": .blue
     case "paused", "pending", "in_review", "planned": .orange
     case "error", "unhealthy", "degraded", "critical", "blocked": .red
+    case "cancelled": .secondary
     default: .secondary
     }
 }

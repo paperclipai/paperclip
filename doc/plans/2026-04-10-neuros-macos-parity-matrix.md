@@ -32,6 +32,7 @@ The current macOS navigation defined in `NavigationSection.swift` is:
 - `operations`
 - `inbox`
 - `activity`
+- `goals`
 - `queue`
 - `agents`
 - `projects`
@@ -46,6 +47,7 @@ The current native detail routing in `RootSplitView.swift` maps those sections t
 - `OperationsHomeView`
 - `InboxSectionView`
 - `ActivitySectionView`
+- `GoalsSectionView`
 - `QueueSectionView`
 - `AgentsSectionView`
 - `ProjectsSectionView`
@@ -66,8 +68,8 @@ Notable real interactive consoles already present on macOS:
 Grouped product capabilities counted in this matrix: 16
 
 - `implemented`: 2
-- `partial`: 9
-- `not_started`: 5
+- `partial`: 10
+- `not_started`: 4
 
 Interpretation:
 
@@ -75,7 +77,7 @@ Interpretation:
 - It is beyond a placeholder prototype.
 - It is not yet at full product parity with the web app.
 - The strongest implemented areas are `Operations` and `Approvals`.
-- The largest missing areas are `Goals`, `Costs`, `Routines`, auth/onboarding, and design/developer utility surfaces.
+- The largest missing areas are `Costs`, `Routines`, auth/onboarding, and design/developer utility surfaces.
 
 ## Parity Matrix
 
@@ -91,7 +93,7 @@ Interpretation:
 | Companies and organization | `Companies.tsx`, `CompanyImport.tsx`, `CompanyExport.tsx`, `CompanySettings.tsx`, `CompanySkills.tsx`, `Org.tsx`, `OrgChart.tsx` | `OrganizationSectionView` shows active company and company summaries only; no import/export/settings/skills/org-chart flows | partial | `OrganizationSectionView` in `OperationsPanels.swift` |
 | Instance settings | `InstanceSettings.tsx`, `InstanceGeneralSettings.tsx`, `InstanceExperimentalSettings.tsx` | `SettingsView` supports connectivity, runtime preference, launch-at-login, notifications, and diagnostics, but not the full instance settings surface | partial | `SettingsView.swift` |
 | Inbox and async work intake | `Inbox.tsx` | native inbox triage now exists over approvals, recent issues, and runtime signals, but without the full web filtering/archive/read workflow | partial | `InboxSectionView` |
-| Goals and goal hierarchy | `Goals.tsx`, `GoalDetail.tsx` | no native equivalent found | not_started | no matching section in native navigation |
+| Goals and goal hierarchy | `Goals.tsx`, `GoalDetail.tsx` | native goal tree and detail surface exist, including hierarchy selection and linked project visibility, but creation/editing flows are still missing | partial | `GoalsViews.swift`, `PaperclipDesktopService.swift` |
 | Costs and spend management | `Costs.tsx` | budget metrics appear in summaries, but no dedicated native costs surface exists | not_started | metrics only in `OperationsPanels.swift`; no section/view for costs |
 | Routines and recurring automation | `Routines.tsx`, `RoutineDetail.tsx` | no native equivalent found | not_started | no matching section in native navigation |
 | Auth, claim, and invite flows | `Auth.tsx`, `CliAuth.tsx`, `BoardClaim.tsx`, `InviteLanding.tsx` | no native authentication/onboarding flow found beyond server configuration | not_started | `SettingsView.swift` covers connection only |
@@ -112,7 +114,6 @@ These routes are intentionally excluded from parity scoring:
 
 The macOS app opens at an operational shell, but it still lacks native surfaces for:
 
-- goals
 - costs
 - routines
 
@@ -146,18 +147,17 @@ The app already shows meaningful organization and plugin state, but it still lac
 
 If the objective is full macOS parity with the current web surface, the most coherent next sequence is:
 
-1. `Goals`
-2. richer `Issues`, `Agents`, and `Projects` detail pages
-3. `Companies` + `Org/OrgChart`
-4. `Plugin settings` + `Adapter manager`
-5. `Costs`
-6. `Routines`
-7. auth/onboarding flows
+1. richer `Issues`, `Agents`, and `Projects` detail pages
+2. `Companies` + `Org/OrgChart`
+3. `Plugin settings` + `Adapter manager`
+4. `Costs`
+5. `Routines`
+6. auth/onboarding flows
 
 Rationale:
 
-- Steps 1 to 3 close the biggest everyday operator gaps.
-- Steps 5 to 7 close platform management gaps.
+- Steps 1 to 3 close the biggest everyday operator gaps now that `Goals` has a native surface.
+- Steps 4 to 6 close platform management gaps.
 - Auth/onboarding should land only after the native app has enough functional breadth to justify a full login flow.
 
 ## Conclusion
@@ -171,4 +171,4 @@ Current state is best described as:
 - strong native operational shell
 - real interactive consoles for approvals, plugins, and workspace runtime
 - partial parity across several board/operator surfaces
-- major product areas still not started on macOS
+- major platform surfaces still not started on macOS

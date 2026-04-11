@@ -72,6 +72,7 @@ public struct SidebarNavigationView: View {
         case .operations: "waveform.path.ecg.rectangle"
         case .inbox: "tray.full"
         case .activity: "clock.arrow.circlepath"
+        case .goals: "target"
         case .queue: "list.bullet.clipboard"
         case .agents: "person.3.sequence"
         case .projects: "folder.badge.gearshape"
