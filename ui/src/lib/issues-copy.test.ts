@@ -6,9 +6,17 @@ import {
   formatIssueFilterCount,
   formatIssueSubtaskCount,
   getIssuesCopy,
+  issueActivitySummaryLabel,
   issueAssignToRequesterLabel,
+  issueColumnDescription,
+  issueColumnLabel,
+  issueColumnsResetLabel,
+  issueColumnsResetSummary,
+  issueColumnsSectionLabel,
+  issueColumnsTriggerLabel,
   issueDeleteLabelTitle,
   issueExecutionRunNowLabel,
+  issueLiveLabel,
   issueParticipantNoneLabel,
   issueParticipantSearchPlaceholder,
   issueGroupFieldLabel,
@@ -48,5 +56,16 @@ describe("issues-copy", () => {
       participantLabel: "Alice",
       locale: "zh-CN",
     })).toBe("审核要求修改，执行者：Alice");
+  });
+
+  it("formats issue column copy", () => {
+    expect(issueColumnLabel("updated", "zh-CN")).toBe("更新时间");
+    expect(issueColumnDescription("workspace", "zh-CN")).toContain("工作区");
+    expect(issueActivitySummaryLabel("2小时前", "zh-CN")).toBe("更新于 2小时前");
+    expect(issueColumnsTriggerLabel("en")).toBe("Table columns");
+    expect(issueColumnsSectionLabel("zh-CN")).toBe("桌面任务行");
+    expect(issueColumnsResetLabel("en")).toBe("Reset defaults");
+    expect(issueColumnsResetSummary("zh-CN")).toBe("状态、ID、更新时间");
+    expect(issueLiveLabel("en")).toBe("Live");
   });
 });

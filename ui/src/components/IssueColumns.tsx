@@ -14,37 +14,31 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
+import { getRuntimeLocaleConfig } from "../lib/runtime-locale";
+import {
+  getIssuesCopy,
+  issueActivitySummaryLabel,
+  issueColumnDescription,
+  issueColumnLabel,
+  issueColumnsResetLabel,
+  issueColumnsResetSummary,
+  issueColumnsSectionLabel,
+  issueColumnsTriggerLabel,
+  issueLiveLabel,
+} from "../lib/issues-copy";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { useLocale } from "../context/LocaleContext";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 
-const issueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
-  id: "ID",
-  assignee: "Assignee",
-  project: "Project",
-  workspace: "Workspace",
-  parent: "Parent issue",
-  labels: "Tags",
-  updated: "Last updated",
-};
-
-const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
-  updated: "Latest visible activity time.",
-};
-
-export function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+export function issueActivityText(issue: Issue, locale = getRuntimeLocaleConfig().locale): string {
+  return issueActivitySummaryLabel(
+    timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt),
+    locale,
+  );
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -73,6 +67,8 @@ export function IssueColumnPicker({
   onResetColumns: () => void;
   title: string;
 }) {
+  const { locale } = useLocale();
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -83,14 +79,14 @@ export function IssueColumnPicker({
           className="hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"
         >
           <Columns3 className="mr-1 h-3.5 w-3.5" />
-          Columns
+          {issueColumnsTriggerLabel(locale)}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              {issueColumnsSectionLabel(locale)}
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -108,10 +104,10 @@ export function IssueColumnPicker({
           >
             <span className="flex flex-col gap-0.5">
               <span className="text-sm font-medium text-foreground">
-                {issueColumnLabels[column]}
+                {issueColumnLabel(column, locale)}
               </span>
               <span className="text-xs leading-relaxed text-muted-foreground">
-                {issueColumnDescriptions[column]}
+                {issueColumnDescription(column, locale)}
               </span>
             </span>
           </DropdownMenuCheckboxItem>
@@ -121,8 +117,8 @@ export function IssueColumnPicker({
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
         >
-          Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          {issueColumnsResetLabel(locale)}
+          <span className="ml-auto text-xs text-muted-foreground">{issueColumnsResetSummary(locale)}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -142,6 +138,8 @@ export function InboxIssueMetaLeading({
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
 }) {
+  const { locale } = useLocale();
+
   return (
     <>
       {showStatus ? (
@@ -176,7 +174,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            Live
+            {issueLiveLabel(locale)}
           </span>
         </span>
       )}
@@ -207,8 +205,10 @@ export function InboxIssueTrailingColumns({
   parentTitle: string | null;
   assigneeContent?: ReactNode;
 }) {
+  const { locale } = useLocale();
+  const copy = getIssuesCopy(locale);
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? copy.userFallback;
 
   return (
     <span
@@ -243,7 +243,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
+              {copy.unassigned}
             </span>
           );
         }
@@ -268,7 +268,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
+              {copy.noProject}
             </span>
           );
         }
@@ -322,7 +322,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">{copy.subIssues}</span>
               )}
             </span>
           );

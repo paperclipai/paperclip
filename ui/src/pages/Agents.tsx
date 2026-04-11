@@ -6,7 +6,9 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
 import { useSidebar } from "../context/SidebarContext";
+import { formatAgentCount, getAgentCopy } from "../lib/agent-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
@@ -57,9 +59,11 @@ export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { locale } = useLocale();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
+  const copy = getAgentCopy(locale);
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
   const [view, setView] = useState<"list" | "org">("org");
@@ -109,11 +113,11 @@ export function Agents() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy.agents }]);
+  }, [copy.agents, setBreadcrumbs]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={copy.selectCompany} />;
   }
 
   if (isLoading) {
@@ -129,10 +133,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: copy.all },
+              { value: "active", label: copy.active },
+              { value: "paused", label: copy.paused },
+              { value: "error", label: copy.error },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -149,7 +153,7 @@ export function Agents() {
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Filters
+              {copy.filters}
               {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
             </button>
             {filtersOpen && (
@@ -164,7 +168,7 @@ export function Agents() {
                   )}>
                     {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
                   </span>
-                  Show terminated
+                  {copy.showTerminated}
                 </button>
               </div>
             )}
@@ -194,13 +198,13 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {copy.newAgent}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">{formatAgentCount(filtered.length, locale)}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -208,8 +212,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={copy.createFirstAgent}
+          action={copy.newAgent}
           onAction={openNewAgent}
         />
       )}
@@ -240,6 +244,7 @@ export function Agents() {
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          label={copy.live}
                         />
                       ) : (
                         <StatusBadge status={agent.status} />
@@ -251,6 +256,7 @@ export function Agents() {
                           agentRef={agentRouteRef(agent)}
                           runId={liveRunByAgent.get(agent.id)!.runId}
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                          label={copy.live}
                         />
                       )}
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
@@ -273,7 +279,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {copy.noAgentsMatch}
         </p>
       )}
 
@@ -281,20 +287,28 @@ export function Agents() {
       {effectiveView === "org" && filteredOrg.length > 0 && (
         <div className="border border-border py-1">
           {filteredOrg.map((node) => (
-            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} tab={tab} />
+            <OrgTreeNode
+              key={node.id}
+              node={node}
+              depth={0}
+              agentMap={agentMap}
+              liveRunByAgent={liveRunByAgent}
+              tab={tab}
+              liveLabel={copy.live}
+            />
           ))}
         </div>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {copy.noAgentsMatch}
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
+          {copy.noOrgHierarchy}
         </p>
       )}
     </div>
@@ -307,12 +321,14 @@ function OrgTreeNode({
   agentMap,
   liveRunByAgent,
   tab,
+  liveLabel,
 }: {
   node: OrgNode;
   depth: number;
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
   tab: FilterTab;
+  liveLabel: string;
 }) {
   const agent = agentMap.get(node.id);
 
@@ -341,6 +357,7 @@ function OrgTreeNode({
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                label={liveLabel}
               />
             ) : (
               <StatusBadge status={node.status} />
@@ -352,6 +369,7 @@ function OrgTreeNode({
                 agentRef={agent ? agentRouteRef(agent) : node.id}
                 runId={liveRunByAgent.get(node.id)!.runId}
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                label={liveLabel}
               />
             )}
             {agent && (
@@ -373,7 +391,15 @@ function OrgTreeNode({
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border/50 ml-4">
           {node.reports.map((child) => (
-            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} tab={tab} />
+            <OrgTreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              agentMap={agentMap}
+              liveRunByAgent={liveRunByAgent}
+              tab={tab}
+              liveLabel={liveLabel}
+            />
           ))}
         </div>
       )}
@@ -385,10 +411,12 @@ function LiveRunIndicator({
   agentRef,
   runId,
   liveCount,
+  label,
 }: {
   agentRef: string;
   runId: string;
   liveCount: number;
+  label: string;
 }) {
   return (
     <Link
@@ -401,7 +429,8 @@ function LiveRunIndicator({
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+        {label}
+        {liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
     </Link>
   );

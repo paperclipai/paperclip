@@ -5,6 +5,8 @@ import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
+import { getApprovalsCopy } from "../lib/approvals-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
@@ -18,6 +20,8 @@ type StatusFilter = "pending" | "all";
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { locale } = useLocale();
+  const copy = getApprovalsCopy(locale);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -26,8 +30,8 @@ export function Approvals() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy.title }]);
+  }, [copy.title, setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
@@ -49,7 +53,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : copy.failedApprove);
     },
   });
 
@@ -60,7 +64,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : copy.failedReject);
     },
   });
 
@@ -75,7 +79,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">{copy.selectCompany}</p>;
   }
 
   if (isLoading) {
@@ -86,17 +90,29 @@ export function Approvals() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
-          <PageTabBar items={[
-            { value: "pending", label: <>Pending{pendingCount > 0 && (
-              <span className={cn(
-                "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                "bg-yellow-500/20 text-yellow-500"
-              )}>
-                {pendingCount}
-              </span>
-            )}</> },
-            { value: "all", label: "All" },
-          ]} />
+          <PageTabBar
+            items={[
+              {
+                value: "pending",
+                label: (
+                  <>
+                    {copy.pending}
+                    {pendingCount > 0 && (
+                      <span
+                        className={cn(
+                          "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                          "bg-yellow-500/20 text-yellow-500",
+                        )}
+                      >
+                        {pendingCount}
+                      </span>
+                    )}
+                  </>
+                ),
+              },
+              { value: "all", label: copy.all },
+            ]}
+          />
         </Tabs>
       </div>
 
@@ -107,7 +123,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? copy.noPending : copy.noApprovals}
           </p>
         </div>
       )}
@@ -126,6 +142,7 @@ export function Approvals() {
               pendingAction={
                 approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null
               }
+              locale={locale}
             />
           ))}
         </div>

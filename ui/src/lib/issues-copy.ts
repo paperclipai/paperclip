@@ -1,4 +1,5 @@
 import { issueStatusLegendLabel, priorityLegendLabel } from "./dashboard-copy";
+import type { InboxIssueColumn } from "./inbox";
 
 type IssuesCopyLocale = string | null | undefined;
 
@@ -8,6 +9,9 @@ const issuesCopy = {
     selectCompany: "Select a company to view issues.",
     searchIssuesPlaceholder: "Search issues...",
     searchIssuesAria: "Search issues",
+    columns: "Table columns",
+    desktopIssueRows: "Desktop issue rows",
+    resetDefaults: "Reset defaults",
     noWorkspace: "No Workspace",
     noParent: "No Parent",
     unassigned: "Unassigned",
@@ -23,12 +27,13 @@ const issuesCopy = {
     visibility: "Visibility",
     showRoutineRuns: "Show routine runs",
     status: "Status",
+    id: "ID",
     priority: "Priority",
     assignee: "Assignee",
     labels: "Labels",
     project: "Project",
     sort: "Sort",
-    group: "Group",
+    group: "Grouping",
     title: "Title",
     created: "Created",
     updated: "Updated",
@@ -75,12 +80,16 @@ const issuesCopy = {
     approval: "Approval",
     runReviewNow: "Run review now",
     runApprovalNow: "Run approval now",
+    live: "Live",
   },
   "zh-CN": {
     issues: "任务",
     selectCompany: "请选择一个公司以查看任务。",
     searchIssuesPlaceholder: "搜索任务…",
     searchIssuesAria: "搜索任务",
+    columns: "列",
+    desktopIssueRows: "桌面任务行",
+    resetDefaults: "恢复默认",
     noWorkspace: "无工作区",
     noParent: "无父任务",
     unassigned: "未分配",
@@ -96,6 +105,7 @@ const issuesCopy = {
     visibility: "显示",
     showRoutineRuns: "显示例行任务运行",
     status: "状态",
+    id: "ID",
     priority: "优先级",
     assignee: "负责人",
     labels: "标签",
@@ -148,6 +158,7 @@ const issuesCopy = {
     approval: "审批",
     runReviewNow: "立即执行审核",
     runApprovalNow: "立即执行审批",
+    live: "进行中",
   },
 } as const;
 
@@ -213,6 +224,71 @@ export function issueGroupFieldLabel(
       none: copy.none,
     }[field]
   );
+}
+
+export function issueColumnLabel(column: InboxIssueColumn, locale: IssuesCopyLocale): string {
+  const copy = getIssuesCopy(locale);
+  return {
+    status: copy.status,
+    id: copy.id,
+    assignee: copy.assignee,
+    project: copy.project,
+    workspace: copy.workspace,
+    parent: copy.parentIssue,
+    labels: copy.labels,
+    updated: copy.updated,
+  }[column];
+}
+
+export function issueColumnsTriggerLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).columns;
+}
+
+export function issueColumnsSectionLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).desktopIssueRows;
+}
+
+export function issueColumnsResetLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).resetDefaults;
+}
+
+export function issueColumnsResetSummary(locale: IssuesCopyLocale): string {
+  const copy = getIssuesCopy(locale);
+  return locale === "zh-CN" ? `${copy.status}、${copy.id}、${copy.updated}` : `${copy.status}, ${copy.id}, ${copy.updated}`;
+}
+
+export function issueLiveLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).live;
+}
+
+export function issueColumnDescription(column: InboxIssueColumn, locale: IssuesCopyLocale): string {
+  if (locale === "zh-CN") {
+    return {
+      status: "左侧状态标记。",
+      id: "像 PAP-1009 这样的任务编号。",
+      assignee: "负责该任务的智能体或董事会成员。",
+      project: "关联项目及其颜色标识。",
+      workspace: "执行该任务的工作区或项目工作区。",
+      parent: "父任务编号和标题。",
+      labels: "任务标签。",
+      updated: "最近一次可见活动时间。",
+    }[column];
+  }
+
+  return {
+    status: "Issue state chip on the left edge.",
+    id: "Ticket identifier like PAP-1009.",
+    assignee: "Assigned agent or board user.",
+    project: "Linked project pill with its color.",
+    workspace: "Execution or project workspace used for the issue.",
+    parent: "Parent issue identifier and title.",
+    labels: "Issue labels and tags.",
+    updated: "Latest visible activity time.",
+  }[column];
+}
+
+export function issueActivitySummaryLabel(time: string, locale: IssuesCopyLocale): string {
+  return locale === "zh-CN" ? `更新于 ${time}` : `Updated ${time}`;
 }
 
 export function issueStatusLabel(status: string, locale: IssuesCopyLocale): string {

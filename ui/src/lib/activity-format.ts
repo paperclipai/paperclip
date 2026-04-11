@@ -52,6 +52,7 @@ const ACTIVITY_TYPE_LABELS_ZH: Record<string, string> = {
 
 const ACTIVITY_ROW_VERBS_EN: Record<string, string> = {
   "issue.created": "created",
+  "issue.read_marked": "marked as read",
   "issue.updated": "updated",
   "issue.checked_out": "checked out",
   "issue.released": "released",
@@ -92,6 +93,7 @@ const ACTIVITY_ROW_VERBS_EN: Record<string, string> = {
 
 const ACTIVITY_ROW_VERBS_ZH: Record<string, string> = {
   "issue.created": "创建了",
+  "issue.read_marked": "标记为已读",
   "issue.updated": "更新了",
   "issue.checked_out": "检出了",
   "issue.released": "发布了",
@@ -132,6 +134,7 @@ const ACTIVITY_ROW_VERBS_ZH: Record<string, string> = {
 
 const ISSUE_ACTIVITY_LABELS_EN: Record<string, string> = {
   "issue.created": "created the issue",
+  "issue.read_marked": "marked the issue as read",
   "issue.updated": "updated the issue",
   "issue.checked_out": "checked out the issue",
   "issue.released": "released the issue",
@@ -157,6 +160,7 @@ const ISSUE_ACTIVITY_LABELS_EN: Record<string, string> = {
 
 const ISSUE_ACTIVITY_LABELS_ZH: Record<string, string> = {
   "issue.created": "创建了任务",
+  "issue.read_marked": "将任务标记为已读",
   "issue.updated": "更新了任务",
   "issue.checked_out": "检出了任务",
   "issue.released": "发布了任务",

@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 interface SwipeToArchiveProps {
   children: ReactNode;
   onArchive: () => void;
+  archiveLabel: string;
   disabled?: boolean;
   selected?: boolean;
   className?: string;
@@ -17,6 +18,7 @@ const COMMIT_DELAY_MS = 140;
 export function SwipeToArchive({
   children,
   onArchive,
+  archiveLabel,
   disabled = false,
   selected = false,
   className,
@@ -146,7 +148,7 @@ export function SwipeToArchive({
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">
           <Archive className="h-4 w-4" />
-          Archive
+          {archiveLabel}
         </span>
       </div>
       <div

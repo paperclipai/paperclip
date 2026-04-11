@@ -44,6 +44,7 @@ import {
   formatMarkAllReadDescription,
   formatRetryButton,
   formatUpdatedAtLabel,
+  formatAgentErrorSummaryTail,
   getInboxCopy,
   inboxEmptyMessage,
 } from "../lib/inbox-copy";
@@ -252,7 +253,7 @@ export function FailedRunInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -410,7 +411,7 @@ function ApprovalInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -548,7 +549,7 @@ function JoinRequestInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -1631,14 +1632,14 @@ export function Inbox() {
                 className={cn("h-8 shrink-0 text-xs", groupBy !== "none" && "bg-accent")}
               >
                 <Layers className="mr-1.5 h-3.5 w-3.5" />
-                Group
+                {copy.group}
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-40 p-2">
               <div className="space-y-0.5">
                 {([
-                  ["none", "None"],
-                  ["type", "Type"],
+                  ["none", copy.groupByNone],
+                  ["type", copy.groupByType],
                 ] as const).map(([value, label]) => (
                   <button
                     key={value}
@@ -1847,7 +1848,7 @@ export function Inbox() {
                           {formatIssueSubtaskCount(childCount, locale)}
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileMeta={issueActivityText(issue, locale).toLowerCase()}
                       mobileLeading={
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button
@@ -1964,6 +1965,7 @@ export function Inbox() {
                       elements.push(wrapItem(approvalKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={approvalKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(approvalKey)}
@@ -2002,6 +2004,7 @@ export function Inbox() {
                       elements.push(wrapItem(runKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={runKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(runKey)}
@@ -2037,6 +2040,7 @@ export function Inbox() {
                       elements.push(wrapItem(joinKey, isSelected, canArchiveFromTab ? (
                         <SwipeToArchive
                           key={joinKey}
+                          archiveLabel={copy.archive}
                           selected={isSelected}
                           disabled={isArchiving}
                           onArchive={() => handleArchiveNonIssue(joinKey)}
@@ -2064,6 +2068,7 @@ export function Inbox() {
                     elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
                       <SwipeToArchive
                         key={`issue:${issue.id}`}
+                        archiveLabel={copy.archive}
                         selected={isSelected}
                         disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
                         onArchive={() => archiveIssueMutation.mutate(issue.id)}
@@ -2092,6 +2097,7 @@ export function Inbox() {
                             {canArchiveFromTab ? (
                               <SwipeToArchive
                                 key={`issue:${child.id}`}
+                                archiveLabel={copy.archive}
                                 selected={isChildSelected}
                                 disabled={isChildArchiving || archiveIssueMutation.isPending}
                                 onArchive={() => archiveIssueMutation.mutate(child.id)}
@@ -2118,7 +2124,7 @@ export function Inbox() {
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
+              {copy.alerts}
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
@@ -2130,14 +2136,14 @@ export function Inbox() {
                     <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
                     <span className="text-sm">
                       <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                      {formatAgentErrorSummaryTail(dashboard!.agents.error, locale)}
                     </span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={copy.dismiss}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

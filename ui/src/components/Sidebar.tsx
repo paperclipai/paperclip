@@ -112,7 +112,7 @@ export function Sidebar() {
             to="/routines"
             label={copy.routines}
             icon={Repeat}
-            textBadge="Beta"
+            textBadge={copy.beta}
             textBadgeTone="amber"
           />
           <SidebarNavItem to="/goals" label={copy.goals} icon={Target} />

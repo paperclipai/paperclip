@@ -1,11 +1,16 @@
 import type { Agent } from "@paperclipai/shared";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   activityTypeLabel,
   formatActivityVerb,
   formatIssueActivityAction,
   getActivityPageCopy,
 } from "./activity-format";
+import { getRuntimeLocaleConfig, setRuntimeLocaleConfig } from "./runtime-locale";
+
+const originalConfig = getRuntimeLocaleConfig();
+
+afterEach(() => setRuntimeLocaleConfig(originalConfig));
 
 describe("activity formatting", () => {
   const agentMap = new Map<string, Agent>([
@@ -70,5 +75,12 @@ describe("activity formatting", () => {
     expect(copy.filterByType).toBe("按类型筛选");
     expect(activityTypeLabel("heartbeat", "zh-CN")).toBe("运行");
     expect(activityTypeLabel("project", "en")).toBe("Project");
+  });
+
+  it("formats missing read-marked activity verbs in Chinese", () => {
+    setRuntimeLocaleConfig({ locale: "zh-CN", timeZone: "Asia/Shanghai", currencyCode: "CNY" });
+
+    expect(formatActivityVerb("issue.read_marked", undefined)).toBe("标记为已读");
+    expect(formatIssueActivityAction("issue.read_marked", undefined)).toBe("将任务标记为已读");
   });
 });

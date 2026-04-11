@@ -3,6 +3,17 @@ type AgentCopyLocale = string | null | undefined;
 const agentCopy = {
   en: {
     agents: "Agents",
+    selectCompany: "Select a company to view agents.",
+    all: "All",
+    active: "Active",
+    paused: "Paused",
+    error: "Error",
+    filters: "Filters",
+    showTerminated: "Show terminated",
+    newAgent: "New Agent",
+    createFirstAgent: "Create your first agent to get started.",
+    noAgentsMatch: "No agents match the selected filter.",
+    noOrgHierarchy: "No organizational hierarchy defined.",
     agent: "Agent",
     runs: "Runs",
     instructions: "Instructions",
@@ -109,6 +120,17 @@ const agentCopy = {
   },
   "zh-CN": {
     agents: "智能体",
+    selectCompany: "请选择一个公司以查看智能体。",
+    all: "全部",
+    active: "运行中",
+    paused: "已暂停",
+    error: "异常",
+    filters: "筛选",
+    showTerminated: "显示已终止",
+    newAgent: "新建智能体",
+    createFirstAgent: "创建你的第一个智能体。",
+    noAgentsMatch: "没有符合当前筛选条件的智能体。",
+    noOrgHierarchy: "尚未定义组织层级。",
     agent: "智能体",
     runs: "运行",
     instructions: "指令",
@@ -202,16 +224,16 @@ const agentCopy = {
     noModelsFound: "没有找到模型。",
     thinkingEffort: "思考强度",
     auto: "自动",
-    addNewAgent: "添加新 Agent",
+    addNewAgent: "添加新智能体",
     ceoSetupRecommendation:
-      "建议由 CEO 来完成 Agent 初始配置——他们更了解组织结构，也能统一设置汇报关系、权限和适配器。",
-    askCeoToCreateAgent: "让 CEO 创建新 Agent",
+      "建议由 CEO 来完成智能体初始配置——他们更了解组织结构，也能统一设置汇报关系、权限和适配器。",
+    askCeoToCreateAgent: "让 CEO 创建新智能体",
     advancedConfigurationMyself: "我想自己做高级配置",
     back: "返回",
     advancedAdapterSetup: "选择用于高级创建流程的适配器类型。",
     recommended: "推荐",
-    createNewAgentIssueTitle: "创建一个新的 Agent",
-    createNewAgentIssueDescription: "请在这里说明你想创建什么样的 Agent",
+    createNewAgentIssueTitle: "创建一个新的智能体",
+    createNewAgentIssueDescription: "请在这里说明你想创建什么样的智能体",
   },
 } as const;
 
@@ -221,6 +243,10 @@ function resolveLocale(locale: AgentCopyLocale) {
 
 export function getAgentCopy(locale: AgentCopyLocale) {
   return agentCopy[resolveLocale(locale)];
+}
+
+export function formatAgentCount(count: number, locale: AgentCopyLocale) {
+  return locale === "zh-CN" ? `${count} 个智能体` : `${count} agent${count === 1 ? "" : "s"}`;
 }
 
 export function formatAgentMoreIssues(count: number, locale: AgentCopyLocale): string {

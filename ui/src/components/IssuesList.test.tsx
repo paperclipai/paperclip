@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
+import { issueColumnsTriggerLabel } from "../lib/issues-copy";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -297,7 +298,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Columns");
+      expect(container.textContent).toContain(issueColumnsTriggerLabel("en"));
       expect(container.textContent).toContain("PAP-9");
       expect(container.textContent).toContain("Agent One");
       expect(container.textContent).not.toContain("Updated");

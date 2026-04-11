@@ -17,6 +17,12 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useLocale } from "../context/LocaleContext";
+import {
+  formatRetentionDays,
+  formatRetentionMonths,
+  formatRetentionWeeks,
+  getInstanceAdminCopy,
+} from "../lib/instance-admin-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -30,6 +36,7 @@ export function InstanceGeneralSettings() {
   const { t, locale, timeZone, currencyCode } = useLocale();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const adminCopy = getInstanceAdminCopy(locale);
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -195,7 +202,7 @@ export function InstanceGeneralSettings() {
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle username log censoring"
+            aria-label={adminCopy.general.toggleCensorAria}
           />
         </div>
       </section>
@@ -212,7 +219,7 @@ export function InstanceGeneralSettings() {
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
+            aria-label={adminCopy.general.toggleKeyboardAria}
           />
         </div>
       </section>
@@ -220,16 +227,14 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Backup retention</h2>
+            <h2 className="text-sm font-semibold">{adminCopy.general.backupRetention}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long to keep automatic database backups at each tier. Daily backups
-              are kept in full, then thinned to one per week and one per month. Backups are
-              compressed with gzip.
+              {adminCopy.general.backupRetentionDescription}
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{adminCopy.general.daily}</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -244,25 +249,24 @@ export function InstanceGeneralSettings() {
                         ? "border-foreground bg-accent text-foreground"
                         : "border-border bg-background hover:bg-accent/50",
                     )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{days} days</div>
-                  </button>
-                );
+                      onClick={() =>
+                        updateGeneralMutation.mutate({
+                          backupRetention: { ...backupRetention, dailyDays: days },
+                        })
+                      }
+                    >
+                      <div className="text-sm font-medium">{formatRetentionDays(days, locale)}</div>
+                    </button>
+                  );
               })}
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{adminCopy.general.weekly}</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
                 return (
                   <button
                     key={weeks}
@@ -274,25 +278,24 @@ export function InstanceGeneralSettings() {
                         ? "border-foreground bg-accent text-foreground"
                         : "border-border bg-background hover:bg-accent/50",
                     )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
+                      onClick={() =>
+                        updateGeneralMutation.mutate({
+                          backupRetention: { ...backupRetention, weeklyWeeks: weeks },
+                        })
+                      }
+                    >
+                      <div className="text-sm font-medium">{formatRetentionWeeks(weeks, locale)}</div>
+                    </button>
+                  );
               })}
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{adminCopy.general.monthly}</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
                 return (
                   <button
                     key={months}
@@ -304,15 +307,15 @@ export function InstanceGeneralSettings() {
                         ? "border-foreground bg-accent text-foreground"
                         : "border-border bg-background hover:bg-accent/50",
                     )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
+                      onClick={() =>
+                        updateGeneralMutation.mutate({
+                          backupRetention: { ...backupRetention, monthlyMonths: months },
+                        })
+                      }
+                    >
+                      <div className="text-sm font-medium">{formatRetentionMonths(months, locale)}</div>
+                    </button>
+                  );
               })}
             </div>
           </div>

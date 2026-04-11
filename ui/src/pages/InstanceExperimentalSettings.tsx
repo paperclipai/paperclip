@@ -4,14 +4,16 @@ import { FlaskConical } from "lucide-react";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useLocale } from "../context/LocaleContext";
+import { getInstanceAdminCopy } from "../lib/instance-admin-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
 export function InstanceExperimentalSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const adminCopy = getInstanceAdminCopy(locale);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -87,7 +89,7 @@ export function InstanceExperimentalSettings() {
             checked={enableIsolatedWorkspaces}
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle isolated workspaces experimental setting"
+            aria-label={adminCopy.experimental.toggleIsolatedWorkspacesAria}
           />
         </div>
       </section>
@@ -104,7 +106,7 @@ export function InstanceExperimentalSettings() {
             checked={autoRestartDevServerWhenIdle}
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle guarded dev-server auto-restart"
+            aria-label={adminCopy.experimental.toggleAutoRestartAria}
           />
         </div>
       </section>

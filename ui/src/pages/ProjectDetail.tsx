@@ -14,17 +14,20 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
-import { StatusBadge } from "../components/StatusBadge";
+import { StatusBadge, formatStatusLabel } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { formatExecutionWorkspaceCloseActionLabel } from "../lib/execution-workspace-copy";
+import { getProjectCopy } from "../lib/project-copy";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -68,6 +71,9 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { locale } = useLocale();
+  const copy = getProjectCopy(locale);
+
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -76,21 +82,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={copy.overview.addDescriptionPlaceholder}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{copy.overview.status}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{copy.overview.targetDate}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -108,6 +114,8 @@ function ColorPicker({
   currentColor: string;
   onSelect: (color: string) => void;
 }) {
+  const { locale } = useLocale();
+  const copy = getProjectCopy(locale);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -128,7 +136,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={copy.color.changeProjectColor}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -146,7 +154,7 @@ function ColorPicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                aria-label={copy.color.selectColor(color)}
               />
             ))}
           </div>
@@ -228,6 +236,8 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
+  const { locale } = useLocale();
+  const copy = getProjectCopy(locale);
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -257,7 +267,7 @@ function ProjectWorkspacesContent({
   });
 
   if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+    return <p className="text-sm text-muted-foreground">{copy.workspaces.emptyState}</p>;
   }
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
@@ -300,7 +310,9 @@ function ProjectWorkspacesContent({
               </span>
             ) : null}
             {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
-              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {formatStatusLabel(summary.executionWorkspaceStatus, locale)}
+              </span>
             ) : null}
           </div>
 
@@ -328,7 +340,7 @@ function ProjectWorkspacesContent({
                 ) : (
                   <Play className="h-3 w-3" />
                 )}
-                {hasRunningServices ? "Stop" : "Start"}
+                {hasRunningServices ? copy.workspaces.stop : copy.workspaces.start}
               </Button>
             ) : null}
             {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
@@ -342,7 +354,7 @@ function ProjectWorkspacesContent({
                   status: summary.executionWorkspaceStatus!,
                 })}
               >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
+                {formatExecutionWorkspaceCloseActionLabel(summary.executionWorkspaceStatus, locale)}
               </Button>
             ) : null}
           </div>
@@ -362,7 +374,7 @@ function ProjectWorkspacesContent({
               <span className="truncate font-mono" title={summary.cwd}>
                 {truncatePath(summary.cwd)}
               </span>
-              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
+              <CopyText text={summary.cwd} className="shrink-0" copiedLabel={copy.workspaces.pathCopied}>
                 <Copy className="h-3 w-3" />
               </CopyText>
             </div>
@@ -384,7 +396,7 @@ function ProjectWorkspacesContent({
         {/* Issues */}
         {summary.issues.length > 0 ? (
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-medium text-muted-foreground/70">Issues</span>
+            <span className="font-medium text-muted-foreground/70">{copy.workspaces.issues}</span>
             {visibleIssues.map((issue) => (
               <IssuesQuicklook key={issue.id} issue={issue}>
                 <Link
@@ -397,7 +409,7 @@ function ProjectWorkspacesContent({
             ))}
             {hiddenIssueCount > 0 ? (
               <Link to={workspaceHref} className="hover:text-foreground hover:underline">
-                +{hiddenIssueCount} more
+                {copy.workspaces.moreIssues(hiddenIssueCount)}
               </Link>
             ) : null}
           </div>
@@ -415,7 +427,7 @@ function ProjectWorkspacesContent({
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
+              {copy.workspaces.cleanupAttentionNeeded}
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
               {cleanupFailedSummaries.map(renderSummaryRow)}
@@ -453,6 +465,8 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { locale } = useLocale();
+  const copy = getProjectCopy(locale);
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -570,17 +584,17 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? copy.fallbackName;
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: copy.archiveToast.archived(name), tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: copy.archiveToast.unarchived(name), tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? copy.archiveToast.archiveFailed : copy.archiveToast.unarchiveFailed,
         tone: "error",
       });
     },
@@ -588,7 +602,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error(copy.noCompanySelected);
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -603,10 +617,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: copy.breadcrumbProjects, href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? copy.fallbackName },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [copy.breadcrumbProjects, copy.fallbackName, setBreadcrumbs, project, routeProjectRef]);
 
   useEffect(() => {
     if (!project) return;
@@ -700,7 +714,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? copy.fallbackName,
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -717,7 +731,7 @@ export function ProjectDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+  }, [budgetOverview?.policies, copy.fallbackName, project, resolvedCompanyId, routeProjectRef]);
 
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
@@ -817,7 +831,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {copy.overview.pausedByBudgetHardStop}
             </div>
           ) : null}
         </div>
@@ -857,11 +871,11 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: copy.tabs.issues },
+            { value: "overview", label: copy.tabs.overview },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: copy.tabs.workspaces }] : []),
+            { value: "configuration", label: copy.tabs.configuration },
+            { value: "budget", label: copy.tabs.budget },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -901,7 +915,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{copy.workspaces.loading}</p>
         )
       ) : null}
 
