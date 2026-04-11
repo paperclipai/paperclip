@@ -312,11 +312,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  // When workspace config does not provide agentHome, derive it from the instructions
-  // file path: …/agents/{id}/instructions/AGENTS.md → …/agents/{id}/
+  // When workspace config does not provide agentHome, fall back to:
+  //   1. adapterConfig.agentHome (explicit per-agent override), then
+  //   2. parent-of-parent of instructionsFilePath if set
+  //      (…/agents/{id}/instructions/AGENTS.md → …/agents/{id}/)
   const agentHome =
     agentHomeFromWorkspace ??
-    (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : null);
+    (asString(config.agentHome, "").trim() ||
+      (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : null) ||
+      null);
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
