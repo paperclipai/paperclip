@@ -40,3 +40,16 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  deerflow-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install and test DeerFlow backend
+        run: cd deerflow/backend && uv sync && uv run pytest tests/ -v --tb=short

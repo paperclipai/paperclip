@@ -39,6 +39,8 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "langgraph-sdk>=0.1.51",
     "markdown-to-mrkdwn>=0.3.1",
+    "mempalace>=3.1.0",
+    "graphifyy[mcp,leiden]>=0.3.20",
 ]
 
 [dependency-groups]
