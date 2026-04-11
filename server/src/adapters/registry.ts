@@ -2,6 +2,7 @@ import type { ServerAdapterModule } from "./types.js";
 import {
   execute as anvilExecute,
   testEnvironment as anvilTestEnvironment,
+  getConfigSchema as anvilGetConfigSchema,
 } from "@paperclipai/adapter-anvil-local/server";
 import {
   agentConfigurationDoc as anvilAgentConfigurationDoc,
@@ -120,6 +121,7 @@ const anvilLocalAdapter: ServerAdapterModule = {
   models: anvilModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: anvilAgentConfigurationDoc,
+  getConfigSchema: anvilGetConfigSchema,
 };
 
 const claudeLocalAdapter: ServerAdapterModule = {
