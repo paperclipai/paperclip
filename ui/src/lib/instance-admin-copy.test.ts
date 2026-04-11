@@ -16,6 +16,8 @@ describe("instance-admin-copy", () => {
     expect(copy.experimental.toggleIsolatedWorkspacesAria).toBe("切换独立工作区实验功能");
     expect(copy.plugins.managerTitle).toBe("插件管理");
     expect(copy.adapters.managerTitle).toBe("适配器管理");
+    expect(copy.plugins.breadcrumbPlugins).toBe("插件");
+    expect(copy.adapters.breadcrumbAdapters).toBe("适配器");
     expect(copy.plugins.installPlugin).toBe("安装插件");
     expect(copy.plugins.noPluginsInstalled).toBe("尚未安装任何插件");
     expect(copy.adapters.installAdapter).toBe("安装适配器");

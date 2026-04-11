@@ -9,7 +9,7 @@ const routinesCopy = {
     selectCompany: "Select a company to view routines.",
     description: "Recurring work definitions that materialize into auditable execution issues.",
     createRoutine: "Create routine",
-    group: "Group",
+    group: "Grouping",
     project: "Project",
     agent: "Agent",
     none: "None",

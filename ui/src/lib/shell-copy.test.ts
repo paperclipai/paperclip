@@ -18,6 +18,7 @@ describe("shell-copy", () => {
     expect(copy.skipToMainContent).toBe("跳到主要内容");
     expect(copy.addCompany).toBe("添加公司");
     expect(copy.beta).toBe("测试版");
+    expect(copy.newAgent).toBe("新建智能体");
     expect(copy.commandPaletteTitle).toBe("命令面板");
     expect(copy.commandPaletteDescription).toBe("搜索要执行的命令…");
     expect(copy.commandPaletteSearchPlaceholder).toBe("搜索任务、智能体、项目…");
@@ -28,6 +29,8 @@ describe("shell-copy", () => {
   it("returns English shell labels for the command palette", () => {
     const copy = getShellCopy("en");
 
+    expect(copy.skipToMainContent).toBe("Skip to content");
+    expect(copy.commandPaletteDescription).toBe("Search commands...");
     expect(copy.commandPaletteCloseLabel).toBe("Close");
   });
 

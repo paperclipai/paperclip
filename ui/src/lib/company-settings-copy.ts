@@ -2,9 +2,9 @@ type CompanySettingsCopyLocale = string | null | undefined;
 
 const companySettingsCopy = {
   en: {
-    title: "Company Settings",
+    title: "Company preferences",
     company: "Company",
-    settings: "Settings",
+    settings: "Preferences",
     noCompanySelected: "No company selected. Select a company from the switcher above.",
     general: "General",
     appearance: "Appearance",

@@ -3,7 +3,7 @@ type InboxCopyLocale = string | null | undefined;
 const inboxCopy = {
   en: {
     inbox: "Inbox",
-    group: "Group",
+    group: "Grouping",
     groupByNone: "None",
     groupByType: "Type",
     archive: "Archive",

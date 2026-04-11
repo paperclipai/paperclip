@@ -6,7 +6,7 @@ const companySkillsCopy = {
   en: {
     breadcrumbs: {
       skills: "Skills",
-      detail: "Detail",
+      detail: "Details",
     },
     empty: {
       noCompanySelected: "Select a company to manage skills.",
@@ -36,8 +36,8 @@ const companySkillsCopy = {
     },
     list: {
       title: "Skills",
-      detail: "Detail",
-      available: "available",
+      detail: "Details",
+      available: "in library",
       scanWorkspace: "Scan project workspaces for skills",
       filter: "Filter skills",
       sourcePlaceholder: "Paste path, GitHub URL, or skills.sh command",
