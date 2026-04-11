@@ -41,6 +41,22 @@ const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   label: String(i + 1),
 }));
 
+// A cron field is "simple" if it is `*` or a single non-negative integer
+// (e.g. `0`, `9`, `13`). Anything with a comma list, a range, a step
+// expression, or a named alias is considered complex and should round-trip
+// through the custom cron input rather than through one of the preset
+// branches below.
+//
+// The UI's preset form only knows how to serialize a single hour / minute /
+// day-of-week / day-of-month. If a complex field is coerced into a preset,
+// saving the form silently overwrites the original cron with a degraded
+// single-value version — e.g. `0 9,13,17 * * *` becomes `0 10 * * *`,
+// collapsing three daily fires into one. Detecting complex fields up front
+// and routing to `custom` prevents that data loss.
+function isSimpleCronField(field: string): boolean {
+  return field === "*" || /^\d+$/.test(field);
+}
+
 function parseCronToPreset(cron: string): {
   preset: SchedulePreset;
   hour: string;
@@ -59,7 +75,28 @@ function parseCronToPreset(cron: string): {
     return { preset: "custom", ...defaults };
   }
 
-  const [min, hr, dom, , dow] = parts;
+  const [min, hr, dom, month, dow] = parts;
+
+  // If any field contains a list / range / step / unknown token, bail out to
+  // `custom` so the raw cron string is shown and edited directly. The only
+  // non-simple field we accept is `dow === "1-5"`, which is recognised below
+  // as the "weekdays" preset.
+  const dowIsWeekdayRange = dow === "1-5";
+  const allFieldsSimple =
+    isSimpleCronField(min) &&
+    isSimpleCronField(hr) &&
+    isSimpleCronField(dom) &&
+    isSimpleCronField(month) &&
+    (isSimpleCronField(dow) || dowIsWeekdayRange);
+  if (!allFieldsSimple) {
+    return { preset: "custom", ...defaults };
+  }
+
+  // None of the presets use the month field, so a non-wildcard month can
+  // only be expressed as a custom cron.
+  if (month !== "*") {
+    return { preset: "custom", ...defaults };
+  }
 
   // Every minute: "* * * * *"
   if (min === "*" && hr === "*" && dom === "*" && dow === "*") {
@@ -144,7 +181,7 @@ function ordinalSuffix(n: number): string {
   return s[(v - 20) % 10] || s[v] || s[0];
 }
 
-export { describeSchedule };
+export { describeSchedule, parseCronToPreset };
 
 export function ScheduleEditor({
   value,
