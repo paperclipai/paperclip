@@ -15,6 +15,9 @@ describe("agent-copy", () => {
     expect(copy.assignTask).toBe("分配任务");
     expect(copy.configurationRevisions).toBe("配置修订记录");
     expect(copy.noModelDetectedSelect).toBe("还没有检测到模型，请手动选择或输入。");
+    expect(copy.addNewAgent).toBe("添加新智能体");
+    expect(copy.createNewAgentIssueTitle).toBe("创建一个新的智能体");
+    expect(copy.createNewAgentIssueDescription).toBe("请在这里说明你想创建什么样的智能体");
   });
 
   it("formats locale-aware agent helpers", () => {

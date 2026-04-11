@@ -65,6 +65,27 @@ const costsCopy = {
     noBillableEventsInPeriod: "No billable events in this period.",
     byBiller: "By biller",
     byBillerDescription: "Account-level financial events grouped by who charged or credited them.",
+    budgetCardObserved: "Observed",
+    budgetCardBudget: "Budget",
+    budgetCardRemaining: "Remaining",
+    budgetCardNoCapConfigured: "No cap configured",
+    budgetCardDisabled: "Disabled",
+    budgetCardUnlimited: "Unlimited",
+    budgetCardPausedStatus: "Paused",
+    budgetCardWarningStatus: "Warning",
+    budgetCardHardStopStatus: "Hard stop",
+    budgetCardHealthyStatus: "Healthy",
+    budgetCardBudgetUsdLabel: "Budget (USD)",
+    budgetCardUpdateBudget: "Update budget",
+    budgetCardSetBudget: "Set budget",
+    budgetCardSaving: "Saving...",
+    budgetCardInvalidDollarAmount: "Enter a valid non-negative dollar amount.",
+    lifetimeBudget: "Lifetime budget",
+    monthlyUtcBudget: "Monthly UTC budget",
+    budgetCardProjectPaused:
+      "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+    budgetCardScopePaused:
+      "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
   },
   "zh-CN": {
     costs: "成本",
@@ -126,6 +147,25 @@ const costsCopy = {
     noBillableEventsInPeriod: "该时间段内还没有计费事件。",
     byBiller: "按计费方",
     byBillerDescription: "按实际收费或返还额度的主体汇总账户级财务事件。",
+    budgetCardObserved: "已用",
+    budgetCardBudget: "预算",
+    budgetCardRemaining: "剩余",
+    budgetCardNoCapConfigured: "未设置上限",
+    budgetCardDisabled: "未启用",
+    budgetCardUnlimited: "不限",
+    budgetCardPausedStatus: "已暂停",
+    budgetCardWarningStatus: "警告",
+    budgetCardHardStopStatus: "硬性停止",
+    budgetCardHealthyStatus: "正常",
+    budgetCardBudgetUsdLabel: "预算（USD）",
+    budgetCardUpdateBudget: "更新预算",
+    budgetCardSetBudget: "设置预算",
+    budgetCardSaving: "保存中...",
+    budgetCardInvalidDollarAmount: "请输入有效的非负美元金额。",
+    lifetimeBudget: "生命周期预算",
+    monthlyUtcBudget: "UTC 月度预算",
+    budgetCardProjectPaused: "该项目的执行已暂停，需提高预算或处理该事件后才能恢复。",
+    budgetCardScopePaused: "该范围的心跳已暂停，需提高预算或处理该事件后才能恢复。",
   },
 } as const;
 
@@ -243,4 +283,81 @@ export function formatScopeBudgetDescription(
     agent: copy.agentBudgetsDescription,
     project: copy.projectBudgetsDescription,
   }[scopeType];
+}
+
+export function formatBudgetPolicyWindowLabel(
+  windowKind: BudgetPolicySummary["windowKind"],
+  locale: CostsCopyLocale,
+) {
+  const copy = getCostsCopy(locale);
+  return windowKind === "lifetime" ? copy.lifetimeBudget : copy.monthlyUtcBudget;
+}
+
+export function formatBudgetPolicyLimitSubtitle(
+  amount: number,
+  utilizationPercent: number,
+  locale: CostsCopyLocale,
+) {
+  const copy = getCostsCopy(locale);
+  if (amount <= 0) return copy.budgetCardNoCapConfigured;
+  return locale === "zh-CN" ? `已使用上限的 ${utilizationPercent}%` : `${utilizationPercent}% of limit`;
+}
+
+function formatBudgetPauseReason(pauseReason: string | null | undefined, locale: CostsCopyLocale) {
+  if (!pauseReason) return null;
+  if (locale === "zh-CN") {
+    if (pauseReason === "budget") return "预算";
+    return pauseReason.replaceAll("_", " ");
+  }
+  return pauseReason.replaceAll("_", " ");
+}
+
+export function formatBudgetPolicySoftAlertSummary(
+  warnPercent: number,
+  pauseReason: string | null | undefined,
+  locale: CostsCopyLocale,
+) {
+  const reason = formatBudgetPauseReason(pauseReason, locale);
+  if (locale === "zh-CN") {
+    return reason ? `软警戒线：${warnPercent}% · 因${reason}暂停` : `软警戒线：${warnPercent}%`;
+  }
+  return reason ? `Soft alert at ${warnPercent}% · ${reason} pause` : `Soft alert at ${warnPercent}%`;
+}
+
+export function formatBudgetPolicyScopeTypeLabel(
+  scopeType: BudgetPolicySummary["scopeType"],
+  locale: CostsCopyLocale,
+) {
+  if (locale === "zh-CN") {
+    return {
+      company: "公司",
+      agent: "Agent",
+      project: "项目",
+    }[scopeType];
+  }
+  return {
+    company: "Company",
+    agent: "Agent",
+    project: "Project",
+  }[scopeType];
+}
+
+export function formatBudgetPolicyStatusLabel(
+  status: BudgetPolicySummary["status"],
+  paused: boolean,
+  locale: CostsCopyLocale,
+) {
+  const copy = getCostsCopy(locale);
+  if (paused) return copy.budgetCardPausedStatus;
+  if (status === "warning") return copy.budgetCardWarningStatus;
+  if (status === "hard_stop") return copy.budgetCardHardStopStatus;
+  return copy.budgetCardHealthyStatus;
+}
+
+export function formatBudgetPolicyPausedDescription(
+  scopeType: BudgetPolicySummary["scopeType"],
+  locale: CostsCopyLocale,
+) {
+  const copy = getCostsCopy(locale);
+  return scopeType === "project" ? copy.budgetCardProjectPaused : copy.budgetCardScopePaused;
 }

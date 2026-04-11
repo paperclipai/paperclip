@@ -224,16 +224,16 @@ const agentCopy = {
     noModelsFound: "没有找到模型。",
     thinkingEffort: "思考强度",
     auto: "自动",
-    addNewAgent: "添加新 Agent",
+    addNewAgent: "添加新智能体",
     ceoSetupRecommendation:
-      "建议由 CEO 来完成 Agent 初始配置——他们更了解组织结构，也能统一设置汇报关系、权限和适配器。",
-    askCeoToCreateAgent: "让 CEO 创建新 Agent",
+      "建议由 CEO 来完成智能体初始配置——他们更了解组织结构，也能统一设置汇报关系、权限和适配器。",
+    askCeoToCreateAgent: "让 CEO 创建新智能体",
     advancedConfigurationMyself: "我想自己做高级配置",
     back: "返回",
     advancedAdapterSetup: "选择用于高级创建流程的适配器类型。",
     recommended: "推荐",
-    createNewAgentIssueTitle: "创建一个新的 Agent",
-    createNewAgentIssueDescription: "请在这里说明你想创建什么样的 Agent",
+    createNewAgentIssueTitle: "创建一个新的智能体",
+    createNewAgentIssueDescription: "请在这里说明你想创建什么样的智能体",
   },
 } as const;
 
