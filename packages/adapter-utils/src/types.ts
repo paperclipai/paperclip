@@ -353,6 +353,7 @@ export interface AdapterConfigSchema {
 
 export interface ServerAdapterModule {
   type: string;
+  label?: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;

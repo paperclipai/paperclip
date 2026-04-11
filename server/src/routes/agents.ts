@@ -74,6 +74,7 @@ import { getTelemetryClient } from "../telemetry.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
+    anvil_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",

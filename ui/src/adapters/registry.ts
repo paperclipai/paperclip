@@ -1,4 +1,5 @@
 import type { UIAdapterModule } from "./types";
+import { anvilLocalUIAdapter } from "./anvil-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
@@ -47,6 +48,7 @@ function notifyAdapterChange(): void {
 
 function registerBuiltInUIAdapters() {
   for (const adapter of [
+    anvilLocalUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     geminiLocalUIAdapter,

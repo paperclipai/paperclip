@@ -339,6 +339,10 @@ function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
 
   for (const block of blocks) {
     if (block.type === "tool" && isCommandTool(block.name, block.input)) {
+      // Split at error boundaries: flush pending items before starting an error group
+      if (block.status === "error" && pending.length > 0) {
+        flush();
+      }
       if (!groupTs) {
         groupTs = block.ts;
       }
@@ -351,6 +355,10 @@ function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
         isError: block.isError,
         status: block.status,
       });
+      // After an error item, flush it as its own group so it doesn't merge with subsequent successes
+      if (block.status === "error") {
+        flush();
+      }
       continue;
     }
 

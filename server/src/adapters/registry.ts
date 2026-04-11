@@ -1,4 +1,13 @@
 import type { ServerAdapterModule } from "./types.js";
+import {
+  execute as anvilExecute,
+  testEnvironment as anvilTestEnvironment,
+} from "@paperclipai/adapter-anvil-local/server";
+import {
+  agentConfigurationDoc as anvilAgentConfigurationDoc,
+  models as anvilModels,
+  label as anvilLabel,
+} from "@paperclipai/adapter-anvil-local";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
@@ -9,7 +18,7 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels, label as claudeLabel } from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -18,7 +27,7 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels, label as codexLabel } from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -26,7 +35,7 @@ import {
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@paperclipai/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
+import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels, label as cursorLabel } from "@paperclipai/adapter-cursor-local";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -34,7 +43,7 @@ import {
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
 } from "@paperclipai/adapter-gemini-local/server";
-import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
+import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels, label as geminiLabel } from "@paperclipai/adapter-gemini-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -46,7 +55,21 @@ import {
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
   models as openCodeModels,
+  label as openCodeLabel,
 } from "@paperclipai/adapter-opencode-local";
+import {
+  execute as ollamaExecute,
+  listOllamaSkills,
+  syncOllamaSkills,
+  testEnvironment as ollamaTestEnvironment,
+  sessionCodec as ollamaSessionCodec,
+  listOllamaModels,
+} from "@paperclipai/adapter-ollama-local/server";
+import {
+  agentConfigurationDoc as ollamaAgentConfigurationDoc,
+  models as ollamaModels,
+  label as ollamaLabel,
+} from "@paperclipai/adapter-ollama-local";
 import {
   execute as openclawGatewayExecute,
   testEnvironment as openclawGatewayTestEnvironment,
@@ -54,6 +77,7 @@ import {
 import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
+  label as openclawGatewayLabel,
 } from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
@@ -67,6 +91,7 @@ import {
 } from "@paperclipai/adapter-pi-local/server";
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
+  label as piLabel,
 } from "@paperclipai/adapter-pi-local";
 import {
   execute as hermesExecute,
@@ -79,6 +104,7 @@ import {
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
+  label as hermesLabel,
 } from "hermes-paperclip-adapter";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
@@ -86,8 +112,19 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
+const anvilLocalAdapter: ServerAdapterModule = {
+  type: "anvil_local",
+  label: anvilLabel,
+  execute: anvilExecute,
+  testEnvironment: anvilTestEnvironment,
+  models: anvilModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: anvilAgentConfigurationDoc,
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  label: claudeLabel,
   execute: claudeExecute,
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
@@ -103,6 +140,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  label: codexLabel,
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   listSkills: listCodexSkills,
@@ -118,6 +156,7 @@ const codexLocalAdapter: ServerAdapterModule = {
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  label: cursorLabel,
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -132,6 +171,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  label: geminiLabel,
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   listSkills: listGeminiSkills,
@@ -145,6 +185,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  label: openclawGatewayLabel,
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -154,6 +195,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  label: openCodeLabel,
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -166,8 +208,23 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const ollamaLocalAdapter: ServerAdapterModule = {
+  type: "ollama_local",
+  label: ollamaLabel,
+  execute: ollamaExecute,
+  testEnvironment: ollamaTestEnvironment,
+  listSkills: listOllamaSkills,
+  syncSkills: syncOllamaSkills,
+  sessionCodec: ollamaSessionCodec,
+  models: ollamaModels,
+  listModels: () => listOllamaModels(),
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: ollamaAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  label: piLabel,
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,
@@ -182,6 +239,7 @@ const piLocalAdapter: ServerAdapterModule = {
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
+  label: hermesLabel,
   execute: hermesExecute,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
@@ -206,9 +264,11 @@ const pausedOverrides = new Set<string>();
 
 function registerBuiltInAdapters() {
   for (const adapter of [
+    anvilLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
+    ollamaLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,

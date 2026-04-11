@@ -107,7 +107,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
     type: adapter.type,
-    label: adapter.type, // ServerAdapterModule doesn't have a separate "label" field; type serves as label
+    label: adapter.label ?? adapter.type,
     source: externalRecord ? "external" : "builtin",
     modelsCount: (adapter.models ?? []).length,
     loaded: true, // If it's in the registry, it's loaded

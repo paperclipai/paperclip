@@ -11,6 +11,7 @@
     "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
+    "dev:ui:watch": "pnpm exec tsx scripts/watch-ui.ts",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "test": "pnpm run preflight:workspace-links && vitest",
@@ -44,8 +45,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "chokidar": "^4.0.3",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "@vitest/coverage-v8": "^3.0.5",
     "vitest": "^3.0.5"

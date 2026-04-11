@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "codex_local",
   "gemini_local",
   "opencode_local",
+  "ollama_local",
   "pi_local",
   "cursor",
   "openclaw_gateway",
