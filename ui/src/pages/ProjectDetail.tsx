@@ -18,6 +18,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { CopyText } from "../components/CopyText";
+import { EnvironmentCard } from "../components/EnvironmentCard";
+import { projectEnvironmentsApi } from "../api/projectEnvironments";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -37,7 +39,7 @@ import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget" | "environments";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -55,6 +57,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "workspaces") return "workspaces";
+  if (tab === "environments") return "environments";
   return null;
 }
 
@@ -439,6 +442,58 @@ function ProjectWorkspacesContent({
   );
 }
 
+/* ── Environments tab content ── */
+
+function EnvironmentsTabContent({ companyId, projectId }: { companyId: string; projectId: string }) {
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+
+  const { data: environments, isLoading } = useQuery({
+    queryKey: queryKeys.projectEnvironments.all(companyId, projectId),
+    queryFn: () => projectEnvironmentsApi.list(companyId, projectId),
+    enabled: !!companyId && !!projectId,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (envId: string) => projectEnvironmentsApi.remove(companyId, projectId, envId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projectEnvironments.all(companyId, projectId) });
+      showToast({ message: "Environment deleted", variant: "success" });
+    },
+    onError: (err: any) => {
+      showToast({ message: err?.message ?? "Failed to delete environment", variant: "error" });
+    },
+  });
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading environments...</p>;
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Environments</h3>
+      </div>
+      {!environments || environments.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No environments configured.</p>
+      ) : (
+        <div className="space-y-2">
+          {environments.map((env) => (
+            <EnvironmentCard
+              key={env.id}
+              env={env}
+              onEdit={() => {}}
+              onDelete={() => {
+                if (confirm(`Delete environment "${env.name}"?`)) {
+                  deleteMutation.mutate(env.id);
+                }
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -626,6 +681,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
     }
+    if (activeTab === "environments") {
+      navigate(`/projects/${canonicalProjectRef}/environments`, { replace: true });
+      return;
+    }
     if (activeTab === "list") {
       if (filter) {
         navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
@@ -788,6 +847,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
+    } else if (tab === "environments") {
+      navigate(`/projects/${canonicalProjectRef}/environments`);
     } else {
       navigate(`/projects/${canonicalProjectRef}/issues`);
     }
@@ -856,6 +917,7 @@ export function ProjectDetail() {
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
+            { value: "environments", label: "Environments" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
               value: item.value,
@@ -916,6 +978,10 @@ export function ProjectDetail() {
             archivePending={archiveProject.isPending}
           />
         </div>
+      )}
+
+      {activeTab === "environments" && resolvedCompanyId && project?.id && (
+        <EnvironmentsTabContent companyId={resolvedCompanyId} projectId={project.id} />
       )}
 
       {activeTab === "budget" && resolvedCompanyId ? (
