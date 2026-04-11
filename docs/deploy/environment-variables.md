@@ -47,4 +47,31 @@ These are set automatically by the server when invoking agents:
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
-| `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+| `OPENAI_API_KEY` | OpenAI API key (for Codex Local / Cursor adapters) |
+| `OPENROUTER_API_KEY` | OpenRouter API key — auto-maps to `OPENAI_API_KEY` + `OPENAI_BASE_URL` for OpenAI-compatible adapters |
+| `OPENAI_BASE_URL` | Override the OpenAI-compatible base URL (e.g. `https://openrouter.ai/api/v1`) |
+
+## Using OpenRouter
+
+[OpenRouter](https://openrouter.ai) provides unified API access to hundreds of models (GPT-4o, Claude, Gemini, Llama, etc.) through a single OpenAI-compatible endpoint.
+
+Set in the agent's **env** config (or as agent-level environment variables):
+
+```
+OPENROUTER_API_KEY=sk-or-v1-…
+```
+
+Paperclip automatically:
+- Maps `OPENROUTER_API_KEY` → `OPENAI_API_KEY` for the child process
+- Sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the child process
+- Tags all usage in the billing ledger as `openrouter`
+
+Alternatively you can set the variables explicitly, which takes precedence:
+
+```
+OPENAI_API_KEY=sk-or-v1-…
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+```
+
+To use a specific model, set the `model` field in the adapter config (e.g. `openai/gpt-4o`, `anthropic/claude-3-5-sonnet`, `google/gemini-2.0-flash`). See the [OpenRouter model list](https://openrouter.ai/models) for available models.
+

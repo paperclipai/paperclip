@@ -46,7 +46,7 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 }
 
 function resolveCursorBillingType(env: Record<string, string>): "api" | "subscription" {
-  return hasNonEmptyEnvValue(env, "CURSOR_API_KEY") || hasNonEmptyEnvValue(env, "OPENAI_API_KEY")
+  return hasNonEmptyEnvValue(env, "CURSOR_API_KEY") || hasNonEmptyEnvValue(env, "OPENAI_API_KEY") || hasNonEmptyEnvValue(env, "OPENROUTER_API_KEY")
     ? "api"
     : "subscription";
 }
@@ -266,6 +266,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
+  }
+  // If OPENROUTER_API_KEY is set in agent config but OPENAI_API_KEY is not, auto-map so that
+  // OpenAI-compatible CLI tools route to OpenRouter without extra configuration.
+  if (env.OPENROUTER_API_KEY && !env.OPENAI_API_KEY) {
+    env.OPENAI_API_KEY = env.OPENROUTER_API_KEY;
+    if (!env.OPENAI_BASE_URL && !env.OPENAI_API_BASE && !env.OPENAI_API_BASE_URL) {
+      env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
+    }
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;

@@ -8,7 +8,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 ## Prerequisites
 
 - Codex CLI installed (`codex` command available)
-- `OPENAI_API_KEY` set in the environment or agent config
+- `OPENAI_API_KEY` set in the environment or agent config (or `OPENROUTER_API_KEY` — see [OpenRouter](#using-openrouter))
 
 ## Configuration Fields
 
@@ -21,6 +21,37 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+
+## Using OpenRouter
+
+[OpenRouter](https://openrouter.ai) provides access to GPT-4o, Claude, Gemini, Llama, and hundreds of other models through a single OpenAI-compatible endpoint.
+
+Set only `OPENROUTER_API_KEY` in the agent's `env` config:
+
+```json
+{
+  "env": {
+    "OPENROUTER_API_KEY": "sk-or-v1-…",
+    "model": "openai/gpt-4o"
+  }
+}
+```
+
+Paperclip automatically maps `OPENROUTER_API_KEY` → `OPENAI_API_KEY` and sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the Codex child process. Usage is tagged as `openrouter` in the billing ledger.
+
+You can also set the variables explicitly (this takes precedence over the auto-mapping):
+
+```json
+{
+  "env": {
+    "OPENAI_API_KEY": "sk-or-v1-…",
+    "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+    "model": "anthropic/claude-3-5-sonnet"
+  }
+}
+```
+
+See the [OpenRouter model list](https://openrouter.ai/models) for all available models. Model IDs use the `provider/model-name` format (e.g. `openai/gpt-4o`, `anthropic/claude-opus-4-5`, `google/gemini-2.0-flash`).
 
 ## Session Persistence
 
