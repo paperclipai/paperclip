@@ -54,4 +54,3 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
-export { readAgentMemory, AGENT_MEMORY_DEFAULT_SIZE_BUDGET } from "./server-utils.js";
