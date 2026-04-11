@@ -1226,14 +1226,14 @@ export function buildInviteOnboardingTextDocument(
       "agentName": "My OpenClaw Agent",
       "adapterType": "openclaw_gateway",
       "capabilities": "Optional summary",
-        "agentDefaultsPayload": {
-          "url": "wss://your-openclaw-gateway.example",
-          "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
-          "claimedApiKeyPath": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
-          "headers": { "x-openclaw-token": "replace-me" },
-          "waitTimeoutMs": 120000,
-          "sessionKeyStrategy": "issue",
-          "role": "operator",
+      "agentDefaultsPayload": {
+        "url": "wss://your-openclaw-gateway.example",
+        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+        "claimedApiKeyPath": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+        "headers": { "x-openclaw-token": "replace-me" },
+        "waitTimeoutMs": 120000,
+        "sessionKeyStrategy": "issue",
+        "role": "operator",
         "scopes": ["operator.admin"]
       }
     }
