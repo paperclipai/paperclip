@@ -20,6 +20,11 @@ import {
   issueActivitySummaryLabel,
   issueColumnDescription,
   issueColumnLabel,
+  issueColumnsResetLabel,
+  issueColumnsResetSummary,
+  issueColumnsSectionLabel,
+  issueColumnsTriggerLabel,
+  issueLiveLabel,
 } from "../lib/issues-copy";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
@@ -74,14 +79,14 @@ export function IssueColumnPicker({
           className="hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"
         >
           <Columns3 className="mr-1 h-3.5 w-3.5" />
-          {locale === "zh-CN" ? "列" : "Columns"}
+          {issueColumnsTriggerLabel(locale)}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              {locale === "zh-CN" ? "桌面任务行" : "Desktop issue rows"}
+              {issueColumnsSectionLabel(locale)}
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -112,8 +117,8 @@ export function IssueColumnPicker({
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
         >
-          {locale === "zh-CN" ? "恢复默认" : "Reset defaults"}
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          {issueColumnsResetLabel(locale)}
+          <span className="ml-auto text-xs text-muted-foreground">{issueColumnsResetSummary(locale)}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -169,7 +174,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            {locale === "zh-CN" ? "进行中" : "Live"}
+            {issueLiveLabel(locale)}
           </span>
         </span>
       )}

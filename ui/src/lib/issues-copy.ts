@@ -9,6 +9,9 @@ const issuesCopy = {
     selectCompany: "Select a company to view issues.",
     searchIssuesPlaceholder: "Search issues...",
     searchIssuesAria: "Search issues",
+    columns: "Columns",
+    desktopIssueRows: "Desktop issue rows",
+    resetDefaults: "Reset defaults",
     noWorkspace: "No Workspace",
     noParent: "No Parent",
     unassigned: "Unassigned",
@@ -24,6 +27,7 @@ const issuesCopy = {
     visibility: "Visibility",
     showRoutineRuns: "Show routine runs",
     status: "Status",
+    id: "ID",
     priority: "Priority",
     assignee: "Assignee",
     labels: "Labels",
@@ -76,12 +80,16 @@ const issuesCopy = {
     approval: "Approval",
     runReviewNow: "Run review now",
     runApprovalNow: "Run approval now",
+    live: "Live",
   },
   "zh-CN": {
     issues: "任务",
     selectCompany: "请选择一个公司以查看任务。",
     searchIssuesPlaceholder: "搜索任务…",
     searchIssuesAria: "搜索任务",
+    columns: "列",
+    desktopIssueRows: "桌面任务行",
+    resetDefaults: "恢复默认",
     noWorkspace: "无工作区",
     noParent: "无父任务",
     unassigned: "未分配",
@@ -97,6 +105,7 @@ const issuesCopy = {
     visibility: "显示",
     showRoutineRuns: "显示例行任务运行",
     status: "状态",
+    id: "ID",
     priority: "优先级",
     assignee: "负责人",
     labels: "标签",
@@ -149,6 +158,7 @@ const issuesCopy = {
     approval: "审批",
     runReviewNow: "立即执行审核",
     runApprovalNow: "立即执行审批",
+    live: "进行中",
   },
 } as const;
 
@@ -220,14 +230,35 @@ export function issueColumnLabel(column: InboxIssueColumn, locale: IssuesCopyLoc
   const copy = getIssuesCopy(locale);
   return {
     status: copy.status,
-    id: "ID",
+    id: copy.id,
     assignee: copy.assignee,
     project: copy.project,
     workspace: copy.workspace,
     parent: copy.parentIssue,
     labels: copy.labels,
-    updated: locale === "zh-CN" ? "最后更新" : "Last updated",
+    updated: locale === "zh-CN" ? "最后更新" : copy.updated,
   }[column];
+}
+
+export function issueColumnsTriggerLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).columns;
+}
+
+export function issueColumnsSectionLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).desktopIssueRows;
+}
+
+export function issueColumnsResetLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).resetDefaults;
+}
+
+export function issueColumnsResetSummary(locale: IssuesCopyLocale): string {
+  const copy = getIssuesCopy(locale);
+  return locale === "zh-CN" ? `${copy.status}、${copy.id}、${copy.updated}` : `${copy.status}, ${copy.id}, ${copy.updated}`;
+}
+
+export function issueLiveLabel(locale: IssuesCopyLocale): string {
+  return getIssuesCopy(locale).live;
 }
 
 export function issueColumnDescription(column: InboxIssueColumn, locale: IssuesCopyLocale): string {

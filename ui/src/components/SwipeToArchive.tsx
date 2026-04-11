@@ -5,7 +5,7 @@ import { cn } from "../lib/utils";
 interface SwipeToArchiveProps {
   children: ReactNode;
   onArchive: () => void;
-  archiveLabel?: string;
+  archiveLabel: string;
   disabled?: boolean;
   selected?: boolean;
   className?: string;
@@ -18,7 +18,7 @@ const COMMIT_DELAY_MS = 140;
 export function SwipeToArchive({
   children,
   onArchive,
-  archiveLabel = "Archive",
+  archiveLabel,
   disabled = false,
   selected = false,
   className,
