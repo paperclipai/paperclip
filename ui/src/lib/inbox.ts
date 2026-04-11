@@ -371,7 +371,7 @@ export function getArchivedInboxSearchIssues({
     .sort(sortIssuesByMostRecentActivity);
 }
 
-export function getInboxSearchFallbackIssues({
+export function getInboxSearchSupplementIssues({
   query,
   filteredWorkItems,
   archivedSearchIssues,
@@ -390,9 +390,14 @@ export function getInboxSearchFallbackIssues({
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
-  if (filteredWorkItems.length > 0) return [];
-  if (archivedSearchIssues.length > 0) return [];
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter);
+  const visibleIssueIds = new Set([
+    ...filteredWorkItems
+      .filter((item): item is Extract<InboxWorkItem, { kind: "issue" }> => item.kind === "issue")
+      .map((item) => item.issue.id),
+    ...archivedSearchIssues.map((issue) => issue.id),
+  ]);
+  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter)
+    .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
 export function resolveIssueWorkspaceName(

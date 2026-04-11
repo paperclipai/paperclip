@@ -20,7 +20,7 @@ import {
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
-  getInboxSearchFallbackIssues,
+  getInboxSearchSupplementIssues,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   groupInboxWorkItems,
@@ -612,12 +612,12 @@ describe("inbox helpers", () => {
     ).toEqual(["newer", "older"]);
   });
 
-  it("uses remote issue results only when local inbox search has no matches", () => {
+  it("adds remote issue results that are not already present in inbox search results", () => {
     const remoteMatch = makeIssue("remote-match", false);
     remoteMatch.status = "in_progress";
 
     expect(
-      getInboxSearchFallbackIssues({
+      getInboxSearchSupplementIssues({
         query: "pull/3303",
         filteredWorkItems: [],
         archivedSearchIssues: [],
@@ -635,9 +635,9 @@ describe("inbox helpers", () => {
     ).toEqual(["remote-match"]);
 
     expect(
-      getInboxSearchFallbackIssues({
+      getInboxSearchSupplementIssues({
         query: "pull/3303",
-        filteredWorkItems: [{ kind: "issue", timestamp: 1, issue: makeIssue("local", false) }],
+        filteredWorkItems: [{ kind: "issue", timestamp: 1, issue: makeIssue("remote-match", false) }],
         archivedSearchIssues: [],
         remoteIssues: [remoteMatch],
         issueFilters: {
@@ -653,10 +653,10 @@ describe("inbox helpers", () => {
     ).toEqual([]);
 
     expect(
-      getInboxSearchFallbackIssues({
+      getInboxSearchSupplementIssues({
         query: "pull/3303",
         filteredWorkItems: [],
-        archivedSearchIssues: [makeIssue("archived", false)],
+        archivedSearchIssues: [makeIssue("remote-match", false)],
         remoteIssues: [remoteMatch],
         issueFilters: {
           statuses: [],

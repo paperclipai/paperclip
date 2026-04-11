@@ -69,7 +69,7 @@ export function CommandPalette() {
 
   const { data: searchedIssues = [] } = useQuery({
     queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery, undefined, 10),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery, limit: 10 }),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery, limit: 10, includeRoutineExecutions: true }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
   });
 
