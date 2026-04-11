@@ -381,12 +381,10 @@ export function issueRoutes(
     ].join("\n");
   }
 
-  async function ensureRequiredRoleEscalationForBlockedIssue(
+  async function prepareRequiredRoleEscalationForBlockedIssue(
     req: Request,
-    actor: ReturnType<typeof getActorInfo>,
     issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     nextStatus: unknown,
-    commentBody?: string,
   ) {
     if (nextStatus !== "blocked" || issue.status === "blocked") return null;
     if (req.actor.type !== "agent" || !req.actor.agentId) return null;
@@ -413,10 +411,26 @@ export function issueRoutes(
       );
     }
 
+    return {
+      actorAgent,
+      targetAgent,
+      targetRole: escalationConfig.targetRole,
+      openStatuses: escalationConfig.openStatuses,
+    };
+  }
+
+  async function ensureRequiredRoleEscalationForBlockedIssue(
+    actor: ReturnType<typeof getActorInfo>,
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    escalationPlan: NonNullable<Awaited<ReturnType<typeof prepareRequiredRoleEscalationForBlockedIssue>>>,
+    commentBody?: string,
+  ) {
+    const { actorAgent, targetAgent, targetRole, openStatuses } = escalationPlan;
+
     const existingEscalations = await svc.list(issue.companyId, {
       parentId: issue.id,
       assigneeAgentId: targetAgent.id,
-      status: escalationConfig.openStatuses,
+      status: openStatuses,
       includeRoutineExecutions: true,
     });
     const existingEscalation =
@@ -429,8 +443,8 @@ export function issueRoutes(
       parentId: issue.id,
       projectId: issue.projectId ?? null,
       goalId: issue.goalId ?? null,
-      title: buildAutoEscalationTitle(issue, escalationConfig.targetRole),
-      description: buildAutoEscalationDescription(issue, actorAgent, escalationConfig.targetRole, commentBody),
+      title: buildAutoEscalationTitle(issue, targetRole),
+      description: buildAutoEscalationDescription(issue, actorAgent, targetRole, commentBody),
       status: "todo",
       priority: issue.priority === "low" ? "medium" : issue.priority,
       assigneeAgentId: targetAgent.id,
@@ -473,7 +487,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         escalationIssueId: escalationIssue.id,
         escalationIssueIdentifier: escalationIssue.identifier,
-        escalationOwnerRole: escalationConfig.targetRole,
+        escalationOwnerRole: targetRole,
         source: "auto_role_blocker_escalation",
       },
     });
@@ -1604,13 +1618,7 @@ export function issueRoutes(
       }
     }
 
-    const blockerEscalationIssue = await ensureRequiredRoleEscalationForBlockedIssue(
-      req,
-      actor,
-      existing,
-      updateFields.status,
-      commentBody,
-    );
+    const blockerEscalationPlan = await prepareRequiredRoleEscalationForBlockedIssue(req, existing, updateFields.status);
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -1677,6 +1685,10 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    const blockerEscalationIssue =
+      blockerEscalationPlan && issue.status === "blocked"
+        ? await ensureRequiredRoleEscalationForBlockedIssue(actor, issue, blockerEscalationPlan, commentBody)
+        : null;
     let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {

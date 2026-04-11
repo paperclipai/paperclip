@@ -817,6 +817,7 @@ export function normalizeAgentDefaultsForJoin(input: {
       typeof issueBlockEscalation.targetRole === "string"
         ? issueBlockEscalation.targetRole.trim()
         : "";
+    if (enabled) {
       normalized.issueBlockEscalation = {
         enabled: true,
         ...(targetRole ? { targetRole } : {}),
