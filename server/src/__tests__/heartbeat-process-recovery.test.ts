@@ -92,6 +92,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runUpdatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -147,7 +148,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.runUpdatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -254,6 +255,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
   });
+
+  it("does not reap a process_detached run within the 15-minute timeout", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      runUpdatedAt: new Date(Date.now() - 5 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    expect(child.killed).toBe(false);
+  });
+
+  it("reaps a process_detached run after the 15-minute timeout", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      runUpdatedAt: new Date(Date.now() - 16 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_detached_timeout");
+    expect(run?.error).toContain("process_detached timeout");
+    expect(run?.error).toContain(String(child.pid));
+    expect(run?.finishedAt).toBeTruthy();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+  }, 15_000);
 
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
