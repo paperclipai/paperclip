@@ -398,3 +398,16 @@ export {
   type UpdateProjectEnvironment,
   type EnvironmentConfig,
 } from "./project-environments.js";
+
+export {
+  reviewStepConfigSchema,
+  updateReviewPipelineSchema,
+  rejectReviewSchema,
+  updateReviewCheckSchema,
+  REVIEW_RUN_STATUSES,
+  REVIEW_CHECK_STATUSES,
+  type ReviewStepConfig,
+  type UpdateReviewPipeline,
+  type ReviewRunStatus,
+  type ReviewCheckStatus,
+} from "./review-pipeline.js";

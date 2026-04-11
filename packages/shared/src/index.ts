@@ -707,6 +707,19 @@ export {
   type EnvironmentConfig,
 } from "./validators/project-environments.js";
 
+export {
+  reviewStepConfigSchema,
+  updateReviewPipelineSchema,
+  rejectReviewSchema,
+  updateReviewCheckSchema,
+  REVIEW_RUN_STATUSES,
+  REVIEW_CHECK_STATUSES,
+  type ReviewStepConfig,
+  type UpdateReviewPipeline,
+  type ReviewRunStatus,
+  type ReviewCheckStatus,
+} from "./validators/review-pipeline.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
