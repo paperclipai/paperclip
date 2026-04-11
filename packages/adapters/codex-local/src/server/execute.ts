@@ -422,10 +422,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  // When workspace config does not provide agentHome, derive it from the instructions
-  // file path: …/agents/{id}/instructions/AGENTS.md → …/agents/{id}/
+  // When workspace config does not provide agentHome, fall back to:
+  //   1. adapterConfig.agentHome (explicit per-agent override), then
+  //   2. parent-of-parent of instructionsFilePath
+  //      (…/agents/{id}/instructions/AGENTS.md → …/agents/{id}/)
   const effectiveAgentHome =
-    agentHome || (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : "");
+    agentHome ||
+    asString(config.agentHome, "").trim() ||
+    (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : "");
   // Prepend persistent agent memory when agentHome is set so every run starts
   // with the agent's accumulated feedback, project state, and user context.
   const memoryBlock = effectiveAgentHome
