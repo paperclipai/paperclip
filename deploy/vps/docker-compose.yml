@@ -1,0 +1,57 @@
+# Kaizai Workforce — VPS Deployment
+# Paperclip (control plane) + LangGraph Orchestrator (execution engine)
+
+services:
+  paperclip:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: paperclip
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    environment:
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://paperclip_user:${PAPERCLIP_DB_PASSWORD}@${DB_PRIVATE_IP}:5432/paperclip
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - NODE_ENV=production
+    volumes:
+      - paperclip-data:/paperclip
+    networks:
+      - workforce
+
+  orchestrator:
+    build:
+      context: ../../orchestrator
+      dockerfile: Dockerfile
+    container_name: langgraph-orchestrator
+    restart: unless-stopped
+    environment:
+      - SQUAD_PG_CONNECTION=postgresql://langgraph_user:${LG_DB_PASSWORD}@${DB_PRIVATE_IP}:5432/langgraph_state
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github_app_key
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_PROJECT=trading-agent-workforce
+      - LANGCHAIN_TRACING_V2=true
+      - PAPERCLIP_API_URL=http://paperclip:3100
+    secrets:
+      - github_app_key
+    networks:
+      - workforce
+    depends_on:
+      - paperclip
+
+secrets:
+  github_app_key:
+    file: ${GITHUB_APP_KEY_PATH:-/opt/workforce/secrets/github-app.pem}
+
+volumes:
+  paperclip-data:
+
+networks:
+  workforce:
+    driver: bridge
