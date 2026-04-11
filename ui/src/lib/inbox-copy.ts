@@ -3,6 +3,8 @@ type InboxCopyLocale = string | null | undefined;
 const inboxCopy = {
   en: {
     inbox: "Inbox",
+    group: "Group",
+    archive: "Archive",
     selectCompany: "Select a company to view inbox.",
     markAsRead: "Mark as read",
     dismissFromInbox: "Dismiss from inbox",
@@ -52,6 +54,8 @@ const inboxCopy = {
   },
   "zh-CN": {
     inbox: "收件箱",
+    group: "分组",
+    archive: "归档",
     selectCompany: "请选择一个公司以查看收件箱。",
     markAsRead: "标记为已读",
     dismissFromInbox: "从收件箱移除",

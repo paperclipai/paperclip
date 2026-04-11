@@ -1631,7 +1631,7 @@ export function Inbox() {
                 className={cn("h-8 shrink-0 text-xs", groupBy !== "none" && "bg-accent")}
               >
                 <Layers className="mr-1.5 h-3.5 w-3.5" />
-                Group
+                {copy.group}
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-40 p-2">
@@ -1847,7 +1847,7 @@ export function Inbox() {
                           {formatIssueSubtaskCount(childCount, locale)}
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileMeta={issueActivityText(issue, locale).toLowerCase()}
                       mobileLeading={
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button

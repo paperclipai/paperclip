@@ -1,4 +1,5 @@
 import { issueStatusLegendLabel, priorityLegendLabel } from "./dashboard-copy";
+import type { InboxIssueColumn } from "./inbox";
 
 type IssuesCopyLocale = string | null | undefined;
 
@@ -213,6 +214,50 @@ export function issueGroupFieldLabel(
       none: copy.none,
     }[field]
   );
+}
+
+export function issueColumnLabel(column: InboxIssueColumn, locale: IssuesCopyLocale): string {
+  const copy = getIssuesCopy(locale);
+  return {
+    status: copy.status,
+    id: "ID",
+    assignee: copy.assignee,
+    project: copy.project,
+    workspace: copy.workspace,
+    parent: copy.parentIssue,
+    labels: copy.labels,
+    updated: locale === "zh-CN" ? "最后更新" : "Last updated",
+  }[column];
+}
+
+export function issueColumnDescription(column: InboxIssueColumn, locale: IssuesCopyLocale): string {
+  if (locale === "zh-CN") {
+    return {
+      status: "左侧状态标记。",
+      id: "像 PAP-1009 这样的任务编号。",
+      assignee: "负责该任务的智能体或董事会成员。",
+      project: "关联项目及其颜色标识。",
+      workspace: "执行该任务的工作区或项目工作区。",
+      parent: "父任务编号和标题。",
+      labels: "任务标签。",
+      updated: "最近一次可见活动时间。",
+    }[column];
+  }
+
+  return {
+    status: "Issue state chip on the left edge.",
+    id: "Ticket identifier like PAP-1009.",
+    assignee: "Assigned agent or board user.",
+    project: "Linked project pill with its color.",
+    workspace: "Execution or project workspace used for the issue.",
+    parent: "Parent issue identifier and title.",
+    labels: "Issue labels and tags.",
+    updated: "Latest visible activity time.",
+  }[column];
+}
+
+export function issueActivitySummaryLabel(time: string, locale: IssuesCopyLocale): string {
+  return locale === "zh-CN" ? `更新于 ${time}` : `Updated ${time}`;
 }
 
 export function issueStatusLabel(status: string, locale: IssuesCopyLocale): string {

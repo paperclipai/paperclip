@@ -6,7 +6,10 @@ import {
   formatIssueFilterCount,
   formatIssueSubtaskCount,
   getIssuesCopy,
+  issueActivitySummaryLabel,
   issueAssignToRequesterLabel,
+  issueColumnDescription,
+  issueColumnLabel,
   issueDeleteLabelTitle,
   issueExecutionRunNowLabel,
   issueParticipantNoneLabel,
@@ -48,5 +51,11 @@ describe("issues-copy", () => {
       participantLabel: "Alice",
       locale: "zh-CN",
     })).toBe("审核要求修改，执行者：Alice");
+  });
+
+  it("formats issue column copy", () => {
+    expect(issueColumnLabel("updated", "zh-CN")).toBe("最后更新");
+    expect(issueColumnDescription("workspace", "zh-CN")).toContain("工作区");
+    expect(issueActivitySummaryLabel("2小时前", "zh-CN")).toBe("更新于 2小时前");
   });
 });
