@@ -22,6 +22,7 @@ import {
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  readAgentMemory,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -247,9 +248,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       }
     }
+    // When workspace config does not provide agentHome, derive it from the instructions
+    // file path: …/agents/{id}/instructions/AGENTS.md → …/agents/{id}/
+    const effectiveAgentHome =
+      agentHome ||
+      (resolvedInstructionsFilePath
+        ? path.dirname(path.dirname(resolvedInstructionsFilePath))
+        : "");
+    // Prepend persistent agent memory when agentHome is set so every run starts
+    // with the agent's accumulated feedback, project state, and user context.
+    const memoryBlock = effectiveAgentHome
+      ? await readAgentMemory(path.join(effectiveAgentHome, "memory"))
+      : "";
+    if (memoryBlock) {
+      instructionsPrefix = `${memoryBlock}\n\n${instructionsPrefix}`;
+    }
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (memoryBlock) {
+        notes.push(`Injected ${memoryBlock.length} chars of persistent agent memory from ${effectiveAgentHome}/memory into stdin prefix.`);
+      }
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -296,6 +315,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
+      memoryChars: memoryBlock.length,
     };
 
     const buildArgs = (resumeSessionId: string | null) => {

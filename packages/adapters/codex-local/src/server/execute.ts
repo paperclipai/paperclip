@@ -20,6 +20,7 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  readAgentMemory,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -406,7 +407,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
-  let instructionsChars = 0;
   if (instructionsFilePath) {
     try {
       const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
@@ -414,7 +414,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -423,6 +422,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // When workspace config does not provide agentHome, derive it from the instructions
+  // file path: …/agents/{id}/instructions/AGENTS.md → …/agents/{id}/
+  const effectiveAgentHome =
+    agentHome || (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : "");
+  // Prepend persistent agent memory when agentHome is set so every run starts
+  // with the agent's accumulated feedback, project state, and user context.
+  const memoryBlock = effectiveAgentHome
+    ? await readAgentMemory(path.join(effectiveAgentHome, "memory"))
+    : "";
+  if (memoryBlock) {
+    instructionsPrefix = `${memoryBlock}\n\n${instructionsPrefix}`;
+  }
+  let instructionsChars = instructionsPrefix.length;
   const repoAgentsNote =
     "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -444,27 +456,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
   const commandNotes = (() => {
+    const notes: string[] = [];
+    if (memoryBlock) {
+      notes.push(`Injected ${memoryBlock.length} chars of persistent agent memory from ${effectiveAgentHome}/memory into stdin prefix.`);
+    }
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      notes.push(repoAgentsNote);
+      return notes;
     }
     if (instructionsPrefix.length > 0) {
       if (shouldUseResumeDeltaPrompt) {
-        return [
+        notes.push(
           `Loaded agent instructions from ${instructionsFilePath}`,
           "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
           repoAgentsNote,
-        ];
+        );
+      } else {
+        notes.push(
+          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          repoAgentsNote,
+        );
       }
-      return [
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+    } else {
+      notes.push(
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
         repoAgentsNote,
-      ];
+      );
     }
-    return [
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      repoAgentsNote,
-    ];
+    return notes;
   })();
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -482,6 +502,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
+    memoryChars: memoryBlock.length,
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {

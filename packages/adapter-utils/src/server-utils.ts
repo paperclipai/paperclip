@@ -1189,3 +1189,65 @@ export async function runChildProcess(
       .catch(reject);
   });
 }
+
+/** Default size budget for injected agent memory (chars, not tokens). */
+export const AGENT_MEMORY_DEFAULT_SIZE_BUDGET = 16_384;
+
+/**
+ * Read persistent agent memory from `memoryDir` and return a formatted
+ * markdown block suitable for injection into a system prompt or stdin prefix.
+ *
+ * Reads `MEMORY.md` (the index) first, then each individual file referenced
+ * by a markdown link in that index, accumulating content until `sizeBudget`
+ * chars is reached. Files that exceed the remaining budget are skipped.
+ *
+ * Returns an empty string when `memoryDir` does not exist or contains no
+ * readable `MEMORY.md` — callers should treat an empty return as "no memory
+ * available" and skip injection rather than treating it as an error.
+ */
+export async function readAgentMemory(
+  memoryDir: string,
+  options?: { sizeBudget?: number },
+): Promise<string> {
+  const sizeBudget = options?.sizeBudget ?? AGENT_MEMORY_DEFAULT_SIZE_BUDGET;
+  const indexPath = path.join(memoryDir, "MEMORY.md");
+
+  let indexContent: string;
+  try {
+    indexContent = await fs.readFile(indexPath, "utf8");
+  } catch {
+    // Memory directory or index file does not exist — not an error.
+    return "";
+  }
+
+  // Parse markdown link targets from MEMORY.md: [Title](filename.md)
+  const fileRefs: string[] = [];
+  for (const match of indexContent.matchAll(/\[(?:[^\]]*)\]\(([^)]+\.md)\)/g)) {
+    const ref = match[1].trim();
+    if (ref && !ref.startsWith("http")) {
+      fileRefs.push(ref);
+    }
+  }
+
+  const header = `# Persistent Memory\n\n## Memory Index\n\n${indexContent}\n\n`;
+  let assembled = header;
+  let remaining = sizeBudget - header.length;
+
+  for (const ref of fileRefs) {
+    if (remaining <= 0) break;
+    const filePath = path.join(memoryDir, ref);
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    const section = `---\n\n### ${ref}\n\n${content.trim()}\n\n`;
+    if (section.length <= remaining) {
+      assembled += section;
+      remaining -= section.length;
+    }
+  }
+
+  return assembled.trim();
+}
