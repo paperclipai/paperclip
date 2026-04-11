@@ -94,6 +94,7 @@ interface IssueChatMessageContext {
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
 }
@@ -162,6 +163,7 @@ interface CommentReassignment {
 
 export interface IssueChatComposerHandle {
   focus: () => void;
+  restoreDraft: (submittedBody: string) => void;
 }
 
 interface IssueChatComposerProps {
@@ -217,6 +219,7 @@ interface IssueChatThreadProps {
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
   composerRef?: Ref<IssueChatComposerHandle>;
@@ -873,10 +876,11 @@ function IssueChatToolPart({
 }
 
 function IssueChatUserMessage() {
-  const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
+  const { onInterruptQueued, onCancelQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
@@ -909,6 +913,16 @@ function IssueChatUserMessage() {
                     onClick={() => void onInterruptQueued(queueTargetRunId)}
                   >
                     {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                  </Button>
+                ) : null}
+                {onCancelQueued ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                    onClick={() => onCancelQueued(commentId)}
+                  >
+                    Cancel
                   </Button>
                 ) : null}
               </div>
@@ -1567,6 +1581,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  function focusComposer() {
+    if (typeof composerContainerRef.current?.scrollIntoView === "function") {
+      composerContainerRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    requestAnimationFrame(() => {
+      window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
+      editorRef.current?.focus();
+    });
+  }
+
   useEffect(() => {
     if (!draftKey) return;
     setBody(loadDraft(draftKey));
@@ -1591,12 +1615,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }, [effectiveSuggestedAssigneeValue]);
 
   useImperativeHandle(forwardedRef, () => ({
-    focus: () => {
-      composerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      requestAnimationFrame(() => {
-        window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
-        editorRef.current?.focus();
-      });
+    focus: focusComposer,
+    restoreDraft: (submittedBody: string) => {
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      focusComposer();
     },
   }), []);
 
@@ -1799,6 +1826,7 @@ export function IssueChatThread({
   hasOutputForRun: hasOutputForRunOverride,
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
+  onCancelQueued,
   interruptingQueuedRunId = null,
   onImageClick,
   composerRef,
@@ -1914,6 +1942,7 @@ export function IssueChatThread({
       currentUserId,
       onVote,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
     }),
@@ -1925,6 +1954,7 @@ export function IssueChatThread({
       currentUserId,
       onVote,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
     ],

@@ -444,6 +444,32 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  function toValidTimestamp(value: Date | string | null | undefined) {
+    if (!value) return null;
+    const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function isQueuedIssueCommentForActiveRun(params: {
+    comment: {
+      authorAgentId?: string | null;
+      createdAt?: Date | string | null;
+    };
+    activeRun: {
+      agentId?: string | null;
+      startedAt?: Date | string | null;
+      createdAt?: Date | string | null;
+    };
+  }) {
+    const activeRunStartedAtMs =
+      toValidTimestamp(params.activeRun.startedAt) ?? toValidTimestamp(params.activeRun.createdAt);
+    const commentCreatedAtMs = toValidTimestamp(params.comment.createdAt);
+
+    if (activeRunStartedAtMs === null || commentCreatedAtMs === null) return false;
+    if (params.comment.authorAgentId && params.comment.authorAgentId === params.activeRun.agentId) return false;
+    return commentCreatedAtMs >= activeRunStartedAtMs;
+  }
+
   async function getClosedIssueExecutionWorkspace(issue: { executionWorkspaceId?: string | null }) {
     if (!issue.executionWorkspaceId) return null;
     const workspace = await executionWorkspacesSvc.getById(issue.executionWorkspaceId);
@@ -2067,6 +2093,72 @@ export function issueRoutes(
       return;
     }
     res.json(comment);
+  });
+
+  router.delete("/issues/:id/comments/:commentId", async (req, res) => {
+    const id = req.params.id as string;
+    const commentId = req.params.commentId as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+
+    const comment = await svc.getComment(commentId);
+    if (!comment || comment.issueId !== id) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const actorOwnsComment =
+      actor.actorType === "agent"
+        ? comment.authorAgentId === actor.agentId
+        : comment.authorUserId === actor.actorId;
+    if (!actorOwnsComment) {
+      res.status(403).json({ error: "Only the comment author can cancel queued comments" });
+      return;
+    }
+
+    const activeRun = await resolveActiveIssueRun(issue);
+    if (!activeRun) {
+      res.status(409).json({ error: "Queued comment can no longer be canceled" });
+      return;
+    }
+
+    if (!isQueuedIssueCommentForActiveRun({ comment, activeRun })) {
+      res.status(409).json({ error: "Only queued comments can be canceled" });
+      return;
+    }
+
+    const removed = await svc.removeComment(commentId);
+    if (!removed) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.comment_cancelled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: removed.id,
+        bodySnippet: removed.body.slice(0, 120),
+        identifier: issue.identifier,
+        issueTitle: issue.title,
+        source: "queue_cancel",
+        queueTargetRunId: activeRun.id,
+      },
+    });
+
+    res.json(removed);
   });
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {

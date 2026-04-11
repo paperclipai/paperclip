@@ -126,6 +126,8 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
+  cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>

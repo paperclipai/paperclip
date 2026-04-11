@@ -41,6 +41,8 @@ import {
   isQueuedIssueComment,
   matchesIssueRef,
   mergeIssueComments,
+  removeIssueCommentFromPages,
+  takeOptimisticIssueComment,
   upsertIssueCommentInPages,
   type IssueCommentReassignment,
   type OptimisticIssueComment,
@@ -391,6 +393,7 @@ export function IssueDetail() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
+  const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     setIssueChatInitialTranscriptReady(false);
@@ -809,6 +812,23 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
   }, [issueId, queryClient]);
 
+  const removeCommentFromCache = useCallback((commentId: string) => {
+    queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
+      queryKeys.issues.comments(issueId!),
+      (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          pages: removeIssueCommentFromPages(current.pages, commentId),
+        };
+      },
+    );
+  }, [issueId, queryClient]);
+
+  const restoreQueuedCommentDraft = useCallback((body: string) => {
+    commentComposerRef.current?.restoreDraft(body);
+  }, []);
+
   const invalidateIssueCollections = useCallback(() => {
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
@@ -982,11 +1002,27 @@ export function IssueDetail() {
         previousIssue,
       };
     },
-    onSuccess: (comment, _variables, context) => {
+    onSuccess: async (comment, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
         );
+      }
+      if (context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
+        cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
+        try {
+          await issuesApi.cancelComment(issueId!, comment.id);
+          invalidateIssueDetail();
+          invalidateIssueThreadLazily();
+          invalidateIssueCollections();
+          return;
+        } catch (err) {
+          pushToast({
+            title: "Cancel failed",
+            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            tone: "error",
+          });
+        }
       }
       queryClient.setQueryData<Issue | undefined>(
         queryKeys.issues.detail(issueId!),
@@ -1080,7 +1116,7 @@ export function IssueDetail() {
         previousIssue,
       };
     },
-    onSuccess: (result, _variables, context) => {
+    onSuccess: async (result, _variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
@@ -1089,6 +1125,22 @@ export function IssueDetail() {
 
       const { comment, ...nextIssue } = result;
       queryClient.setQueryData(queryKeys.issues.detail(issueId!), nextIssue);
+      if (comment && context?.optimisticCommentId && cancelledQueuedOptimisticCommentIdsRef.current.has(context.optimisticCommentId)) {
+        cancelledQueuedOptimisticCommentIdsRef.current.delete(context.optimisticCommentId);
+        try {
+          await issuesApi.cancelComment(issueId!, comment.id);
+          invalidateIssueDetail();
+          invalidateIssueThreadLazily();
+          invalidateIssueCollections();
+          return;
+        } catch (err) {
+          pushToast({
+            title: "Cancel failed",
+            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            tone: "error",
+          });
+        }
+      }
       if (comment) {
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(issueId!),
@@ -1186,6 +1238,52 @@ export function IssueDetail() {
       });
     },
   });
+
+  const cancelQueuedComment = useMutation({
+    mutationFn: async ({ commentId }: { commentId: string }) => issuesApi.cancelComment(issueId!, commentId),
+    onSuccess: (comment) => {
+      removeCommentFromCache(comment.id);
+      restoreQueuedCommentDraft(comment.body);
+      invalidateIssueDetail();
+      invalidateIssueThreadLazily();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Queued comment canceled",
+        body: "The queued message was restored to the composer.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Cancel failed",
+        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        tone: "error",
+      });
+    },
+  });
+
+  const handleCancelQueuedComment = useCallback((commentId: string) => {
+    if (commentId.startsWith("optimistic-")) {
+      cancelledQueuedOptimisticCommentIdsRef.current.add(commentId);
+      let cancelledComment: OptimisticIssueComment | null = null;
+      setOptimisticComments((current) => {
+        const next = takeOptimisticIssueComment(current, commentId);
+        cancelledComment = next.comment;
+        return next.comments;
+      });
+      if (cancelledComment) {
+        restoreQueuedCommentDraft(cancelledComment.body);
+        pushToast({
+          title: "Queued comment canceled",
+          body: "The queued message was restored to the composer.",
+          tone: "success",
+        });
+      }
+      return;
+    }
+
+    void cancelQueuedComment.mutateAsync({ commentId });
+  }, [cancelQueuedComment, restoreQueuedCommentDraft, pushToast]);
 
   const feedbackVoteMutation = useMutation({
     mutationFn: (variables: {
@@ -2180,6 +2278,7 @@ export function IssueDetail() {
                 onInterruptQueued={async (runId) => {
                   await interruptQueuedComment.mutateAsync(runId);
                 }}
+                onCancelQueued={handleCancelQueuedComment}
                 interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
                 onCancelRun={runningIssueRun
                   ? async () => {

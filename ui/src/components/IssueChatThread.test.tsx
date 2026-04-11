@@ -340,7 +340,7 @@ describe("IssueChatThread", () => {
 
   it("exposes a composer focus handle that forwards to the editor", () => {
     const root = createRoot(container);
-    const composerRef = createRef<{ focus: () => void }>();
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
@@ -382,6 +382,51 @@ describe("IssueChatThread", () => {
     scrollByMock.mockRestore();
     requestAnimationFrameMock.mockRestore();
 
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("restores a cancelled queued draft into the composer handle", () => {
+    const root = createRoot(container);
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
+    const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const requestAnimationFrameMock = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            composerRef={composerRef}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor).not.toBeNull();
+
+    act(() => {
+      composerRef.current?.restoreDraft("Queued message");
+    });
+
+    expect(editor?.value).toBe("Queued message");
+    expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
+    expect(scrollByMock).toHaveBeenCalledWith({ top: 96, behavior: "smooth" });
+
+    scrollByMock.mockRestore();
+    requestAnimationFrameMock.mockRestore();
     act(() => {
       root.unmount();
     });
