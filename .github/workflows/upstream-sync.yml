@@ -193,6 +193,39 @@ jobs:
           upstream_sha="${BRANCH_NAME#bot-upgrade/}"
           pr_title="chore(upstream): sync ${upstream_sha} into zh-enterprise"
 
+          git fetch --no-tags origin "zh-enterprise:refs/remotes/origin/zh-enterprise"
+
+          branch_visible=false
+          for attempt in 1 2 3; do
+            if git fetch --no-tags origin "$BRANCH_NAME:refs/remotes/origin/$BRANCH_NAME"; then
+              branch_visible=true
+              break
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Waiting for origin/$BRANCH_NAME to become visible after push..."
+              sleep 5
+            fi
+          done
+
+          if [ "$branch_visible" != "true" ]; then
+            echo "Remote bot branch origin/$BRANCH_NAME was pushed but is not yet fetchable."
+            exit 1
+          fi
+
+          ahead_commits="$(git rev-list --count "origin/zh-enterprise..origin/$BRANCH_NAME")"
+          if [ "$ahead_commits" = "0" ]; then
+            echo "Branch $BRANCH_NAME has no commits ahead of zh-enterprise; skipping PR creation."
+            echo "pr_url=" >> "$GITHUB_OUTPUT"
+            echo "result=no-diff" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Upstream Sync PR"
+              echo "- branch: \`$BRANCH_NAME\`"
+              echo "- result: skipped PR creation because the bot branch has no commits ahead of \`zh-enterprise\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           pr_url="$({
             gh pr list --state open --base zh-enterprise --head "$BRANCH_NAME" --json url,headRepositoryOwner \
               --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url"
@@ -211,6 +244,7 @@ jobs:
           fi
 
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "result=updated-or-created" >> "$GITHUB_OUTPUT"
 
       - name: Fail when sync needs maintainer action
         if: always()
