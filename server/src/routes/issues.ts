@@ -1653,6 +1653,10 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           commentId: comment.id,
+          // Full body included so plugins subscribing to issue.comment_added
+          // can bridge comments without an extra issues.listComments fetch.
+          // Truncated snippet kept for backward-compat with existing UIs.
+          body: comment.body,
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
@@ -2250,6 +2254,9 @@ export function issueRoutes(
       entityId: currentIssue.id,
       details: {
         commentId: comment.id,
+        // Full body included so plugins subscribing to issue.comment_added
+        // can bridge comments without an extra issues.listComments fetch.
+        body: comment.body,
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
