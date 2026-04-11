@@ -3647,6 +3647,61 @@ export function heartbeatService(db: Db) {
       return mergedRun;
     }
 
+    // Dedup window: re-check for queued runs created in the last 5 seconds
+    // that the initial query may have missed due to concurrent transaction
+    // isolation (e.g. assignment-wake in a FOR UPDATE transaction that
+    // hadn't committed when we queried at the top of this block).
+    if (issueId) {
+      const DEDUP_WINDOW_MS = 5_000;
+      const windowStart = new Date(Date.now() - DEDUP_WINDOW_MS);
+      const recentQueuedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "queued"),
+            gt(heartbeatRuns.createdAt, windowStart),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (recentQueuedRun) {
+        const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+          recentQueuedRun.contextSnapshot,
+          contextSnapshot,
+        );
+        const mergedRun = await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: mergedContextSnapshot,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, recentQueuedRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? recentQueuedRun);
+
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "coalesced",
+          coalescedCount: 1,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          runId: mergedRun.id,
+          finishedAt: new Date(),
+        });
+        return mergedRun;
+      }
+    }
+
     const wakeupRequest = await db
       .insert(agentWakeupRequests)
       .values({
