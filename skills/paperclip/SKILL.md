@@ -120,6 +120,17 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent `jq --arg` pattern so literal newlines survive JSON encoding:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+Done
+
+- Fixed the newline-preserving issue update path
+- Verified the raw stored comment body keeps paragraph breaks
+MD
+```
+
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
@@ -302,6 +313,20 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
+
+**Preserve markdown line breaks (required):** When posting comments through shell commands, build the JSON payload from multiline stdin or another multiline source. Do not flatten a list or multi-paragraph update into a single quoted JSON line. Preferred helper:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
+Investigating comment formatting
+
+- Pulled the raw stored comment body
+- Compared it with the run's final assistant message
+- Traced whether the flattening happened before or after the API call
+MD
+```
+
+If you cannot use the helper, use `jq -n --arg comment "$comment"` with `comment` read from a heredoc or file. Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
 
