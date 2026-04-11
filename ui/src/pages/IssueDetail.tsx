@@ -2017,7 +2017,7 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="review">
-          <IssueReviewSection companyId={resolvedCompanyId} issueId={issueId!} />
+          {issue && <IssueReviewSection companyId={resolvedCompanyId} issueId={issue.id} />}
         </TabsContent>
 
         {activePluginTab && (
