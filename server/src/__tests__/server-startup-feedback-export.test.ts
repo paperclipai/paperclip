@@ -66,6 +66,8 @@ vi.mock("../config.js", () => ({
   loadConfig: vi.fn(() => ({
     deploymentMode: "authenticated",
     deploymentExposure: "private",
+    bind: "loopback",
+    customBindHost: undefined,
     host: "127.0.0.1",
     port: 3210,
     allowedHostnames: [],

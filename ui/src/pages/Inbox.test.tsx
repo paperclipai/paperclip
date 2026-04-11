@@ -99,6 +99,7 @@ describe("FailedRunInboxRow", () => {
       errorCode: null,
       externalRunId: null,
       processPid: null,
+      processGroupId: null,
       processStartedAt: null,
       retryOfRunId: null,
       processLossRetryCount: 0,

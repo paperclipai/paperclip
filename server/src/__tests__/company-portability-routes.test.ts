@@ -175,4 +175,50 @@ describe("company portability routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
   });
+
+  it("requires instance admin for new-company import preview", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Imported Test" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("requires instance admin for new-company import apply", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Imported Test" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
 });

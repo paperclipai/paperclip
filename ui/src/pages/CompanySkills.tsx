@@ -742,7 +742,7 @@ function SkillPane({
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
-          <MarkdownBody>{body}</MarkdownBody>
+          <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
           <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
             <code>{file.content}</code>
