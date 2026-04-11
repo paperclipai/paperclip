@@ -9,6 +9,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isTerminalIssueStatus,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,

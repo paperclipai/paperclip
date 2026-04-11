@@ -1,0 +1,11 @@
+{
+  "files": [
+    "server/src/__tests__/heartbeat-workspace-session.test.ts",
+    "server/src/__tests__/issues-service.test.ts",
+    ".planning/current-scope.json",
+    ".planning/baseline.json"
+  ],
+  "source": "surgeon_brief",
+  "paperclipIssue": "AET-24",
+  "linearTicket": "AET-273"
+}

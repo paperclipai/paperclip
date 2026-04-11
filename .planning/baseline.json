@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-04-11T07:16:23Z",
+  "worktree": "/Users/macbook/Developer/paperclip/.worktrees/aet-273-thread-resume-rollout",
+  "branch": "codex/aet-273-thread-resume-rollout",
+  "baseline": "pre-import-fix",
+  "currentFocus": "missing",
+  "hygieneAudit": "pass",
+  "tests": null
+}
