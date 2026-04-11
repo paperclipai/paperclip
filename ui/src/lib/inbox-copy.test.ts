@@ -16,6 +16,8 @@ describe("inbox-copy", () => {
 
     expect(copy.inbox).toBe("收件箱");
     expect(copy.group).toBe("分组");
+    expect(copy.groupByNone).toBe("无");
+    expect(copy.groupByType).toBe("类型");
     expect(copy.archive).toBe("归档");
     expect(copy.searchInbox).toBe("搜索收件箱…");
     expect(copy.markAllAsRead).toBe("全部标为已读");

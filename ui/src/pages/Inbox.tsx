@@ -252,7 +252,7 @@ export function FailedRunInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -410,7 +410,7 @@ function ApprovalInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -548,7 +548,7 @@ function JoinRequestInboxRow({
                 onClick={onArchive}
                 disabled={archiveDisabled}
                 className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label={copy.dismissFromInbox}
+                aria-label={copy.archive}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -1637,8 +1637,8 @@ export function Inbox() {
             <PopoverContent align="end" className="w-40 p-2">
               <div className="space-y-0.5">
                 {([
-                  ["none", "None"],
-                  ["type", "Type"],
+                  ["none", copy.groupByNone],
+                  ["type", copy.groupByType],
                 ] as const).map(([value, label]) => (
                   <button
                     key={value}

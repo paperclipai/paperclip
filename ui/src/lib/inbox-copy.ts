@@ -4,6 +4,8 @@ const inboxCopy = {
   en: {
     inbox: "Inbox",
     group: "Group",
+    groupByNone: "None",
+    groupByType: "Type",
     archive: "Archive",
     selectCompany: "Select a company to view inbox.",
     markAsRead: "Mark as read",
@@ -55,6 +57,8 @@ const inboxCopy = {
   "zh-CN": {
     inbox: "收件箱",
     group: "分组",
+    groupByNone: "无",
+    groupByType: "类型",
     archive: "归档",
     selectCompany: "请选择一个公司以查看收件箱。",
     markAsRead: "标记为已读",
