@@ -22,6 +22,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  readAgentMemory,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -297,6 +298,8 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const agentHomeFromWorkspace =
+    asString(parseObject(context.paperclipWorkspace).agentHome, "") || null;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -309,6 +312,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  // When workspace config does not provide agentHome, derive it from the instructions
+  // file path: …/agents/{id}/instructions/AGENTS.md → …/agents/{id}/
+  const agentHome =
+    agentHomeFromWorkspace ??
+    (instructionsFilePath ? path.dirname(path.dirname(instructionsFilePath)) : null);
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
@@ -337,19 +345,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
-  // When instructionsFilePath is configured, build a stable content-addressed
-  // file that includes both the file content and the path directive, so we only
-  // need --append-system-prompt-file (Claude CLI forbids using both flags together).
+
+  // Read persistent agent memory from ${agentHome}/memory/ if agentHome is set.
+  // Injected into the system prompt alongside agent instructions so every run
+  // starts with the agent's accumulated feedback, project state, and user context.
+  const memoryBlock = agentHome ? await readAgentMemory(path.join(agentHome, "memory")) : "";
+  const memoryChars = memoryBlock.length;
+
+  // Build combined instructions: agent AGENTS.md + path directive + memory block.
+  // Passes everything into the content-addressed prompt bundle so session resumption
+  // is invalidated automatically when memory or instructions change.
   let combinedInstructionsContents: string | null = null;
-  if (instructionsFilePath) {
+  if (instructionsFilePath || memoryBlock) {
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      const pathDirective =
-        `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
-      combinedInstructionsContents = instructionsContent + pathDirective;
+      let instructionsContent = "";
+      let pathDirective = "";
+      if (instructionsFilePath) {
+        instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+        pathDirective =
+          `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsFileDir}. ` +
+          `This base directory is authoritative for sibling instruction files such as ` +
+          `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
+      }
+      const memorySuffix = memoryBlock ? `\n\n${memoryBlock}` : "";
+      combinedInstructionsContents = instructionsContent + pathDirective + memorySuffix;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -423,6 +443,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
+    memoryChars,
   };
 
   const buildClaudeArgs = (
@@ -476,9 +497,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
-      commandNotes.push(
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
-      );
+      if (instructionsFilePath) {
+        commandNotes.push(
+          `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+        );
+      }
+      if (memoryChars > 0) {
+        commandNotes.push(
+          `Injected ${memoryChars} chars of persistent agent memory from ${agentHome}/memory into system prompt.`,
+        );
+      }
     }
     if (onMeta) {
       await onMeta({
