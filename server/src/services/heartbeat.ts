@@ -1828,6 +1828,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { runSource?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -1846,13 +1847,18 @@ export function heartbeatService(db: Db) {
           ? "idle"
           : "error";
 
+    const setFields: Record<string, unknown> = {
+      status: nextStatus,
+      lastHeartbeatAt: new Date(),
+      updatedAt: new Date(),
+    };
+    if (opts?.runSource === "timer") {
+      setFields.lastTimerHeartbeatAt = new Date();
+    }
+
     const updated = await db
       .update(agents)
-      .set({
-        status: nextStatus,
-        lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
-      })
+      .set(setFields)
       .where(eq(agents.id, agentId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -1972,7 +1978,7 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", { runSource: run.invocationSource });
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -2945,7 +2951,7 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { runSource: run.invocationSource });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -3009,7 +3015,7 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { runSource: run.invocationSource });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -3041,7 +3047,7 @@ export function heartbeatService(db: Db) {
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed", { runSource: run.invocationSource }).catch(() => undefined);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
@@ -3835,7 +3841,7 @@ export function heartbeatService(db: Db) {
     }
 
     runningProcesses.delete(run.id);
-    await finalizeAgentStatus(run.agentId, "cancelled");
+    await finalizeAgentStatus(run.agentId, "cancelled", { runSource: run.invocationSource });
     await startNextQueuedRunForAgent(run.agentId);
     return cancelled;
   }
@@ -4048,7 +4054,7 @@ export function heartbeatService(db: Db) {
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
+        const baseline = new Date(agent.lastTimerHeartbeatAt ?? agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
