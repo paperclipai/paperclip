@@ -83,7 +83,12 @@ If blocked:
 ```
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
-{ "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
+{
+  "status": "blocked",
+  "blockedReason": "What is blocked and why.",
+  "blockedUntil": "What condition or time should unblock it.",
+  "comment": "Who needs to unblock it and any next step context."
+}
 ```
 
 ### Step 9: Delegate if Needed

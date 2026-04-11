@@ -61,12 +61,12 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { Identity } from "../components/Identity";
+import { IssueBlockedMetaPanel } from "../components/IssueBlockedMetaPanel";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -1673,72 +1673,23 @@ export function IssueDetail() {
       )}
 
       {issue.status === "blocked" && (
-        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-3 text-sm text-yellow-700 dark:text-yellow-400 space-y-3">
-          {isEditingBlockedMeta ? (
-            <div className="space-y-2">
-              <div className="grid gap-2 md:grid-cols-2">
-                <Input
-                  value={blockedReasonDraft}
-                  onChange={(event) => setBlockedReasonDraft(event.target.value)}
-                  placeholder="Why is this blocked?"
-                  className="bg-background/80 text-foreground"
-                />
-                <Input
-                  value={blockedUntilDraft}
-                  onChange={(event) => setBlockedUntilDraft(event.target.value)}
-                  placeholder="Until what condition or time?"
-                  className="bg-background/80 text-foreground"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => updateIssue.mutate({ blockedReason: blockedReasonDraft || null, blockedUntil: blockedUntilDraft || null })}
-                  disabled={updateIssue.isPending}
-                >
-                  Save blocked info
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setBlockedReasonDraft(issue.blockedReason ?? "");
-                    setBlockedUntilDraft(issue.blockedUntil ?? "");
-                    setIsEditingBlockedMeta(false);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-start justify-between gap-3">
-              <dl className="min-w-0 flex-1 space-y-3">
-                <div className="space-y-1">
-                  <dt className="text-xs font-semibold uppercase tracking-wide text-yellow-700/80 dark:text-yellow-300/80">
-                    Blocked
-                  </dt>
-                  <dd className="min-w-0 break-words text-sm text-yellow-900 dark:text-yellow-100">
-                    {issue.blockedReason || "No reason set"}
-                  </dd>
-                </div>
-                {issue.blockedUntil && (
-                  <div className="space-y-1">
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-yellow-700/70 dark:text-yellow-300/70">
-                      Until
-                    </dt>
-                    <dd className="min-w-0 break-words text-sm text-yellow-700 dark:text-yellow-300">
-                      {issue.blockedUntil}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-              <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setIsEditingBlockedMeta(true)}>
-                Edit
-              </Button>
-            </div>
-          )}
-        </div>
+        <IssueBlockedMetaPanel
+          blockedReason={issue.blockedReason}
+          blockedUntil={issue.blockedUntil}
+          isEditing={isEditingBlockedMeta}
+          blockedReasonDraft={blockedReasonDraft}
+          blockedUntilDraft={blockedUntilDraft}
+          isSaving={updateIssue.isPending}
+          onBlockedReasonDraftChange={setBlockedReasonDraft}
+          onBlockedUntilDraftChange={setBlockedUntilDraft}
+          onSave={() => updateIssue.mutate({ blockedReason: blockedReasonDraft || null, blockedUntil: blockedUntilDraft || null })}
+          onCancel={() => {
+            setBlockedReasonDraft(issue.blockedReason ?? "");
+            setBlockedUntilDraft(issue.blockedUntil ?? "");
+            setIsEditingBlockedMeta(false);
+          }}
+          onEdit={() => setIsEditingBlockedMeta(true)}
+        />
       )}
 
       <div className="space-y-3">

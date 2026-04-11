@@ -206,6 +206,9 @@ Invariant:
 - `created_by_user_id` uuid fk `users.id` null
 - `request_depth` int not null default 0
 - `billing_code` text null
+- `blocked_reason` text null
+- `blocked_until` text null
+- `blocked_at` timestamptz null
 - `started_at` timestamptz null
 - `completed_at` timestamptz null
 - `cancelled_at` timestamptz null
@@ -391,6 +394,8 @@ Allowed transitions:
 
 Side effects:
 
+- entering `blocked` sets `blocked_at` if newly blocked
+- leaving `blocked` clears `blocked_reason`, `blocked_until`, and `blocked_at`
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
