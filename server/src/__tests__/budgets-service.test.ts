@@ -352,8 +352,8 @@ describe("budgetService", () => {
     }]);
     dbStub.queueUpdate([]);
 
-    const service = budgetService(dbStub.db as any);
-    await service.evaluateCostEvent({
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
       companyId: "company-1",
       agentId: "agent-1",
       projectId: null,
