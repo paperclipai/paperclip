@@ -1,4 +1,10 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.sandbox.search import GrepMatch
 
 
 class Sandbox(ABC):
@@ -58,6 +64,47 @@ class Sandbox(ABC):
             path: The absolute path of the file to write to.
             content: The text content to write to the file.
             append: Whether to append the content to the file. If False, the file will be created or overwritten.
+        """
+        pass
+
+    @abstractmethod
+    def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
+        """Find paths that match a glob pattern under a root directory.
+
+        Args:
+            path: The absolute root directory to search under.
+            pattern: The glob pattern to match relative to the root path.
+            include_dirs: Whether matching directories should also be returned.
+            max_results: Maximum number of paths to return.
+
+        Returns:
+            A tuple of (matched_paths, truncated).
+        """
+        pass
+
+    @abstractmethod
+    def grep(
+        self,
+        path: str,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        literal: bool = False,
+        case_sensitive: bool = False,
+        max_results: int = 100,
+    ) -> tuple[list[GrepMatch], bool]:
+        """Search for matches inside text files under a directory.
+
+        Args:
+            path: The absolute root directory to search under.
+            pattern: The string or regex pattern to search for.
+            glob: Optional glob filter for candidate files.
+            literal: Whether to treat pattern as a plain string.
+            case_sensitive: Whether matching is case-sensitive.
+            max_results: Maximum number of matching lines to return.
+
+        Returns:
+            A tuple of (matches, truncated).
         """
         pass
 

@@ -10,6 +10,7 @@ from src.sandbox.exceptions import (
     SandboxNotFoundError,
     SandboxRuntimeError,
 )
+from src.sandbox.search import GrepMatch
 from src.sandbox.sandbox import Sandbox
 from src.sandbox.sandbox_provider import get_sandbox_provider
 
@@ -232,6 +233,93 @@ def ensure_thread_directories_exist(runtime: ToolRuntime[ContextT, ThreadState] 
     runtime.state["thread_directories_created"] = True
 
 
+def _truncate_bash_output(output: str, max_chars: int) -> str:
+    """Middle-truncate bash output, preserving head and tail (50/50 split).
+
+    bash output may have errors at either end (stderr/stdout ordering is
+    non-deterministic), so both ends are preserved equally.
+
+    The returned string (including the truncation marker) is guaranteed to be
+    no longer than max_chars characters. Pass max_chars=0 to disable truncation
+    and return the full output unchanged.
+    """
+    if max_chars == 0:
+        return output
+    if len(output) <= max_chars:
+        return output
+    total_len = len(output)
+    # Compute the exact worst-case marker length: skipped chars is at most
+    # total_len, so this is a tight upper bound.
+    marker_max_len = len(f"\n... [middle truncated: {total_len} chars skipped] ...\n")
+    kept = max(0, max_chars - marker_max_len)
+    if kept == 0:
+        return output[:max_chars]
+    head_len = kept // 2
+    tail_len = kept - head_len
+    skipped = total_len - kept
+    marker = f"\n... [middle truncated: {skipped} chars skipped] ...\n"
+    return f"{output[:head_len]}{marker}{output[-tail_len:] if tail_len > 0 else ''}"
+
+
+def _truncate_read_file_output(output: str, max_chars: int) -> str:
+    """Head-truncate read_file output, preserving the beginning of the file.
+
+    Source code and documents are read top-to-bottom; the head contains the
+    most context (imports, class definitions, function signatures).
+
+    The returned string (including the truncation marker) is guaranteed to be
+    no longer than max_chars characters. Pass max_chars=0 to disable truncation
+    and return the full output unchanged.
+    """
+    if max_chars == 0:
+        return output
+    if len(output) <= max_chars:
+        return output
+    total = len(output)
+    # Compute the exact worst-case marker length: both numeric fields are at
+    # their maximum (total chars), so this is a tight upper bound.
+    marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use start_line/end_line to read a specific range] ...")
+    kept = max(0, max_chars - marker_max_len)
+    if kept == 0:
+        return output[:max_chars]
+    marker = f"\n... [truncated: showing first {kept} of {total} chars. Use start_line/end_line to read a specific range] ..."
+    return f"{output[:kept]}{marker}"
+
+
+def _truncate_ls_output(output: str, max_chars: int) -> str:
+    """Head-truncate ls output, preserving the beginning of the listing.
+
+    Directory listings are read top-to-bottom; the head shows the most
+    relevant structure.
+
+    The returned string (including the truncation marker) is guaranteed to be
+    no longer than max_chars characters. Pass max_chars=0 to disable truncation
+    and return the full output unchanged.
+    """
+    if max_chars == 0:
+        return output
+    if len(output) <= max_chars:
+        return output
+    total = len(output)
+    marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use a more specific path to see fewer results] ...")
+    kept = max(0, max_chars - marker_max_len)
+    if kept == 0:
+        return output[:max_chars]
+    marker = f"\n... [truncated: showing first {kept} of {total} chars. Use a more specific path to see fewer results] ..."
+    return f"{output[:kept]}{marker}"
+
+
+def _get_sandbox_max_chars(field: str, default: int) -> int:
+    """Resolve a max_chars value from sandbox config, falling back to a default."""
+    try:
+        from src.config.app_config import get_app_config
+
+        sandbox_cfg = get_app_config().sandbox
+        return getattr(sandbox_cfg, field, default) if sandbox_cfg else default
+    except Exception:
+        return default
+
+
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
@@ -250,7 +338,9 @@ def bash_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, com
         if is_local_sandbox(runtime):
             thread_data = get_thread_data(runtime)
             command = replace_virtual_paths_in_command(command, thread_data)
-        return sandbox.execute_command(command)
+        output = sandbox.execute_command(command)
+        max_chars = _get_sandbox_max_chars("bash_output_max_chars", 20000)
+        return _truncate_bash_output(output, max_chars)
     except SandboxError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -274,7 +364,9 @@ def ls_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, path:
         children = sandbox.list_dir(path)
         if not children:
             return "(empty)"
-        return "\n".join(children)
+        output = "\n".join(children)
+        max_chars = _get_sandbox_max_chars("ls_output_max_chars", 20000)
+        return _truncate_ls_output(output, max_chars)
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -312,7 +404,8 @@ def read_file_tool(
             return "(empty)"
         if start_line is not None and end_line is not None:
             content = "\n".join(content.splitlines()[start_line - 1 : end_line])
-        return content
+        max_chars = _get_sandbox_max_chars("read_file_output_max_chars", 50000)
+        return _truncate_read_file_output(content, max_chars)
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -404,3 +497,146 @@ def str_replace_tool(
         return f"Error: Permission denied accessing file: {path}"
     except Exception as e:
         return f"Error: Unexpected error replacing string: {type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# glob / grep tools and helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_GLOB_MAX_RESULTS = 200
+_MAX_GLOB_MAX_RESULTS = 1000
+_DEFAULT_GREP_MAX_RESULTS = 100
+_MAX_GREP_MAX_RESULTS = 500
+
+
+def _clamp_max_results(value: int, *, default: int, upper_bound: int) -> int:
+    if value <= 0:
+        return default
+    return min(value, upper_bound)
+
+
+def _format_glob_results(root_path: str, matches: list[str], truncated: bool) -> str:
+    if not matches:
+        return f"No files matched under {root_path}"
+
+    lines = [f"Found {len(matches)} paths under {root_path}"]
+    if truncated:
+        lines[0] += f" (showing first {len(matches)})"
+    lines.extend(f"{index}. {path}" for index, path in enumerate(matches, start=1))
+    if truncated:
+        lines.append("Results truncated. Narrow the path or pattern to see fewer matches.")
+    return "\n".join(lines)
+
+
+def _format_grep_results(root_path: str, matches: list[GrepMatch], truncated: bool) -> str:
+    if not matches:
+        return f"No matches found under {root_path}"
+
+    lines = [f"Found {len(matches)} matches under {root_path}"]
+    if truncated:
+        lines[0] += f" (showing first {len(matches)})"
+    lines.extend(f"{match.path}:{match.line_number}: {match.line}" for match in matches)
+    if truncated:
+        lines.append("Results truncated. Narrow the path or add a glob filter.")
+    return "\n".join(lines)
+
+
+@tool("glob", parse_docstring=True)
+def glob_tool(
+    runtime: ToolRuntime[ContextT, ThreadState],
+    description: str,
+    pattern: str,
+    path: str,
+    include_dirs: bool = False,
+    max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
+) -> str:
+    """Find files or directories that match a glob pattern under a root directory.
+
+    Args:
+        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        pattern: The glob pattern to match relative to the root path, for example `**/*.py`.
+        path: The **absolute** root directory to search under.
+        include_dirs: Whether matching directories should also be returned. Default is False.
+        max_results: Maximum number of paths to return. Default is 200.
+    """
+    try:
+        sandbox = ensure_sandbox_initialized(runtime)
+        ensure_thread_directories_exist(runtime)
+        requested_path = path
+        effective_max_results = _clamp_max_results(
+            max_results,
+            default=_DEFAULT_GLOB_MAX_RESULTS,
+            upper_bound=_MAX_GLOB_MAX_RESULTS,
+        )
+        if is_local_sandbox(runtime):
+            thread_data = get_thread_data(runtime)
+            path = replace_virtual_path(path, thread_data)
+        matches, truncated = sandbox.glob(path, pattern, include_dirs=include_dirs, max_results=effective_max_results)
+        return _format_glob_results(requested_path, matches, truncated)
+    except SandboxError as e:
+        return f"Error: {e}"
+    except FileNotFoundError:
+        return f"Error: Directory not found: {requested_path}"
+    except NotADirectoryError:
+        return f"Error: Path is not a directory: {requested_path}"
+    except PermissionError:
+        return f"Error: Permission denied: {requested_path}"
+    except Exception as e:
+        return f"Error: Unexpected error searching paths: {type(e).__name__}: {e}"
+
+
+@tool("grep", parse_docstring=True)
+def grep_tool(
+    runtime: ToolRuntime[ContextT, ThreadState],
+    description: str,
+    pattern: str,
+    path: str,
+    glob: str | None = None,
+    literal: bool = False,
+    case_sensitive: bool = False,
+    max_results: int = _DEFAULT_GREP_MAX_RESULTS,
+) -> str:
+    """Search for matching lines inside text files under a root directory.
+
+    Args:
+        description: Explain why you are searching file contents in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        pattern: The string or regex pattern to search for.
+        path: The **absolute** root directory to search under.
+        glob: Optional glob filter for candidate files, for example `**/*.py`.
+        literal: Whether to treat `pattern` as a plain string. Default is False.
+        case_sensitive: Whether matching is case-sensitive. Default is False.
+        max_results: Maximum number of matching lines to return. Default is 100.
+    """
+    try:
+        sandbox = ensure_sandbox_initialized(runtime)
+        ensure_thread_directories_exist(runtime)
+        requested_path = path
+        effective_max_results = _clamp_max_results(
+            max_results,
+            default=_DEFAULT_GREP_MAX_RESULTS,
+            upper_bound=_MAX_GREP_MAX_RESULTS,
+        )
+        if is_local_sandbox(runtime):
+            thread_data = get_thread_data(runtime)
+            path = replace_virtual_path(path, thread_data)
+        matches, truncated = sandbox.grep(
+            path,
+            pattern,
+            glob=glob,
+            literal=literal,
+            case_sensitive=case_sensitive,
+            max_results=effective_max_results,
+        )
+        return _format_grep_results(requested_path, matches, truncated)
+    except SandboxError as e:
+        return f"Error: {e}"
+    except FileNotFoundError:
+        return f"Error: Directory not found: {requested_path}"
+    except NotADirectoryError:
+        return f"Error: Path is not a directory: {requested_path}"
+    except re.error as e:
+        return f"Error: Invalid regex pattern: {e}"
+    except PermissionError:
+        return f"Error: Permission denied: {requested_path}"
+    except Exception as e:
+        return f"Error: Unexpected error searching file contents: {type(e).__name__}: {e}"
