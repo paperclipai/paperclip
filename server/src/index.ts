@@ -87,12 +87,19 @@ const BUNDLED_PLUGINS: BundledPlugin[] = [
     isLocalPath: true,
     pluginKey: "paperclip-plugin-kalshi",
   },
-  // Lucitra Capital — cross-asset research (yfinance, FRED, SEC EDGAR,
-  // Tavily). Layer 1 read-only. Sibling submodule in lucitra-dev.
+  // Lucitra Capital — cross-asset research (FRED, SEC EDGAR, Tavily).
+  // Layer 1 read-only. Sibling submodule in lucitra-dev.
   {
     packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-research"),
     isLocalPath: true,
     pluginKey: "paperclip-plugin-research",
+  },
+  // Lucitra Capital — equity market data (Tiingo IEX quotes + daily OHLCV).
+  // Owned data infrastructure, not a SaaS wrapper. Sibling in lucitra-dev.
+  {
+    packageName: resolve(SERVER_DIR, "../../../paperclip-plugin-market-data"),
+    isLocalPath: true,
+    pluginKey: "paperclip-plugin-market-data",
   },
 ];
 
@@ -139,6 +146,174 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
     }
   }
 
+}
+
+/**
+ * Auto-seed research plugin secrets from environment variables.
+ *
+ * Reads FRED_API_KEY, TAVILY_API_KEY, and SEC_EDGAR_USER_AGENT from
+ * process.env. If present, creates corresponding Paperclip secrets
+ * (idempotent — skips if they already exist) and saves the research
+ * plugin instance config with the secret refs.
+ */
+async function autoSeedResearchSecrets() {
+  const fredKey = process.env.FRED_API_KEY?.trim();
+  const secEdgarAgent = process.env.SEC_EDGAR_USER_AGENT?.trim();
+  const tiingoEnv = process.env.TIINGO_API_KEY?.trim();
+  const finnhubEnv = process.env.FINNHUB_API_KEY?.trim();
+
+  // Only proceed if at least one key is set
+  if (!fredKey && !secEdgarAgent && !tiingoEnv && !finnhubEnv) return;
+
+  const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const api = async (path: string, init: RequestInit = {}) => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init.headers as Record<string, string> ?? {}) },
+    });
+    const text = await res.text();
+    let body: any;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    if (!res.ok) throw new Error(`${init.method ?? "GET"} ${path} -> ${res.status}: ${typeof body === "string" ? body : JSON.stringify(body)}`);
+    return body;
+  };
+
+  // Find the research + secrets plugins and a company
+  const plugins = await api("/api/plugins") as Array<{ id: string; pluginKey: string; status: string }>;
+  const research = plugins.find((p) => p.pluginKey === "paperclip-plugin-research");
+  const secrets = plugins.find((p) => p.pluginKey === "lucitra.plugin-secrets");
+  if (!research || !secrets) {
+    logger.debug("auto-seed research: research or secrets plugin not ready yet");
+    return;
+  }
+
+  const companies = await api("/api/companies") as Array<{ id: string; name?: string }>;
+  if (!companies.length) return;
+
+  // Seed secrets into ALL companies so the UI sees them regardless of
+  // which company is active.  Returns the first company's secret IDs
+  // for use in plugin config (config is per-plugin, not per-company).
+  const secretIdsByName: Record<string, string> = {};
+
+  for (const company of companies) {
+    const listResp = await api(`/api/plugins/${secrets.id}/data/list-secrets`, {
+      method: "POST",
+      body: JSON.stringify({ companyId: company.id, params: { companyId: company.id } }),
+    });
+    const existingArr = (() => {
+      const data = listResp?.data ?? listResp ?? [];
+      return Array.isArray(data) ? data : (data.secrets ?? []);
+    })() as Array<{ id: string; name: string }>;
+    const findExisting = (name: string) => existingArr.find((s) => s?.name === name);
+
+    const createSecret = async (name: string, value: string): Promise<string> => {
+      const existing = findExisting(name);
+      if (existing) {
+        if (!secretIdsByName[name]) secretIdsByName[name] = existing.id;
+        return existing.id;
+      }
+      const resp = await api(`/api/plugins/${secrets.id}/actions/create-secret`, {
+        method: "POST",
+        body: JSON.stringify({
+          companyId: company.id,
+          params: { companyId: company.id, name, value, provider: "local_encrypted" },
+        }),
+      });
+      const created = resp?.data ?? resp;
+      const id = created?.id ?? created?.secret?.id;
+      if (id && !secretIdsByName[name]) secretIdsByName[name] = id;
+      return id;
+    };
+
+    // Create secrets for this company
+    const tiingoKey = process.env.TIINGO_API_KEY?.trim();
+    const finnhubKey = process.env.FINNHUB_API_KEY?.trim();
+    if (finnhubKey) await createSecret("market-data-finnhub-api-key", finnhubKey);
+    if (tiingoKey) await createSecret("market-data-tiingo-api-key", tiingoKey);
+    if (fredKey) await createSecret("research-fred-api-key", fredKey);
+
+    logger.info({ companyId: company.id }, "auto-seed: secrets seeded for company");
+  } // end for-each company
+
+  // Build research plugin config using the first company's secret IDs
+  const configJson: Record<string, unknown> = {};
+  if (secretIdsByName["market-data-tiingo-api-key"]) {
+    configJson.tiingoApiKeyRef = secretIdsByName["market-data-tiingo-api-key"];
+  }
+  if (secretIdsByName["research-fred-api-key"]) {
+    configJson.fredApiKeyRef = secretIdsByName["research-fred-api-key"];
+  }
+  if (secEdgarAgent) {
+    configJson.secEdgarUserAgent = secEdgarAgent;
+  }
+
+  // Save research plugin config
+  if (Object.keys(configJson).length > 0) {
+    await api(`/api/plugins/${research.id}/config`, {
+      method: "POST",
+      body: JSON.stringify({ configJson }),
+    });
+    logger.info({ keys: Object.keys(configJson) }, "auto-seed research: config saved");
+  }
+
+  // Save market-data plugin config (Finnhub primary + Tiingo for FX/history)
+  const marketDataConfig: Record<string, unknown> = {};
+  if (secretIdsByName["market-data-finnhub-api-key"]) {
+    marketDataConfig.finnhubApiKeyRef = secretIdsByName["market-data-finnhub-api-key"];
+  }
+  if (secretIdsByName["market-data-tiingo-api-key"]) {
+    marketDataConfig.tiingoApiKeyRef = secretIdsByName["market-data-tiingo-api-key"];
+  }
+  if (Object.keys(marketDataConfig).length > 0) {
+    const marketData = plugins.find((p) => p.pluginKey === "paperclip-plugin-market-data");
+    if (marketData) {
+      await api(`/api/plugins/${marketData.id}/config`, {
+        method: "POST",
+        body: JSON.stringify({ configJson: marketDataConfig }),
+      });
+      logger.info({ keys: Object.keys(marketDataConfig) }, "auto-seed market-data: config saved");
+    }
+  }
+}
+
+/**
+ * Bootstrap the Lucitra Capital trading desk agent company from the
+ * markdown source files in `lucitra-capital-company/`.
+ *
+ * This runs after `autoSeedResearchSecrets` so secrets are already seeded.
+ * The bootstrap script is idempotent — on a fresh Paperclip install it
+ * creates all agents + routines, on an existing install it updates them
+ * in place without duplicating. Safe to run on every server startup.
+ *
+ * Source of truth for the company lives in git at
+ * `lucitra-capital-company/`. Running this at startup guarantees that
+ * the running Paperclip state matches the committed spec, even after a
+ * `rm -rf ~/.paperclip`.
+ */
+async function autoBootstrapLucitraCapital() {
+  // Path resolves relative to compiled dist location: dist/index.js
+  // Walk up: dist → server → paperclip (submodule) → lucitra-dev
+  const bootstrapPath = resolve(
+    SERVER_DIR,
+    "../../../lucitra-capital-company/scripts/bootstrap.ts",
+  );
+  const fs = await import("node:fs");
+  if (!fs.existsSync(bootstrapPath)) {
+    logger.debug({ bootstrapPath }, "lucitra-capital bootstrap script not found — skipping");
+    return;
+  }
+
+  try {
+    // Dynamic ESM import — runs the bootstrap as a side effect (its main()
+    // is called at module load). The script is self-contained.
+    const bootstrapUrl = pathToFileURL(bootstrapPath).href;
+    await import(bootstrapUrl);
+    logger.info("lucitra-capital bootstrap completed");
+  } catch (err) {
+    logger.warn({ err }, "lucitra-capital bootstrap failed (non-fatal)");
+  }
 }
 
 type BetterAuthSessionUser = {
@@ -833,10 +1008,15 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
 
-  // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any).catch((err) => {
-    logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
-  });
+  // Auto-install bundled plugins (idempotent — skips if already installed),
+  // then auto-seed research secrets from env vars, then bootstrap the
+  // Lucitra Capital trading desk company from the markdown source files.
+  void autoInstallBundledPlugins(db as any)
+    .then(() => autoSeedResearchSecrets())
+    .then(() => autoBootstrapLucitraCapital())
+    .catch((err) => {
+      logger.warn({ err }, "auto-install/seed/bootstrap failed (non-fatal)");
+    });
 
   // Start Linear tunnel if Linear is connected and cloudflared is available
   if (config.linearOAuthClientId) {
