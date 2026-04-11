@@ -74,11 +74,18 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Skills Manager
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
-- ⚪ Artifacts & Deployments
-- ⚪ CEO Chat
-- ⚪ MAXIMIZER MODE
+- ✅ Agent Reviews and Approvals
 - ⚪ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Artifacts & Work Products
+- ⚪ Memory & Knowledge
+- ⚪ Enforced Outcomes
+- ⚪ MAXIMIZER MODE
+- ⚪ Deep Planning
+- ⚪ Work Queues
+- ⚪ Self-Organization
+- ⚪ Automatic Organizational Learning
+- ⚪ CEO Chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 
@@ -94,12 +101,12 @@ Paperclip collects anonymous usage telemetry to help us understand how the produ
 
 Telemetry is **enabled by default** and can be disabled with any of the following:
 
-| Method | How |
-|---|---|
-| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1` |
-| Standard convention | `DO_NOT_TRACK=1` |
-| CI environments | Automatically disabled when `CI=true` |
-| Config file | Set `telemetry.enabled: false` in your Paperclip config |
+| Method               | How                                                     |
+| -------------------- | ------------------------------------------------------- |
+| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
+| Standard convention  | `DO_NOT_TRACK=1`                                        |
+| CI environments      | Automatically disabled when `CI=true`                   |
+| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
 
 ## Contributing
 

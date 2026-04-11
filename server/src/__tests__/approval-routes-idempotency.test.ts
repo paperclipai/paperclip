@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { approvalRoutes } from "../routes/approvals.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -39,7 +37,11 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
 }));
 
-function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
+  const [{ approvalRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/approvals.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -49,6 +51,7 @@ function createApp() {
       companyIds: ["company-1"],
       source: "session",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -57,7 +60,11 @@ function createApp() {
   return app;
 }
 
-function createAgentApp() {
+async function createAgentApp() {
+  const [{ approvalRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/approvals.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -77,14 +84,8 @@ function createAgentApp() {
 
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockApprovalService.getById.mockResolvedValue({
-      id: "approval-1",
-      companyId: "company-1",
-      type: "hire_agent",
-      status: "pending",
-      payload: {},
-    });
+    vi.resetModules();
+    vi.resetAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
@@ -111,7 +112,7 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-1/approve")
       .send({});
 
@@ -140,12 +141,46 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-1/reject")
       .send({});
 
     expect(res.status).toBe(200);
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval decisions for companies outside the caller scope", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-2",
+      companyId: "company-2",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-2/approve")
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval revision requests for companies outside the caller scope", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-3",
+      companyId: "company-2",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-3/request-revision")
+      .send({ decisionNote: "Need changes" });
+
+    expect(res.status).toBe(404);
+    expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
@@ -164,7 +199,7 @@ describe("approval routes idempotent retries", () => {
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
     });
 
-    const res = await request(createAgentApp())
+    const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",

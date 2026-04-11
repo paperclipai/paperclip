@@ -54,6 +54,17 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   // these routes need a higher body-size limit than the global 1 MB default.
   const largeBody = express.json({ limit: "10mb" });
 
+  function assertImportTargetAccess(
+    req: Request,
+    target: { mode: "new_company" } | { mode: "existing_company"; companyId: string },
+  ) {
+    if (target.mode === "new_company") {
+      assertInstanceAdmin(req);
+      return;
+    }
+    assertCompanyAccess(req, target.companyId);
+  }
+
   async function assertCanUpdateBranding(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
@@ -166,18 +177,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import/preview", largeBody, validate(companyPortabilityPreviewSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const preview = await portability.previewImport(req.body);
     res.json(preview);
   });
 
   router.post("/import", largeBody, validate(companyPortabilityImportSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
     await logActivity(db, {

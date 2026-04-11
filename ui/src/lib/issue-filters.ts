@@ -6,6 +6,7 @@ export type IssueFilterState = {
   assignees: string[];
   labels: string[];
   projects: string[];
+  workspaces: string[];
   showRoutineExecutions: boolean;
 };
 
@@ -15,6 +16,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   assignees: [],
   labels: [],
   projects: [],
+  workspaces: [],
   showRoutineExecutions: false,
 };
 
@@ -41,6 +43,12 @@ export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
 
 export function toggleIssueFilterValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((existing) => existing !== value) : [...values, value];
+}
+
+export function resolveIssueFilterWorkspaceId(
+  issue: Pick<Issue, "executionWorkspaceId" | "projectWorkspaceId">,
+): string | null {
+  return issue.executionWorkspaceId ?? issue.projectWorkspaceId ?? null;
 }
 
 export function applyIssueFilters(
@@ -71,6 +79,12 @@ export function applyIssueFilters(
   if (state.projects.length > 0) {
     result = result.filter((issue) => issue.projectId != null && state.projects.includes(issue.projectId));
   }
+  if (state.workspaces.length > 0) {
+    result = result.filter((issue) => {
+      const workspaceId = resolveIssueFilterWorkspaceId(issue);
+      return workspaceId != null && state.workspaces.includes(workspaceId);
+    });
+  }
   return result;
 }
 
@@ -84,6 +98,7 @@ export function countActiveIssueFilters(
   if (state.assignees.length > 0) count += 1;
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
+  if (state.workspaces.length > 0) count += 1;
   if (enableRoutineVisibilityFilter && state.showRoutineExecutions) count += 1;
   return count;
 }

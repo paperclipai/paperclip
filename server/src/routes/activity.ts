@@ -1,12 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
-import { issueService } from "../services/index.js";
+import { heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -22,6 +20,7 @@ const createActivitySchema = z.object({
 export function activityRoutes(db: Db) {
   const router = Router();
   const svc = activityService(db);
+  const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
@@ -82,11 +81,7 @@ export function activityRoutes(db: Db) {
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
-    const run = await db
-      .select({ companyId: heartbeatRuns.companyId })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    const run = await heartbeat.getRun(runId);
     if (!run || !hasCompanyAccess(req, run.companyId)) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;

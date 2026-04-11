@@ -39,17 +39,15 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    budgetService: () => mockBudgetService,
-    companyPortabilityService: () => mockCompanyPortabilityService,
-    companyService: () => mockCompanyService,
-    feedbackService: () => mockFeedbackService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  budgetService: () => mockBudgetService,
+  companyPortabilityService: () => mockCompanyPortabilityService,
+  companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
+  logActivity: mockLogActivity,
+}));
 
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
@@ -90,7 +88,6 @@ async function createApp(actor: Record<string, unknown>) {
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
     vi.resetAllMocks();
   });
 

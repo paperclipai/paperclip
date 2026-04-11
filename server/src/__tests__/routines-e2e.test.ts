@@ -26,56 +26,53 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { errorHandler } from "../middleware/index.js";
 import { accessService } from "../services/access.js";
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", async () => {
-    const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
+vi.mock("../services/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
 
-    return {
-      ...actual,
-      routineService: (db: any) =>
-        actual.routineService(db, {
-          heartbeat: {
-            wakeup: async (agentId: string, wakeupOpts: any) => {
-              const issueId =
-                (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
-                (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
-                null;
-              if (!issueId) return null;
+  return {
+    ...actual,
+    routineService: (db: any) =>
+      actual.routineService(db, {
+        heartbeat: {
+          wakeup: async (agentId: string, wakeupOpts: any) => {
+            const issueId =
+              (typeof wakeupOpts?.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+              (typeof wakeupOpts?.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+              null;
+            if (!issueId) return null;
 
-              const issue = await db
-                .select({ companyId: issues.companyId })
-                .from(issues)
-                .where(eq(issues.id, issueId))
-                .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
-              if (!issue) return null;
+            const issue = await db
+              .select({ companyId: issues.companyId })
+              .from(issues)
+              .where(eq(issues.id, issueId))
+              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+            if (!issue) return null;
 
-              const queuedRunId = randomUUID();
-              await db.insert(heartbeatRuns).values({
-                id: queuedRunId,
-                companyId: issue.companyId,
-                agentId,
-                invocationSource: wakeupOpts?.source ?? "assignment",
-                triggerDetail: wakeupOpts?.triggerDetail ?? null,
-                status: "queued",
-                contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
-              });
-              await db
-                .update(issues)
-                .set({
-                  executionRunId: queuedRunId,
-                  executionLockedAt: new Date(),
-                })
-                .where(eq(issues.id, issueId));
-              return { id: queuedRunId };
-            },
+            const queuedRunId = randomUUID();
+            await db.insert(heartbeatRuns).values({
+              id: queuedRunId,
+              companyId: issue.companyId,
+              agentId,
+              invocationSource: wakeupOpts?.source ?? "assignment",
+              triggerDetail: wakeupOpts?.triggerDetail ?? null,
+              status: "queued",
+              contextSnapshot: { ...(wakeupOpts?.contextSnapshot ?? {}), issueId },
+            });
+            await db
+              .update(issues)
+              .set({
+                executionRunId: queuedRunId,
+                executionLockedAt: new Date(),
+              })
+              .where(eq(issues.id, issueId));
+            return { id: queuedRunId };
           },
-        }),
-    };
-  });
-}
+        },
+      }),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -94,11 +91,6 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
-
-  beforeEach(() => {
-    vi.resetModules();
-    registerServiceMocks();
-  });
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -123,8 +115,15 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await tempDb?.cleanup();
   });
 
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
   async function createApp(actor: Record<string, unknown>) {
-    const { routineRoutes } = await import("../routes/routines.js");
+    const [{ routineRoutes }, { errorHandler }] = await Promise.all([
+      import("../routes/routines.js"),
+      import("../middleware/index.js"),
+    ]);
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

@@ -424,7 +424,12 @@ function commentDateLabel(date: Date | string | undefined): string {
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
   return (
-    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined} onImageClick={onImageClick}>
+    <MarkdownBody
+      className="text-sm leading-6"
+      style={recessed ? { opacity: 0.55 } : undefined}
+      softBreaks
+      onImageClick={onImageClick}
+    >
       {text}
     </MarkdownBody>
   );
