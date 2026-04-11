@@ -123,18 +123,22 @@ export function reviewExecutorService(db: Db) {
     }
 
     const body = ctx.prBody ?? "";
-    const screenshotPatterns = [
-      /!\[/,
-      /\.(png|jpg|jpeg|gif|webp|svg)(\?[^\s)]*)?/i,
-      /<img/i,
-      /screenshot/i,
-      /스크린샷/,
-      /화면/,
-    ];
 
-    const hasScreenshot = screenshotPatterns.some((pattern) => pattern.test(body));
+    // Extract image URLs from PR body
+    const imageUrls: string[] = [];
+    // Markdown: ![alt](url)
+    const mdImages = body.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g);
+    for (const m of mdImages) imageUrls.push(m[1]);
+    // HTML: <img src="url">
+    const htmlImages = body.matchAll(/<img[^>]+src=["']([^"']+)["']/gi);
+    for (const m of htmlImages) imageUrls.push(m[1]);
+    // Bare image URLs
+    const bareUrls = body.matchAll(/(https?:\/\/[^\s)>"']+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?[^\s)>"']*)?)/gi);
+    for (const m of bareUrls) {
+      if (!imageUrls.includes(m[1])) imageUrls.push(m[1]);
+    }
 
-    if (!hasScreenshot) {
+    if (imageUrls.length === 0) {
       return {
         status: "failed",
         summary: "화면 작업이 포함되어 있지만 스크린샷이 없습니다. PR에 스크린샷을 첨부해주세요.",
@@ -143,18 +147,20 @@ export function reviewExecutorService(db: Db) {
           handler: "screenshot-required",
           uiFiles: true,
           screenshotFound: false,
+          screenshots: [],
         },
       };
     }
 
     return {
       status: "passed",
-      summary: "스크린샷 확인됨",
+      summary: `스크린샷 ${imageUrls.length}개 확인됨`,
       details: {
         executor: "builtin",
         handler: "screenshot-required",
         uiFiles: true,
         screenshotFound: true,
+        screenshots: imageUrls,
       },
     };
   }
