@@ -67,6 +67,20 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+const FRESH_SESSION_COMMENT_PATTERNS = [
+  /\bfresh session\b/i,
+  /\bnew session\b/i,
+  /\bstart fresh\b/i,
+  /\bfrom scratch\b/i,
+  /\bignore (?:the )?(?:prior|previous) session\b/i,
+  /\breplay\b/i,
+];
+
+function shouldForceFreshSessionFromCommentBody(body: unknown) {
+  if (typeof body !== "string") return false;
+  return FRESH_SESSION_COMMENT_PATTERNS.some((pattern) => pattern.test(body));
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -1679,6 +1693,8 @@ export function issueRoutes(
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
     });
+
+    const forceFreshSession = shouldForceFreshSessionFromCommentBody(commentBody);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {

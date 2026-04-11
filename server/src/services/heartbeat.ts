@@ -669,6 +669,18 @@ function deriveTaskKey(
   );
 }
 
+export function isTerminalIssueStatus(status: string | null | undefined) {
+  return typeof status === "string" && TERMINAL_ISSUE_STATUSES.has(status);
+}
+
+export function shouldPostSystemIssueComment(input: {
+  issueStatus: string | null | undefined;
+  issueExecutionRunId: string | null | undefined;
+  runId: string;
+}) {
+  return !isTerminalIssueStatus(input.issueStatus) && input.issueExecutionRunId === input.runId;
+}
+
 /**
  * Extended task key derivation that falls back to a stable synthetic key
  * for timer/heartbeat wakes. This ensures timer wakes can resume their
