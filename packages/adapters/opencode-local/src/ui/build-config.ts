@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { parseFailoverModelList, type CreateConfigValues } from "@paperclipai/adapter-utils";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -57,6 +57,8 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   if (v.model) ac.model = v.model;
+  const failoverModels = parseFailoverModelList(v.failoverModelsText);
+  if (failoverModels.length > 0) ac.failoverModels = failoverModels;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
   ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
   // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)

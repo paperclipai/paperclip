@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { parseFailoverModelList, type CreateConfigValues } from "@paperclipai/adapter-utils";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -69,6 +69,8 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   if (v.model) ac.model = v.model;
+  const failoverModels = parseFailoverModelList(v.failoverModelsText);
+  if (failoverModels.length > 0) ac.failoverModels = failoverModels;
   if (v.thinkingEffort) ac.effort = v.thinkingEffort;
   if (v.chrome) ac.chrome = true;
   ac.timeoutSec = 0;

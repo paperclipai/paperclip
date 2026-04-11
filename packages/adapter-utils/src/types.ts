@@ -368,6 +368,7 @@ export interface CreateConfigValues {
   instructionsFilePath?: string;
   promptTemplate: string;
   model: string;
+  failoverModelsText: string;
   thinkingEffort: string;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;

@@ -54,3 +54,7 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  parseFailoverModelList,
+  serializeFailoverModelList,
+} from "./failover-models.js";

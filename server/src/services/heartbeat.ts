@@ -21,7 +21,7 @@ import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, listAdapterModels, listServerAdapters, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -67,6 +67,11 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  buildAdapterFailoverPlan,
+  executeWithAdapterFailover,
+  shouldPersistSessionForAttempt,
+} from "./adapter-failover.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2797,6 +2802,12 @@ export function heartbeatService(db: Db) {
       ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const failoverPlan = await buildAdapterFailoverPlan({
+      primaryAdapterType: agent.adapterType,
+      runtimeConfig,
+      resolveModels: listAdapterModels,
+      listAdapterTypes: () => listServerAdapters().map((adapter) => adapter.type),
+    });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -2981,6 +2992,7 @@ export function heartbeatService(db: Db) {
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
+      ...failoverPlan.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
         ? [
@@ -3228,45 +3240,89 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
-      const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
-        : null;
-      if (adapter.supportsLocalAgentJwt && !authToken) {
-        logger.warn(
-          {
-            companyId: agent.companyId,
-            agentId: agent.id,
+      const {
+        attempt: completedAttempt,
+        result: adapterResult,
+        trail: failoverTrail,
+      } = await executeWithAdapterFailover({
+        attempts: failoverPlan.attempts,
+        executeAttempt: async (attempt) => {
+          const adapter = getServerAdapter(attempt.adapterType);
+          const authToken = adapter.supportsLocalAgentJwt
+            ? createLocalAgentJwt(agent.id, agent.companyId, attempt.adapterType, run.id)
+            : null;
+
+          if (adapter.supportsLocalAgentJwt && !authToken) {
+            logger.warn(
+              {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                runId: run.id,
+                adapterType: attempt.adapterType,
+              },
+              "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+            );
+          }
+
+          return adapter.execute({
             runId: run.id,
-            adapterType: agent.adapterType,
-          },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
-        );
-      }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
-            pid: meta.pid,
-            processGroupId:
-              "processGroupId" in meta && typeof meta.processGroupId === "number"
-                ? meta.processGroupId
-                : null,
-            startedAt: meta.startedAt,
+            agent: {
+              ...agent,
+              adapterType: attempt.adapterType,
+              adapterConfig: attempt.config,
+            },
+            runtime: attempt.usesFailover
+              ? {
+                  ...runtimeForAdapter,
+                  sessionId: null,
+                  sessionParams: null,
+                  sessionDisplayId: null,
+                }
+              : runtimeForAdapter,
+            config: attempt.config,
+            context,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta && typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
           });
         },
-        authToken: authToken ?? undefined,
+        onFailover: async ({ attempt, result }, nextAttempt) => {
+          const fromLabel = attempt.model ? `${attempt.adapterType}:${attempt.model}` : attempt.adapterType;
+          const toLabel = nextAttempt.model ? `${nextAttempt.adapterType}:${nextAttempt.model}` : nextAttempt.adapterType;
+
+          await onLog(
+            "stderr",
+            `[paperclip] Retryable adapter failure on ${fromLabel}; retrying with ${toLabel}.\n`,
+          );
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: "adapter failover",
+            payload: {
+              fromAdapterType: attempt.adapterType,
+              fromModel: attempt.model,
+              toAdapterType: nextAttempt.adapterType,
+              toModel: nextAttempt.model,
+              reason: result.errorCode ?? result.errorMessage ?? "retryable_adapter_failure",
+            },
+          });
+        },
       });
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: completedAttempt.adapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -3311,13 +3367,24 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      const nextSessionState = resolveNextSessionState({
-        codec: sessionCodec,
-        adapterResult,
-        previousParams: previousSessionParams,
-        previousDisplayId: runtimeForAdapter.sessionDisplayId,
-        previousLegacySessionId: runtimeForAdapter.sessionId,
-      });
+      const persistSession = shouldPersistSessionForAttempt(
+        completedAttempt,
+        agent.adapterType,
+        readNonEmptyString(runtimeConfig.model),
+      );
+      const nextSessionState = persistSession
+        ? resolveNextSessionState({
+            codec: sessionCodec,
+            adapterResult,
+            previousParams: previousSessionParams,
+            previousDisplayId: runtimeForAdapter.sessionDisplayId,
+            previousLegacySessionId: runtimeForAdapter.sessionId,
+          })
+        : {
+            params: null,
+            displayId: null,
+            legacySessionId: null,
+          };
       const rawUsage = normalizeUsageTotals(adapterResult.usage);
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
         agentId: agent.id,
@@ -3369,6 +3436,18 @@ export function heartbeatService(db: Db) {
               sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
               taskSessionReused: taskSessionForRun != null,
               freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
+              failoverUsed: completedAttempt.usesFailover,
+              primaryAdapterType: agent.adapterType,
+              primaryModel: readNonEmptyString(runtimeConfig.model) ?? "unknown",
+              effectiveAdapterType: completedAttempt.adapterType,
+              effectiveModel: completedAttempt.model ?? readNonEmptyString(adapterResult.model) ?? "unknown",
+              failoverTrail: failoverTrail.map(({ attempt, result }) => ({
+                adapterType: attempt.adapterType,
+                model: attempt.model,
+                usesFailover: attempt.usesFailover,
+                errorCode: result.errorCode ?? null,
+                errorMessage: result.errorMessage ?? null,
+              })),
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
