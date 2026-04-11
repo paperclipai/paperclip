@@ -101,7 +101,7 @@ export function OpenClawGatewayConfigFields({
       ? (config.issueBlockEscalation as Record<string, unknown>)
       : {};
   const issueBlockEscalationEnabled = Boolean(
-    eff("adapterConfig", "issueBlockEscalation", issueBlockEscalation).enabled ?? issueBlockEscalation.enabled,
+    (eff("adapterConfig", "issueBlockEscalation", issueBlockEscalation) ?? {}).enabled ?? issueBlockEscalation.enabled,
   );
 
   const setIssueBlockEscalation = (patch: Record<string, unknown>) => {
