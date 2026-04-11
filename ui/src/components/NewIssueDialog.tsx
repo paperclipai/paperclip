@@ -46,6 +46,8 @@ import {
   FileText,
   Loader2,
   X,
+  Search,
+  Check,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -268,6 +270,90 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
     return "agent_default";
   }
   return "shared_workspace";
+}
+
+function InitiativePicker({ initiatives, value, onChange }: {
+  initiatives: Issue[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return initiatives;
+    const q = search.toLowerCase();
+    return initiatives.filter(i =>
+      i.title.toLowerCase().includes(q) ||
+      (i.identifier && i.identifier.toLowerCase().includes(q))
+    );
+  }, [initiatives, search]);
+
+  const selected = initiatives.find(i => i.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (o) setTimeout(() => inputRef.current?.focus(), 50); }}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex items-center gap-1.5 w-full text-left text-xs border rounded-md px-2 py-1.5 transition-colors",
+            value
+              ? "border-border text-foreground"
+              : "border-destructive/50 text-destructive",
+          )}
+        >
+          {selected ? (
+            <span className="truncate">
+              {selected.identifier ? `${selected.identifier}: ` : ""}{selected.title}
+            </span>
+          ) : (
+            <span>Select initiative (required)</span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-0" align="start">
+        <div className="p-2 border-b border-border">
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-accent/30">
+            <Search className="h-3 w-3 text-muted-foreground shrink-0" />
+            <input
+              ref={inputRef}
+              className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+              placeholder="Search initiatives..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="max-h-64 overflow-y-auto p-1">
+          {filtered.length === 0 ? (
+            <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+              No initiatives found
+            </div>
+          ) : (
+            filtered.map((init) => (
+              <button
+                key={init.id}
+                type="button"
+                className={cn(
+                  "flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm",
+                  init.id === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground",
+                )}
+                onClick={() => { onChange(init.id); setOpen(false); setSearch(""); }}
+              >
+                <span className="truncate">
+                  {init.identifier ? <span className="text-muted-foreground mr-1">{init.identifier}</span> : null}
+                  {init.title}
+                </span>
+                {init.id === value && <Check className="h-3 w-3 shrink-0" />}
+              </button>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 export function NewIssueDialog() {
@@ -992,8 +1078,8 @@ export function NewIssueDialog() {
           </div>
         </div>
 
-        {/* Issue type toggle */}
-        <div className="px-4 pt-3 pb-1 shrink-0">
+        {/* Issue type toggle + initiative picker */}
+        <div className="px-4 pt-3 pb-1 shrink-0 space-y-2">
           <div className="flex items-center gap-2">
             <div className="flex items-center border border-border rounded-md overflow-hidden text-xs">
               <button
@@ -1021,21 +1107,14 @@ export function NewIssueDialog() {
                 Initiative
               </button>
             </div>
-            {issueType === "task" && initiatives.length > 0 && (
-              <select
-                className="text-xs border border-border rounded-md px-2 py-1 bg-transparent text-foreground max-w-[240px] truncate"
-                value={parentId}
-                onChange={(e) => setParentId(e.target.value)}
-              >
-                <option value="">No parent initiative</option>
-                {initiatives.map((init) => (
-                  <option key={init.id} value={init.id}>
-                    {init.identifier ? `${init.identifier}: ` : ""}{init.title}
-                  </option>
-                ))}
-              </select>
-            )}
           </div>
+          {issueType === "task" && (
+            <InitiativePicker
+              initiatives={initiatives}
+              value={parentId}
+              onChange={setParentId}
+            />
+          )}
         </div>
 
         {/* Title */}
@@ -1519,7 +1598,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
+              disabled={!title.trim() || createIssue.isPending || (issueType === "task" && !parentId)}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >
