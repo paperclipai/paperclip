@@ -398,6 +398,12 @@ export function issueRoutes(
     return null;
   }
 
+  function trustedRunIdForUpdateClearance(req: Request, runId: string | null) {
+    if (req.actor.type === "agent") return runId;
+    if (req.actor.type === "board" && req.actor.source === "local_implicit") return runId;
+    return null;
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -1376,6 +1382,7 @@ export function issueRoutes(
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
+    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
     const isClosed = isClosedIssueStatus(existing.status);
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
@@ -1432,7 +1439,7 @@ export function issueRoutes(
             actorType: actor.actorType,
             actorId: actor.actorId,
             agentId: actor.agentId,
-            runId: actor.runId,
+            runId: trustedActorRunId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
@@ -1511,6 +1518,10 @@ export function issueRoutes(
 
     let issue;
     try {
+      const updateActor = {
+        actorAgentId: actor.agentId ?? null,
+        actorRunId: trustedActorRunId,
+      };
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
@@ -1521,6 +1532,7 @@ export function issueRoutes(
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
             },
+            updateActor,
             tx,
           );
           if (!updated) return null;
@@ -1535,7 +1547,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: trustedActorRunId,
           });
 
           return updated;
@@ -1545,7 +1557,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
+        }, updateActor);
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
@@ -1586,9 +1598,9 @@ export function issueRoutes(
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
-    if (actor.runId) {
-      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
-        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
+    if (trustedActorRunId) {
+      await heartbeat.reportRunActivity(trustedActorRunId).catch((err) =>
+        logger.warn({ err, runId: trustedActorRunId }, "failed to clear detached run warning after issue activity"));
     }
 
     // Build activity details with previous values for changed fields
@@ -1615,7 +1627,7 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: trustedActorRunId,
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
@@ -1642,7 +1654,7 @@ export function issueRoutes(
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
-          runId: actor.runId,
+          runId: trustedActorRunId,
           action: "issue.blockers_updated",
           entityType: "issue",
           entityId: issue.id,
@@ -1670,7 +1682,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: trustedActorRunId,
         action: "issue.reviewers_updated",
         entityType: "issue",
         entityId: issue.id,
@@ -1690,7 +1702,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: trustedActorRunId,
         action: "issue.approvers_updated",
         entityType: "issue",
         entityId: issue.id,
@@ -1724,7 +1736,7 @@ export function issueRoutes(
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
+        runId: trustedActorRunId,
       });
 
       await logActivity(db, {
@@ -1732,7 +1744,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: trustedActorRunId,
         action: "issue.comment_added",
         entityType: "issue",
         entityId: issue.id,
@@ -2033,13 +2045,14 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
 
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: trustedActorRunId,
       action: "issue.checked_out",
       entityType: "issue",
       entityId: issue.id,
@@ -2082,23 +2095,24 @@ export function issueRoutes(
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
-    const released = await svc.release(
-      id,
-      req.actor.type === "agent" ? req.actor.agentId : undefined,
+    const released = await svc.release(id, {
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
       actorRunId,
-    );
+      actorUserId: req.actor.type === "board" ? req.actor.userId : null,
+    });
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
 
     const actor = getActorInfo(req);
+    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
     await logActivity(db, {
       companyId: released.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: trustedActorRunId,
       action: "issue.released",
       entityType: "issue",
       entityId: released.id,
@@ -2320,6 +2334,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const trustedActorRunId = trustedRunIdForUpdateClearance(req, actor.runId ?? null);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
@@ -2337,7 +2352,18 @@ export function issueRoutes(
     let currentIssue = issue;
 
     if (effectiveReopenRequested && isClosed) {
-      const reopenedIssue = await svc.update(id, { status: "todo" });
+      const reopenedIssue = await svc.update(
+        id,
+        {
+          status: "todo",
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        {
+          actorAgentId: actor.agentId ?? null,
+          actorRunId: trustedActorRunId,
+        },
+      );
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;
@@ -2351,7 +2377,7 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
-        runId: actor.runId,
+        runId: trustedActorRunId,
         action: "issue.updated",
         entityType: "issue",
         entityId: currentIssue.id,
@@ -2381,7 +2407,7 @@ export function issueRoutes(
             actorType: actor.actorType,
             actorId: actor.actorId,
             agentId: actor.agentId,
-            runId: actor.runId,
+            runId: trustedActorRunId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
@@ -2394,12 +2420,12 @@ export function issueRoutes(
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
+      runId: trustedActorRunId,
     });
 
-    if (actor.runId) {
-      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
-        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
+    if (trustedActorRunId) {
+      await heartbeat.reportRunActivity(trustedActorRunId).catch((err) =>
+        logger.warn({ err, runId: trustedActorRunId }, "failed to clear detached run warning after issue comment"));
     }
 
     await logActivity(db, {
@@ -2407,7 +2433,7 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      runId: actor.runId,
+      runId: trustedActorRunId,
       action: "issue.comment_added",
       entityType: "issue",
       entityId: currentIssue.id,

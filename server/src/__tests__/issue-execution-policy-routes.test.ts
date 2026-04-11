@@ -138,6 +138,10 @@ describe("issue execution policy routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      {
+        actorAgentId: null,
+        actorRunId: null,
+      },
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(updatePatch.status).toBeUndefined();
