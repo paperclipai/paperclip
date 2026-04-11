@@ -1886,7 +1886,10 @@ export function pluginRoutes(
    * endpoints must be publicly accessible for external callers. Signature
    * verification is the plugin's responsibility.
    *
-   * Response: `{ deliveryId: string, status: string }`
+   * Response: `{ deliveryId: string, status: string }` for generic webhooks.
+   * Slack-compatible responses are returned for signed Slack requests:
+   * - empty `200 OK` for slash commands and interactivity
+   * - `{ challenge }` for Slack Events `url_verification`
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
@@ -1953,13 +1956,26 @@ export function pluginRoutes(
       }
     }
 
-    // Use the raw buffer stashed by the express.json() `verify` callback.
+    // Use the raw buffer stashed by the express.json() or express.urlencoded() `verify` callback.
     // This preserves the exact bytes the provider signed, whereas
     // JSON.stringify(req.body) would re-serialize and break HMAC verification.
     const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const rawBody = stashedRaw ? stashedRaw.toString("utf-8") : "";
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
+    const slackSignature = rawHeaders["x-slack-signature"];
+    const slackRequestTimestamp = rawHeaders["x-slack-request-timestamp"];
+    const isSlackWebhook = typeof slackSignature === "string" && typeof slackRequestTimestamp === "string";
+    const slackEventType =
+      parsedBody && typeof parsedBody === "object" && "type" in parsedBody
+        ? parsedBody.type
+        : undefined;
+    const slackChallenge =
+      parsedBody && typeof parsedBody === "object" && "challenge" in parsedBody
+        ? parsedBody.challenge
+        : undefined;
+    const isSlackUrlVerification =
+      isSlackWebhook && slackEventType === "url_verification" && typeof slackChallenge === "string";
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
@@ -1974,6 +1990,22 @@ export function pluginRoutes(
         startedAt,
       })
       .returning({ id: pluginWebhookDeliveries.id });
+
+    if (isSlackUrlVerification) {
+      const finishedAt = new Date();
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      await db
+        .update(pluginWebhookDeliveries)
+        .set({
+          status: "success",
+          durationMs,
+          finishedAt,
+        })
+        .where(eq(pluginWebhookDeliveries.id, delivery.id));
+
+      res.status(200).json({ challenge: slackChallenge });
+      return;
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
@@ -1996,6 +2028,11 @@ export function pluginRoutes(
           finishedAt,
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
+
+      if (isSlackWebhook) {
+        res.status(200).end();
+        return;
+      }
 
       res.status(200).json({
         deliveryId: delivery.id,
