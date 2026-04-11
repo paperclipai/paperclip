@@ -34,6 +34,9 @@ import crypto from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts, issues, teamWorkflowStatuses } from "@paperclipai/db";
+import type { ReviewStepConfig } from "@paperclipai/db";
+import { reviewPipelineService } from "./review-pipeline.js";
+import { reviewExecutorService } from "./review-executors.js";
 
 /**
  * Hard caps to prevent amplification DoS on webhook inputs. A
@@ -162,6 +165,50 @@ export interface WebhookApplyResult {
   upserted: number;
   transitioned: number;
   unknownIdentifiers: string[];
+}
+
+/**
+ * Fire-and-forget executor for auto review steps. Runs each non-manual
+ * check sequentially, updating status in the DB as it goes. Errors on
+ * individual steps are caught and recorded without aborting the rest.
+ */
+async function executeAutoSteps(
+  db: Db,
+  reviewRunId: string,
+  checks: Array<{ id: string; stepSlug: string; stepType: string }>,
+  steps: ReviewStepConfig[],
+  ctx: {
+    companyId: string;
+    issueId: string;
+    workProductId: string;
+    prUrl?: string;
+    prTitle?: string;
+  },
+) {
+  const executors = reviewExecutorService(db);
+  const reviewSvc = reviewPipelineService(db);
+
+  for (const check of checks) {
+    const step = steps.find((s) => s.slug === check.stepSlug);
+    if (!step || step.type === "manual") continue;
+
+    await reviewSvc.updateCheck(check.id, { status: "running" });
+
+    try {
+      const result = await executors.execute(step, ctx);
+      await reviewSvc.updateCheck(check.id, {
+        status: result.status,
+        summary: result.summary,
+        details: result.details,
+      });
+    } catch (err) {
+      await reviewSvc.updateCheck(check.id, {
+        status: "failed",
+        summary: `Execution error: ${err instanceof Error ? err.message : "unknown"}`,
+        details: { error: true },
+      });
+    }
+  }
 }
 
 export function githubWebhookService(db: Db) {
@@ -310,6 +357,52 @@ export function githubWebhookService(db: Db) {
 
         await upsertWorkProduct(issueRow.id, companyId, evt);
         result.upserted += 1;
+
+        // Trigger review pipeline for opened / synchronize events.
+        if (evt.action === "opened" || evt.action === "synchronize") {
+          if (issueRow.teamId) {
+            const reviewSvc = reviewPipelineService(db);
+            const pipeline = await reviewSvc.getTeamPipeline(companyId, issueRow.teamId);
+
+            if (pipeline && pipeline.enabled && (pipeline.steps as ReviewStepConfig[]).length > 0) {
+              const steps = pipeline.steps as ReviewStepConfig[];
+
+              // Find the work product id for this PR URL
+              const wpRow = await db
+                .select({ id: issueWorkProducts.id })
+                .from(issueWorkProducts)
+                .where(
+                  and(
+                    eq(issueWorkProducts.issueId, issueRow.id),
+                    eq(issueWorkProducts.companyId, companyId),
+                    eq(issueWorkProducts.url, evt.pull_request.html_url),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+
+              if (wpRow) {
+                const { run, checks } = await reviewSvc.createRun({
+                  companyId,
+                  workProductId: wpRow.id,
+                  issueId: issueRow.id,
+                  pipelineTemplateId: pipeline.id,
+                  steps,
+                  triggeredBy: "github_webhook",
+                });
+
+                // Execute auto steps fire-and-forget
+                void executeAutoSteps(db, run.id, checks, steps, {
+                  companyId,
+                  issueId: issueRow.id,
+                  workProductId: wpRow.id,
+                  prUrl: evt.pull_request.html_url,
+                  prTitle: evt.pull_request.title,
+                });
+              }
+            }
+          }
+        }
 
         // Transition to completed-category status on merge only.
         // If the team has no completed-category status configured we
