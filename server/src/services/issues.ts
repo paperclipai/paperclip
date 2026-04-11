@@ -1503,6 +1503,9 @@ export function issueService(db: Db) {
           .where(eq(companies.id, companyId))
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
+        const issueNumber = company.issueCounter;
+        const identifier = `${company.issuePrefix}-${issueNumber}`;
+
         const values = {
           ...issueData,
           originKind: issueData.originKind ?? "manual",
