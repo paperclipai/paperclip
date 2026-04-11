@@ -48,6 +48,7 @@ import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { IssueWorkProductsSection } from "../components/IssueWorkProductsSection";
+import { IssueReviewSection } from "../components/IssueReviewSection";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
@@ -1884,6 +1885,9 @@ export function IssueDetail() {
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="review" className="gap-1.5">
+            Review
+          </TabsTrigger>
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               {item.label}
@@ -2010,6 +2014,10 @@ export function IssueDetail() {
               ))}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="review">
+          <IssueReviewSection companyId={resolvedCompanyId} issueId={issueId!} />
         </TabsContent>
 
         {activePluginTab && (
