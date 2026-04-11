@@ -919,7 +919,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Grouped">
+        <SubSection title="Group">
           <AvatarGroup>
             <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>

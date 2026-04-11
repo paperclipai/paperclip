@@ -3,6 +3,10 @@ type ShellCopyLocale = string | null | undefined;
 const shellCopy = {
   en: {
     selectCompany: "Select company",
+    companies: "Companies",
+    noCompanies: "No companies",
+    companySettings: "Company Settings",
+    manageCompanies: "Manage Companies",
     newIssue: "New Issue",
     dashboard: "Dashboard",
     inbox: "Inbox",
@@ -70,6 +74,10 @@ const shellCopy = {
   },
   "zh-CN": {
     selectCompany: "选择公司",
+    companies: "公司",
+    noCompanies: "暂无公司",
+    companySettings: "公司设置",
+    manageCompanies: "管理公司",
     newIssue: "新建任务",
     dashboard: "仪表盘",
     inbox: "收件箱",

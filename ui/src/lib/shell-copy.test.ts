@@ -17,6 +17,11 @@ describe("shell-copy", () => {
 
     expect(copy.skipToMainContent).toBe("跳到主要内容");
     expect(copy.addCompany).toBe("添加公司");
+    expect(copy.selectCompany).toBe("选择公司");
+    expect(copy.companies).toBe("公司");
+    expect(copy.noCompanies).toBe("暂无公司");
+    expect(copy.companySettings).toBe("公司设置");
+    expect(copy.manageCompanies).toBe("管理公司");
     expect(copy.beta).toBe("测试版");
     expect(copy.newAgent).toBe("新建智能体");
     expect(copy.commandPaletteTitle).toBe("命令面板");
