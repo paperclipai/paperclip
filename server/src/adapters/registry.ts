@@ -89,6 +89,8 @@ import {
   agentConfigurationDoc as copilotAgentConfigurationDoc,
   models as copilotModels,
   execute as copilotExecute,
+  listCopilotSkills,
+  syncCopilotSkills,
   testEnvironment as copilotTestEnvironment,
   sessionCodec as copilotSessionCodec,
 } from "./copilot-local/index.js";
@@ -127,6 +129,8 @@ const copilotLocalAdapter: ServerAdapterModule = {
   type: "copilot_local",
   execute: copilotExecute,
   testEnvironment: copilotTestEnvironment,
+  listSkills: listCopilotSkills,
+  syncSkills: syncCopilotSkills,
   sessionCodec: copilotSessionCodec,
   sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
   models: copilotModels,

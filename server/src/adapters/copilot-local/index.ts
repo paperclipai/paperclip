@@ -1,5 +1,6 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
+import { listCopilotSkills, syncCopilotSkills } from "./skills.js";
 import { testEnvironment } from "./test.js";
 
 export const models = [
@@ -111,5 +112,7 @@ export const sessionCodec: AdapterSessionCodec = {
 
 export {
   execute,
+  listCopilotSkills,
+  syncCopilotSkills,
   testEnvironment,
 };

@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -26,9 +25,13 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isCopilotUnknownSessionError, parseCopilotJsonl } from "./parse.js";
+import { resolveCopilotSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_COPILOT_LOCAL_MODEL = "claude-sonnet-4.5";
+const COPILOT_LOCAL_SKILL_ROOT_CANDIDATES = [
+  path.resolve(__moduleDir, "../../../../skills"),
+];
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -39,20 +42,17 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function copilotSkillsHome(): string {
-  return path.join(os.homedir(), ".copilot", "skills");
-}
-
 async function ensureCopilotSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
+  config: Record<string, unknown> = {},
 ): Promise<void> {
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
 
-  const skillsHome = copilotSkillsHome();
+  const skillsHome = resolveCopilotSkillsHome(config);
   try {
     await fs.mkdir(skillsHome, { recursive: true });
   } catch (err) {
@@ -123,9 +123,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
-  const copilotSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const copilotSkillEntries = await readPaperclipRuntimeSkillEntries(
+    config,
+    __moduleDir,
+    COPILOT_LOCAL_SKILL_ROOT_CANDIDATES,
+  );
   const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, copilotSkillEntries);
-  await ensureCopilotSkillsInjected(onLog, copilotSkillEntries, desiredSkillNames);
+  await ensureCopilotSkillsInjected(onLog, copilotSkillEntries, desiredSkillNames, config);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -267,7 +271,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const commandNotes = [
     "Prompt is passed to GitHub Copilot CLI via -p in non-interactive mode.",
     "Paperclip enables allow-all permissions and disables interactive ask_user prompts for unattended runs.",
-    `Paperclip skills are linked into ${copilotSkillsHome()}.`,
+    `Paperclip skills are linked into ${resolveCopilotSkillsHome(config)}.`,
     ...(autopilot ? ["Added --autopilot for multi-step completion."] : []),
     ...(instructionsPrefix ? [`Loaded agent instructions from ${instructionsFilePath}.`] : []),
   ];
