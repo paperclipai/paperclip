@@ -851,6 +851,19 @@ export function normalizeAgentDefaultsForJoin(input: {
     }
   }
 
+  const claimedApiKeyPath =
+    typeof defaults.claimedApiKeyPath === "string"
+      ? defaults.claimedApiKeyPath.trim()
+      : "";
+  if (claimedApiKeyPath) {
+    normalized.claimedApiKeyPath = claimedApiKeyPath;
+    diagnostics.push({
+      code: "openclaw_gateway_claimed_api_key_path_configured",
+      level: "info",
+      message: `claimedApiKeyPath set to ${claimedApiKeyPath}`,
+    });
+  }
+
   return { normalized, diagnostics, fatalErrors };
 }
 
@@ -1039,13 +1052,13 @@ function buildInviteOnboardingManifest(
         "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
-      requiredFields: {
-        requestType: "agent",
-        agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
-        capabilities: "Optional capability summary",
+        requiredFields: {
+          requestType: "agent",
+          agentName: "Display name for this agent",
+          adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
+          capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, claimedApiKeyPath, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1213,13 +1226,14 @@ export function buildInviteOnboardingTextDocument(
       "agentName": "My OpenClaw Agent",
       "adapterType": "openclaw_gateway",
       "capabilities": "Optional summary",
-      "agentDefaultsPayload": {
-        "url": "wss://your-openclaw-gateway.example",
-        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
-        "headers": { "x-openclaw-token": "replace-me" },
-        "waitTimeoutMs": 120000,
-        "sessionKeyStrategy": "issue",
-        "role": "operator",
+        "agentDefaultsPayload": {
+          "url": "wss://your-openclaw-gateway.example",
+          "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+          "claimedApiKeyPath": "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+          "headers": { "x-openclaw-token": "replace-me" },
+          "waitTimeoutMs": 120000,
+          "sessionKeyStrategy": "issue",
+          "role": "operator",
         "scopes": ["operator.admin"]
       }
     }
