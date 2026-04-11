@@ -150,4 +150,14 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  projectEnvironments: {
+    all: (companyId: string, projectId: string) =>
+      ["projectEnvironments", companyId, projectId] as const,
+  },
+  reviewPipeline: {
+    teamPipeline: (companyId: string, teamId: string) =>
+      ["reviewPipeline", "team", companyId, teamId] as const,
+    issueReviews: (companyId: string, issueId: string) =>
+      ["reviewPipeline", "issueReviews", companyId, issueId] as const,
+  },
 };
