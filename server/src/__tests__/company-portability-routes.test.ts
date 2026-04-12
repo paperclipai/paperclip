@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -78,23 +78,29 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
-async function createApp(actor: Record<string, unknown>) {
-  const { companyRoutes } = await import("../routes/companies.js");
-  const { errorHandler } = await import("../middleware/index.js");
+let companyRoutesFactory: typeof import("../routes/companies.js").companyRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+
+function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/companies", companyRoutes({} as any));
-  app.use(errorHandler);
+  app.use("/api/companies", companyRoutesFactory({} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe("company portability routes", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
+    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
+
+  beforeEach(() => {
     mockAgentService.getById.mockReset();
     mockCompanyPortabilityService.exportBundle.mockReset();
     mockCompanyPortabilityService.previewExport.mockReset();
@@ -109,7 +115,7 @@ describe("company portability routes", () => {
       companyId: "11111111-1111-4111-8111-111111111111",
       role: "engineer",
     });
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -141,7 +147,7 @@ describe("company portability routes", () => {
       warnings: [],
       paperclipExtensionPath: ".paperclip.yaml",
     });
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -165,7 +171,7 @@ describe("company portability routes", () => {
       companyId: "11111111-1111-4111-8111-111111111111",
       role: "ceo",
     });
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",
@@ -188,7 +194,7 @@ describe("company portability routes", () => {
   });
 
   it("keeps global import preview routes board-only", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "11111111-1111-4111-8111-111111111111",

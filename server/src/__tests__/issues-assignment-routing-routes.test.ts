@@ -1,7 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(async () => []),
@@ -59,6 +58,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 let issueRoutesFactory: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
 
 function createApp(actorOverride?: Record<string, unknown>) {
   const app = express();
@@ -75,14 +75,18 @@ function createApp(actorOverride?: Record<string, unknown>) {
     next();
   });
   app.use("/api", issueRoutesFactory({} as any, {} as any));
-  app.use(errorHandler);
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe("issue discovery routing guard for assignment runs", () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.list.mockResolvedValue([]);
     mockHeartbeatService.getRun.mockResolvedValue({

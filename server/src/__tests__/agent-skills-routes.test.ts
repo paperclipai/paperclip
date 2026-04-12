@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -121,6 +119,9 @@ function createDb(requireBoardApprovalForNewAgents = false) {
   };
 }
 
+let agentRoutesFactory: typeof import("../routes/agents.js").agentRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+
 function createApp(db: Record<string, unknown> = createDb()) {
   const app = express();
   app.use(express.json());
@@ -134,8 +135,8 @@ function createApp(db: Record<string, unknown> = createDb()) {
     };
     next();
   });
-  app.use("/api", agentRoutes(db as any));
-  app.use(errorHandler);
+  app.use("/api", agentRoutesFactory(db as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -158,6 +159,12 @@ function makeAgent(adapterType: string) {
 }
 
 describe("agent skill routes", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
+
   beforeEach(() => {
     vi.resetAllMocks();
     mockRoleRequiresQaCoverage.mockReturnValue(false);

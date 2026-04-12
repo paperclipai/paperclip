@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -80,6 +78,9 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+let companyRoutesFactory: typeof import("../routes/companies.js").companyRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+
 function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
@@ -87,12 +88,18 @@ function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/companies", companyRoutes({} as any));
-  app.use(errorHandler);
+  app.use("/api/companies", companyRoutesFactory({} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe("company KPI routes", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
+
   beforeEach(() => {
     vi.resetAllMocks();
     mockExecutiveSummaryService.listKpis.mockResolvedValue([]);
