@@ -50,11 +50,20 @@ pnpm dev
 ### Last Agent Working On This
 - **Who:** hermes
 - **When:** 2026-04-12
-- **What:** Added PROJECT.md and devcontainer (fork setup)
+- **What:** Deep hermes_local integration with Cabinet memory sync, openclaw_local adapter, http_agent adapter
 
 ### What Needs To Happen Next
-1. 
-2. 
+1. Run pnpm install and typecheck to verify all new adapters compile
+2. Test each adapter with Paperclip agents
+3. Create PRs for review
+
+### Recent Changes
+- Created `packages/adapters/hermes-local/` — hermes_local adapter with Cabinet memory sync
+- Created `packages/adapters/openclaw-local/` — REST API adapter for OpenClaw gateway (port 18789)
+- Created `packages/adapters/http-agent/` — Generic HTTP adapter for remote agents
+- Updated `server/src/adapters/builtin-adapter-types.ts` — Added new adapter types
+- Updated `server/src/adapters/registry.ts` — Registered new adapters
+- Updated `server/package.json` — Added workspace dependencies
 
 ## Architecture
 

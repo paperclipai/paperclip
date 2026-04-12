@@ -72,14 +72,27 @@ import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
-  listSkills as hermesListSkills,
-  syncSkills as hermesSyncSkills,
-  detectModel as detectModelFromHermes,
-} from "hermes-paperclip-adapter/server";
+} from "@paperclipai/adapter-hermes-local/server";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
-} from "hermes-paperclip-adapter";
+} from "@paperclipai/adapter-hermes-local";
+import {
+  execute as openclawLocalExecute,
+  testEnvironment as openclawLocalTestEnvironment,
+} from "@paperclipai/adapter-openclaw-local/server";
+import {
+  agentConfigurationDoc as openclawLocalAgentConfigurationDoc,
+  models as openclawLocalModels,
+} from "@paperclipai/adapter-openclaw-local";
+import {
+  execute as httpAgentExecute,
+  testEnvironment as httpAgentTestEnvironment,
+} from "@paperclipai/adapter-http-agent/server";
+import {
+  agentConfigurationDoc as httpAgentAgentConfigurationDoc,
+  models as httpAgentModels,
+} from "@paperclipai/adapter-http-agent";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -185,12 +198,27 @@ const hermesLocalAdapter: ServerAdapterModule = {
   execute: hermesExecute,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
-  listSkills: hermesListSkills,
-  syncSkills: hermesSyncSkills,
   models: hermesModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
-  detectModel: () => detectModelFromHermes(),
+};
+
+const openclawLocalAdapter: ServerAdapterModule = {
+  type: "openclaw_local",
+  execute: openclawLocalExecute,
+  testEnvironment: openclawLocalTestEnvironment,
+  models: openclawLocalModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: openclawLocalAgentConfigurationDoc,
+};
+
+const httpAgentAdapter: ServerAdapterModule = {
+  type: "http_agent",
+  execute: httpAgentExecute,
+  testEnvironment: httpAgentTestEnvironment,
+  models: httpAgentModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: httpAgentAgentConfigurationDoc,
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
@@ -213,7 +241,9 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    openclawLocalAdapter,
     hermesLocalAdapter,
+    httpAgentAdapter,
     processAdapter,
     httpAdapter,
   ]) {

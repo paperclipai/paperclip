@@ -169,6 +169,32 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/adapters/hermes-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/http-agent:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/adapters/openclaw-gateway:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -187,6 +213,19 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/openclaw-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -477,9 +516,18 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+      '@paperclipai/adapter-hermes-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/hermes-local
+      '@paperclipai/adapter-http-agent':
+        specifier: workspace:*
+        version: link:../packages/adapters/http-agent
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
+      '@paperclipai/adapter-openclaw-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/openclaw-local
       '@paperclipai/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
