@@ -595,7 +595,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const contextBoundIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -618,6 +618,28 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (contextBoundIssue) return contextBoundIssue;
+
+    // Final fallback: find any open routine execution issue matching the unique
+    // constraint criteria, even if its heartbeat run has already ended. This
+    // prevents a duplicate-key violation when the pre-check misses an issue
+    // whose run finished but whose status has not yet moved to a terminal state.
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
