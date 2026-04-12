@@ -6,9 +6,12 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 function extractHostname(req: Request): string | null {
-  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
-  const hostHeader = req.header("host")?.trim();
-  const raw = forwardedHost || hostHeader;
+  // Only trust X-Forwarded-Host when Express trust proxy is enabled,
+  // which sets req.hostname from the forwarded header. When trust proxy
+  // is off, use the Host header directly to prevent spoofing.
+  const raw = req.app.get("trust proxy")
+    ? (req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host")?.trim())
+    : req.header("host")?.trim();
   if (!raw) return null;
 
   try {

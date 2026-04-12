@@ -6,6 +6,7 @@ on:
       - "master"
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -53,3 +54,51 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USER,PAPERCLIP_IMAGE
+          script: |
+            set -e
+
+            # Login to GHCR using env vars (not shell-interpolated secrets)
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+            cd /docker/paperclip-jic4
+
+            # Pull latest image — fail visibly if pull fails
+            export PAPERCLIP_IMAGE="${PAPERCLIP_IMAGE}"
+            echo "Pulling ${PAPERCLIP_IMAGE}..."
+            docker compose pull server
+
+            # Restart with new image
+            docker compose up -d
+
+            # Wait for health check
+            echo "Waiting for server to be healthy..."
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:3100/api/health > /dev/null 2>&1; then
+                echo "Server is healthy!"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "ERROR: Server failed to become healthy within 60s"
+            docker compose logs --tail=50 server
+            exit 1
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USER: ${{ github.repository_owner }}
+          PAPERCLIP_IMAGE: ghcr.io/${{ github.repository }}:latest
