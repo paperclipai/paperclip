@@ -20,6 +20,10 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
       retentionDays: 30,
       dir: defaultBackupDir,
     },
+    heartbeatCleanup: {
+      enabled: true,
+      pruneAfterHours: 48,
+    },
   };
 
   const mode = await p.select({
@@ -152,6 +156,10 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
       intervalMinutes: Number(backupIntervalInput || "60"),
       retentionDays: Number(backupRetentionInput || "30"),
       dir: backupDirInput || defaultBackupDir,
+    },
+    heartbeatCleanup: base.heartbeatCleanup ?? {
+      enabled: true,
+      pruneAfterHours: 48,
     },
   };
 }
