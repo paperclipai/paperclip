@@ -2328,7 +2328,7 @@ function PromptsTab({
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                  if (confirm(t("agentDetail.prompts.actions.deleteConfirm", "Delete {{file}}?", { file: selectedOrEntryFile }))) {
                     deleteFile.mutate(selectedOrEntryFile, {
                       onSuccess: () => {
                         setSelectedFile(currentEntryFile);

@@ -210,6 +210,7 @@
   "agentDetail.prompts.status.fileSuffix": "文件",
   "agentDetail.prompts.status.newFile": "此 bundle 中的新文件",
   "agentDetail.prompts.actions.delete": "删除",
+  "agentDetail.prompts.actions.deleteConfirm": "删除 {{file}}？",
   "agentDetail.prompts.placeholder.markdown": "# 智能体指令",
   "agentDetail.prompts.placeholder.text": "文件内容",
   "instanceGeneral.breadcrumb.settings": "实例设置",

@@ -18,6 +18,7 @@ const closePanelMock = vi.fn();
 const openNewIssueMock = vi.fn();
 const setSelectedCompanyIdMock = vi.fn();
 const navigateMock = vi.fn();
+const confirmMock = vi.fn(() => false);
 
 vi.mock("../api/agents", () => ({
   agentsApi: {
@@ -279,10 +280,14 @@ describe("AgentDetail", () => {
     setSelectedCompanyIdMock.mockReset();
     navigateMock.mockReset();
     localStorage.clear();
+    vi.stubGlobal("confirm", confirmMock);
+    confirmMock.mockReset();
+    confirmMock.mockReturnValue(false);
   });
 
   afterEach(() => {
     container.remove();
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
 
@@ -340,6 +345,7 @@ describe("AgentDetail", () => {
     expect(container.textContent).toContain("根路径");
     expect(container.textContent).toContain("入口文件");
     expect(container.textContent).toContain("文件");
+    expect(container.textContent).not.toContain("Delete notes.txt?");
     expect(setBreadcrumbsMock).toHaveBeenLastCalledWith([
       { label: "智能体", href: "/agents" },
       { label: "Budget Bot", href: "/agents/agent-one/dashboard" },

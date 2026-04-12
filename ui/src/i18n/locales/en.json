@@ -210,6 +210,7 @@
   "agentDetail.prompts.status.fileSuffix": "file",
   "agentDetail.prompts.status.newFile": "New file in this bundle",
   "agentDetail.prompts.actions.delete": "Delete",
+  "agentDetail.prompts.actions.deleteConfirm": "Delete {{file}}?",
   "agentDetail.prompts.placeholder.markdown": "# Agent instructions",
   "agentDetail.prompts.placeholder.text": "File contents",
   "instanceGeneral.breadcrumb.settings": "Instance Settings",
