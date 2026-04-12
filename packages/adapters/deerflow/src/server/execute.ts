@@ -145,6 +145,8 @@ async function* parseSSE(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  let currentEvent: SSEEvent = {};
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -153,7 +155,6 @@ async function* parseSSE(
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
 
-    let currentEvent: SSEEvent = {};
     for (const rawLine of lines) {
       const line = rawLine.replace(/\r$/, ""); // strip \r from \r\n
       if (line.startsWith("event: ")) {
@@ -304,7 +305,6 @@ export async function execute(
         ...(skill ? { skill_name: skill } : {}),
         paperclip_api_url: PAPERCLIP_BASE_URL,
         paperclip_company_id: ctx.agent.companyId,
-        ...(authToken ? { paperclip_auth_token: authToken } : {}),
         ...(taskType ? { task_type: taskType } : {}),
         ...(issueLabels.length > 0 ? { issue_labels: issueLabels } : {}),
       },

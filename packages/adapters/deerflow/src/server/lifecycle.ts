@@ -115,6 +115,8 @@ const IDLE_SHUTDOWN_MS = 10 * 60 * 1_000; // 10 minutes
 
 let activeRuns = 0;
 let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+// Single-instance assumption: all agents in the process point at the same
+// DeerFlow deployment. If multi-instance support is needed, key on URL.
 let startingPromise: Promise<void> | null = null;
 
 function cancelShutdownTimer(): void {

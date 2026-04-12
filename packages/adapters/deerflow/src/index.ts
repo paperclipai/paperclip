@@ -17,5 +17,5 @@ Core fields:
 - thinkingEnabled (boolean, optional): enable extended thinking (default: false)
 - subagentEnabled (boolean, optional): enable sub-agent delegation (default: true)
 - timeoutSec (number, optional): execution timeout in seconds (default: 600)
-- recursionLimit (number, optional): LangGraph recursion limit (default: 100)
+- recursionLimit (number, optional): LangGraph recursion limit (default: 50)
 `;
