@@ -32,11 +32,12 @@ echo "[backup] Creating archive of /paperclip/instances (includes DB dumps)..."
 tar -czf "$ARCHIVE" -C /paperclip instances/ 2>/dev/null
 
 SIZE=$(du -sh "$ARCHIVE" 2>/dev/null | cut -f1)
-AGENTS_COUNT=$(find /paperclip/instances -name "AGENTS.md" 2>/dev/null | wc -l | tr -d ' ')
+AGENTS_COUNT=$(find /paperclip/instances/default/agents -name "AGENTS.md" 2>/dev/null | wc -l | tr -d ' ')
+CODEX_COUNT=$(find /paperclip/instances -path "*/codex-home/*" -name "AGENTS.md" 2>/dev/null | wc -l | tr -d ' ')
 DB_DUMPS=$(find "$DB_BACKUP_DIR" -name "*.dump" 2>/dev/null | wc -l | tr -d ' ')
 HOSTNAME_VAL=$(hostname 2>/dev/null || echo "unknown")
 
-echo "[backup] Archive: $ARCHIVE ($SIZE), agents: $AGENTS_COUNT"
+echo "[backup] Archive: $ARCHIVE ($SIZE), agents: $AGENTS_COUNT, codex plugins: $CODEX_COUNT"
 
 # ── Read Telegram credentials from DB ────────────────────────────────────────
 if [ -z "${DATABASE_URL:-}" ]; then
@@ -81,6 +82,7 @@ MSG="🗄 *Paperclip Backup*
 📅 $(date '+%Y-%m-%d %H:%M UTC')
 📦 Size: $SIZE
 🤖 Agents with instructions: $AGENTS_COUNT
+🔌 Codex plugins (AGENTS.md): $CODEX_COUNT
 🗃 DB dumps in archive: $DB_DUMPS
 🔧 Machine: $HOSTNAME_VAL
 ✅ Status: OK"
