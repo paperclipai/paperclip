@@ -89,9 +89,34 @@ class AioSandboxProvider(SandboxProvider):
         atexit.register(self.shutdown)
         self._register_signal_handlers()
 
+        # Adopt orphaned containers from a previous process before starting idle checker
+        self._reconcile_orphans()
+
         # Start idle checker if enabled
         if self._config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT) > 0:
             self._start_idle_checker()
+
+    # ── Orphan reconciliation ────────────────────────────────────────────
+
+    def _reconcile_orphans(self) -> None:
+        """Adopt orphaned containers from a previous process into the warm pool."""
+        import time
+        try:
+            running = self._backend.list_running()
+            if not running:
+                return
+            current_time = time.time()
+            adopted = 0
+            with self._lock:
+                for info in running:
+                    if info.sandbox_id in self._sandboxes or info.sandbox_id in self._warm_pool:
+                        continue
+                    self._warm_pool[info.sandbox_id] = (info, current_time)
+                    adopted += 1
+            if adopted:
+                logger.info("Reconciled %d orphaned container(s) into warm pool", adopted)
+        except Exception as e:
+            logger.warning("Orphan reconciliation failed (non-fatal): %s", e)
 
     # ── Factory methods ──────────────────────────────────────────────────
 

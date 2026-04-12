@@ -96,3 +96,8 @@ class SandboxBackend(ABC):
             SandboxInfo if found and healthy, None otherwise.
         """
         ...
+
+    def list_running(self) -> list:
+        """List running sandbox containers. Returns list of SandboxInfo.
+        Default returns empty list. LocalContainerBackend overrides."""
+        return []

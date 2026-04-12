@@ -302,6 +302,87 @@ class LocalContainerBackend(SandboxBackend):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
 
+    def _batch_inspect(self, container_names: list[str]) -> list[dict]:
+        """Batch-inspect containers via a single docker inspect call."""
+        if not container_names:
+            return []
+        try:
+            result = subprocess.run(
+                [self._runtime, "inspect"] + container_names,
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return []
+            import json
+            return json.loads(result.stdout)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _parse_docker_timestamp(ts: str) -> float:
+        """Parse Docker's nanosecond ISO 8601 timestamp to epoch seconds."""
+        from datetime import datetime, timezone
+        ts = ts.rstrip("Z").rstrip("z")
+        if "." in ts:
+            base, frac = ts.rsplit(".", 1)
+            frac = frac[:6]
+            ts = f"{base}.{frac}"
+        try:
+            dt = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    def list_running(self) -> list:
+        """Enumerate running DeerFlow sandbox containers via Docker CLI."""
+        try:
+            result = subprocess.run(
+                [self._runtime, "ps", "--filter", f"name={self._container_prefix}-",
+                 "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                return []
+            container_names = [
+                name.strip() for name in result.stdout.strip().splitlines()
+                if name.strip().startswith(self._container_prefix + "-")
+            ]
+            if not container_names:
+                return []
+            inspections = self._batch_inspect(container_names)
+            sandboxes = []
+            sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
+            for info in inspections:
+                name = info.get("Name", "").lstrip("/")
+                sandbox_id = name.replace(self._container_prefix + "-", "", 1) if name else ""
+                if not sandbox_id:
+                    continue
+                state = info.get("State", {})
+                started_at = state.get("StartedAt", "")
+                # Extract host port from NetworkSettings.Ports (container port 8080/tcp)
+                ports = info.get("NetworkSettings", {}).get("Ports", {})
+                port_bindings = ports.get("8080/tcp") or []
+                port = None
+                if port_bindings:
+                    try:
+                        port = int(port_bindings[0].get("HostPort", 0))
+                    except (ValueError, TypeError, IndexError):
+                        port = None
+                if not port:
+                    continue
+                sandbox_url = f"http://{sandbox_host}:{port}"
+                sandboxes.append(SandboxInfo(
+                    sandbox_id=sandbox_id,
+                    sandbox_url=sandbox_url,
+                    container_id=info.get("Id", ""),
+                    container_name=name,
+                    created_at=self._parse_docker_timestamp(started_at),
+                ))
+            return sandboxes
+        except Exception as e:
+            logger.warning("Failed to enumerate running containers: %s", e)
+            return []
+
     def _get_container_port(self, container_name: str) -> int | None:
         """Get the host port of a running container.
 
