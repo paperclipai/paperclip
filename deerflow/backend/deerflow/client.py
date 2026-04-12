@@ -698,6 +698,32 @@ class DeerFlowClient:
             "data": self.get_memory(),
         }
 
+    def clear_memory(self) -> dict:
+        """Clear all memory data.
+
+        Returns:
+            The reset (empty) memory data dict.
+        """
+        from deerflow.agents.memory.updater import clear_memory_data
+
+        clear_memory_data()
+        return self.get_memory()
+
+    def delete_memory_fact(self, fact_id: str) -> dict:
+        """Delete a specific fact by ID.
+
+        Returns:
+            Updated memory data dict.
+
+        Raises:
+            ValueError: If fact not found.
+        """
+        from deerflow.agents.memory.updater import delete_memory_fact
+
+        if not delete_memory_fact(fact_id):
+            raise ValueError(f"Fact '{fact_id}' not found")
+        return self.get_memory()
+
     # ------------------------------------------------------------------
     # Public API — file uploads
     # ------------------------------------------------------------------

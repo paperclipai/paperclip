@@ -315,6 +315,26 @@ class MemoryUpdater:
         return current_memory
 
 
+def clear_memory_data(agent_name: str | None = None) -> bool:
+    """Clear all memory data, resetting to empty structure."""
+    from deerflow.agents.memory.storage import _create_empty_memory
+
+    empty = _create_empty_memory()
+    return get_memory_storage().save(empty, agent_name)
+
+
+def delete_memory_fact(fact_id: str, agent_name: str | None = None) -> bool:
+    """Delete a single fact by ID. Returns True if found and deleted, False if not found."""
+    storage = get_memory_storage()
+    data = storage.load(agent_name)
+    original_count = len(data.get("facts", []))
+    data["facts"] = [f for f in data.get("facts", []) if f.get("id") != fact_id]
+    if len(data["facts"]) == original_count:
+        return False
+    storage.save(data, agent_name)
+    return True
+
+
 def update_memory_from_conversation(messages: list[Any], thread_id: str | None = None, agent_name: str | None = None) -> bool:
     """Convenience function to update memory from a conversation.
 

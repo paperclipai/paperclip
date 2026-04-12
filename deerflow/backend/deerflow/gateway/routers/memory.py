@@ -1,9 +1,9 @@
 """Memory API router for retrieving and managing global memory data."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from deerflow.agents.memory.updater import get_memory_data, reload_memory_data
+from deerflow.agents.memory.updater import clear_memory_data, delete_memory_fact, get_memory_data, reload_memory_data
 from deerflow.config.memory_config import get_memory_config
 
 router = APIRouter(prefix="/api", tags=["memory"])
@@ -199,3 +199,43 @@ async def get_memory_status() -> MemoryStatusResponse:
         ),
         data=MemoryResponse(**memory_data),
     )
+
+
+@router.delete(
+    "/memory",
+    response_model=MemoryResponse,
+    summary="Clear Memory",
+    description="Clear all memory data, resetting to empty structure.",
+)
+async def clear_memory() -> MemoryResponse:
+    """Clear all memory data.
+
+    Returns:
+        The reset (empty) memory data.
+    """
+    clear_memory_data()
+    return MemoryResponse(**get_memory_data())
+
+
+@router.delete(
+    "/memory/facts/{fact_id}",
+    response_model=MemoryResponse,
+    summary="Delete Memory Fact",
+    description="Delete a specific fact by ID.",
+)
+async def delete_fact(fact_id: str) -> MemoryResponse:
+    """Delete a specific fact by ID.
+
+    Args:
+        fact_id: The unique identifier of the fact to delete.
+
+    Returns:
+        The updated memory data after deletion.
+
+    Raises:
+        HTTPException: 404 if the fact is not found.
+    """
+    deleted = delete_memory_fact(fact_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_id}' not found")
+    return MemoryResponse(**get_memory_data())

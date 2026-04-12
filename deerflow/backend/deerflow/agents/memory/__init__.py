@@ -26,6 +26,8 @@ from deerflow.agents.memory.storage import (
 )
 from deerflow.agents.memory.updater import (
     MemoryUpdater,
+    clear_memory_data,
+    delete_memory_fact,
     get_memory_data,
     reload_memory_data,
     update_memory_from_conversation,
@@ -49,6 +51,8 @@ __all__ = [
     "set_memory_storage",
     # Updater
     "MemoryUpdater",
+    "clear_memory_data",
+    "delete_memory_fact",
     "get_memory_data",
     "reload_memory_data",
     "update_memory_from_conversation",
