@@ -30,10 +30,22 @@ vi.mock("../api/agents", () => ({
     resetSession: vi.fn(),
     updatePermissions: vi.fn(),
     adapterModels: vi.fn().mockResolvedValue([]),
+    instructionsBundle: vi.fn().mockResolvedValue({
+      mode: "external",
+      rootPath: "/agent/prompts",
+      managedRootPath: "",
+      entryFile: "AGENTS.md",
+      files: [{ path: "AGENTS.md", size: 42, language: "markdown", isEntryFile: true, deprecated: false }],
+      warnings: [],
+    }),
+    instructionsFile: vi.fn().mockResolvedValue({ path: "AGENTS.md", content: "", language: "markdown" }),
     listConfigRevisions: () => configRevisionsMock(),
     listKeys: () => listKeysMock(),
     createKey: vi.fn(),
     revokeKey: vi.fn(),
+    saveInstructionsFile: vi.fn(),
+    deleteInstructionsFile: vi.fn(),
+    updateInstructionsBundle: vi.fn(),
   },
 }));
 
@@ -102,6 +114,8 @@ vi.mock("../lib/queryKeys", () => ({
       configRevisions: (agentId: string) => ["agents", "config-revisions", agentId],
       keys: (agentId: string) => ["agents", "keys", agentId],
       adapterModels: (companyId: string, adapterType: string) => ["agents", "adapter-models", companyId, adapterType],
+      instructionsBundle: (agentId: string) => ["agents", "instructions-bundle", agentId],
+      instructionsFile: (agentId: string, filePath: string) => ["agents", "instructions-file", agentId, filePath],
     },
     heartbeats: (companyId: string, agentId?: string) => ["heartbeats", companyId, agentId],
     issues: {
@@ -119,7 +133,7 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children as never}</a>
   ),
   Navigate: () => <div>navigate</div>,
-  useParams: () => ({ agentId: "agent-one", tab: "configuration", runId: undefined, companyPrefix: undefined }),
+  useParams: () => ({ agentId: "agent-one", tab: "instructions", runId: undefined, companyPrefix: undefined }),
   useNavigate: () => navigateMock,
   useBeforeUnload: vi.fn(),
 }));
@@ -200,7 +214,7 @@ describe("AgentDetail", () => {
       status: "pending_approval",
       reportsTo: null,
       capabilities: null,
-      adapterType: "process",
+      adapterType: "claude_local",
       adapterConfig: {},
       contextMode: "thin",
       budgetMonthlyCents: 0,
@@ -291,7 +305,7 @@ describe("AgentDetail", () => {
     return root;
   }
 
-  async function waitFor(condition: () => boolean, attempts = 10) {
+  async function waitFor(condition: () => boolean, attempts = 20) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (condition()) return;
       await act(async () => {
@@ -303,30 +317,29 @@ describe("AgentDetail", () => {
     throw new Error("Timed out waiting for AgentDetail to settle");
   }
 
-  it("renders localized configuration revisions, permissions, and keys chrome", async () => {
+  it("renders localized prompts chrome for the instructions tab", async () => {
     localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
     const root = await renderPage();
 
-    await waitFor(() => container.textContent?.includes("配置修订历史") === true && container.textContent?.includes("当前没有活动中的 API keys。") === true);
+    await waitFor(() => container.textContent?.includes("高级选项") === true && container.textContent?.includes("文件") === true);
 
     expect(container.textContent).toContain("分配任务");
     expect(container.textContent).toContain("运行心跳");
-    expect(container.textContent).toContain("配置");
+    expect(container.textContent).toContain("指令");
     expect(container.textContent).toContain("复制 Agent ID");
     expect(container.textContent).toContain("重置会话");
     expect(container.textContent).toContain("终止");
-    expect(container.textContent).toContain("权限");
-    expect(container.textContent).toContain("可创建新智能体");
-    expect(container.textContent).toContain("可分配任务");
-    expect(container.textContent).toContain("API Keys");
-    expect(container.textContent).toContain("创建 API Key");
-    expect(container.textContent).toContain("创建");
-    expect(container.textContent).toContain("当前没有活动中的 API keys。");
-    expect(container.textContent).toContain("配置修订历史");
+    expect(container.textContent).toContain("高级选项");
+    expect(container.textContent).toContain("模式");
+    expect(container.textContent).toContain("托管");
+    expect(container.textContent).toContain("外部");
+    expect(container.textContent).toContain("根路径");
+    expect(container.textContent).toContain("入口文件");
+    expect(container.textContent).toContain("文件");
     expect(setBreadcrumbsMock).toHaveBeenLastCalledWith([
       { label: "智能体", href: "/agents" },
       { label: "Budget Bot", href: "/agents/agent-one/dashboard" },
-      { label: "配置" },
+      { label: "指令" },
     ]);
 
     await act(async () => {
