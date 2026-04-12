@@ -255,6 +255,122 @@ describeEmbeddedPostgres("enqueueWakeup dedup window for mention-wake race", () 
     expect(mentionRun!.id).not.toBe(assignmentRun!.id);
   }, 15_000);
 
+  it("two issue-execution wakes for same agent+issue produce 1 run (regression guard)", async () => {
+    const { agentId, issueId } = await seedAgentWithBlockedQueue();
+    const heartbeat = heartbeatService(db);
+
+    // First assignment wake — goes through issue execution lock path
+    const run1 = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: { issueId },
+      payload: { issueId },
+    });
+    expect(run1).toBeTruthy();
+    expect(run1!.status).toBe("queued");
+
+    // Second assignment wake — same agent+issue, goes through same lock path
+    // Should coalesce into the existing queued run
+    const run2 = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "automation",
+      reason: "issue_assigned",
+      contextSnapshot: { issueId },
+      payload: { issueId },
+    });
+    expect(run2).toBeTruthy();
+    expect(run2!.id).toBe(run1!.id);
+
+    // Verify only one queued run exists
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
+    expect(queuedRuns).toHaveLength(1);
+  }, 15_000);
+
+  it("timer wake + issue-execution wake produce separate runs (expected)", async () => {
+    const { agentId, issueId, blockingRunId } = await seedAgentWithBlockedQueue();
+    const heartbeat = heartbeatService(db);
+
+    // Timer wake — no issueId, goes through non-issue path.
+    // Coalesces into the blocking run (same null taskKey scope), returns running.
+    const timerRun = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "heartbeat_timer",
+      reason: "heartbeat_timer",
+      contextSnapshot: {},
+      payload: {},
+    });
+    expect(timerRun).toBeTruthy();
+    expect(timerRun!.id).toBe(blockingRunId);
+
+    // Assignment wake — has issueId, goes through issue execution lock path
+    const assignmentRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: { issueId },
+      payload: { issueId },
+    });
+    expect(assignmentRun).toBeTruthy();
+
+    // Timer and assignment runs are separate — timer has no issueId,
+    // so cross-path dedup correctly does not merge them
+    expect(timerRun!.id).not.toBe(assignmentRun!.id);
+  }, 15_000);
+
+  it("cross-path dedup catches a queued run outside the 5s window", async () => {
+    const { companyId, agentId, issueId } = await seedAgentWithBlockedQueue();
+    const heartbeat = heartbeatService(db);
+
+    // Directly insert a queued run with createdAt older than 5 seconds
+    // to simulate a run that the 5s dedup window would miss
+    const oldRunId = randomUUID();
+    const oldWakeupId = randomUUID();
+    const sixSecondsAgo = new Date(Date.now() - 6_000);
+    await db.insert(agentWakeupRequests).values({
+      id: oldWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId: oldRunId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: oldRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: oldWakeupId,
+      contextSnapshot: { issueId },
+      createdAt: sixSecondsAgo,
+    });
+
+    // Mention-wake should coalesce via the cross-path dedup check
+    // (not the 5s window, since the run is older than 5s)
+    const mentionRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "mention",
+      reason: "issue_comment_mentioned",
+      contextSnapshot: { issueId, wakeCommentId: randomUUID() },
+      payload: { issueId },
+    });
+
+    expect(mentionRun!.id).toBe(oldRunId);
+  }, 15_000);
+
   it("dedup window catches a queued run inserted directly (simulating race)", async () => {
     const { companyId, agentId, issueId } = await seedAgentWithBlockedQueue();
     const heartbeat = heartbeatService(db);
