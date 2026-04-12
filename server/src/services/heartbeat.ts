@@ -30,6 +30,11 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import {
+  hasFalseCompleteRecoverySignal,
+  isSuccessfulHeartbeatRunStatus,
+  selectReadyUnassignedCandidate,
+} from "./operations-heartbeat-target.js";
 import { secretService } from "./secrets.js";
 import { createAgentStartLockController } from "./agent-start-lock.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -247,13 +252,10 @@ export async function resolveOperationsHeartbeatTarget(
           (issue.status === "in_progress" && !issue.executionRunId)
           || issue.status === "blocked"
           || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
-        const hasFalseCompleteSignals = Boolean(
-          run
-          && run.status === "completed"
-          && truthType !== "completion"
-          && truthType !== "blocker"
-          && truthType !== "handoff",
-        );
+        const hasFalseCompleteSignals = hasFalseCompleteRecoverySignal({
+          runStatus: run?.status,
+          truthType,
+        });
         const hasContradictoryTruthSignals =
           (truthType === "completion" && issue.status !== "in_review")
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
@@ -321,7 +323,7 @@ export async function resolveOperationsHeartbeatTarget(
           score -= 120;
           reasons.push(`fresh ${truthType} truth already present`);
         }
-        if (truthType === "completion" && run?.status === "completed" && issue.status === "in_review") {
+        if (truthType === "completion" && isSuccessfulHeartbeatRunStatus(run?.status) && issue.status === "in_review") {
           score -= 160;
           reasons.push("completion truth aligns with current state");
         }
@@ -370,7 +372,7 @@ export async function resolveOperationsHeartbeatTarget(
     }
   }
 
-  const readyUnassigned = await db
+  const readyUnassignedRows = await db
     .select({
       id: issues.id,
       priority: issues.priority,
@@ -384,9 +386,8 @@ export async function resolveOperationsHeartbeatTarget(
         sql`${issues.hiddenAt} is null`,
         sql`${issues.assigneeAgentId} is null`,
       ),
-    )
-    .orderBy(desc(issues.updatedAt))
-    .then((rows) => rows[0] ?? null);
+    );
+  const readyUnassigned = selectReadyUnassignedCandidate(readyUnassignedRows);
 
   if (readyUnassigned) {
     return {
@@ -2588,6 +2589,7 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
             executionWorkspaceId: issues.executionWorkspaceId,
