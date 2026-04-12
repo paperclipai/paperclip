@@ -30,6 +30,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { useLocation } from "@/lib/router";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 import { reviewPipelineApi } from "../api/reviewPipeline";
 import { PipelineStepEditor } from "../components/PipelineStepEditor";
 
@@ -778,6 +779,7 @@ export function TeamDocDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { t } = useT();
+  const confirm = useConfirm();
 
   const { data: doc } = useQuery({
     queryKey: ["team-document", selectedCompanyId, teamId, key],
@@ -854,8 +856,8 @@ export function TeamDocDetailPage() {
           size="sm"
           variant="ghost"
           className="text-muted-foreground hover:text-destructive"
-          onClick={() => {
-            if (confirm(t("team.deleteDocConfirm").replace("{name}", title || key!))) deleteMutation.mutate();
+          onClick={async () => {
+            if (await confirm({ description: t("team.deleteDocConfirm").replace("{name}", title || key!), variant: "destructive" })) deleteMutation.mutate();
           }}
         >
           <Trash2 className="h-4 w-4" />
@@ -910,6 +912,7 @@ function WorkflowStatusesEditor({
 }) {
   const qc = useQueryClient();
   const { t } = useT();
+  const confirm = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -1065,8 +1068,8 @@ function WorkflowStatusesEditor({
                     size="sm"
                     variant="ghost"
                     className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-                    onClick={() => {
-                      if (confirm(t("team.deleteStatusConfirm").replace("{name}", s.name))) deleteMutation.mutate(s.id);
+                    onClick={async () => {
+                      if (await confirm({ description: t("team.deleteStatusConfirm").replace("{name}", s.name), variant: "destructive" })) deleteMutation.mutate(s.id);
                     }}
                     title={t("team.deleteStatus")}
                   >
@@ -1150,6 +1153,7 @@ function TeamMembersEditor({
 }) {
   const qc = useQueryClient();
   const { t } = useT();
+  const confirm = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [pickerValue, setPickerValue] = useState("");
 
@@ -1249,8 +1253,8 @@ function TeamMembersEditor({
                   size="sm"
                   variant="ghost"
                   className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    if (confirm(t("team.removeMemberConfirm"))) removeMutation.mutate(m.id);
+                  onClick={async () => {
+                    if (await confirm({ description: t("team.removeMemberConfirm"), variant: "destructive" })) removeMutation.mutate(m.id);
                   }}
                   title={t("team.removeMember")}
                 >
@@ -1420,6 +1424,7 @@ export function TeamSettingsPage() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { t } = useT();
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -1495,8 +1500,8 @@ export function TeamSettingsPage() {
         <Button
           variant="destructive"
           size="sm"
-          onClick={() => {
-            if (confirm(t("team.deleteConfirm").replace("{name}", team.name))) deleteMutation.mutate();
+          onClick={async () => {
+            if (await confirm({ description: t("team.deleteConfirm").replace("{name}", team.name), variant: "destructive" })) deleteMutation.mutate();
           }}
         >
           <Trash2 className="h-4 w-4 mr-1" /> {t("team.delete")}

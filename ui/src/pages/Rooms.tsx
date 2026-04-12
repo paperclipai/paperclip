@@ -17,6 +17,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useT } from "../i18n";
+import { useConfirm, useAlert } from "../context/ConfirmContext";
 import type { TranslationKey } from "../i18n/en";
 
 // Deterministic color from a string (user/agent id)
@@ -326,6 +327,8 @@ export function NewRoomPage() {
 
 export function RoomDetailPage() {
   const { t } = useT();
+  const confirm = useConfirm();
+  const showAlert = useAlert();
   const { roomId } = useParams<{ roomId: string }>();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
@@ -534,7 +537,7 @@ export function RoomDetailPage() {
       setPendingAttachments((prev) => [...prev, ...atts]);
     },
     onError: (err: any) => {
-      alert(`Upload failed: ${err?.message ?? String(err)}`);
+      showAlert({ description: `Upload failed: ${err?.message ?? String(err)}` });
     },
   });
 
@@ -686,8 +689,8 @@ export function RoomDetailPage() {
             data-testid="room-archive"
             variant="ghost"
             size="sm"
-            onClick={() => {
-              if (confirm(t("room.archiveConfirm").replace("{name}", room.data!.name))) archiveMutation.mutate();
+            onClick={async () => {
+              if (await confirm({ description: t("room.archiveConfirm").replace("{name}", room.data!.name), variant: "destructive" })) archiveMutation.mutate();
             }}
           >
             <Trash2 className="h-4 w-4 mr-1" /> {t("room.archive")}

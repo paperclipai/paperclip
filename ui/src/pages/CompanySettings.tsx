@@ -18,6 +18,7 @@ import {
   HintIcon
 } from "../components/agent-config-primitives";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -36,6 +37,7 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { t } = useT();
+  const confirm = useConfirm();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   // General settings local state
@@ -583,11 +585,12 @@ export function CompanySettings() {
                 archiveMutation.isPending ||
                 selectedCompany.status === "archived"
               }
-              onClick={() => {
+              onClick={async () => {
                 if (!selectedCompanyId) return;
-                const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
-                );
+                const confirmed = await confirm({
+                  description: `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`,
+                  variant: "destructive",
+                });
                 if (!confirmed) return;
                 const nextCompanyId =
                   companies.find(

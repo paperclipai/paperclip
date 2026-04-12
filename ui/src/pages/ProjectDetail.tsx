@@ -14,6 +14,7 @@ import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
@@ -447,6 +448,7 @@ function ProjectWorkspacesContent({
 function EnvironmentsTabContent({ companyId, projectId }: { companyId: string; projectId: string }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const confirm = useConfirm();
 
   const { data: environments, isLoading } = useQuery({
     queryKey: queryKeys.projectEnvironments.all(companyId, projectId),
@@ -481,8 +483,8 @@ function EnvironmentsTabContent({ companyId, projectId }: { companyId: string; p
               key={env.id}
               env={env}
               onEdit={() => {}}
-              onDelete={() => {
-                if (confirm(`Delete environment "${env.name}"?`)) {
+              onDelete={async () => {
+                if (await confirm({ description: `Delete environment "${env.name}"?`, variant: "destructive" })) {
                   deleteMutation.mutate(env.id);
                 }
               }}

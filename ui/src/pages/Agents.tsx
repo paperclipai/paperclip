@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -471,6 +472,7 @@ function RestartAllLeadersButton({
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { t } = useT();
+  const confirm = useConfirm();
   const [loading, setLoading] = useState(false);
 
   const leaders = agents.filter((a) => a.adapterType === "claude_local" && a.status !== "terminated");
@@ -482,7 +484,7 @@ function RestartAllLeadersButton({
   const runningCount = leaders.filter((a) => runningSet.has(a.id)).length;
 
   const handleRestartAll = async () => {
-    if (!confirm(t("agents.restartAllConfirm").replace("{count}", String(leaders.length)))) return;
+    if (!(await confirm({ description: t("agents.restartAllConfirm").replace("{count}", String(leaders.length)) }))) return;
     setLoading(true);
     let ok = 0;
     let fail = 0;

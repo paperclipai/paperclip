@@ -16,9 +16,11 @@ import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 
 export function ApprovalDetail() {
   const { t } = useT();
+  const confirm = useConfirm();
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -313,8 +315,8 @@ export function ApprovalDetail() {
               size="sm"
               variant="outline"
               className="text-destructive border-destructive/40"
-              onClick={() => {
-                if (!window.confirm(t("approval.deleteConfirm"))) return;
+              onClick={async () => {
+                if (!(await confirm({ description: t("approval.deleteConfirm"), variant: "destructive" }))) return;
                 deleteAgentMutation.mutate(linkedAgentId);
               }}
               disabled={deleteAgentMutation.isPending}

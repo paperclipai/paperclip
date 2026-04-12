@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime } from "../lib/utils";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -29,6 +30,7 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
 
 export function InstanceSettings() {
   const { t } = useT();
+  const confirm = useConfirm();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -187,10 +189,10 @@ export function InstanceSettings() {
             size="sm"
             className="ml-auto h-7 text-xs"
             disabled={disableAllMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               const noun = enabledCount === 1 ? t("instanceSettings.agent") : t("instanceSettings.agents");
               const msg = t("instanceSettings.disableAllConfirm").replace("{count}", String(enabledCount)).replace("{noun}", noun);
-              if (!window.confirm(msg)) {
+              if (!(await confirm({ description: msg, variant: "destructive" }))) {
                 return;
               }
               disableAllMutation.mutate(agents);

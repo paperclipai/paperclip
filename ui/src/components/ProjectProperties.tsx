@@ -22,6 +22,7 @@ import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -226,6 +227,7 @@ function ArchiveDangerZone({
 
 export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
   const { t } = useT();
+  const confirm = useConfirm();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
@@ -465,23 +467,25 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     persistCodebase({ repoUrl });
   };
 
-  const clearLocalWorkspace = () => {
-    const confirmed = window.confirm(
-      codebase.repoUrl
+  const clearLocalWorkspace = async () => {
+    const confirmed = await confirm({
+      description: codebase.repoUrl
         ? "Clear local folder from this workspace?"
         : "Delete this workspace local folder?",
-    );
+      variant: "destructive",
+    });
     if (!confirmed) return;
     persistCodebase({ cwd: null });
   };
 
-  const clearRepoWorkspace = () => {
+  const clearRepoWorkspace = async () => {
     const hasLocalFolder = Boolean(codebase.localFolder);
-    const confirmed = window.confirm(
-      hasLocalFolder
+    const confirmed = await confirm({
+      description: hasLocalFolder
         ? "Clear repo from this workspace?"
         : "Delete this workspace repo?",
-    );
+      variant: "destructive",
+    });
     if (!confirmed) return;
     if (primaryCodebaseWorkspace && hasLocalFolder) {
       updateWorkspace.mutate({

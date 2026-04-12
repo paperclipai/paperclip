@@ -20,6 +20,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useT } from "../i18n";
+import { useConfirm } from "../context/ConfirmContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -1902,6 +1903,7 @@ function PromptsTab({
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
+  const confirmDialog = useConfirm();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
@@ -2534,8 +2536,8 @@ function PromptsTab({
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                onClick={async () => {
+                  if (await confirmDialog({ description: `Delete ${selectedOrEntryFile}?`, variant: "destructive" })) {
                     deleteFile.mutate(selectedOrEntryFile, {
                       onSuccess: () => {
                         setSelectedFile(currentEntryFile);
@@ -3271,6 +3273,7 @@ function RunsTab({
 
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const { t } = useT();
+  const confirmDialog = useConfirm();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3628,11 +3631,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                       type="button"
                       className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-60"
                       disabled={clearSessionsForTouchedIssues.isPending}
-                      onClick={() => {
+                      onClick={async () => {
                         const issueCount = touchedIssueIds.length;
-                        const confirmed = window.confirm(
-                          `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
-                        );
+                        const confirmed = await confirmDialog({
+                          description: `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
+                        });
                         if (!confirmed) return;
                         clearSessionsForTouchedIssues.mutate();
                       }}

@@ -11,6 +11,7 @@ import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
+import { ConfirmProvider } from "./context/ConfirmContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -52,7 +53,9 @@ createRoot(document.getElementById("root")!).render(
                         <PanelProvider>
                           <PluginLauncherProvider>
                             <DialogProvider>
-                              <App />
+                              <ConfirmProvider>
+                                <App />
+                              </ConfirmProvider>
                             </DialogProvider>
                           </PluginLauncherProvider>
                         </PanelProvider>
