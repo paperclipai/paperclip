@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import { useI18n } from "@/i18n/runtime";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
@@ -25,7 +26,8 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap });
+  const { locale, t } = useI18n();
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, locale });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -43,7 +45,13 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
     : entityLink(event.entityType, event.entityId, name);
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : event.actorType === "user" ? "Board" : event.actorId || "Unknown");
+  const actorName = actor?.name ?? (
+    event.actorType === "system"
+      ? t("activity.actor.system", "System")
+      : event.actorType === "user"
+        ? t("activity.actor.board", "Board")
+        : event.actorId || t("activity.actor.unknown", "Unknown")
+  );
 
   const inner = (
     <div className="flex gap-3">
@@ -57,7 +65,7 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
         {name && <span className="font-medium">{name}</span>}
         {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
       </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt, locale)}</span>
     </div>
   );
 

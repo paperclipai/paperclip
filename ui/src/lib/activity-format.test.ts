@@ -57,4 +57,9 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("formats simple activity labels for zh-CN", () => {
+    expect(formatActivityVerb("issue.created", null, { locale: "zh-CN" })).toBe("创建了");
+    expect(formatIssueActivityAction("issue.created", null, { locale: "zh-CN" })).toBe("创建了该事项");
+  });
 });

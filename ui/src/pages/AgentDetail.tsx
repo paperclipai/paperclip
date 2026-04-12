@@ -75,6 +75,7 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
+import { useI18n } from "@/i18n/runtime";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
@@ -625,6 +626,7 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
@@ -851,32 +853,32 @@ export function AgentDetail() {
 
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
-      { label: "Agents", href: "/agents" },
+      { label: t("agentDetail.breadcrumb.agents", "Agents"), href: "/agents" },
     ];
-    const agentName = agent?.name ?? routeAgentRef ?? "Agent";
+    const agentName = agent?.name ?? routeAgentRef ?? t("agentDetail.breadcrumb.agentFallback", "Agent");
     if (activeView === "dashboard" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
       crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
-        crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
+        crumbs.push({ label: t("agentDetail.breadcrumb.runs", "Runs"), href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: t("agentDetail.breadcrumb.run", "Run {{id}}", { id: urlRunId.slice(0, 8) }) });
       } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
+        crumbs.push({ label: t("agentDetail.tabs.instructions", "Instructions") });
       } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+        crumbs.push({ label: t("agentDetail.tabs.configuration", "Configuration") });
       // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+      //   crumbs.push({ label: t("agentDetail.tabs.skills", "Skills") });
       } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
+        crumbs.push({ label: t("agentDetail.tabs.runs", "Runs") });
       } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
+        crumbs.push({ label: t("agentDetail.tabs.budget", "Budget") });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        crumbs.push({ label: t("agentDetail.tabs.dashboard", "Dashboard") });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, t]);
 
   useEffect(() => {
     closePanel();
@@ -928,12 +930,12 @@ export function AgentDetail() {
             onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
           >
             <Plus className="h-3.5 w-3.5 sm:mr-1" />
-            <span className="hidden sm:inline">Assign Task</span>
+            <span className="hidden sm:inline">{t("agentDetail.actions.assignTask", "Assign Task")}</span>
           </Button>
           <RunButton
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
-            label="Run Heartbeat"
+            label={t("agentDetail.actions.runHeartbeat", "Run Heartbeat")}
           />
           <PauseResumeButton
             isPaused={agent.status === "paused"}
@@ -951,7 +953,7 @@ export function AgentDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{t("agentDetail.live", "Live")}</span>
             </Link>
           )}
 
@@ -971,7 +973,7 @@ export function AgentDetail() {
                 }}
               >
                 <Copy className="h-3 w-3" />
-                Copy Agent ID
+                {t("agentDetail.actions.copyAgentId", "Copy Agent ID")}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -981,7 +983,7 @@ export function AgentDetail() {
                 }}
               >
                 <RotateCcw className="h-3 w-3" />
-                Reset Sessions
+                {t("agentDetail.actions.resetSessions", "Reset Sessions")}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
@@ -991,7 +993,7 @@ export function AgentDetail() {
                 }}
               >
                 <Trash2 className="h-3 w-3" />
-                Terminate
+                {t("agentDetail.actions.terminate", "Terminate")}
               </button>
             </PopoverContent>
           </Popover>
@@ -1005,12 +1007,12 @@ export function AgentDetail() {
         >
           <PageTabBar
             items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
-              { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
-              { value: "runs", label: "Runs" },
-              { value: "budget", label: "Budget" },
+              { value: "dashboard", label: t("agentDetail.tabs.dashboard", "Dashboard") },
+              { value: "instructions", label: t("agentDetail.tabs.instructions", "Instructions") },
+              { value: "skills", label: t("agentDetail.tabs.skills", "Skills") },
+              { value: "configuration", label: t("agentDetail.tabs.configuration", "Configuration") },
+              { value: "runs", label: t("agentDetail.tabs.runs", "Runs") },
+              { value: "budget", label: t("agentDetail.tabs.budget", "Budget") },
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1021,7 +1023,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
-          This agent is pending board approval and cannot be invoked yet.
+          {t("agentDetail.pendingApproval", "This agent is pending board approval and cannot be invoked yet.")}
         </p>
       )}
 
@@ -1042,14 +1044,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {t("agentDetail.actions.cancel", "Cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? t("agentDetail.actions.saving", "Saving…") : t("agentDetail.actions.save", "Save")}
             </Button>
           </div>
         </div>
@@ -1068,14 +1070,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {t("agentDetail.actions.cancel", "Cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? t("agentDetail.actions.saving", "Saving…") : t("agentDetail.actions.save", "Save")}
             </Button>
           </div>
         </div>
@@ -1162,20 +1164,23 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
 }
 
 function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: string }) {
-  if (runs.length === 0) return null;
+  const { t } = useI18n();
 
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  const sorted = useMemo(
+    () => [...runs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [runs],
   );
-
-  const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
-  const run = liveRun ?? sorted[0];
-  const isLive = run.status === "running" || run.status === "queued";
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+  const liveRun = useMemo(
+    () => sorted.find((r) => r.status === "running" || r.status === "queued") ?? null,
+    [sorted],
+  );
+  const run = liveRun ?? sorted[0] ?? null;
+  const isLive = run?.status === "running" || run?.status === "queued";
+  const statusInfo = run ? (runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" }) : { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
-  const summaryRaw = run.resultJson
+  const summaryRaw = run?.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+    : run?.error ?? "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = useMemo(() => {
@@ -1195,6 +1200,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
     return excerpt.join(" ");
   }, [summaryRaw]);
 
+  if (!run) return null;
+
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
@@ -1205,13 +1212,13 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
               <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
             </span>
           )}
-          {isLive ? "Live Run" : "Latest Run"}
+          {isLive ? t("agentDetail.dashboard.latestRun.live", "Live Run") : t("agentDetail.dashboard.latestRun.latest", "Latest Run")}
         </h3>
         <Link
           to={`/agents/${agentId}/runs/${run.id}`}
           className="shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors no-underline"
         >
-          View details &rarr;
+          {t("agentDetail.dashboard.latestRun.viewDetails", "View details")} &rarr;
         </Link>
       </div>
 
@@ -1265,6 +1272,8 @@ function AgentOverview({
   agentId: string;
   agentRouteId: string;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="space-y-8">
       {/* Latest Run */}
@@ -1272,16 +1281,16 @@ function AgentOverview({
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
+        <ChartCard title={t("agentDetail.dashboard.charts.runActivity", "Run Activity")} subtitle={t("agentDetail.dashboard.charts.last14Days", "Last 14 days")}>
           <RunActivityChart runs={runs} />
         </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <ChartCard title={t("agentDetail.dashboard.charts.issuesByPriority", "Issues by Priority")} subtitle={t("agentDetail.dashboard.charts.last14Days", "Last 14 days")}>
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title={t("agentDetail.dashboard.charts.issuesByStatus", "Issues by Status")} subtitle={t("agentDetail.dashboard.charts.last14Days", "Last 14 days")}>
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
+        <ChartCard title={t("agentDetail.dashboard.charts.successRate", "Success Rate")} subtitle={t("agentDetail.dashboard.charts.last14Days", "Last 14 days")}>
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
@@ -1289,16 +1298,16 @@ function AgentOverview({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Issues</h3>
+          <h3 className="text-sm font-medium">{t("agentDetail.dashboard.recentIssues.title", "Recent Issues")}</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            See All &rarr;
+            {t("agentDetail.dashboard.recentIssues.seeAll", "See All")} &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent issues.</p>
+          <p className="text-sm text-muted-foreground">{t("agentDetail.dashboard.recentIssues.empty", "No recent issues.")}</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1312,7 +1321,7 @@ function AgentOverview({
             ))}
             {assignedIssues.length > 10 && (
               <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more issues
+                {t("agentDetail.dashboard.recentIssues.more", "+{{count}} more issues", { count: assignedIssues.length - 10 })}
               </div>
             )}
           </div>
@@ -1321,7 +1330,7 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="text-sm font-medium">{t("agentDetail.dashboard.costs.title", "Costs")}</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
@@ -1337,6 +1346,7 @@ function CostsSection({
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
+  const { t } = useI18n();
   const runsWithCost = runs
     .filter((r) => {
       const metrics = runMetrics(r);
@@ -1350,19 +1360,19 @@ function CostsSection({
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
+              <span className="text-xs text-muted-foreground block">{t("agentDetail.dashboard.costs.inputTokens", "Input tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
+              <span className="text-xs text-muted-foreground block">{t("agentDetail.dashboard.costs.outputTokens", "Output tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
+              <span className="text-xs text-muted-foreground block">{t("agentDetail.dashboard.costs.cachedTokens", "Cached tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
+              <span className="text-xs text-muted-foreground block">{t("agentDetail.dashboard.costs.totalCost", "Total cost")}</span>
               <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
             </div>
           </div>
@@ -1373,11 +1383,11 @@ function CostsSection({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("agentDetail.dashboard.costs.table.date", "Date")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("agentDetail.dashboard.costs.table.run", "Run")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{t("agentDetail.dashboard.costs.table.input", "Input")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{t("agentDetail.dashboard.costs.table.output", "Output")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{t("agentDetail.dashboard.costs.table.cost", "Cost")}</th>
               </tr>
             </thead>
             <tbody>
