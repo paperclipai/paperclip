@@ -90,7 +90,7 @@ export function createAnalyticsService(db: Db) {
         AND action = 'issue.updated'
         AND created_at >= ${since.toISOString()}::timestamptz
         AND (details->>'status') IN ('done', 'cancelled')
-        ${entityIds ? sql`AND entity_id = ANY(${entityIds})` : sql``}
+        ${entityIds ? sql`AND entity_id = ANY(${entityIds.map(String)})` : sql``}
       GROUP BY 1
       ORDER BY 1
     `);
@@ -143,7 +143,7 @@ export function createAnalyticsService(db: Db) {
             (
               SELECT al.details->>'status'
               FROM activity_log al
-              WHERE al.entity_id = ip.id
+              WHERE al.entity_id = ip.id::text
                 AND al.action = 'issue.updated'
                 AND al.details->>'status' IS NOT NULL
                 AND al.created_at::date <= d.day
