@@ -6,6 +6,7 @@ import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listOpenDirectChildren: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -78,6 +79,7 @@ function makeIssue(status: "todo" | "done") {
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.listOpenDirectChildren.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -139,6 +141,79 @@ describe("issue comment reopen routes", () => {
           reopened: true,
           reopenedFrom: "done",
           status: "todo",
+        }),
+      }),
+    );
+  });
+
+  it("blocks marking a parent done when direct children are still open", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      parentId: null,
+    });
+    mockIssueService.listOpenDirectChildren.mockResolvedValue([
+      {
+        id: "child-1",
+        identifier: "PAP-581",
+        title: "Still doing work",
+        status: "in_progress",
+      },
+    ]);
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Cannot mark parent issue done while direct child issues are still open",
+      details: {
+        openDirectChildren: [
+          {
+            id: "child-1",
+            identifier: "PAP-581",
+            title: "Still doing work",
+            status: "in_progress",
+          },
+        ],
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an explicit done exception reason and logs it", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      parentId: null,
+    });
+    mockIssueService.listOpenDirectChildren.mockResolvedValue([
+      {
+        id: "child-1",
+        identifier: "PAP-581",
+        title: "Still doing work",
+        status: "todo",
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", doneExceptionReason: "closing parent while child follows in next release" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
+      status: "done",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "done",
+          doneExceptionReason: "closing parent while child follows in next release",
         }),
       }),
     );

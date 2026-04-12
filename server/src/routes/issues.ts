@@ -31,7 +31,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
@@ -917,12 +917,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const actor = getActorInfo(req);
     const isClosed = existing.status === "done" || existing.status === "cancelled";
-    const { comment: commentBody, reopen: reopenRequested, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const {
+      comment: commentBody,
+      doneExceptionReason,
+      reopen: reopenRequested,
+      hiddenAt: hiddenAtRaw,
+      ...updateFields
+    } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
+    }
+    if (updateFields.status === "done" && existing.status !== "done") {
+      const openDirectChildren = await svc.listOpenDirectChildren(existing.companyId, existing.id);
+      if (openDirectChildren.length > 0 && !doneExceptionReason) {
+        throw unprocessable("Cannot mark parent issue done while direct child issues are still open", {
+          openDirectChildren,
+        });
+      }
     }
     let issue;
     try {
@@ -990,6 +1004,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        ...(doneExceptionReason ? { doneExceptionReason } : {}),
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         _previous: hasFieldChanges ? previous : undefined,

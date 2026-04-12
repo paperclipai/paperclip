@@ -92,6 +92,7 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type OpenDirectChildIssue = Pick<IssueRow, "id" | "identifier" | "title" | "status">;
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -847,6 +848,26 @@ export function issueService(db: Db) {
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);
       return enriched;
+    },
+
+    listOpenDirectChildren: async (companyId: string, parentId: string): Promise<OpenDirectChildIssue[]> => {
+      return db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.parentId, parentId),
+            ne(issues.status, "done"),
+            ne(issues.status, "cancelled"),
+          ),
+        )
+        .orderBy(asc(issues.createdAt), asc(issues.id));
     },
 
     create: async (
