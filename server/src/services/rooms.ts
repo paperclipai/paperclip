@@ -1032,6 +1032,7 @@ export function roomService(db: Db, buses?: RoomServiceBuses) {
             identifier: issues.identifier,
             title: issues.title,
             status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
           },
         })
         .from(roomIssues)

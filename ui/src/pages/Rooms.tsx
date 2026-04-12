@@ -455,6 +455,37 @@ export function RoomDetailPage() {
   // reset to false when the user flips back to text.
   const [requiresApproval, setRequiresApproval] = useState(false);
 
+  // Routing hint: who will receive this message?
+  const routingHint = useMemo(() => {
+    const agents = (allAgents.data ?? []) as Array<{ id: string; name: string }>;
+    const getName = (id: string) => agents.find((a) => a.id === id)?.name ?? null;
+    // @all / @전체 / @모두
+    if (/@(all|everyone|전체|모두)\b/i.test(body)) return { target: "전체", type: "all" as const };
+    // @mention
+    const mentionMatch = body.match(/@([\p{L}\p{N}_-]+)/u);
+    if (mentionMatch) {
+      const tok = mentionMatch[1].toLowerCase();
+      const mentioned = agents.find((a) => a.name.toLowerCase() === tok);
+      if (mentioned) return { target: mentioned.name, type: "mention" as const };
+    }
+    // coordinator fallback
+    const coordId = room.data?.coordinatorAgentId;
+    if (coordId) {
+      const name = getName(coordId);
+      if (name) return { target: name, type: "coordinator" as const };
+    }
+    // issue assignee fallback
+    const linkedIssue = issues.data?.[0];
+    if (linkedIssue?.issue) {
+      const assigneeId = (linkedIssue.issue as any).assigneeAgentId;
+      if (assigneeId) {
+        const name = getName(assigneeId);
+        if (name) return { target: name, type: "assignee" as const };
+      }
+    }
+    return null;
+  }, [body, allAgents.data, room.data?.coordinatorAgentId, issues.data]);
+
   const mentionCandidates = useMemo(() => {
     if (mentionQuery === null) return [];
     const agents = (allAgents.data ?? []) as Array<{ id: string; name: string }>;
@@ -903,6 +934,14 @@ export function RoomDetailPage() {
                     <span className="font-medium">@{a.name}</span>
                   </button>
                 ))}
+              </div>
+            )}
+            {/* Routing hint */}
+            {routingHint && (
+              <div className="px-4 pt-2 pb-0">
+                <span className="text-[10px] text-muted-foreground/60">
+                  → {routingHint.target}에게 보내는 중
+                </span>
               </div>
             )}
             {/* Textarea area */}
