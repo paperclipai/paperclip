@@ -351,12 +351,22 @@ private struct PluginUpgradeRequest: Encodable, Sendable {
 private actor PaperclipAPIClient {
     private let configuration: ServerConnectionConfiguration
     private let session: URLSession
+    private static let userAgent: String = {
+        let bundle = Bundle.main
+        let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        return "NeurOSDesktopApp/\(version)"
+    }()
 
     init(configuration: ServerConnectionConfiguration) {
         self.configuration = configuration
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
+        var headers = config.httpAdditionalHeaders ?? [:]
+        headers["User-Agent"] = Self.userAgent
+        headers["X-NeurOS-Client"] = "macos"
+        headers["Accept"] = "application/json"
+        config.httpAdditionalHeaders = headers
         self.session = URLSession(configuration: config)
     }
 
@@ -559,15 +569,33 @@ private actor PaperclipAPIClient {
             throw URLError(.badServerResponse)
         }
 
+        let bodyPreview = String(data: data, encoding: .utf8)
+            .map { String($0.prefix(800)) }
+            ?? ""
+
         guard (200..<300).contains(httpResponse.statusCode) else {
+            let previewSuffix = bodyPreview.isEmpty ? "" : "\nResposta: \(bodyPreview)"
             throw NSError(
                 domain: "io.goldneuron.neurOS.network",
                 code: httpResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Resposta HTTP \(httpResponse.statusCode) em \(url.absoluteString)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Resposta HTTP \(httpResponse.statusCode) em \(url.absoluteString)\(previewSuffix)"
+                ]
             )
         }
 
-        return try Self.decoder.decode(T.self, from: data)
+        do {
+            return try Self.decoder.decode(T.self, from: data)
+        } catch {
+            let previewSuffix = bodyPreview.isEmpty ? "" : "\nResposta: \(bodyPreview)"
+            throw NSError(
+                domain: "io.goldneuron.neurOS.network",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Falha ao decodificar resposta de \(url.absoluteString)\(previewSuffix)"
+                ]
+            )
+        }
     }
 
     private static let decoder: JSONDecoder = {
