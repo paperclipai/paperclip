@@ -48,16 +48,26 @@ print(dt.strftime('%Y-%m-%d %H:%M UTC'))
 ")
 
 log "Token valid until: $EXPIRES_AT"
-log "Pushing to Fly.io app: $APP ..."
 
-echo "$CREDS" | fly secrets set "CLAUDE_CREDENTIALS_JSON=-" --app "$APP" --stage 2>&1 | tee -a "$LOGFILE" || {
-  # Try alternate form if stdin pipe doesn't work with your fly CLI version
-  fly secrets set "CLAUDE_CREDENTIALS_JSON=$CREDS" --app "$APP" --stage 2>&1 | tee -a "$LOGFILE"
-}
+# Extract raw accessToken for CLAUDE_CODE_OAUTH_TOKEN env var
+# (claude CLI 2.1.x checks this env var first — works on Linux where no Keychain is available)
+ACCESS_TOKEN=$(echo "$CREDS" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d['claudeAiOauth']['accessToken'])
+")
 
-log "Triggering rolling restart so the new credentials take effect..."
-fly deploy --app "$APP" --strategy rolling --update-only 2>&1 | tee -a "$LOGFILE" || {
-  log "WARN: rolling restart failed — machine may restart on next request or you can run: fly machines restart --app $APP"
-}
+if [ -z "$ACCESS_TOKEN" ]; then
+  log "ERROR: Could not extract accessToken from credentials"
+  exit 1
+fi
 
-log "Done. Token refreshed successfully."
+log "Pushing credentials to Fly.io app: $APP ..."
+
+# Set both secrets at once (single deploy trigger)
+fly secrets set \
+  "CLAUDE_CREDENTIALS_JSON=$CREDS" \
+  "CLAUDE_CODE_OAUTH_TOKEN=$ACCESS_TOKEN" \
+  --app "$APP" 2>&1 | tee -a "$LOGFILE"
+
+log "Done. Both CLAUDE_CREDENTIALS_JSON and CLAUDE_CODE_OAUTH_TOKEN refreshed successfully."

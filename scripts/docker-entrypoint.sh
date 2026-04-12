@@ -43,6 +43,25 @@ PYEOF
     # Fix ownership — files were written by root; claude CLI runs as node
     chown node:node /paperclip/.claude/credentials.json /paperclip/.claude.json 2>/dev/null || true
     chmod 600 /paperclip/.claude/credentials.json /paperclip/.claude.json 2>/dev/null || true
+
+    # Derive CLAUDE_CODE_OAUTH_TOKEN from credentials if not already set.
+    # claude CLI 2.1.x checks this env var first (bypasses Keychain lookup),
+    # which is critical on Linux where no Keychain is available.
+    if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+        _TOKEN=$(python3 -c "
+import json, os, sys
+try:
+    d = json.loads(os.environ.get('CLAUDE_CREDENTIALS_JSON', '{}'))
+    print(d['claudeAiOauth']['accessToken'])
+except Exception:
+    pass
+" 2>/dev/null || true)
+        if [ -n "$_TOKEN" ]; then
+            export CLAUDE_CODE_OAUTH_TOKEN="$_TOKEN"
+            echo "[entrypoint] CLAUDE_CODE_OAUTH_TOKEN derived from CLAUDE_CREDENTIALS_JSON"
+        fi
+        unset _TOKEN
+    fi
 fi
 
 # Adjust the node user's UID/GID if they differ from the runtime request
