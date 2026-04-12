@@ -80,6 +80,15 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as deerflowExecute,
+  testEnvironment as deerflowTestEnvironment,
+  sessionCodec as deerflowSessionCodec,
+} from "@paperclipai/adapter-deerflow/server";
+import {
+  agentConfigurationDoc as deerflowAgentConfigurationDoc,
+  models as deerflowModels,
+} from "@paperclipai/adapter-deerflow";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -193,6 +202,16 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const deerflowAdapter: ServerAdapterModule = {
+  type: "deerflow",
+  execute: deerflowExecute,
+  testEnvironment: deerflowTestEnvironment,
+  sessionCodec: deerflowSessionCodec,
+  models: deerflowModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: deerflowAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -214,6 +233,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    deerflowAdapter,
     processAdapter,
     httpAdapter,
   ]) {
