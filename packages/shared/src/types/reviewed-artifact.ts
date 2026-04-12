@@ -57,13 +57,21 @@ export type ReviewedArtifactWorkspaceFileSource = {
   path: string;
 };
 
+export type ReviewedArtifactUnresolvedSource = {
+  type: "unresolved";
+  originalType: ReviewedArtifactSourceType;
+  reason: "missing_source_reference";
+  missingFields: string[];
+};
+
 export type ReviewedArtifactSource =
   | ReviewedArtifactIssueDocumentSource
   | ReviewedArtifactIssueAttachmentSource
   | ReviewedArtifactIssueWorkProductSource
   | ReviewedArtifactExternalUrlSource
   | ReviewedArtifactApprovalPayloadSource
-  | ReviewedArtifactWorkspaceFileSource;
+  | ReviewedArtifactWorkspaceFileSource
+  | ReviewedArtifactUnresolvedSource;
 
 export interface ReviewedArtifactItem {
   id: string;

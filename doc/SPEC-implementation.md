@@ -393,6 +393,7 @@ Invariants:
 - use this dedicated store for selected review artifacts; do not overload `approval.payload`, `issues.execution_state`, or `issue_work_products`
 - new explicit sets supersede the prior active explicit set for the same review/approval context instead of mutating historical rows
 - existing issues and approvals are not backfilled into explicit artifact sets; readers may resolve suggested artifacts separately and must label them as not explicitly selected
+- nullable source FKs may become unresolved after referenced rows are deleted; readers must keep the item row stable and surface an explicit unresolved source state instead of throwing
 
 ## 8. State Machines
 

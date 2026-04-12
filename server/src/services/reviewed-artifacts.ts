@@ -12,51 +12,98 @@ import {
 
 type ReviewedArtifactSetRow = typeof reviewedArtifactSets.$inferSelect;
 type ReviewedArtifactItemRow = typeof reviewedArtifactItems.$inferSelect;
+type ReviewedArtifactQueryDb = Pick<Db, "select">;
+type PersistableReviewedArtifactSource = Exclude<ReviewedArtifactSource, { type: "unresolved" }>;
+type ReviewedArtifactSourceColumn =
+  | "sourceIssueId"
+  | "sourceDocumentKey"
+  | "sourceIssueAttachmentId"
+  | "sourceIssueWorkProductId"
+  | "sourceExternalUrl"
+  | "sourceApprovalPayloadPointer"
+  | "sourceExecutionWorkspaceId"
+  | "sourceWorkspacePath";
 
-function requireValue(value: string | null, field: string, itemId: string): string {
-  if (value) return value;
-  throw new Error(`Reviewed artifact item ${itemId} is missing ${field}`);
+function missingSourceReference(
+  row: ReviewedArtifactItemRow,
+  fields: ReviewedArtifactSourceColumn[],
+): ReviewedArtifactSource | null {
+  const missingFields = fields.filter((field) => {
+    const value = row[field];
+    return typeof value === "string" ? value.length === 0 : value == null;
+  });
+
+  return missingFields.length > 0
+    ? {
+        type: "unresolved",
+        originalType: row.sourceType,
+        reason: "missing_source_reference",
+        missingFields,
+      }
+    : null;
 }
 
 function toReviewedArtifactSource(row: ReviewedArtifactItemRow): ReviewedArtifactSource {
   switch (row.sourceType) {
-    case "issue_document":
+    case "issue_document": {
+      const unresolved = missingSourceReference(row, ["sourceIssueId", "sourceDocumentKey"]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        issueId: requireValue(row.sourceIssueId, "sourceIssueId", row.id),
-        documentKey: requireValue(row.sourceDocumentKey, "sourceDocumentKey", row.id),
+        issueId: row.sourceIssueId!,
+        documentKey: row.sourceDocumentKey!,
         revisionId: row.sourceDocumentRevisionId ?? null,
       };
-    case "issue_attachment":
+    }
+    case "issue_attachment": {
+      const unresolved = missingSourceReference(row, ["sourceIssueId", "sourceIssueAttachmentId"]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        issueId: requireValue(row.sourceIssueId, "sourceIssueId", row.id),
-        attachmentId: requireValue(row.sourceIssueAttachmentId, "sourceIssueAttachmentId", row.id),
+        issueId: row.sourceIssueId!,
+        attachmentId: row.sourceIssueAttachmentId!,
       };
-    case "issue_work_product":
+    }
+    case "issue_work_product": {
+      const unresolved = missingSourceReference(row, ["sourceIssueId", "sourceIssueWorkProductId"]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        issueId: requireValue(row.sourceIssueId, "sourceIssueId", row.id),
-        workProductId: requireValue(row.sourceIssueWorkProductId, "sourceIssueWorkProductId", row.id),
+        issueId: row.sourceIssueId!,
+        workProductId: row.sourceIssueWorkProductId!,
       };
-    case "external_url":
+    }
+    case "external_url": {
+      const unresolved = missingSourceReference(row, ["sourceExternalUrl"]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        url: requireValue(row.sourceExternalUrl, "sourceExternalUrl", row.id),
+        url: row.sourceExternalUrl!,
       };
-    case "approval_payload":
+    }
+    case "approval_payload": {
+      const unresolved = missingSourceReference(row, ["sourceApprovalPayloadPointer"]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        pointer: requireValue(row.sourceApprovalPayloadPointer, "sourceApprovalPayloadPointer", row.id),
+        pointer: row.sourceApprovalPayloadPointer!,
       };
-    case "workspace_file":
+    }
+    case "workspace_file": {
+      const unresolved = missingSourceReference(row, [
+        "sourceIssueId",
+        "sourceExecutionWorkspaceId",
+        "sourceWorkspacePath",
+      ]);
+      if (unresolved) return unresolved;
       return {
         type: row.sourceType,
-        issueId: requireValue(row.sourceIssueId, "sourceIssueId", row.id),
-        executionWorkspaceId: requireValue(row.sourceExecutionWorkspaceId, "sourceExecutionWorkspaceId", row.id),
+        issueId: row.sourceIssueId!,
+        executionWorkspaceId: row.sourceExecutionWorkspaceId!,
         runId: row.sourceRunId ?? null,
-        path: requireValue(row.sourceWorkspacePath, "sourceWorkspacePath", row.id),
+        path: row.sourceWorkspacePath!,
       };
+    }
   }
 }
 
@@ -101,7 +148,7 @@ function toReviewedArtifactSet(row: ReviewedArtifactSetRow, items: ReviewedArtif
   };
 }
 
-function sourceToColumns(source: ReviewedArtifactSource) {
+function sourceToColumns(source: PersistableReviewedArtifactSource) {
   const base = {
     sourceIssueId: null as string | null,
     sourceDocumentKey: null as string | null,
@@ -156,18 +203,20 @@ function sourceToColumns(source: ReviewedArtifactSource) {
   }
 }
 
-async function getSetWithItems(queryDb: any, setId: string) {
-  const set = await queryDb
-    .select()
-    .from(reviewedArtifactSets)
-    .where(eq(reviewedArtifactSets.id, setId))
-    .then((rows: ReviewedArtifactSetRow[]) => rows[0] ?? null);
+async function getSetWithItems(queryDb: ReviewedArtifactQueryDb, setOrId: ReviewedArtifactSetRow | string) {
+  const set = typeof setOrId === "string"
+    ? await queryDb
+        .select()
+        .from(reviewedArtifactSets)
+        .where(eq(reviewedArtifactSets.id, setOrId))
+        .then((rows: ReviewedArtifactSetRow[]) => rows[0] ?? null)
+    : setOrId;
   if (!set) return null;
 
   const items = await queryDb
     .select()
     .from(reviewedArtifactItems)
-    .where(eq(reviewedArtifactItems.setId, setId))
+    .where(eq(reviewedArtifactItems.setId, set.id))
     .orderBy(asc(reviewedArtifactItems.orderIndex), asc(reviewedArtifactItems.createdAt))
     .then((rows: ReviewedArtifactItemRow[]) => rows.map(toReviewedArtifactItem));
 
@@ -205,7 +254,7 @@ export function reviewedArtifactService(db: Db) {
         })))
         .orderBy(desc(reviewedArtifactSets.createdAt))
         .then((rows) => rows[0] ?? null);
-      return set ? getSetWithItems(db, set.id) : null;
+      return set ? getSetWithItems(db, set) : null;
     },
 
     getActiveForApproval: async (companyId: string, approvalId: string) => {
@@ -218,7 +267,7 @@ export function reviewedArtifactService(db: Db) {
         })))
         .orderBy(desc(reviewedArtifactSets.createdAt))
         .then((rows) => rows[0] ?? null);
-      return set ? getSetWithItems(db, set.id) : null;
+      return set ? getSetWithItems(db, set) : null;
     },
 
     createSet: async (input: CreateReviewedArtifactSet) => {
