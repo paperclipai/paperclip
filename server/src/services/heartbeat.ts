@@ -3947,8 +3947,12 @@ export function heartbeatService(db: Db) {
             Boolean(wakeCommentId) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const shouldQueueFollowupForApproval =
+            reason === "approval_approved" &&
+            activeExecutionRun.status === "running" &&
+            isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake && !shouldQueueFollowupForApproval) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -4126,10 +4130,16 @@ export function heartbeatService(db: Db) {
     );
     const shouldQueueFollowupForCommentWake =
       Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+    // approval_approved must always produce a fresh queued run so the requester
+    // agent sees and acts on the resolution. Coalescing it into a running run
+    // means the agent never re-polls approval state mid-run and the originating
+    // issue stays blocked indefinitely after the run ends.
+    const shouldQueueFollowupForApproval =
+      reason === "approval_approved" && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
 
     const coalescedTargetRun =
       sameScopeQueuedRun ??
-      (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+      ((shouldQueueFollowupForCommentWake || shouldQueueFollowupForApproval) ? null : sameScopeRunningRun ?? null);
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
