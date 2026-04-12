@@ -4,7 +4,10 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import {
+  applyMaintenanceOverlay,
   captureConflictDiagnostics,
+  commitMaintenanceOverlay,
+  findLatestIntegratedUpstreamBase,
   listMaintenanceCommits,
   listUnmergedFiles,
   prepareBotBranch,
@@ -85,6 +88,8 @@ function buildReport({
   branchName,
   status,
   commits,
+  maintenanceStrategy,
+  overlayBase,
   diagnostics,
   localizationResult,
   validationSummary,
@@ -96,6 +101,8 @@ function buildReport({
     branchName,
     status,
     commits,
+    maintenanceStrategy,
+    overlayBase,
     dryRun: config.dryRun,
     readyForPr,
     upstreamRef: config.upstreamRef,
@@ -121,10 +128,12 @@ function renderFallbackPrBody(report, error) {
   return [
     '# Upstream sync',
     '',
-    `- replay status: \`${report.status}\``,
+    `- sync status: \`${report.status}\``,
+    `- maintenance strategy: \`${report.maintenanceStrategy ?? 'replay'}\``,
     `- branch: \`${report.branchName ?? ''}\``,
     `- upstream ref/tag: \`${report.upstreamRef}\``,
     `- maintenance ref: \`${report.maintenanceRef}\``,
+    ...(report.overlayBase ? [`- overlay base: \`${report.overlayBase}\``] : []),
     '',
     '## Failure',
     `- stage: \`${failure.stage}\``,
@@ -157,6 +166,9 @@ export async function runUpstreamSync({
   scanLocalization = scanAndMaybeTranslateLowRisk,
   runValidation = runValidationSuite,
   renderPrBodyContent = renderPrBody,
+  findIntegratedUpstreamBase = findLatestIntegratedUpstreamBase,
+  applyMaintenanceOverlayImpl = applyMaintenanceOverlay,
+  commitMaintenanceOverlayImpl = commitMaintenanceOverlay,
 } = {}) {
   const reportPath = REPORT_PATH;
   const prBodyPath = PR_BODY_PATH;
@@ -164,6 +176,8 @@ export async function runUpstreamSync({
   let commits = [];
   let branchName = '';
   let status = 'preparing';
+  let maintenanceStrategy = 'replay';
+  let overlayBase = null;
   let diagnostics;
   let localizationResult = createSkippedLocalizationSummary('not-started');
   let validationSummary;
@@ -177,6 +191,18 @@ export async function runUpstreamSync({
       upstreamRef: config.upstreamRef,
       maintenanceRef: config.maintenanceRef,
     });
+    stage = 'detect-maintenance-strategy';
+    if (commits.length > 0) {
+      const integratedUpstreamBase = await findIntegratedUpstreamBase({
+        run,
+        upstreamRef: config.upstreamRef,
+        maintenanceRef: config.maintenanceRef,
+      });
+      if (integratedUpstreamBase) {
+        maintenanceStrategy = 'overlay';
+        overlayBase = integratedUpstreamBase.upstreamBase;
+      }
+    }
     stage = 'resolve-bot-branch-name';
     branchName = await resolveBotBranchName({
       run,
@@ -197,6 +223,8 @@ export async function runUpstreamSync({
         branchName,
         status,
         commits,
+        maintenanceStrategy,
+        overlayBase,
         diagnostics,
         localizationResult,
         validationSummary,
@@ -215,6 +243,8 @@ export async function runUpstreamSync({
         reportPath,
         prBodyPath,
         status,
+        maintenanceStrategy,
+        overlayBase,
         validationStatus,
         validationLogPath,
         readyForPr,
@@ -231,8 +261,23 @@ export async function runUpstreamSync({
     });
 
     try {
-      stage = 'replay-commit-stack';
-      await replayCommitStack({ run, commits });
+      if (maintenanceStrategy === 'overlay') {
+        stage = 'apply-maintenance-overlay';
+        await applyMaintenanceOverlayImpl({
+          run,
+          overlayBase,
+          maintenanceRef: config.maintenanceRef,
+        });
+        stage = 'commit-maintenance-overlay';
+        await commitMaintenanceOverlayImpl({
+          run,
+          overlayBase,
+          maintenanceRef: config.maintenanceRef,
+        });
+      } else {
+        stage = 'replay-commit-stack';
+        await replayCommitStack({ run, commits });
+      }
       status = config.dryRun ? 'dry-run' : 'replayed';
     } catch (error) {
       let conflicts;
@@ -252,6 +297,7 @@ export async function runUpstreamSync({
       diagnostics = await captureConflictDiagnostics({
         run,
         failingCommit: error && typeof error === 'object' && 'failingCommit' in error ? error.failingCommit : commits[commits.length - 1],
+        failingCommitSummary: error && typeof error === 'object' && 'failingCommitSummary' in error ? error.failingCommitSummary : undefined,
         conflicts,
       });
     }
@@ -274,6 +320,8 @@ export async function runUpstreamSync({
       branchName,
       status,
       commits,
+      maintenanceStrategy,
+      overlayBase,
       diagnostics,
       localizationResult,
       validationSummary,
@@ -292,6 +340,8 @@ export async function runUpstreamSync({
       reportPath,
       prBodyPath,
       status,
+      maintenanceStrategy,
+      overlayBase,
       validationStatus,
       validationLogPath,
       readyForPr,
@@ -318,6 +368,8 @@ export async function runUpstreamSync({
       branchName,
       status,
       commits,
+      maintenanceStrategy,
+      overlayBase,
       diagnostics,
       localizationResult,
       validationSummary,
@@ -343,6 +395,8 @@ export async function runUpstreamSync({
       reportPath,
       prBodyPath,
       status,
+      maintenanceStrategy,
+      overlayBase,
       validationStatus,
       validationLogPath,
       readyForPr,

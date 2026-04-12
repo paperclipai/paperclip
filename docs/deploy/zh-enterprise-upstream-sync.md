@@ -1,6 +1,6 @@
 ---
 title: zh-enterprise Upstream Sync
-summary: Scheduled upstream replay and PR automation for the Chinese enterprise fork
+summary: Scheduled upstream sync and PR automation for the Chinese enterprise fork
 ---
 
 This workflow pair keeps a `zh-enterprise` fork close to `paperclipai/paperclip` without pushing directly to the long-lived maintenance branch.
@@ -68,11 +68,13 @@ Each scheduled run:
 
 Use **Actions → Upstream Sync → Run workflow** and enable the `dry_run` input.
 
-Dry-run mode still fetches the refs, creates the candidate `bot-upgrade/*` branch locally, replays the maintenance stack, runs localization/validation, generates the report artifacts, and prints the workflow outputs, but it does not:
+Dry-run mode still fetches the refs, creates the candidate `bot-upgrade/*` branch locally, reapplies the maintenance changes, runs localization/validation, generates the report artifacts, and prints the workflow outputs, but it does not:
 
 - push `bot-upgrade/*`
 - commit translation edits
 - create or update a PR
+
+If `zh-enterprise` already contains a prior direct merge from upstream, the CLI automatically switches from commit replay to an overlay recovery strategy based on the last integrated upstream snapshot. This avoids re-replaying the full historical maintenance stack after that direct merge.
 
 This is the safest way to inspect what the next sync would do.
 
@@ -109,11 +111,11 @@ No new maintenance commits were discovered. No action is required.
 
 ### `conflict`
 
-A replay conflict blocked the bot branch. Download the artifacts, inspect the conflict diagnostics, resolve the replay manually on a fresh branch, and open/update the PR yourself.
+A sync conflict blocked the bot branch. Download the artifacts, inspect the conflict diagnostics, resolve the replay or overlay manually on a fresh branch, and open/update the PR yourself.
 
 ### `validation failure`
 
-The replay completed, but one of the required checks failed. Review the uploaded validation log and decide whether to:
+The sync completed, but one of the required checks failed. Review the uploaded validation log and decide whether to:
 
 1. push a short-lived follow-up fix onto the current `bot-upgrade/*` branch without rerunning upstream-sync, or
 2. move the fix to a separate branch if you expect to rerun upstream-sync for the same upstream SHA
@@ -122,10 +124,10 @@ Rerunning the discovery workflow for the same upstream SHA refreshes the bot bra
 
 ### successful ready PR
 
-Review the generated PR like any other upgrade PR, but merge it with **rebase** only. Do **not** use merge commits or squash merges for upstream-sync PRs, because the replay algorithm expects `zh-enterprise` maintenance history to stay replayable as a linear commit stack.
+Review the generated PR like any other upgrade PR, but merge it with **rebase** only. Do **not** use merge commits or squash merges for upstream-sync PRs, because the automation still works best when `zh-enterprise` stays mostly linear. Overlay recovery exists for prior direct upstream merges, but it is a repair path, not the steady-state workflow.
 
-Check the replay summary, low-risk translation edits, manual-review items, and validation output before rebasing into `zh-enterprise`.
+Check the sync summary, low-risk translation edits, manual-review items, and validation output before rebasing into `zh-enterprise`.
 
 ## Important note about low-risk translation edits
 
-Low-risk translation changes are not separate maintenance commits inside the upstream-sync CLI. The discovery workflow commits those remaining working-tree edits right before pushing the bot branch so the PR contains the translated files together with the replayed maintenance stack.
+Low-risk translation changes are not separate maintenance commits inside the upstream-sync CLI. The discovery workflow commits those remaining working-tree edits right before pushing the bot branch so the PR contains the translated files together with the generated sync result.

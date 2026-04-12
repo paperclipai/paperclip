@@ -34,6 +34,8 @@ function formatValidationLine(label, check, fallbackSummary) {
 export function renderPrBody({
   branchName,
   status,
+  maintenanceStrategy = 'replay',
+  overlayBase = null,
   upstreamRef,
   maintenanceRef,
   commits = [],
@@ -58,10 +60,12 @@ export function renderPrBody({
   return [
     '# Upstream sync',
     '',
-    `- replay status: \`${status}\``,
+    `- sync status: \`${status}\``,
+    `- maintenance strategy: \`${maintenanceStrategy}\``,
     `- branch: \`${branchName}\``,
     `- upstream ref/tag: \`${upstreamRef}\``,
     `- maintenance ref: \`${maintenanceRef}\``,
+    ...(overlayBase ? [`- overlay base: \`${overlayBase}\``] : []),
     '- merge strategy: `rebase` only',
     formatConflictLine(effectiveDiagnostics),
     '',
@@ -73,7 +77,7 @@ export function renderPrBody({
           '',
         ]
       : []),
-    '## Replayed commits',
+    '## Maintenance source commits',
     ...(commits.length > 0 ? commits.map((commit) => `- \`${commit}\``) : ['- none']),
     '',
     '## Auto-translated files',

@@ -31,6 +31,10 @@ function createRunMock(responses) {
   return { calls, run };
 }
 
+async function noIntegratedUpstreamBase() {
+  return null;
+}
+
 test('runUpstreamSync dry-run replays the candidate branch without marking it ready for PR', async () => {
   const { sandboxRoot, sandbox } = createSandbox(`dry-run-${Date.now()}`);
   const previousCwd = process.cwd();
@@ -62,6 +66,7 @@ test('runUpstreamSync dry-run replays the candidate branch without marking it re
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => {
         validationCallCount += 1;
         return {
@@ -137,6 +142,7 @@ test('runUpstreamSync replays commits when not in dry-run mode', async () => {
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => {
         validationCallCount += 1;
         return {
@@ -204,6 +210,7 @@ test('runUpstreamSync returns no-op when there are no maintenance commits to rep
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => {
         validationCallCount += 1;
         return {
@@ -233,6 +240,95 @@ test('runUpstreamSync returns no-op when there are no maintenance commits to rep
       { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
       { command: 'git', args: ['rev-parse', '--short=12', 'origin/master'] },
     ]);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('runUpstreamSync switches to overlay strategy after a prior direct upstream merge', async () => {
+  const { sandboxRoot, sandbox } = createSandbox(`overlay-${Date.now()}`);
+  const previousCwd = process.cwd();
+  process.chdir(sandbox);
+
+  const applyCalls = [];
+  const commitCalls = [];
+  const { calls, run } = createRunMock({
+    '{"command":"git","args":["merge-base","origin/master","HEAD"]}': 'base-sha\n',
+    '{"command":"git","args":["rev-list","--reverse","base-sha..HEAD"]}': 'c1\nc2\n',
+    '{"command":"git","args":["rev-parse","--short=12","origin/master"]}': 'abc123def456\n',
+    '{"command":"git","args":["checkout","-B","bot-upgrade/abc123def456","origin/master"]}': '',
+  });
+
+  try {
+    const result = await runUpstreamSync({
+      config: {
+        githubRepository: 'paperclip/paperclip',
+        baseBranch: 'zh-enterprise',
+        upstreamRemote: 'upstream',
+        upstreamRef: 'origin/master',
+        maintenanceRef: 'HEAD',
+        branchPrefix: 'bot-upgrade',
+        dryRun: true,
+        llmApiBase: undefined,
+        llmApiKey: undefined,
+        llmModel: undefined,
+      },
+      run,
+      findIntegratedUpstreamBase: async () => ({
+        mergeCommit: 'merge-upstream',
+        firstParent: 'old-maintenance-head',
+        upstreamBase: 'upstream-snapshot',
+      }),
+      applyMaintenanceOverlayImpl: async (args) => {
+        applyCalls.push(args);
+        return { applied: true };
+      },
+      commitMaintenanceOverlayImpl: async (args) => {
+        commitCalls.push(args);
+        return true;
+      },
+      runValidation: async () => ({
+        status: 'passed',
+        uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
+        serverTypecheck: { status: 'passed', summary: 'Server typecheck passed.' },
+        checkI18n: { status: 'passed', summary: 'check:i18n passed.' },
+        checks: [],
+        logPath: 'reports/upstream-sync-validation-log.json',
+      }),
+    });
+
+    assert.equal(result.status, 'dry-run');
+    assert.equal(result.readyForPr, false);
+    assert.equal(result.maintenanceStrategy, 'overlay');
+    assert.equal(result.overlayBase, 'upstream-snapshot');
+    assert.deepEqual(applyCalls, [
+      {
+        run,
+        overlayBase: 'upstream-snapshot',
+        maintenanceRef: 'HEAD',
+      },
+    ]);
+    assert.deepEqual(commitCalls, [
+      {
+        run,
+        overlayBase: 'upstream-snapshot',
+        maintenanceRef: 'HEAD',
+      },
+    ]);
+    assert.deepEqual(calls, [
+      { command: 'git', args: ['merge-base', 'origin/master', 'HEAD'] },
+      { command: 'git', args: ['rev-list', '--reverse', 'base-sha..HEAD'] },
+      { command: 'git', args: ['rev-parse', '--short=12', 'origin/master'] },
+      { command: 'git', args: ['checkout', '-B', 'bot-upgrade/abc123def456', 'origin/master'] },
+    ]);
+
+    const report = JSON.parse(fs.readFileSync(path.join(sandbox, result.reportPath), 'utf8'));
+    assert.equal(report.maintenanceStrategy, 'overlay');
+    assert.equal(report.overlayBase, 'upstream-snapshot');
+    const prBody = fs.readFileSync(path.join(sandbox, result.prBodyPath), 'utf8');
+    assert.match(prBody, /- maintenance strategy: `overlay`/);
+    assert.match(prBody, /- overlay base: `upstream-snapshot`/);
   } finally {
     process.chdir(previousCwd);
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
@@ -272,6 +368,7 @@ test('runUpstreamSync captures cherry-pick conflicts and reports diagnostics', a
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => {
         validationCallCount += 1;
         return {
@@ -356,6 +453,7 @@ test('runUpstreamSync records non-conflict replay failures without losing artifa
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
     });
 
     assert.equal(result.status, 'error');
@@ -411,6 +509,7 @@ test('runUpstreamSync writes validation failures to report artifacts without thr
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => ({
         status: 'failed',
         uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
@@ -466,6 +565,7 @@ test('runUpstreamSync records unexpected validation runner errors without losing
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => {
         throw new Error('validation log write failed');
       },
@@ -518,6 +618,7 @@ test('runUpstreamSync records localization scan failures without losing artifact
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       scanLocalization: async () => {
         throw new Error('localization scan failed');
       },
@@ -566,6 +667,7 @@ test('runUpstreamSync falls back to a minimal PR body when custom rendering fail
         llmModel: undefined,
       },
       run,
+      findIntegratedUpstreamBase: noIntegratedUpstreamBase,
       runValidation: async () => ({
         status: 'passed',
         uiTypecheck: { status: 'passed', summary: 'UI typecheck passed.' },
