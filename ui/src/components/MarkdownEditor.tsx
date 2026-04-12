@@ -393,19 +393,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   // Track IME composition state. When composition ends, flush any deferred
   // decoration and value sync work.
   //
-  // The flush is deferred to requestAnimationFrame because Lexical fires
-  // onChange via queueMicrotask. At the moment compositionend fires
-  // synchronously, the parent's value prop (valueRef.current) has not yet
-  // been updated by React — the onChange microtask hasn't run and React
-  // hasn't re-rendered. Flushing synchronously would compare the stale
-  // parent value against latestValueRef (already updated by the preceding
-  // input event) and call setMarkdown() with the OLD value, briefly
-  // reverting editor content and causing Android keyboards to dismiss.
+  // Both the flush AND the isComposingRef reset are deferred to
+  // requestAnimationFrame. Lexical processes compositionend synchronously
+  // (updateEditorSync → $commitPendingUpdates) which reconciles the DOM
+  // within the same event handler. On Android, this DOM reconciliation
+  // triggers MutationObserver callbacks and selectionchange events
+  // immediately after our compositionend handler returns.
   //
-  // By deferring to rAF we wait until after:
-  //   1. Lexical's microtask-based onChange fires
-  //   2. React re-renders with the new value
-  // At that point valueRef.current is in sync and setMarkdown is skipped.
+  // If isComposingRef is set to false synchronously, those intermediate
+  // events slip through our composition guards:
+  //   - MutationObserver → decorateProjectMentions() runs during unstable DOM
+  //   - selectionchange → checkMention() → potential React re-render
+  //   - value sync useEffect → setMarkdown() with stale parent value
+  //
+  // On the first paragraph this is especially disruptive because Lexical's
+  // reconciliation involves more DOM restructuring (composition suffix
+  // removal on the only text node), generating more mutation/selection
+  // events in the critical window.
+  //
+  // By keeping isComposingRef true until the rAF callback, all guards
+  // remain active until the browser has fully processed the composition
+  // and Lexical/React have settled.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -420,12 +428,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
     };
     const onEnd = () => {
-      isComposingRef.current = false;
-      // Defer flush to next frame so Lexical onChange + React render complete first.
+      // Do NOT set isComposingRef to false here — keep guards active until
+      // the deferred flush runs. See comment block above.
       flushHandle = requestAnimationFrame(() => {
         flushHandle = 0;
-        // If a new composition started before this callback, bail out.
-        if (isComposingRef.current) return;
+        // If a new compositionstart fired before this callback, the rAF
+        // was cancelled by onStart — so reaching here means no new
+        // composition is active. Safe to lower the guard.
+        isComposingRef.current = false;
         decorateProjectMentions();
         // If the external value drifted during composition, sync now
         if (ref.current && valueRef.current !== latestValueRef.current) {
