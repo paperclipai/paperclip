@@ -2271,18 +2271,18 @@ function PromptsTab({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
-                        virtual file
+                        {t("agentDetail.prompts.badges.virtualFile", "virtual file")}
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
+                      {t("agentDetail.prompts.badges.virtualFileHelp", "Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content")}
                     </TooltipContent>
                   </Tooltip>
                 );
               }
               return (
                 <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
-                  {file.isEntryFile ? "entry" : `${file.size}b`}
+                  {file.isEntryFile ? t("agentDetail.prompts.badges.entry", "entry") : `${file.size}b`}
                 </span>
               );
             }}
@@ -2316,9 +2316,9 @@ function PromptsTab({
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
-                      ? "Deprecated virtual file"
-                      : `${selectedFileDetail?.language ?? "text"} file`
-                    : "New file in this bundle"}
+                      ? t("agentDetail.prompts.status.deprecatedVirtualFile", "Deprecated virtual file")
+                      : `${selectedFileDetail?.language ?? "text"} ${t("agentDetail.prompts.status.fileSuffix", "file")}`
+                    : t("agentDetail.prompts.status.newFile", "New file in this bundle")}
                 </p>
               </div>
             </div>
@@ -2339,7 +2339,7 @@ function PromptsTab({
                 }}
                 disabled={deleteFile.isPending}
               >
-                Delete
+                {t("agentDetail.prompts.actions.delete", "Delete")}
               </Button>
             )}
           </div>
@@ -2351,7 +2351,7 @@ function PromptsTab({
               key={selectedOrEntryFile}
               value={displayValue}
               onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
+              placeholder={t("agentDetail.prompts.placeholder.markdown", "# Agent instructions")}
               contentClassName="min-h-[420px] text-sm font-mono"
               imageUploadHandler={async (file) => {
                 const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
@@ -2364,7 +2364,7 @@ function PromptsTab({
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
               className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
-              placeholder="File contents"
+              placeholder={t("agentDetail.prompts.placeholder.text", "File contents")}
             />
           )}
         </div>

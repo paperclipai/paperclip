@@ -35,7 +35,11 @@ vi.mock("../api/agents", () => ({
       rootPath: "/agent/prompts",
       managedRootPath: "",
       entryFile: "AGENTS.md",
-      files: [{ path: "AGENTS.md", size: 42, language: "markdown", isEntryFile: true, deprecated: false }],
+      files: [
+        { path: "AGENTS.md", size: 42, language: "markdown", isEntryFile: true, deprecated: false },
+        { path: "legacy.md", size: 12, language: "markdown", isEntryFile: false, deprecated: true },
+        { path: "notes.txt", size: 7, language: "text", isEntryFile: false, deprecated: false },
+      ],
       warnings: [],
     }),
     instructionsFile: vi.fn().mockResolvedValue({ path: "AGENTS.md", content: "", language: "markdown" }),
