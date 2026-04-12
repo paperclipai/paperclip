@@ -340,6 +340,7 @@ function ActionIconButton({
 }
 
 function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCreateRoom: () => void }) {
+  const { t } = useT();
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [copiedBranch, setCopiedBranch] = useState(false);
@@ -347,7 +348,7 @@ function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCr
   return (
     <TooltipProvider>
       <ActionIconButton
-        label="Copy issue URL"
+        label={t("issue.copyUrl")}
         shortcut="⌘⇧,"
         icon={Link2}
         checkedIcon={Check}
@@ -359,7 +360,7 @@ function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCr
         }}
       />
       <ActionIconButton
-        label="Copy issue ID"
+        label={t("issue.copyId")}
         icon={Copy}
         checkedIcon={Check}
         checked={copiedId}
@@ -370,7 +371,7 @@ function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCr
         }}
       />
       <ActionIconButton
-        label="Copy branch name"
+        label={t("issue.copyBranch")}
         shortcut="⌘⇧."
         icon={GitBranch}
         checkedIcon={Check}
@@ -386,7 +387,7 @@ function IssuePropertiesPanelActions({ issue, onCreateRoom }: { issue: any; onCr
       />
       {issue.teamId && (
         <ActionIconButton
-          label="Create room"
+          label={t("issue.createRoom")}
           icon={MessageSquare}
           onClick={onCreateRoom}
         />
@@ -548,7 +549,7 @@ export function IssueDetail() {
     [issueId, location.state, location.search],
   );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: t("nav.issues"), href: "/issues" },
     [issueId, location.state, location.search],
   );
 
@@ -574,8 +575,8 @@ export function IssueDetail() {
   });
 
   const { data: leaderProcesses } = useQuery({
-    queryKey: queryKeys.leaderProcesses?.list?.(selectedCompanyId!) ?? ["leader-processes", selectedCompanyId],
-    queryFn: () => leaderProcessesApi.list(selectedCompanyId!),
+    queryKey: ["leader-processes", selectedCompanyId],
+    queryFn: () => leaderProcessesApi.listForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -909,7 +910,7 @@ export function IssueDetail() {
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
+        title: variables.action === "approve" ? t("issue.approvalFailed") : t("issue.rejectionFailed"),
         body: err instanceof Error ? err.message : "Unable to update approval",
         tone: "error",
       });
@@ -1193,7 +1194,7 @@ export function IssueDetail() {
       invalidateIssue();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.documentImportFailed"));
     },
   });
 
@@ -2059,7 +2060,7 @@ export function IssueDetail() {
               {activity.slice(0, 20).map((evt) => (
                 <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ActorIdentity evt={evt} agentMap={agentMap} />
-                  <span>{formatAction(evt.action, t, evt.details)}</span>
+                  <span>{formatAction(evt.action, t as (key: string) => string, evt.details)}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
               ))}
@@ -2068,7 +2069,7 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="review">
-          {issue && <IssueReviewSection companyId={resolvedCompanyId} issueId={issue.id} />}
+          {issue && resolvedCompanyId && <IssueReviewSection companyId={resolvedCompanyId} issueId={issue.id} />}
         </TabsContent>
 
         {activePluginTab && (

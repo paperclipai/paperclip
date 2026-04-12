@@ -242,6 +242,14 @@ export const en = {
   "activity.issueUnassigned": "unassigned the issue",
   "activity.titleUpdated": "updated the title",
   "activity.descriptionUpdated": "updated the description",
+  "issue.copyUrl": "Copy issue URL",
+  "issue.copyId": "Copy issue ID",
+  "issue.copyBranch": "Copy branch name",
+  "issue.createRoom": "Create room",
+  "issue.approvalFailed": "Approval failed",
+  "issue.rejectionFailed": "Rejection failed",
+  "issue.documentImportFailed": "Document import failed",
+  "nav.issues": "Issues",
 
   // Comments
   "comment.leaveComment": "Leave a comment...",

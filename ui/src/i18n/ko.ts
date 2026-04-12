@@ -244,6 +244,14 @@ export const ko: Record<TranslationKey, string> = {
   "activity.issueUnassigned": "이슈 할당을 해제했습니다",
   "activity.titleUpdated": "제목을 수정했습니다",
   "activity.descriptionUpdated": "설명을 수정했습니다",
+  "issue.copyUrl": "이슈 URL 복사",
+  "issue.copyId": "이슈 ID 복사",
+  "issue.copyBranch": "브랜치명 복사",
+  "issue.createRoom": "룸 생성",
+  "issue.approvalFailed": "승인 실패",
+  "issue.rejectionFailed": "거부 실패",
+  "issue.documentImportFailed": "문서 가져오기 실패",
+  "nav.issues": "이슈",
 
   // Comments
   "comment.leaveComment": "코멘트를 남기세요...",
