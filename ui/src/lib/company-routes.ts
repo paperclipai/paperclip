@@ -17,6 +17,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "inbox",
   "design-guide",
   "voice",
+  "youtube",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

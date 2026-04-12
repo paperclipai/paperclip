@@ -60,3 +60,4 @@ export { splitTestRuns } from "./split_test_runs.js";
 export { agentChats } from "./agent_chats.js";
 export { agentChatMessages } from "./agent_chat_messages.js";
 export { voiceCommands } from "./voice_commands.js";
+export { youtubeExtractions } from "./youtube_extractions.js";

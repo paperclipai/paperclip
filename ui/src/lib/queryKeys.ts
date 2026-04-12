@@ -140,6 +140,10 @@ export const queryKeys = {
     stats: (companyId: string) => ["voice", "stats", companyId] as const,
     detail: (id: string) => ["voice", "detail", id] as const,
   },
+  youtube: {
+    list: (companyId: string) => ["youtube", companyId] as const,
+    detail: (id: string) => ["youtube", "detail", id] as const,
+  },
   skills: {
     available: ["skills", "available"] as const,
   },
