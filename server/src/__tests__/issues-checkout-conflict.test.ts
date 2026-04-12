@@ -68,6 +68,12 @@ vi.mock("../services/index.js", () => ({
   goalService: () => ({}),
   projectService: () => ({}),
   issueApprovalService: () => ({}),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  executionWorkspaceService: () => ({}),
+  workProductService: () => ({}),
+  documentService: () => ({}),
+  routineService: () => ({}),
 }));
 
 // ---------------------------------------------------------------------------
