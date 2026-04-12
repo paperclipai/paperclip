@@ -18,7 +18,7 @@ jobs:
       contents: read
     env:
       BASE_BRANCH: zh-enterprise
-      MAINTENANCE_REF: HEAD
+      MAINTENANCE_REF: origin/zh-enterprise
       UPSTREAM_REF: upstream/master
 
     steps:
@@ -59,7 +59,7 @@ jobs:
       - name: Regenerate upstream sync report artifacts
         id: regenerate
         continue-on-error: true
-        run: pnpm sync:upstream -- --dry-run --maintenance-ref HEAD
+        run: pnpm sync:upstream -- --dry-run --maintenance-ref origin/zh-enterprise
 
       - name: Upload upstream sync PR artifacts
         uses: actions/upload-artifact@v4
