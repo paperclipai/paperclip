@@ -1,6 +1,6 @@
 #!/bin/bash
-# Reads fresh Claude Code OAuth credentials from macOS Keychain and pushes
-# them to Fly.io as the CLAUDE_CREDENTIALS_JSON secret.
+# Reads fresh Claude Code OAuth credentials from macOS Keychain and Codex
+# ChatGPT subscription auth from ~/.codex/auth.json, then pushes them to Fly.io.
 #
 # Run this on your Mac before the access token expires (~every 24 hours).
 # Best practice: install as a LaunchAgent that runs every 6 hours.
@@ -64,10 +64,30 @@ fi
 
 log "Pushing credentials to Fly.io app: $APP ..."
 
-# Set both secrets at once (single deploy trigger)
-fly secrets set \
-  "CLAUDE_CREDENTIALS_JSON=$CREDS" \
-  "CLAUDE_CODE_OAUTH_TOKEN=$ACCESS_TOKEN" \
-  --app "$APP" 2>&1 | tee -a "$LOGFILE"
+CODEX_AUTH_JSON=""
+if [ -f "$HOME/.codex/auth.json" ]; then
+  if python3 -m json.tool "$HOME/.codex/auth.json" >/dev/null 2>&1; then
+    CODEX_AUTH_JSON=$(cat "$HOME/.codex/auth.json")
+    log "Codex auth found at ~/.codex/auth.json; including CODEX_AUTH_JSON."
+  else
+    log "WARNING: ~/.codex/auth.json exists but is not valid JSON; skipping CODEX_AUTH_JSON."
+  fi
+else
+  log "WARNING: ~/.codex/auth.json not found; Codex agents may need manual login."
+fi
 
-log "Done. Both CLAUDE_CREDENTIALS_JSON and CLAUDE_CODE_OAUTH_TOKEN refreshed successfully."
+# Set both secrets at once (single deploy trigger)
+if [ -n "$CODEX_AUTH_JSON" ]; then
+  fly secrets set \
+    "CLAUDE_CREDENTIALS_JSON=$CREDS" \
+    "CLAUDE_CODE_OAUTH_TOKEN=$ACCESS_TOKEN" \
+    "CODEX_AUTH_JSON=$CODEX_AUTH_JSON" \
+    --app "$APP" 2>&1 | tee -a "$LOGFILE"
+else
+  fly secrets set \
+    "CLAUDE_CREDENTIALS_JSON=$CREDS" \
+    "CLAUDE_CODE_OAUTH_TOKEN=$ACCESS_TOKEN" \
+    --app "$APP" 2>&1 | tee -a "$LOGFILE"
+fi
+
+log "Done. Claude credentials refreshed; Codex auth included: $([ -n "$CODEX_AUTH_JSON" ] && echo yes || echo no)."

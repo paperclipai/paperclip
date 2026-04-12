@@ -64,6 +64,19 @@ except Exception:
     fi
 fi
 
+# Write Codex subscription auth if provided via environment.
+# codex_local uses a Paperclip-managed CODEX_HOME seeded from ~/.codex/auth.json.
+# In the container, the shared home is /paperclip/.codex, so this lets Codex
+# run with ChatGPT subscription auth instead of requiring OPENAI_API_KEY.
+if [ -n "$CODEX_AUTH_JSON" ]; then
+    mkdir -p /paperclip/.codex
+    printf '%s' "$CODEX_AUTH_JSON" > /paperclip/.codex/auth.json
+    chown -R node:node /paperclip/.codex 2>/dev/null || true
+    chmod 700 /paperclip/.codex 2>/dev/null || true
+    chmod 600 /paperclip/.codex/auth.json 2>/dev/null || true
+    echo "[entrypoint] Codex auth written to /paperclip/.codex/auth.json"
+fi
+
 # Adjust the node user's UID/GID if they differ from the runtime request
 # and fix volume ownership only when a remap is needed
 changed=0
