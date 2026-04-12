@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -2100,11 +2100,46 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    const wakeReason = req.body.reason ?? null;
+    let wakePayload: Record<string, unknown> = req.body.payload ?? {};
+
+    // For retry_failed_run, recover the in-progress issue context when the
+    // caller omitted it. Without this, the retry runs as a generic agent wake
+    // instead of resuming work on the agent's current issue.
+    if (
+      wakeReason === "retry_failed_run" &&
+      !(typeof wakePayload.issueId === "string" && wakePayload.issueId.trim()) &&
+      !(typeof wakePayload.taskId === "string" && wakePayload.taskId.trim()) &&
+      !(typeof wakePayload.taskKey === "string" && wakePayload.taskKey.trim())
+    ) {
+      const activeIssue = await db
+        .select({ id: issuesTable.id, identifier: issuesTable.identifier })
+        .from(issuesTable)
+        .where(
+          and(
+            eq(issuesTable.assigneeAgentId, id),
+            eq(issuesTable.status, "in_progress"),
+            isNull(issuesTable.hiddenAt),
+          ),
+        )
+        .orderBy(desc(issuesTable.updatedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (activeIssue) {
+        wakePayload = {
+          ...wakePayload,
+          issueId: activeIssue.id,
+          taskId: activeIssue.id,
+          ...(activeIssue.identifier ? { taskKey: activeIssue.identifier } : {}),
+        };
+      }
+    }
+
     const run = await heartbeat.wakeup(id, {
       source: req.body.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
-      reason: req.body.reason ?? null,
-      payload: req.body.payload ?? null,
+      reason: wakeReason,
+      payload: wakePayload,
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
