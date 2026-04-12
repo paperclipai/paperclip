@@ -11,6 +11,8 @@ const getAgentMock = vi.fn();
 const budgetsOverviewMock = vi.fn();
 const heartbeatsListMock = vi.fn();
 const issuesListMock = vi.fn();
+const listKeysMock = vi.fn();
+const configRevisionsMock = vi.fn();
 const setBreadcrumbsMock = vi.fn();
 const closePanelMock = vi.fn();
 const openNewIssueMock = vi.fn();
@@ -27,6 +29,11 @@ vi.mock("../api/agents", () => ({
     update: vi.fn(),
     resetSession: vi.fn(),
     updatePermissions: vi.fn(),
+    adapterModels: vi.fn().mockResolvedValue([]),
+    listConfigRevisions: () => configRevisionsMock(),
+    listKeys: () => listKeysMock(),
+    createKey: vi.fn(),
+    revokeKey: vi.fn(),
   },
 }));
 
@@ -92,6 +99,9 @@ vi.mock("../lib/queryKeys", () => ({
       runtimeState: (agentId: string) => ["agents", "runtime-state", agentId],
       taskSessions: (agentId: string) => ["agents", "task-sessions", agentId],
       list: (companyId: string) => ["agents", "list", companyId],
+      configRevisions: (agentId: string) => ["agents", "config-revisions", agentId],
+      keys: (agentId: string) => ["agents", "keys", agentId],
+      adapterModels: (companyId: string, adapterType: string) => ["agents", "adapter-models", companyId, adapterType],
     },
     heartbeats: (companyId: string, agentId?: string) => ["heartbeats", companyId, agentId],
     issues: {
@@ -109,7 +119,7 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children as never}</a>
   ),
   Navigate: () => <div>navigate</div>,
-  useParams: () => ({ agentId: "agent-one", tab: "dashboard", runId: undefined, companyPrefix: undefined }),
+  useParams: () => ({ agentId: "agent-one", tab: "configuration", runId: undefined, companyPrefix: undefined }),
   useNavigate: () => navigateMock,
   useBeforeUnload: vi.fn(),
 }));
@@ -122,6 +132,10 @@ vi.mock("../components/PageTabBar", () => ({
 
 vi.mock("../components/MarkdownEditor", () => ({
   MarkdownEditor: () => <div>markdown-editor</div>,
+}));
+
+vi.mock("../components/AgentConfigForm", () => ({
+  AgentConfigForm: () => <div>agent-config-form</div>,
 }));
 
 vi.mock("../components/AgentActionButtons", () => ({
@@ -239,6 +253,8 @@ describe("AgentDetail", () => {
       },
     ]);
     issuesListMock.mockResolvedValue([]);
+    listKeysMock.mockResolvedValue([]);
+    configRevisionsMock.mockResolvedValue([]);
     setBreadcrumbsMock.mockReset();
     closePanelMock.mockReset();
     openNewIssueMock.mockReset();
@@ -287,37 +303,30 @@ describe("AgentDetail", () => {
     throw new Error("Timed out waiting for AgentDetail to settle");
   }
 
-  it("renders localized dashboard chrome and static dashboard labels", async () => {
+  it("renders localized configuration revisions, permissions, and keys chrome", async () => {
     localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
     const root = await renderPage();
 
-    await waitFor(() => container.textContent?.includes("运行活动") === true && container.textContent?.includes("最近事项") === true);
+    await waitFor(() => container.textContent?.includes("配置修订历史") === true && container.textContent?.includes("当前没有活动中的 API keys。") === true);
 
     expect(container.textContent).toContain("分配任务");
     expect(container.textContent).toContain("运行心跳");
-    expect(container.textContent).toContain("仪表盘");
-    expect(container.textContent).toContain("指令");
     expect(container.textContent).toContain("配置");
-    expect(container.textContent).toContain("运行记录");
-    expect(container.textContent).toContain("预算");
     expect(container.textContent).toContain("复制 Agent ID");
     expect(container.textContent).toContain("重置会话");
     expect(container.textContent).toContain("终止");
-    expect(container.textContent).toContain("该智能体正等待看板审批，当前无法触发运行。");
-    expect(container.textContent).toContain("实时运行");
-    expect(container.textContent).toContain("查看详情");
-    expect(container.textContent).toContain("运行活动");
-    expect(container.textContent).toContain("按优先级统计事项");
-    expect(container.textContent).toContain("按状态统计事项");
-    expect(container.textContent).toContain("成功率");
-    expect(container.textContent).toContain("最近 14 天");
-    expect(container.textContent).toContain("最近事项");
-    expect(container.textContent).toContain("查看全部");
-    expect(container.textContent).toContain("暂无最近事项。");
-    expect(container.textContent).toContain("成本");
+    expect(container.textContent).toContain("权限");
+    expect(container.textContent).toContain("可创建新智能体");
+    expect(container.textContent).toContain("可分配任务");
+    expect(container.textContent).toContain("API Keys");
+    expect(container.textContent).toContain("创建 API Key");
+    expect(container.textContent).toContain("创建");
+    expect(container.textContent).toContain("当前没有活动中的 API keys。");
+    expect(container.textContent).toContain("配置修订历史");
     expect(setBreadcrumbsMock).toHaveBeenLastCalledWith([
       { label: "智能体", href: "/agents" },
-      { label: "Budget Bot" },
+      { label: "Budget Bot", href: "/agents/agent-one/dashboard" },
+      { label: "配置" },
     ]);
 
     await act(async () => {
