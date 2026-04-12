@@ -70,6 +70,54 @@ function PickerButton({
   );
 }
 
+function GoalPickerButton({
+  currentId,
+  goals,
+  parentGoal,
+  onChange,
+}: {
+  currentId: string | null;
+  goals: Goal[];
+  parentGoal: Goal | null;
+  onChange: (id: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className="cursor-pointer hover:opacity-80 transition-opacity text-sm">
+          {parentGoal ? (
+            <span className="hover:underline">{parentGoal.title}</span>
+          ) : (
+            <span className="text-muted-foreground">None</span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-56 p-1 max-h-64 overflow-y-auto" align="end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn("w-full justify-start text-xs", !currentId && "bg-accent")}
+          onClick={() => { onChange(null); setOpen(false); }}
+        >
+          None
+        </Button>
+        {goals.map((g) => (
+          <Button
+            key={g.id}
+            variant="ghost"
+            size="sm"
+            className={cn("w-full justify-start text-xs", g.id === currentId && "bg-accent")}
+            onClick={() => { onChange(g.id); setOpen(false); }}
+          >
+            {g.title}
+          </Button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   const { selectedCompanyId } = useCompany();
 
@@ -137,16 +185,25 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        {goal.parentId && (
-          <PropertyRow label="Parent Goal">
+        <PropertyRow label="Parent Goal">
+          {onUpdate ? (
+            <GoalPickerButton
+              currentId={goal.parentId ?? null}
+              goals={(allGoals ?? []).filter((g) => g.id !== goal.id)}
+              parentGoal={parentGoal ?? null}
+              onChange={(id) => onUpdate({ parentId: id })}
+            />
+          ) : goal.parentId ? (
             <Link
               to={`/goals/${goal.parentId}`}
               className="text-sm hover:underline"
             >
               {parentGoal?.title ?? goal.parentId.slice(0, 8)}
             </Link>
-          </PropertyRow>
-        )}
+          ) : (
+            <span className="text-sm text-muted-foreground">None</span>
+          )}
+        </PropertyRow>
       </div>
 
       <Separator />

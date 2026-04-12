@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useParams } from "@/lib/router";
+import { useParams, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
@@ -18,7 +18,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, SlidersHorizontal } from "lucide-react";
+import { Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 interface GoalPropertiesToggleButtonProps {
@@ -53,6 +53,7 @@ export function GoalDetail() {
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const {
     data: goal,
@@ -94,6 +95,18 @@ export function GoalDetail() {
           queryKey: queryKeys.goals.list(resolvedCompanyId)
         });
       }
+    }
+  });
+
+  const deleteGoal = useMutation({
+    mutationFn: () => goalsApi.remove(goalId!),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(resolvedCompanyId)
+        });
+      }
+      navigate("/goals");
     }
   });
 
@@ -147,7 +160,21 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:text-destructive"
+              title="Delete goal"
+              disabled={deleteGoal.isPending}
+              onClick={() => {
+                if (window.confirm(`Delete "${goal.title}"? This cannot be undone.`)) {
+                  deleteGoal.mutate();
+                }
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
               onShowProperties={() => setPanelVisible(true)}
@@ -164,11 +191,12 @@ export function GoalDetail() {
 
         <InlineEditor
           value={goal.description ?? ""}
-          onSave={(description) => updateGoal.mutate({ description })}
+          onSave={(description) => updateGoal.mutate({ description: description || null })}
           as="p"
           className="text-sm text-muted-foreground"
           placeholder="Add a description..."
           multiline
+          nullable
           imageUploadHandler={async (file) => {
             const asset = await uploadImage.mutateAsync(file);
             return asset.contentPath;
