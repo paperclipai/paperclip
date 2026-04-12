@@ -69,6 +69,7 @@ jobs:
         id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           branch_name="bot-upgrade/$(git rev-parse --short=12 upstream/master)"
@@ -83,7 +84,7 @@ jobs:
           fi
 
           existing_pr="$(
-            gh pr list --state all --base zh-enterprise --head "$branch_name" --json url,headRepositoryOwner,mergedAt,state \
+            gh pr list -R "$GH_REPO" --state all --base zh-enterprise --head "$branch_name" --json url,headRepositoryOwner,mergedAt,state \
               --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | select(.state == \"OPEN\" or .mergedAt != null) | .url" |
             head -n 1
           )"
@@ -207,6 +208,7 @@ jobs:
         if: steps.sync.outputs.ready_for_pr == 'true'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_BOT_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
           BRANCH_NAME: ${{ steps.sync.outputs.branch_name }}
           PR_BODY_PATH: ${{ steps.sync.outputs.pr_body_path }}
@@ -248,19 +250,19 @@ jobs:
           fi
 
           pr_url="$({
-            gh pr list --state open --base zh-enterprise --head "$BRANCH_NAME" --json url,headRepositoryOwner \
+            gh pr list -R "$GH_REPO" --state open --base zh-enterprise --head "$BRANCH_NAME" --json url,headRepositoryOwner \
               --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url"
           } | head -n 1)"
 
           if [ -n "$pr_url" ]; then
-            gh pr edit "$pr_url" --title "$pr_title" --body-file "$PR_BODY_PATH"
+            gh pr edit -R "$GH_REPO" "$pr_url" --title "$pr_title" --body-file "$PR_BODY_PATH"
             echo "Reused existing PR: $pr_url"
           else
             pr_head="${REPO_OWNER}:${BRANCH_NAME}"
             pr_create_error_log="$(mktemp)"
 
             for attempt in 1 2 3 4 5; do
-              if pr_url="$(gh pr create \
+              if pr_url="$(gh pr create -R "$GH_REPO" \
                 --base zh-enterprise \
                 --head "$pr_head" \
                 --title "$pr_title" \
