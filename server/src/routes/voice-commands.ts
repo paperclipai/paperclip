@@ -74,7 +74,7 @@ export function voiceCommandRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertBoard(req);
 
-      const userId = (req as any).userId ?? (req as any).agentId;
+      const userId = (req.actor as { userId: string }).userId;
       const routerAgentId = req.body.routerAgentId;
 
       // If a router agent is specified, create a chat and trigger the agent
@@ -213,7 +213,7 @@ export function voiceCommandRoutes(db: Db) {
       if (existing.routerAgentId) {
         const agent = await agents.getById(existing.routerAgentId);
         if (agent) {
-          const corrUserId = (req as any).userId ?? (req as any).agentId;
+          const corrUserId = (req.actor as { userId: string }).userId;
           const corrChat = await chats.createChat({
             companyId: existing.companyId,
             agentId: existing.routerAgentId,
