@@ -17,7 +17,7 @@ export default defineConfig({
     watch: process.cwd().startsWith("/mnt/") ? { usePolling: true, interval: 1000 } : undefined,
     proxy: {
       "/api": {
-        target: `http://localhost:${process.env.VITE_API_PORT ?? "3101"}`,
+        target: `http://localhost:${process.env.VITE_API_PORT ?? "3100"}`,
         ws: true,
       },
     },

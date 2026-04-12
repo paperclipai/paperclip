@@ -59,13 +59,16 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleClose = useCallback((result: boolean) => {
-    setState((prev) => (prev ? { ...prev, open: false } : null));
-    setTimeout(() => {
-      resolveRef.current?.(state?.mode === "alert" ? undefined : result);
-      resolveRef.current = null;
-      setState(null);
-    }, 150);
-  }, [state?.mode]);
+    setState((prev) => {
+      const isAlert = prev?.mode === "alert";
+      setTimeout(() => {
+        resolveRef.current?.(isAlert ? undefined : result);
+        resolveRef.current = null;
+        setState(null);
+      }, 150);
+      return prev ? { ...prev, open: false } : null;
+    });
+  }, []);
 
   return (
     <ConfirmContext.Provider value={{ confirm, alert }}>

@@ -320,12 +320,6 @@ export const en = {
   "agentDetail.stopping": "Stopping...",
   "agentDetail.resume": "Resume",
   "agentDetail.resuming": "Resuming…",
-  "agentDetail.adapter": "Adapter",
-  "agentDetail.appliedWhenRuns": "Applied when the agent runs",
-  "agentDetail.selectedSkills": "Selected skills",
-  "agentDetail.viewCompanySkills": "View company skills library",
-  "agentDetail.teams": "Teams",
-
   // Routine detail
   "routine.title": "Routine title",
   "routine.assignee": "Assignee",

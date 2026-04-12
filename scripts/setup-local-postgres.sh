@@ -18,8 +18,8 @@ PG_USER="cloud_admin"
 PG_DB="postgres"
 LOCAL_DB_URL="postgresql://${PG_USER}@localhost:${NEON_COMPUTE_PORT}/${PG_DB}"
 
-# Neon Cloud 원본 (마이그레이션 소스)
-NEON_CLOUD_URL="postgresql://neondb_owner:npg_YmibwR86QGpg@ep-winter-sky-a15sf4oy.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+# Neon Cloud 원본 (마이그레이션 소스) — 환경변수로 전달
+NEON_CLOUD_URL="${NEON_CLOUD_URL:-}"
 
 # Paperclip 인스턴스 경로
 PAPERCLIP_HOME="${HOME}/.paperclip"
