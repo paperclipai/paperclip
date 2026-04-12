@@ -392,26 +392,55 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   // Track IME composition state. When composition ends, flush any deferred
   // decoration and value sync work.
+  //
+  // The flush is deferred to requestAnimationFrame because Lexical fires
+  // onChange via queueMicrotask. At the moment compositionend fires
+  // synchronously, the parent's value prop (valueRef.current) has not yet
+  // been updated by React — the onChange microtask hasn't run and React
+  // hasn't re-rendered. Flushing synchronously would compare the stale
+  // parent value against latestValueRef (already updated by the preceding
+  // input event) and call setMarkdown() with the OLD value, briefly
+  // reverting editor content and causing Android keyboards to dismiss.
+  //
+  // By deferring to rAF we wait until after:
+  //   1. Lexical's microtask-based onChange fires
+  //   2. React re-renders with the new value
+  // At that point valueRef.current is in sync and setMarkdown is skipped.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onStart = () => { isComposingRef.current = true; };
+    let flushHandle = 0;
+    const onStart = () => {
+      isComposingRef.current = true;
+      // Cancel any pending flush from a previous compositionend — a new
+      // composition started before the deferred flush ran.
+      if (flushHandle) {
+        cancelAnimationFrame(flushHandle);
+        flushHandle = 0;
+      }
+    };
     const onEnd = () => {
       isComposingRef.current = false;
-      // Flush deferred decoration
-      decorateProjectMentions();
-      // If the external value drifted during composition, sync now
-      if (ref.current && valueRef.current !== latestValueRef.current) {
-        echoIgnoreMarkdownRef.current = valueRef.current;
-        ref.current.setMarkdown(valueRef.current);
-        latestValueRef.current = valueRef.current;
-      }
+      // Defer flush to next frame so Lexical onChange + React render complete first.
+      flushHandle = requestAnimationFrame(() => {
+        flushHandle = 0;
+        // If a new composition started before this callback, bail out.
+        if (isComposingRef.current) return;
+        decorateProjectMentions();
+        // If the external value drifted during composition, sync now
+        if (ref.current && valueRef.current !== latestValueRef.current) {
+          echoIgnoreMarkdownRef.current = valueRef.current;
+          ref.current.setMarkdown(valueRef.current);
+          latestValueRef.current = valueRef.current;
+        }
+      });
     };
     el.addEventListener("compositionstart", onStart);
     el.addEventListener("compositionend", onEnd);
     return () => {
       el.removeEventListener("compositionstart", onStart);
       el.removeEventListener("compositionend", onEnd);
+      if (flushHandle) cancelAnimationFrame(flushHandle);
     };
   }, [decorateProjectMentions]);
 
