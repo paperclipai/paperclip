@@ -13,6 +13,7 @@ import {
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+import { releaseOrphanedSysvSharedMemory } from "../server/src/lib/sysv-ipc.ts";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -384,6 +385,15 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   const interactive = options.interactive ?? mode === "watch";
   const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
+
+  if (!env.DATABASE_URL) {
+    const releasedSegments = await releaseOrphanedSysvSharedMemory();
+    if (releasedSegments.length > 0) {
+      console.log(
+        `[paperclip] released ${releasedSegments.length} orphan SysV shared-memory segment${releasedSegments.length === 1 ? "" : "s"} before embedded PostgreSQL startup`,
+      );
+    }
+  }
 
   const payload = await refreshPendingMigrations();
   if (payload.status !== "needsMigrations" || pendingMigrations.length === 0) {
