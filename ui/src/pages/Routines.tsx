@@ -653,6 +653,7 @@ export function Routines() {
           showCloseButton={false}
           className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
         >
+        <DialogTitle className="sr-only">Routines</DialogTitle>
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>

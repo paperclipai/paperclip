@@ -46,7 +46,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const proc = await runChildProcess(runId, command, args, {
     cwd,
-    env,
+    env: runtimeEnv,
     timeoutSec,
     graceSec,
     onLog,

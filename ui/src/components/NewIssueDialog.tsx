@@ -23,6 +23,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -952,7 +953,8 @@ export function NewIssueDialog() {
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
-        onEscapeKeyDown={(event) => {
+        onEscapeKeyDown={(event) =>
+        <DialogTitle className="sr-only">New issue</DialogTitle> {
           if (createIssue.isPending) {
             event.preventDefault();
           }

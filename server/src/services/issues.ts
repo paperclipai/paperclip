@@ -167,7 +167,7 @@ async function getWorkspaceInheritanceIssue(
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   if (!issue) {
-    throw notFound("Workspace inheritance issue not found");
+    throw notFound(`Workspace inheritance issue not found: issue "${issueId}" does not exist in this company`);
   }
   return issue;
 }
@@ -1420,6 +1420,9 @@ export function issueService(db: Db) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
+          }
+          if (issueData.projectId == null && workspaceSource.projectId) {
+            issueData.projectId = workspaceSource.projectId;
           }
           if (
             isolatedWorkspacesEnabled &&

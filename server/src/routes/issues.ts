@@ -1746,7 +1746,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || isClosed || existing.status === "blocked";
 
         if (assigneeId && !assigneeChanged && !skipAssigneeCommentWake) {
           addWakeup(assigneeId, {
@@ -2264,7 +2264,7 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || isClosed || issue.status === "blocked";
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
