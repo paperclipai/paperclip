@@ -656,10 +656,10 @@ export function Inbox() {
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
-    pathSegment === "mine" || pathSegment === "recent" || pathSegment === "all" || pathSegment === "unread"
+    pathSegment === "mine" || pathSegment === "recent" || pathSegment === "all" || pathSegment === "unread" || pathSegment === "assigned"
       ? pathSegment
       : "mine";
-  const canArchiveFromTab = isMineInboxTab(tab);
+  const canArchiveFromTab = isMineInboxTab(tab) || tab === "assigned";
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -762,7 +762,21 @@ export function Inbox() {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "assigned-to-me"],
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        touchedByUserId: "me",
+        inboxArchivedByUserId: "me",
+        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        includeRoutineExecutions: true,
+      }),
+    enabled: !!selectedCompanyId,
+  });
+  const {
+    data: assignedToMeRaw = [],
+    isLoading: isAssignedToMeLoading,
+  } = useQuery({
+    queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!),
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         assigneeUserId: "me",
@@ -800,10 +814,15 @@ export function Inbox() {
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
+  const assignedToMeIssues = useMemo(() => getRecentTouchedIssues(assignedToMeRaw), [assignedToMeRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const visibleMineIssues = useMemo(
     () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true),
     [mineIssues, issueFilters, currentUserId],
+  );
+  const visibleAssignedToMeIssues = useMemo(
+    () => applyIssueFilters(assignedToMeIssues, issueFilters, currentUserId, true),
+    [assignedToMeIssues, issueFilters, currentUserId],
   );
   const visibleTouchedIssues = useMemo(
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true),
@@ -816,10 +835,11 @@ export function Inbox() {
   const issuesToRender = useMemo(
     () => {
       if (tab === "mine") return visibleMineIssues;
+      if (tab === "assigned") return visibleAssignedToMeIssues;
       if (tab === "unread") return unreadTouchedIssues;
       return visibleTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, visibleAssignedToMeIssues, visibleTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {
@@ -1286,7 +1306,8 @@ export function Inbox() {
 
       // Cancel in-flight refetches so they don't overwrite our optimistic update
       const queryKeys_ = [
-        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "assigned-to-me"],
+        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+        queryKeys.issues.listAssignedToMe(selectedCompanyId!),
         [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
         queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
       ];
@@ -1647,6 +1668,7 @@ export function Inbox() {
     !isDashboardLoading &&
     !isIssuesLoading &&
     !isMineIssuesLoading &&
+    !isAssignedToMeLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading;
 
@@ -1696,6 +1718,10 @@ export function Inbox() {
               {
                 value: "mine",
                 label: "Mine",
+              },
+              {
+                value: "assigned",
+                label: "Assigned to me",
               },
               {
                 value: "recent",
@@ -1894,6 +1920,8 @@ export function Inbox() {
               ? "No inbox items match your search."
               : tab === "mine"
               ? "Inbox zero."
+              : tab === "assigned"
+              ? "No issues assigned to you."
               : tab === "unread"
               ? "No new inbox items."
               : tab === "recent"
