@@ -205,12 +205,20 @@ async function askAgent(
   //   eventType: "chunk" | "status" | "done" | "error"
   //   stream:    "stdout" | "stderr" | "system" | null  ← stream TYPE, not content
   //   message:   string | null                          ← actual text content
-  //   payload:   Record<string, unknown> | null
+  //
+  // IMPORTANT: sendMessage() returns the runId IMMEDIATELY (fire-and-forget).
+  // Events arrive LATER as async notifications. We must wait for the "done"
+  // or "error" event BEFORE calling close(), otherwise close() deletes the
+  // callback and we miss all events.
   const streamChunks: string[] = [];
   let eventCount = 0;
 
-  try {
-    await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
+  let doneResolve!: () => void;
+  const donePromise = new Promise<void>((resolve) => { doneResolve = resolve; });
+
+  // Fire sendMessage (non-blocking: returns runId, events follow async)
+  ctx.agents.sessions
+    .sendMessage(session.sessionId, companyId, {
       prompt,
       reason: "Telegram message",
       onEvent: (event) => {
@@ -226,18 +234,37 @@ async function askAgent(
           streamChunks.push(event.message);
         }
 
-        // "done" event may also carry the final assembled message
-        if (event.eventType === "done" && event.message) {
-          // Only use done.message if we have no chunks (avoid duplication)
-          if (streamChunks.length === 0) {
+        // "done" event — agent completed
+        if (event.eventType === "done") {
+          if (event.message && streamChunks.length === 0) {
             streamChunks.push(event.message);
           }
+          doneResolve();
+        }
+
+        // "error" event — agent failed
+        if (event.eventType === "error") {
+          doneResolve();
         }
       },
+    })
+    .catch((err) => {
+      ctx.logger.error("sendMessage error", { error: String(err) });
+      doneResolve();
     });
-  } finally {
-    await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
-  }
+
+  // Wait for done event or 5-minute timeout
+  const TIMEOUT_MS = 5 * 60 * 1000;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>(
+    (resolve) => { timeoutHandle = setTimeout(resolve, TIMEOUT_MS); },
+  );
+
+  await Promise.race([donePromise, timeoutPromise]);
+  clearTimeout(timeoutHandle);
+
+  // Now safe to close (done event already received or timed out)
+  await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
 
   ctx.logger.info("Agent response collected", {
     eventCount,
