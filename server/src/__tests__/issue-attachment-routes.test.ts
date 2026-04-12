@@ -196,6 +196,22 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  it("serves parameterized svg attachments as downloads with sandboxing headers", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(
+      makeAttachment("image/svg+xml; charset=utf-8", "diagram.svg"),
+    );
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("image/svg+xml");
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="diagram.svg"');
+    expect(res.headers["content-security-policy"]).toContain("sandbox");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
   it("serves binary attachments as downloads", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/octet-stream", "bundle.bin"));

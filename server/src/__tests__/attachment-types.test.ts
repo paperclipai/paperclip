@@ -104,6 +104,10 @@ describe("normalizeContentType", () => {
     expect(normalizeContentType(" Application/Zip ")).toBe("application/zip");
   });
 
+  it("strips media type parameters", () => {
+    expect(normalizeContentType(" Image/Svg+Xml; Charset=UTF-8 ")).toBe("image/svg+xml");
+  });
+
   it("falls back to octet-stream when the type is missing", () => {
     expect(normalizeContentType(undefined)).toBe("application/octet-stream");
     expect(normalizeContentType("")).toBe("application/octet-stream");

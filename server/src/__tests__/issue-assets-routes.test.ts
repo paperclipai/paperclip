@@ -223,6 +223,32 @@ describe("issue assets routes", () => {
     expect(res.body.workspace.status).toBe("unavailable");
   });
 
+  it("does not expose parameterized svg attachments as previewable", async () => {
+    mockIssueService.listAttachments.mockResolvedValue([
+      {
+        ...attachment,
+        contentType: "image/svg+xml; charset=utf-8",
+        originalFilename: "diagram.svg",
+      },
+    ]);
+    mockDocumentsService.listIssueDocuments.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+
+    const res = await request(createApp()).get(`/api/issues/${issueId}/assets`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.assets).toEqual([
+      expect.objectContaining({
+        kind: "attachment",
+        title: "diagram.svg",
+        contentType: "image/svg+xml",
+        previewable: false,
+        previewUrl: null,
+        downloadUrl: "/api/attachments/attachment-1/content?download=1",
+      }),
+    ]);
+  });
+
   it("exports the latest issue document revision as markdown download", async () => {
     const body = "# Plan\n\nShip it.";
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({ ...document, body });
