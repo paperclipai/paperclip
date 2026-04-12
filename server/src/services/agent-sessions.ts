@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentSessions, agents, projectWorkspaces } from "@paperclipai/db";
+import { rebaseHomePath } from "./path-utils.js";
 
 /**
  * Phase 4: durable session entity for a leader agent's Claude CLI.
@@ -87,7 +88,7 @@ async function resolveWorkspacePath(
         ),
       )
       .limit(1);
-    if (ws?.cwd) return ws.cwd;
+    if (ws?.cwd) return rebaseHomePath(ws.cwd);
 
     // Fallback: any workspace with a cwd (still company-scoped)
     const [anyWs] = await db
@@ -100,7 +101,7 @@ async function resolveWorkspacePath(
         ),
       )
       .limit(1);
-    if (anyWs?.cwd) return anyWs.cwd;
+    if (anyWs?.cwd) return rebaseHomePath(anyWs.cwd);
   }
   return buildFallbackWorkspacePath(agentId, sessionId);
 }

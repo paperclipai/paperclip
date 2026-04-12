@@ -25,6 +25,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { rebaseHomePath } from "./path-utils.js";
 import fsSync from "node:fs";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -165,7 +166,7 @@ export function createWorkspaceProvisioner(
       agentId: string;
       session: AgentSessionRecord;
     }): Promise<WorkspaceSpec & { agentKeyId: string | null }> {
-      const cwd = session.workspacePath;
+      const cwd = rebaseHomePath(session.workspacePath);
       // MCP config lives in a session-specific directory so multiple agents
       // sharing the same project repo cwd don't collide on .mcp.json.
       // CLAUDE_PROJECT_DIR = cwd so the CLI reads the repo's CLAUDE.md,

@@ -18,6 +18,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { rebaseHomePath } from "./path-utils.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -299,7 +300,8 @@ function readNonEmptyString(value: unknown): string | null {
 function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
-  return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;
+  if (cwd === REPO_ONLY_CWD_SENTINEL) return null;
+  return rebaseHomePath(cwd);
 }
 
 function deriveNameFromCwd(cwd: string): string {
