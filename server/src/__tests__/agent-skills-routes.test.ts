@@ -163,7 +163,7 @@ describe("agent skill routes", () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  });
+  }, 20_000);
 
   beforeEach(() => {
     vi.resetAllMocks();

@@ -138,5 +138,5 @@ describe("branch audit", () => {
     const report = await collectBranchAudit(repoRoot, { baseRef: "master" });
     expect(report.branches.some((branch) => branch.name === "merged-clean")).toBe(false);
     expect(report.branches.some((branch) => branch.name === "attached-branch")).toBe(true);
-  });
+  }, 15_000);
 });

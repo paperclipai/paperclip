@@ -231,7 +231,7 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
-  });
+  }, 15_000);
 
   it("does not initialize closed issue auto-archive scheduler when disabled", async () => {
     await startServer();

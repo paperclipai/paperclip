@@ -1,23 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-function resolvePatchedHermesExecutePath(): string {
+function resolveUnpatchedHermesExecutePath(): string {
   const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-  const pnpmRoot = path.join(repoRoot, "node_modules", ".pnpm");
-  const hermesEntry = readdirSync(pnpmRoot, { withFileTypes: true }).find(
-    (entry) => entry.isDirectory() && entry.name.startsWith("hermes-paperclip-adapter@0.2.0"),
-  );
-
-  if (!hermesEntry) {
-    throw new Error("patched hermes-paperclip-adapter package not found under node_modules/.pnpm");
-  }
-
   return path.join(
-    pnpmRoot,
-    hermesEntry.name,
+    repoRoot,
+    "node_modules",
+    ".pnpm",
+    "hermes-paperclip-adapter@0.2.0",
     "node_modules",
     "hermes-paperclip-adapter",
     "dist",
@@ -26,12 +20,64 @@ function resolvePatchedHermesExecutePath(): string {
   );
 }
 
-describe("hermes patched adapter", () => {
-  it("keeps the patched execute.js template syntactically valid", () => {
-    const executePath = resolvePatchedHermesExecutePath();
+function resolveActiveHermesExecutePath(): string {
+  const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  return realpathSync(path.join(repoRoot, "server", "node_modules", "hermes-paperclip-adapter", "dist", "server", "execute.js"));
+}
 
-    expect(() => {
-      execFileSync(process.execPath, ["--check", executePath], { stdio: "pipe" });
-    }).not.toThrow();
+function renderExecuteJsFromRepoPatch(): string {
+  const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  const patchPath = path.join(repoRoot, "patches", "hermes-paperclip-adapter@0.2.0.patch");
+  const tempRoot = mkdtempSync(path.join(tmpdir(), "paperclip-hermes-patch-"));
+  const executePath = path.join(tempRoot, "dist", "server", "execute.js");
+
+  mkdirSync(path.dirname(executePath), { recursive: true });
+  copyFileSync(resolveUnpatchedHermesExecutePath(), executePath);
+
+  try {
+    execFileSync("git", ["apply", "--unsafe-paths", patchPath], { cwd: tempRoot, stdio: "pipe" });
+    return executePath;
+  } catch (error) {
+    rmSync(tempRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+describe("hermes patched adapter", () => {
+  it("keeps the repo patch execute.js template syntactically valid", () => {
+    const executePath = renderExecuteJsFromRepoPatch();
+
+    try {
+      expect(() => {
+        execFileSync(process.execPath, ["--check", executePath], { stdio: "pipe" });
+      }).not.toThrow();
+    } finally {
+      rmSync(path.dirname(path.dirname(executePath)), { recursive: true, force: true });
+    }
+  });
+
+  it("keeps repo patch coverage for missing Hermes session recovery", () => {
+    const executePath = renderExecuteJsFromRepoPatch();
+
+    try {
+      const source = readFileSync(executePath, "utf8");
+
+      expect(source).toContain("function isHermesUnknownSessionError");
+      expect(source).toContain("Skipping suspicious Hermes session id");
+      expect(source).toContain('Hermes resume session "${prevSessionId}" is unavailable; retrying with a fresh session.');
+      expect(source).toContain("executionResult.clearSession = true;");
+    } finally {
+      rmSync(path.dirname(path.dirname(executePath)), { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the installed Hermes execute.js aligned with the repo patch", () => {
+    const executePath = renderExecuteJsFromRepoPatch();
+
+    try {
+      expect(readFileSync(resolveActiveHermesExecutePath(), "utf8")).toBe(readFileSync(executePath, "utf8"));
+    } finally {
+      rmSync(path.dirname(path.dirname(executePath)), { recursive: true, force: true });
+    }
   });
 });

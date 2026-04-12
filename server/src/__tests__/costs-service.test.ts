@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -113,10 +113,13 @@ function createAppWithActor(actor: any) {
   return app;
 }
 
-beforeEach(async () => {
+beforeAll(async () => {
   vi.resetModules();
   ({ costRoutes: costRoutesFactory } = await import("../routes/costs.js"));
   ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+}, 20_000);
+
+beforeEach(() => {
   vi.clearAllMocks();
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",

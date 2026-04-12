@@ -42,19 +42,24 @@ function createDbMock(input: {
   const issueQueue = [...(input.issueRows ?? [])];
   const commentQueue = [...(input.commentRows ?? [])];
   const fallbackQueue = [...(input.fallbackRows ?? [])];
-  let activeQueue = fallbackQueue;
-  const limit = vi.fn(async () => activeQueue.shift() ?? []);
-  const orderBy = vi.fn(() => ({ limit }));
-  const where = vi.fn(() => ({ orderBy }));
+
+  const limit = vi.fn(async (queue: Array<Array<Record<string, unknown>>>) => queue.shift() ?? []);
+  const orderBy = vi.fn((queue: Array<Array<Record<string, unknown>>>) => ({
+    limit: () => limit(queue),
+  }));
+  const where = vi.fn((queue: Array<Array<Record<string, unknown>>>) => ({
+    orderBy: () => orderBy(queue),
+  }));
   const from = vi.fn((table: unknown) => {
-    if (table === issues) {
-      activeQueue = issueQueue;
-    } else if (table === issueComments) {
-      activeQueue = commentQueue;
-    } else {
-      activeQueue = fallbackQueue;
-    }
-    return { where };
+    const queue =
+      table === issues
+        ? issueQueue
+        : table === issueComments
+          ? commentQueue
+          : fallbackQueue;
+    return {
+      where: () => where(queue),
+    };
   });
   const select = vi.fn(() => ({ from }));
   return {

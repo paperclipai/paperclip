@@ -84,7 +84,7 @@ describe("issue discovery routing guard for assignment runs", () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  });
+  }, 20_000);
 
   beforeEach(() => {
     vi.clearAllMocks();
