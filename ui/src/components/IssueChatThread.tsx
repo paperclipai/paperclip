@@ -41,6 +41,7 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -750,7 +751,7 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextToClipboard(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
           });
@@ -949,7 +950,7 @@ function IssueChatUserMessage() {
                     .filter((p): p is { type: "text"; text: string } => p.type === "text")
                     .map((p) => p.text)
                     .join("\n\n");
-                  void navigator.clipboard.writeText(text).then(() => {
+                  void copyTextToClipboard(text).then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
                   });
@@ -1156,7 +1157,7 @@ function IssueChatAssistantMessage() {
                           .filter((p): p is { type: "text"; text: string } => p.type === "text")
                           .map((p) => p.text)
                           .join("\n\n");
-                        void navigator.clipboard.writeText(text);
+                        void copyTextToClipboard(text);
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />

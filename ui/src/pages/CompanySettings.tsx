@@ -8,6 +8,7 @@ import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
@@ -140,7 +141,7 @@ export function CompanySettings() {
       }
       setInviteSnippet(snippet);
       try {
-        await navigator.clipboard.writeText(snippet);
+        await copyTextToClipboard(snippet);
         setSnippetCopied(true);
         setSnippetCopyDelightId((prev) => prev + 1);
         setTimeout(() => setSnippetCopied(false), 2000);
@@ -519,7 +520,7 @@ export function CompanySettings() {
                     variant="ghost"
                     onClick={async () => {
                       try {
-                        await navigator.clipboard.writeText(inviteSnippet);
+                        await copyTextToClipboard(inviteSnippet);
                         setSnippetCopied(true);
                         setSnippetCopyDelightId((prev) => prev + 1);
                         setTimeout(() => setSnippetCopied(false), 2000);

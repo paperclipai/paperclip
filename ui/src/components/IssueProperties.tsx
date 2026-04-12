@@ -13,6 +13,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -29,7 +30,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
   useEffect(() => () => clearTimeout(timerRef.current), []);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);

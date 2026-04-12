@@ -15,6 +15,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -603,7 +604,7 @@ function SkillPane({
                   <button
                     className="truncate hover:text-foreground text-muted-foreground transition-colors cursor-pointer"
                     onClick={() => {
-                      navigator.clipboard.writeText(detail.sourcePath!);
+                      void copyTextToClipboard(detail.sourcePath!);
                       pushToast({ title: "Copied path to workspace" });
                     }}
                   >

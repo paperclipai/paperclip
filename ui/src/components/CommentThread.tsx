@@ -19,6 +19,7 @@ import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { copyTextToClipboard } from "../lib/clipboard";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
@@ -210,27 +211,6 @@ function runStatusClass(status: string) {
   }
 }
 
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
-
 function CopyMarkdownButton({ text }: { text: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -257,7 +237,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
       title={label}
       aria-label="Copy comment as markdown"
       onClick={() => {
-        void copyTextWithFallback(text)
+        void copyTextToClipboard(text)
           .then(() => setStatus("copied"))
           .catch(() => setStatus("failed"));
 

@@ -16,6 +16,7 @@ import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -1534,7 +1535,7 @@ export function IssueDetail() {
     const title = decodeEntities(issue.title);
     const body = decodeEntities(issue.description ?? "");
     const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
-    await navigator.clipboard.writeText(md);
+    await copyTextToClipboard(md);
     setCopied(true);
     pushToast({ title: "Copied to clipboard", tone: "success" });
     setTimeout(() => setCopied(false), 2000);

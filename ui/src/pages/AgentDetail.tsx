@@ -21,6 +21,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -966,7 +967,7 @@ export function AgentDetail() {
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                 onClick={() => {
-                  navigator.clipboard.writeText(agent.id);
+                  void copyTextToClipboard(agent.id);
                   setMoreOpen(false);
                 }}
               >
@@ -3980,7 +3981,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
 
   function copyToken() {
     if (!newToken) return;
-    navigator.clipboard.writeText(newToken);
+    void copyTextToClipboard(newToken);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }

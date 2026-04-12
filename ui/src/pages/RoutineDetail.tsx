@@ -23,6 +23,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { timeAgo } from "../lib/timeAgo";
@@ -398,7 +399,7 @@ export function RoutineDetail() {
 
   const copySecretValue = async (label: string, value: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       pushToast({ title: `${label} copied`, tone: "success" });
     } catch (error) {
       pushToast({

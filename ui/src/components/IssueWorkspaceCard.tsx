@@ -7,6 +7,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
@@ -69,7 +70,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
