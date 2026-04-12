@@ -270,8 +270,8 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
-  it("preserves session context on timer heartbeats", () => {
-    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
+  it("resets session context on timer heartbeats", () => {
+    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(true);
   });
 
   it("preserves session context on manual on-demand invokes by default", () => {
