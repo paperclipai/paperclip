@@ -56,6 +56,11 @@ jobs:
           git fetch --no-tags upstream master:refs/remotes/upstream/master
           git fetch --no-tags origin zh-enterprise:refs/remotes/origin/zh-enterprise
 
+      - name: Configure git identity
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
+
       - name: Regenerate upstream sync report artifacts
         id: regenerate
         continue-on-error: true
