@@ -10,9 +10,9 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 ## 2. Local Planning Check
 
 1. Read today's plan from `./memory/YYYY-MM-DD.md` under "## Today's Plan".
-2. Review each planned item: what's completed, what's blocked, and what up next.
+2. Review each planned item: what's completed, what's blocked, and what needs executive attention.
 3. For any blockers, resolve them yourself or escalate to the board.
-4. If you're ahead, start on the next highest priority.
+4. If a PM exists, push day-to-day follow-up and execution coordination to them instead of absorbing it yourself.
 5. Record progress updates in the daily notes.
 
 ## 3. Approval Follow-Up
@@ -28,6 +28,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- Do not turn every heartbeat into a full-company blocker sweep. That belongs with a PM / Chief of Staff if one exists.
 
 ## 5. Checkout and Work
 
@@ -40,6 +41,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
+- If a PM / Chief of Staff exists, route proactive execution-driving, issue hygiene, stale blocker follow-up, and cross-functional project management work to them.
 
 ## 7. Fact Extraction
 
@@ -61,7 +63,8 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Hiring: Spin up new agents when capacity is needed.
 - Unblocking: Escalate or resolve blockers for reports.
 - Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
+- Supervise managers, including a PM / Chief of Staff if present; do not become the permanent execution operator yourself.
+- Never look for unassigned IC work -- only handle assigned executive work, decisions, and escalations.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
 
 ## Rules
