@@ -110,6 +110,31 @@ describe("issue discovery routing guard for assignment runs", () => {
     expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 
+  it("allows project-scoped issue queries for issue_assigned runs", async () => {
+    const app = createApp();
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+        issueId: "issue-123",
+      },
+    });
+
+    const res = await request(app).get("/api/companies/company-1/issues?projectId=project-1&assigneeAgentId=agent-1");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledOnce();
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId: "project-1",
+        assigneeAgentId: "agent-1",
+      }),
+    );
+  });
+
   it("allows list endpoint for non-assignment runs", async () => {
     const app = createApp();
 

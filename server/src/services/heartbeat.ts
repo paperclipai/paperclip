@@ -31,6 +31,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { createAgentStartLockController } from "./agent-start-lock.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
@@ -66,15 +67,10 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
-const HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS = 30 * 1000;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
-type AgentStartLock = {
-  promise: Promise<void>;
-  startedAt: number;
-};
-const startLocksByAgent = new Map<string, AgentStartLock>();
+const agentStartLockController = createAgentStartLockController();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -603,41 +599,18 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
-  const existing = startLocksByAgent.get(agentId);
-  if (existing) {
-    const ageMs = Date.now() - existing.startedAt;
-    if (ageMs >= HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS) {
-      logger.warn({ agentId, ageMs }, "clearing stale queued-run start lock");
-      startLocksByAgent.delete(agentId);
-    }
-  }
-
-  const previous = startLocksByAgent.get(agentId)?.promise ?? Promise.resolve();
-  const run = previous.then(fn);
-  const marker = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  const lock: AgentStartLock = {
-    promise: marker,
-    startedAt: Date.now(),
-  };
-  startLocksByAgent.set(agentId, lock);
-  try {
-    return await run;
-  } finally {
-    if (startLocksByAgent.get(agentId) === lock) {
-      startLocksByAgent.delete(agentId);
-    }
-  }
+  return agentStartLockController.withAgentStartLock(agentId, fn);
 }
 
 export const heartbeatServiceTestInternals = {
   clearStartLocks() {
-    startLocksByAgent.clear();
+    agentStartLockController.clear();
   },
   seedStartLock(agentId: string, startedAt: number, promise: Promise<void> = new Promise<void>(() => {})) {
-    startLocksByAgent.set(agentId, { promise, startedAt });
+    agentStartLockController.seed(agentId, startedAt, promise);
+  },
+  withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
+    return agentStartLockController.withAgentStartLock(agentId, fn);
   },
 };
 

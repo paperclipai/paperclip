@@ -172,6 +172,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { runId, issueId };
   }
 
+  function queryHasNonEmptyValue(value: unknown) {
+    if (typeof value === "string") return value.trim().length > 0;
+    if (Array.isArray(value)) return value.some((entry) => typeof entry === "string" && entry.trim().length > 0);
+    return false;
+  }
+
+  function hasAssignmentContextualIssueListFilter(req: Request) {
+    return [
+      req.query.projectId,
+      req.query.executionWorkspaceId,
+      req.query.parentId,
+      req.query.labelId,
+      req.query.originKind,
+      req.query.originId,
+      req.query.participantAgentId,
+      req.query.assigneeUserId,
+      req.query.touchedByUserId,
+      req.query.inboxArchivedByUserId,
+      req.query.unreadForUserId,
+    ].some(queryHasNonEmptyValue);
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -303,7 +325,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
 
     const assignmentScopedRun = await resolveAssignmentScopedRunContext(req, companyId);
-    if (assignmentScopedRun) {
+    if (assignmentScopedRun && !hasAssignmentContextualIssueListFilter(req)) {
       res.status(409).json({
         error: "assignment mode forbids discovery queries; fetch /issues/:id directly",
         code: "assignment_mode_forbids_discovery",
