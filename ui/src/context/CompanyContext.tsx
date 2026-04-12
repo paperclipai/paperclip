@@ -59,9 +59,19 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [companies],
   );
 
-  // Auto-select first company when list loads
+  // Auto-select first company when list loads, and clear any stale
+  // localStorage pointer that references a company that no longer exists
+  // (e.g. after a DB wipe).
   useEffect(() => {
-    if (companies.length === 0) return;
+    if (isLoading) return;
+
+    if (companies.length === 0) {
+      if (selectedCompanyId !== null) {
+        setSelectedCompanyIdState(null);
+        localStorage.removeItem(STORAGE_KEY);
+      }
+      return;
+    }
 
     const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companies;
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -72,7 +82,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, selectedCompanyId, sidebarCompanies]);
+  }, [companies, isLoading, selectedCompanyId, sidebarCompanies]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);

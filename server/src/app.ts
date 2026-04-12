@@ -31,6 +31,7 @@ import { linearAuthRoutes } from "./routes/linear-auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { workspaceScanRoutes } from "./routes/workspace-scan.js";
+import { githubOAuthRoutes, githubApiRoutes } from "./routes/github-oauth.js";
 import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -144,6 +145,9 @@ export async function createApp(
       linear: !!appConfig.linearOAuthClientId,
     });
   });
+
+  // GitHub OAuth routes — root-level because the callback URL is /oauth/github/callback
+  app.use(githubOAuthRoutes());
 
   // Linear OAuth routes — server-managed flow using credentials from .env.
   // Handles /start (redirect to Linear), /callback (token exchange + auto-config),
@@ -273,6 +277,7 @@ export async function createApp(
     ),
   );
   api.use(workspaceScanRoutes());
+  api.use(githubApiRoutes());
   api.use(adapterRoutes());
   api.use(
     accessRoutes(db, {

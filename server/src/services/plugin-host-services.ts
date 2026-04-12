@@ -50,6 +50,15 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+
+/**
+ * Node's HTTP parser defaults to 16 KB for the entire response header block
+ * and throws `HPE_HEADER_OVERFLOW` on anything larger. News/RSS origins often
+ * ship absurdly fat cookies, CSP headers, and tracking blobs that blow past
+ * that — widen to 128 KB so plugin fetches don't hard-fail on well-behaved
+ * (if verbose) sites. Still bounded to prevent pathological server responses.
+ */
+const PLUGIN_FETCH_MAX_HEADER_SIZE = 128 * 1024;
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
@@ -213,6 +222,7 @@ function buildPinnedRequestOptions(
       headers: Object.fromEntries(headers.entries()),
       auth,
       servername: target.tlsServername,
+      maxHeaderSize: PLUGIN_FETCH_MAX_HEADER_SIZE,
     },
     body,
   };

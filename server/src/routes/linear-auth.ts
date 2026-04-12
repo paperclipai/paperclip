@@ -343,6 +343,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
     let highestIssueNumber: number | null = null;
     let teamKey: string | null = null;
     let currentCounter: number | null = null;
+    let allTeams: Array<{ id: string; name: string; key: string; issueCount: number }> = [];
 
     if (existing) {
       try {
@@ -355,6 +356,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               teams {
                 nodes {
                   id
+                  name
                   key
                   issueCount
                   issues(filter: { state: { type: { nin: ["completed", "cancelled"] } } }, first: 250) {
@@ -368,14 +370,28 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         if (statsRes.ok) {
           const data = (await statsRes.json()) as {
             data?: {
-              teams?: { nodes?: Array<{ id: string; key: string; issueCount: number; issues: { nodes: Array<{ id: string }> } }> };
+              teams?: { nodes?: Array<{ id: string; name: string; key: string; issueCount: number; issues: { nodes: Array<{ id: string }> } }> };
             };
             errors?: Array<{ message: string }>;
           };
           if (data.errors?.length) {
             console.warn("[linear-auth] GraphQL errors:", data.errors);
           }
-          const team = data.data?.teams?.nodes?.[0];
+          const teamNodes = data.data?.teams?.nodes ?? [];
+          allTeams = teamNodes.map((t) => ({
+            id: t.id, name: t.name, key: t.key, issueCount: t.issueCount,
+          }));
+
+          // Use the configured team if one is bound, otherwise fall back to first
+          const linearPlugin = await db.select().from(plugins).where(eq(plugins.pluginKey, "paperclip-plugin-linear")).then((r) => r[0] ?? null);
+          let configuredTeamId: string | null = null;
+          if (linearPlugin) {
+            const [cfg] = await db.select().from(pluginConfig).where(eq(pluginConfig.pluginId, linearPlugin.id));
+            configuredTeamId = (cfg?.configJson as Record<string, unknown>)?.teamId as string ?? null;
+          }
+          const team = (configuredTeamId
+            ? teamNodes.find((t) => t.id === configuredTeamId)
+            : teamNodes[0]) ?? teamNodes[0];
           openIssueCount = team?.issues?.nodes?.length ?? null;
           teamKey = team?.key ?? null;
 
@@ -432,6 +448,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       highestIssueNumber,
       currentCounter,
       teamKey,
+      teams: allTeams,
     });
   });
 

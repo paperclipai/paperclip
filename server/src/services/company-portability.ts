@@ -2195,6 +2195,11 @@ async function fetchText(url: string) {
 async function fetchOptionalText(url: string) {
   const response = await ghFetch(url);
   if (response.status === 404) return null;
+  if (response.status === 401 || response.status === 403) {
+    throw unprocessable(
+      `GitHub rejected access to ${url} (HTTP ${response.status}). If this is a private repository, set PAPERCLIP_GITHUB_TOKEN (or GITHUB_TOKEN) in the server environment to a personal access token with repo read access.`,
+    );
+  }
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }

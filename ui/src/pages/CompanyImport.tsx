@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { authApi } from "../api/auth";
+import { api } from "../api/client";
 import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
@@ -27,8 +28,11 @@ import {
   ChevronRight,
   Download,
   Github,
+  Loader2,
   Package,
+  Search,
   Upload,
+  X,
 } from "lucide-react";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -47,6 +51,88 @@ import {
 } from "../components/PackageFileTree";
 import { readZipArchive } from "../lib/zip";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
+
+// ── GitHub repo picker ──────────────────────────────────────────────
+
+interface GitHubRepo {
+  fullName: string;
+  name: string;
+  owner: string;
+  ownerAvatar: string;
+  private: boolean;
+  description: string | null;
+  htmlUrl: string;
+  defaultBranch: string;
+  updatedAt: string;
+}
+
+function GitHubRepoPicker({ onSelect }: { onSelect: (repo: GitHubRepo) => void }) {
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["github", "repos", debouncedSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ per_page: "20" });
+      if (debouncedSearch) params.set("q", debouncedSearch);
+      return api.get<{ repos: GitHubRepo[] }>(`/github/repos?${params}`);
+    },
+  });
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+        <input
+          className="w-full rounded-md border border-border bg-transparent pl-8 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+          placeholder="Search your repos..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+      <div className="max-h-64 overflow-y-auto rounded-md border border-border divide-y divide-border">
+        {isLoading && (
+          <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Loading repos...
+          </div>
+        )}
+        {!isLoading && data?.repos.length === 0 && (
+          <div className="py-6 text-center text-xs text-muted-foreground">
+            {debouncedSearch ? "No repos match your search" : "No repos found"}
+          </div>
+        )}
+        {data?.repos.map((repo) => (
+          <button
+            key={repo.fullName}
+            type="button"
+            className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-accent/50 transition-colors"
+            onClick={() => onSelect(repo)}
+          >
+            <img src={repo.ownerAvatar} alt="" className="h-5 w-5 rounded-full mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium truncate">{repo.fullName}</span>
+                {repo.private && (
+                  <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-500">
+                    private
+                  </span>
+                )}
+              </div>
+              {repo.description && (
+                <p className="text-[11px] text-muted-foreground truncate">{repo.description}</p>
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -660,6 +746,26 @@ export function CompanyImport() {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
+  // GitHub connection status
+  const { data: githubStatus, refetch: refetchGitHubStatus } = useQuery({
+    queryKey: ["github", "status"],
+    queryFn: () => api.get<{ connected: boolean; scope?: string }>("/github/status"),
+  });
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("github_connected") || params.has("github_error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+      if (params.has("github_connected")) {
+        void refetchGitHubStatus();
+        pushToast({ tone: "success", title: "GitHub connected", body: "You can now import private repos." });
+      }
+      if (params.has("github_error")) {
+        pushToast({ tone: "error", title: "GitHub connection failed", body: params.get("github_error") ?? "Unknown error" });
+      }
+    }
+  }, [pushToast, refetchGitHubStatus]);
+
   // Source state
   const [sourceMode, setSourceMode] = useState<"github" | "local">("github");
   const [importUrl, setImportUrl] = useState("");
@@ -1161,21 +1267,77 @@ export function CompanyImport() {
             )}
           </div>
         ) : (
-          <Field
-            label="GitHub URL"
-            hint="Repo tree path or blob URL to COMPANY.md (e.g. github.com/owner/repo/tree/main/company)."
-          >
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              type="text"
-              value={importUrl}
-              placeholder="https://github.com/owner/repo/tree/main/company"
-              onChange={(e) => {
-                setImportUrl(e.target.value);
-                setImportPreview(null);
-              }}
-            />
-          </Field>
+          <div className="space-y-2">
+            {githubStatus?.connected ? (
+              <>
+                {importUrl ? (
+                  <Field label="Selected repo">
+                    <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
+                      <Github className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="text-sm truncate flex-1 font-mono">{importUrl}</span>
+                      <button
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => { setImportUrl(""); setImportPreview(null); }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </Field>
+                ) : (
+                  <Field label="Select a repo" hint="Search your GitHub repos or paste a URL below.">
+                    <GitHubRepoPicker
+                      onSelect={(repo) => {
+                        setImportUrl(`https://github.com/${repo.fullName}`);
+                        setImportPreview(null);
+                      }}
+                    />
+                  </Field>
+                )}
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Github className="h-3.5 w-3.5" />
+                  <span className="text-green-500">Connected — showing your repos</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <Field
+                  label="GitHub URL"
+                  hint="Repo tree path or blob URL to COMPANY.md (e.g. github.com/owner/repo/tree/main/company)."
+                >
+                  <input
+                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                    type="text"
+                    value={importUrl}
+                    placeholder="https://github.com/owner/repo/tree/main/company"
+                    onChange={(e) => {
+                      setImportUrl(e.target.value);
+                      setImportPreview(null);
+                    }}
+                  />
+                </Field>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Github className="h-3.5 w-3.5" />
+                  <span>Private repo?</span>
+                  <button
+                    type="button"
+                    className="text-blue-500 hover:underline"
+                    onClick={() => {
+                      const popup = window.open("/oauth/github/start", "github-oauth", "width=600,height=700");
+                      const poll = setInterval(() => {
+                        if (popup?.closed) {
+                          clearInterval(poll);
+                          void refetchGitHubStatus();
+                        }
+                      }, 500);
+                    }}
+                  >
+                    Connect GitHub
+                  </button>
+                  <span>to browse and select repos</span>
+                </div>
+              </>
+            )}
+          </div>
         )}
 
         <Field label="Target" hint="Import into this company or create a new one.">

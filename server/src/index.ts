@@ -1004,13 +1004,13 @@ export async function startServer(): Promise<StartedServer> {
   });
 
   // Auto-install bundled plugins (idempotent — skips if already installed),
-  // then auto-seed research secrets from env vars, then bootstrap the
-  // Lucitra Capital trading desk company from the markdown source files.
+  // then auto-seed research secrets from env vars. Agent company import
+  // moved to the onboarding flow — autoBootstrapLucitraCapital is retained
+  // for reference but no longer runs on startup.
   void autoInstallBundledPlugins(db as any)
     .then(() => autoSeedResearchSecrets())
-    .then(() => autoBootstrapLucitraCapital())
     .catch((err) => {
-      logger.warn({ err }, "auto-install/seed/bootstrap failed (non-fatal)");
+      logger.warn({ err }, "auto-install/seed failed (non-fatal)");
     });
 
   // Start Linear tunnel if Linear is connected and cloudflared is available

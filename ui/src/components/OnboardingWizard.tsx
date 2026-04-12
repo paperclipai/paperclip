@@ -5,6 +5,7 @@ import { readZipArchive } from "../lib/zip";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { api } from "../api/client";
 import { companiesApi } from "../api/companies";
 import type { OrgNode } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -53,6 +54,7 @@ import { FolderPicker } from "./FolderPicker";
 import {
   Building2,
   Bot,
+  Github,
   ListTodo,
   Rocket,
   ArrowLeft,
@@ -64,10 +66,96 @@ import {
   GitBranch,
   Network,
   Download,
+  Search,
   Upload,
   X
 } from "lucide-react";
 
+
+interface GitHubRepo {
+  fullName: string;
+  name: string;
+  owner: string;
+  ownerAvatar: string;
+  private: boolean;
+  description: string | null;
+  htmlUrl: string;
+  defaultBranch: string;
+  updatedAt: string;
+}
+
+function GitHubRepoPicker({ onSelect }: { onSelect: (repo: GitHubRepo) => void }) {
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["github", "repos", debouncedSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ per_page: "20" });
+      if (debouncedSearch) params.set("q", debouncedSearch);
+      return api.get<{ repos: GitHubRepo[] }>(`/github/repos?${params}`);
+    },
+  });
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+        <input
+          className="w-full rounded-md border border-border bg-transparent pl-8 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+          placeholder="Search your repos..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          autoFocus
+        />
+      </div>
+      <div className="max-h-56 overflow-y-auto rounded-md border border-border divide-y divide-border">
+        {isLoading && (
+          <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Loading repos...
+          </div>
+        )}
+        {!isLoading && data?.repos.length === 0 && (
+          <div className="py-6 text-center text-xs text-muted-foreground">
+            {debouncedSearch ? "No repos match your search" : "No repos found"}
+          </div>
+        )}
+        {data?.repos.map((repo) => (
+          <button
+            key={repo.fullName}
+            type="button"
+            className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-accent/50 transition-colors"
+            onClick={() => onSelect(repo)}
+          >
+            <img
+              src={repo.ownerAvatar}
+              alt=""
+              className="h-5 w-5 rounded-full mt-0.5 shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium truncate">{repo.fullName}</span>
+                {repo.private && (
+                  <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-500">
+                    private
+                  </span>
+                )}
+              </div>
+              {repo.description && (
+                <p className="text-[11px] text-muted-foreground truncate">{repo.description}</p>
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 type SetupMode = "fresh" | "import";
@@ -119,8 +207,14 @@ export function OnboardingWizard() {
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
+  // GitHub connection
+  const { data: githubStatus, refetch: refetchGitHubStatus } = useQuery({
+    queryKey: ["github", "status"],
+    queryFn: () => api.get<{ connected: boolean; scope?: string }>("/github/status"),
+  });
+
   // Step 1
-  const [setupMode, setSetupMode] = useState<SetupMode>("fresh");
+  const [setupMode, setSetupMode] = useState<SetupMode>("import");
   const [importSourceMode, setImportSourceMode] = useState<"github" | "local">("github");
   const [importUrl, setImportUrl] = useState("");
   const [localPackage, setLocalPackage] = useState<{
@@ -479,6 +573,12 @@ export function OnboardingWizard() {
   const [linearIssueCount, setLinearIssueCount] = useState<number | null>(null);
   const [linearTeamKey, setLinearTeamKey] = useState<string | null>(null);
   const [linearHighestNumber, setLinearHighestNumber] = useState<number | null>(null);
+  const [linearTeams, setLinearTeams] = useState<Array<{ id: string; name: string; key: string; issueCount: number }>>([]);
+  const [linearTeamMode, setLinearTeamMode] = useState<"new" | "existing">("new");
+  const [linearSelectedTeamId, setLinearSelectedTeamId] = useState<string>("");
+  const [linearNewTeamName, setLinearNewTeamName] = useState("");
+  const [linearNewTeamKey, setLinearNewTeamKey] = useState("");
+  const [linearTeamConfigured, setLinearTeamConfigured] = useState(false);
   const [importingIssues, setImportingIssues] = useState(false);
   const [importPhase, setImportPhase] = useState<"config" | "projects" | "issues" | "labels" | "sync" | "done">("config");
   const [importResult, setImportResult] = useState<{ imported: number; projects: number; labels: number } | null>(null);
@@ -508,11 +608,111 @@ export function OnboardingWizard() {
               setLinearIssueCount(data.openIssueCount);
               setLinearTeamKey(data.teamKey);
               setLinearHighestNumber(data.highestIssueNumber);
+              if (data.teams) {
+                setLinearTeams(data.teams);
+                if (data.teams.length > 0) {
+                  setLinearSelectedTeamId(data.teams[0].id);
+                }
+              }
+              setLinearNewTeamName(companyName || "");
+              setLinearNewTeamKey(
+                (companyName || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5) || "NEW"
+              );
             }
           })
           .catch(() => {});
       }
     }, 500);
+  }
+
+  const [linearTeamLoading, setLinearTeamLoading] = useState(false);
+  const [linearTeamError, setLinearTeamError] = useState<string | null>(null);
+
+  async function handleConfigureLinearTeam() {
+    if (!createdCompanyId) return;
+    setLinearTeamLoading(true);
+    setLinearTeamError(null);
+    try {
+      if (linearTeamMode === "existing" && linearSelectedTeamId) {
+        const cfgRes = await fetch(`/api/auth/linear/configure?companyId=${createdCompanyId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ teamId: linearSelectedTeamId }),
+        });
+        if (!cfgRes.ok) {
+          const err = await cfgRes.json().catch(() => ({})) as { error?: string };
+          setLinearTeamError(err.error ?? `Configure failed (${cfgRes.status})`);
+          return;
+        }
+        const team = linearTeams.find((t) => t.id === linearSelectedTeamId);
+        if (team) {
+          setLinearTeamKey(team.key);
+          setLinearIssueCount(team.issueCount);
+        }
+      } else if (linearTeamMode === "new" && linearNewTeamName.trim()) {
+        const key = linearNewTeamKey.trim().toUpperCase();
+        if (!key) {
+          setLinearTeamError("Team identifier is required");
+          return;
+        }
+        const duplicate = linearTeams.find((t) => t.key.toUpperCase() === key);
+        if (duplicate) {
+          setLinearTeamError(`A team with identifier "${key}" already exists (${duplicate.name}). Choose a different identifier or use the existing team.`);
+          return;
+        }
+
+        const plugins = await fetch("/api/plugins").then((r) => r.json()) as Array<{ id: string; pluginKey: string }>;
+        const linearPlugin = plugins.find((p) => p.pluginKey === "paperclip-plugin-linear");
+        if (!linearPlugin) {
+          setLinearTeamError("Linear plugin not found");
+          return;
+        }
+
+        const res = await fetch(
+          `/api/plugins/${linearPlugin.id}/actions/create-team`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              companyId: createdCompanyId,
+              params: {
+                name: linearNewTeamName.trim(),
+                key,
+              },
+            }),
+          }
+        );
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({})) as { message?: string; error?: string };
+          setLinearTeamError(err.message ?? err.error ?? `Team creation failed (${res.status})`);
+          return;
+        }
+
+        const data = await res.json() as { data?: { team?: { id: string; key: string; name: string } } };
+        const team = data?.data?.team;
+        if (!team) {
+          setLinearTeamError("Team creation returned no data — check server logs");
+          return;
+        }
+
+        setLinearTeamKey(team.key);
+        const cfgRes = await fetch(`/api/auth/linear/configure?companyId=${createdCompanyId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ teamId: team.id }),
+        });
+        if (!cfgRes.ok) {
+          setLinearTeamError("Team created in Linear but failed to bind to this company");
+          return;
+        }
+      }
+      setLinearTeamConfigured(true);
+    } catch (err) {
+      setLinearTeamError(err instanceof Error ? err.message : "Unexpected error");
+    } finally {
+      setLinearTeamLoading(false);
+    }
   }
 
   async function handleSaveConfig() {
@@ -1341,22 +1541,72 @@ export function OnboardingWizard() {
                         </button>
                       </div>
 
-                      {/* GitHub URL input */}
+                      {/* GitHub source */}
                       {importSourceMode === "github" && (
-                        <div className="group">
-                          <label className="text-xs text-muted-foreground mb-1 block">
-                            GitHub URL or companies.sh package
-                          </label>
-                          <input
-                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                            placeholder="https://github.com/org/company-package"
-                            value={importUrl}
-                            onChange={(e) => {
-                              setImportUrl(e.target.value);
-                              setImportPreview(null);
-                            }}
-                            autoFocus
-                          />
+                        <div className="group space-y-2">
+                          {githubStatus?.connected ? (
+                            <>
+                              {importUrl ? (
+                                <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                                  <Github className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                  <span className="text-sm truncate flex-1 font-mono">{importUrl}</span>
+                                  <button
+                                    className="text-muted-foreground hover:text-foreground"
+                                    onClick={() => { setImportUrl(""); setImportPreview(null); }}
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <GitHubRepoPicker
+                                  onSelect={(repo) => {
+                                    setImportUrl(`https://github.com/${repo.fullName}`);
+                                    setImportPreview(null);
+                                  }}
+                                />
+                              )}
+                              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                <Github className="h-3 w-3" />
+                                <span className="text-green-500">Connected — showing your repos</span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <label className="text-xs text-muted-foreground mb-1 block">
+                                GitHub URL or companies.sh package
+                              </label>
+                              <input
+                                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                                placeholder="https://github.com/org/company-package"
+                                value={importUrl}
+                                onChange={(e) => {
+                                  setImportUrl(e.target.value);
+                                  setImportPreview(null);
+                                }}
+                                autoFocus
+                              />
+                              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                <Github className="h-3 w-3" />
+                                <span>Private repo?</span>
+                                <button
+                                  type="button"
+                                  className="text-blue-500 hover:underline"
+                                  onClick={() => {
+                                    const popup = window.open("/oauth/github/start", "github-oauth", "width=600,height=700");
+                                    const poll = setInterval(() => {
+                                      if (popup?.closed) {
+                                        clearInterval(poll);
+                                        void refetchGitHubStatus();
+                                      }
+                                    }, 500);
+                                  }}
+                                >
+                                  Connect GitHub
+                                </button>
+                                <span>to browse and select repos</span>
+                              </div>
+                            </>
+                          )}
                         </div>
                       )}
 
@@ -2132,11 +2382,111 @@ export function OnboardingWizard() {
                       <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3">
                         <Check className="h-4 w-4 text-green-500" />
                         <span className="text-sm text-green-400">
-                          Linear connected{linearTeamKey ? ` (${linearTeamKey})` : ""}
+                          Linear connected{linearTeamConfigured && linearTeamKey ? ` (${linearTeamKey})` : ""}
                         </span>
                       </div>
 
-                      {linearIssueCount !== null && linearIssueCount > 0 && !importDone && (
+                      {/* Team picker — shown after connecting, before importing */}
+                      {!linearTeamConfigured && (
+                        <div className="rounded-md border border-border bg-muted/30 px-4 py-3 space-y-3">
+                          <p className="text-sm font-medium">Select a Linear team</p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className={cn(
+                                "rounded-md border px-3 py-1.5 text-xs transition-colors",
+                                linearTeamMode === "new" ? "border-foreground bg-accent" : "border-border hover:bg-accent/50"
+                              )}
+                              onClick={() => setLinearTeamMode("new")}
+                            >
+                              Create new team
+                            </button>
+                            {linearTeams.length > 0 && (
+                              <button
+                                type="button"
+                                className={cn(
+                                  "rounded-md border px-3 py-1.5 text-xs transition-colors",
+                                  linearTeamMode === "existing" ? "border-foreground bg-accent" : "border-border hover:bg-accent/50"
+                                )}
+                                onClick={() => setLinearTeamMode("existing")}
+                              >
+                                Use existing team
+                              </button>
+                            )}
+                          </div>
+
+                          {linearTeamMode === "new" ? (
+                            <div className="space-y-2">
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">Team name</label>
+                                <input
+                                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+                                  value={linearNewTeamName}
+                                  onChange={(e) => {
+                                    setLinearNewTeamName(e.target.value);
+                                    setLinearNewTeamKey(
+                                      e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5)
+                                    );
+                                  }}
+                                  placeholder="e.g. Lucitra Capital"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">Team identifier</label>
+                                <input
+                                  className="w-24 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring uppercase font-mono"
+                                  value={linearNewTeamKey}
+                                  onChange={(e) => setLinearNewTeamKey(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))}
+                                  placeholder="LUCA"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <select
+                              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                              value={linearSelectedTeamId}
+                              onChange={(e) => setLinearSelectedTeamId(e.target.value)}
+                            >
+                              {linearTeams.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name} ({t.key}) — {t.issueCount} issues
+                                </option>
+                              ))}
+                            </select>
+                          )}
+
+                          {linearTeamError && (
+                            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+                              {linearTeamError}
+                            </div>
+                          )}
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleConfigureLinearTeam}
+                            disabled={
+                              linearTeamLoading ||
+                              (linearTeamMode === "new"
+                                ? !linearNewTeamName.trim() || !linearNewTeamKey.trim()
+                                : !linearSelectedTeamId)
+                            }
+                          >
+                            {linearTeamLoading ? (
+                              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                            ) : (
+                              <Check className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            {linearTeamLoading
+                              ? "Creating..."
+                              : linearTeamMode === "new"
+                                ? "Create team"
+                                : "Use this team"}
+                          </Button>
+                        </div>
+                      )}
+
+                      {linearTeamConfigured && linearIssueCount !== null && linearIssueCount > 0 && !importDone && (
                         <div className="rounded-md border border-border bg-muted/30 px-4 py-3 space-y-3">
                           <p className="text-sm">
                             Found <span className="font-medium text-foreground">{linearIssueCount} open issues</span> in Linear{linearTeamKey ? ` (${linearTeamKey})` : ""}.
