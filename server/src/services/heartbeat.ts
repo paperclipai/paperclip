@@ -2798,7 +2798,7 @@ export function heartbeatService(db: Db) {
       secretsSvc,
     });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    const runtimeConfig = {
+    const runtimeConfig: Record<string, unknown> = {
       ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
