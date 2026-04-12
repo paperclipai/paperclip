@@ -24,11 +24,17 @@ public actor UserDefaultsDesktopConfigurationStore: DesktopConfigurationStoring 
             return .default
         }
 
-        return configuration
+        let normalized = configuration.canonicalized
+        if normalized != configuration {
+            await save(normalized)
+        }
+
+        return normalized
     }
 
     public func save(_ configuration: ServerConnectionConfiguration) async {
-        guard let data = try? encoder.encode(configuration) else { return }
+        let normalized = configuration.canonicalized
+        guard let data = try? encoder.encode(normalized) else { return }
         defaults.set(data, forKey: key)
     }
 }

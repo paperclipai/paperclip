@@ -144,7 +144,19 @@ public struct ServerConnectionConfiguration: Codable, Equatable, Sendable {
         } else {
             normalizedBaseURL = "http://\(trimmedBaseURLString)"
         }
-        return URLComponents(string: normalizedBaseURL)
+        guard var components = URLComponents(string: normalizedBaseURL) else {
+            return nil
+        }
+        components.host = Self.canonicalHost(components.host)
+        return components
+    }
+
+    public var canonicalized: ServerConnectionConfiguration {
+        var normalized = self
+        if let components = normalizedComponents?.url {
+            normalized.baseURLString = components.absoluteString
+        }
+        return normalized
     }
 
     private static func extractCompanyPrefix(from path: String) -> String? {
@@ -214,6 +226,18 @@ public struct ServerConnectionConfiguration: Codable, Equatable, Sendable {
         }
         let allowed = CharacterSet.alphanumerics
         return segment.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private static func canonicalHost(_ host: String?) -> String? {
+        guard let host else { return nil }
+        let lowercased = host.lowercased()
+        if lowercased == "localhost" || lowercased == "::1" || lowercased == "127.0.0.1" {
+            return lowercased == "::1" ? "::1" : host
+        }
+        if lowercased.hasPrefix("127.") {
+            return "127.0.0.1"
+        }
+        return host
     }
 
     private enum CodingKeys: String, CodingKey {
