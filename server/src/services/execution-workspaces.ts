@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -22,6 +22,16 @@ import {
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type SharedWorkspaceDedupeCandidate = {
+  id: string;
+  projectWorkspaceId: string | null;
+  cwd: string | null;
+  status: string;
+  lastUsedAt: Date;
+  createdAt: Date;
+  linkedIssueCount: number;
+  activeRuntimeCount: number;
+};
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
@@ -355,6 +365,66 @@ function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
 }
 
+function compareSharedWorkspaceDedupeCandidates(
+  left: SharedWorkspaceDedupeCandidate,
+  right: SharedWorkspaceDedupeCandidate,
+) {
+  return (
+    right.activeRuntimeCount - left.activeRuntimeCount
+    || right.linkedIssueCount - left.linkedIssueCount
+    || right.lastUsedAt.getTime() - left.lastUsedAt.getTime()
+    || right.createdAt.getTime() - left.createdAt.getTime()
+    || left.id.localeCompare(right.id)
+  );
+}
+
+export function planSharedWorkspaceDeduplication(candidates: SharedWorkspaceDedupeCandidate[]) {
+  const grouped = new Map<string, SharedWorkspaceDedupeCandidate[]>();
+
+  for (const candidate of candidates) {
+    const normalizedCwd = readNullableString(candidate.cwd);
+    if (!normalizedCwd) continue;
+    const key = `${candidate.projectWorkspaceId ?? ""}\u0000${normalizedCwd}`;
+    const existing = grouped.get(key) ?? [];
+    existing.push({ ...candidate, cwd: normalizedCwd });
+    grouped.set(key, existing);
+  }
+
+  const plans: Array<{
+    projectWorkspaceId: string | null;
+    cwd: string;
+    keep: SharedWorkspaceDedupeCandidate;
+    archive: SharedWorkspaceDedupeCandidate[];
+    skipped: SharedWorkspaceDedupeCandidate[];
+  }> = [];
+
+  for (const group of grouped.values()) {
+    if (group.length < 2) continue;
+    const ordered = [...group].sort(compareSharedWorkspaceDedupeCandidates);
+    const keep = ordered[0]!;
+    const archive: SharedWorkspaceDedupeCandidate[] = [];
+    const skipped: SharedWorkspaceDedupeCandidate[] = [];
+
+    for (const candidate of ordered.slice(1)) {
+      if (candidate.activeRuntimeCount > 0 || candidate.linkedIssueCount > 0) {
+        skipped.push(candidate);
+      } else {
+        archive.push(candidate);
+      }
+    }
+
+    plans.push({
+      projectWorkspaceId: keep.projectWorkspaceId,
+      cwd: keep.cwd ?? "",
+      keep,
+      archive,
+      skipped,
+    });
+  }
+
+  return plans;
+}
+
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   db: Db,
   companyId: string,
@@ -431,6 +501,45 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      return toExecutionWorkspace(
+        row,
+        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+      );
+    },
+
+    findReusableSharedWorkspace: async (input: {
+      companyId: string;
+      projectId: string;
+      projectWorkspaceId?: string | null;
+      cwd: string;
+    }) => {
+      const normalizedCwd = readNullableString(input.cwd);
+      if (!normalizedCwd) return null;
+
+      const conditions = [
+        eq(executionWorkspaces.companyId, input.companyId),
+        eq(executionWorkspaces.projectId, input.projectId),
+        eq(executionWorkspaces.mode, "shared_workspace"),
+        eq(executionWorkspaces.strategyType, "project_primary"),
+        eq(executionWorkspaces.cwd, normalizedCwd),
+        inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+      ];
+
+      if (input.projectWorkspaceId) {
+        conditions.push(eq(executionWorkspaces.projectWorkspaceId, input.projectWorkspaceId));
+      } else {
+        conditions.push(isNull(executionWorkspaces.projectWorkspaceId));
+      }
+
+      const row = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(and(...conditions))
+        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+
+      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, input.companyId, [row]);
       return toExecutionWorkspace(
         row,
         (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),

@@ -14,6 +14,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  selectPersistedExecutionWorkspaceForReuse,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -57,6 +58,39 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     createdAt: new Date(),
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
+}
+
+function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "execution-workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    sourceIssueId: "issue-1",
+    mode: "shared_workspace",
+    strategyType: "project_primary",
+    name: "Shared workspace",
+    status: "active",
+    cwd: "/Users/seb/paperclip",
+    repoUrl: null,
+    baseRef: null,
+    branchName: null,
+    providerType: "local_fs",
+    providerRef: null,
+    derivedFromExecutionWorkspaceId: null,
+    lastUsedAt: new Date(),
+    openedAt: new Date(),
+    closedAt: null,
+    cleanupEligibleAt: null,
+    cleanupReason: null,
+    config: null,
+    metadata: null,
+    runtimeServices: [],
+    branchProvenance: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
 }
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
@@ -253,6 +287,73 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
     });
 
     expect(result).toBeNull();
+  });
+});
+
+describe("selectPersistedExecutionWorkspaceForReuse", () => {
+  it("reuses an exact-path shared workspace even when the issue has no persisted reuse preference", () => {
+    const sharedWorkspace = buildExecutionWorkspace({
+      id: "execution-workspace-root",
+      cwd: "/Users/seb/paperclip",
+    });
+
+    const result = selectPersistedExecutionWorkspaceForReuse({
+      requestedExecutionWorkspaceMode: "shared_workspace",
+      issueExecutionWorkspacePreference: null,
+      existingExecutionWorkspace: null,
+      matchingSharedExecutionWorkspace: sharedWorkspace,
+    });
+
+    expect(result?.id).toBe("execution-workspace-root");
+  });
+
+  it("prefers the exact-path shared workspace over a stale linked workspace on a different cwd", () => {
+    const staleLinkedWorkspace = buildExecutionWorkspace({
+      id: "execution-workspace-default",
+      cwd: "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+    });
+    const repoRootWorkspace = buildExecutionWorkspace({
+      id: "execution-workspace-root",
+      cwd: "/Users/seb/paperclip",
+    });
+
+    const result = selectPersistedExecutionWorkspaceForReuse({
+      requestedExecutionWorkspaceMode: "shared_workspace",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspace: staleLinkedWorkspace,
+      matchingSharedExecutionWorkspace: repoRootWorkspace,
+    });
+
+    expect(result?.id).toBe("execution-workspace-root");
+  });
+
+  it("keeps isolated workspace reuse gated by the issue reuse preference", () => {
+    const isolatedWorkspace = buildExecutionWorkspace({
+      id: "execution-workspace-isolated",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      providerType: "git_worktree",
+      providerRef: "/tmp/worktree",
+      cwd: "/tmp/worktree",
+    });
+
+    expect(
+      selectPersistedExecutionWorkspaceForReuse({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        issueExecutionWorkspacePreference: null,
+        existingExecutionWorkspace: isolatedWorkspace,
+        matchingSharedExecutionWorkspace: null,
+      }),
+    ).toBeNull();
+
+    expect(
+      selectPersistedExecutionWorkspaceForReuse({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        issueExecutionWorkspacePreference: "reuse_existing",
+        existingExecutionWorkspace: isolatedWorkspace,
+        matchingSharedExecutionWorkspace: null,
+      })?.id,
+    ).toBe("execution-workspace-isolated");
   });
 });
 

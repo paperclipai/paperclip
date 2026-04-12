@@ -21,6 +21,7 @@ import {
 import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
+  planSharedWorkspaceDeduplication,
   readExecutionWorkspaceConfig,
   toExecutionWorkspace,
 } from "../services/execution-workspaces.ts";
@@ -138,6 +139,66 @@ describe("execution workspace config helpers", () => {
       createdByRuntime: true,
     });
     expect(workspace.branchProvenance?.recordedAt).toBeInstanceOf(Date);
+  });
+
+  it("plans shared workspace deduplication by exact cwd and preserves active rows", () => {
+    const plans = planSharedWorkspaceDeduplication([
+      {
+        id: "keep-root",
+        projectWorkspaceId: "workspace-1",
+        cwd: "/Users/seb/paperclip",
+        status: "active",
+        lastUsedAt: new Date("2026-04-12T23:00:00Z"),
+        createdAt: new Date("2026-04-12T22:00:00Z"),
+        linkedIssueCount: 0,
+        activeRuntimeCount: 0,
+      },
+      {
+        id: "archive-root",
+        projectWorkspaceId: "workspace-1",
+        cwd: "/Users/seb/paperclip",
+        status: "active",
+        lastUsedAt: new Date("2026-04-12T22:00:00Z"),
+        createdAt: new Date("2026-04-12T21:00:00Z"),
+        linkedIssueCount: 0,
+        activeRuntimeCount: 0,
+      },
+      {
+        id: "keep-default",
+        projectWorkspaceId: "workspace-1",
+        cwd: "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+        status: "active",
+        lastUsedAt: new Date("2026-04-12T23:30:00Z"),
+        createdAt: new Date("2026-04-12T22:30:00Z"),
+        linkedIssueCount: 0,
+        activeRuntimeCount: 1,
+      },
+      {
+        id: "skip-default",
+        projectWorkspaceId: "workspace-1",
+        cwd: "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+        status: "active",
+        lastUsedAt: new Date("2026-04-12T22:30:00Z"),
+        createdAt: new Date("2026-04-12T21:30:00Z"),
+        linkedIssueCount: 1,
+        activeRuntimeCount: 0,
+      },
+    ]);
+
+    expect(plans).toHaveLength(2);
+
+    const defaultPlan = plans.find(
+      (plan) => plan.cwd === "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+    );
+    const rootPlan = plans.find((plan) => plan.cwd === "/Users/seb/paperclip");
+
+    expect(defaultPlan?.keep.id).toBe("keep-default");
+    expect(defaultPlan?.archive).toEqual([]);
+    expect(defaultPlan?.skipped.map((candidate) => candidate.id)).toEqual(["skip-default"]);
+
+    expect(rootPlan?.keep.id).toBe("keep-root");
+    expect(rootPlan?.archive.map((candidate) => candidate.id)).toEqual(["archive-root"]);
+    expect(rootPlan?.skipped).toEqual([]);
   });
 });
 
@@ -501,5 +562,85 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
     expect(listed[0]?.runtimeServices).toHaveLength(1);
     expect(listed[0]?.runtimeServices?.[0]?.id).toBe(currentServiceId);
+  });
+
+  it("finds reusable shared workspaces by exact resolved cwd", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const repoRootWorkspaceId = randomUUID();
+    const legacyDefaultWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Inference Lab",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "paperclip",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/Users/seb/paperclip",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: repoRootWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: null,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Repo root workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/Users/seb/paperclip",
+        lastUsedAt: new Date("2026-04-12T22:00:00Z"),
+      },
+      {
+        id: legacyDefaultWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: null,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Legacy default workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+        lastUsedAt: new Date("2026-04-12T23:00:00Z"),
+      },
+    ]);
+
+    const repoRootWorkspace = await svc.findReusableSharedWorkspace({
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      cwd: "/Users/seb/paperclip",
+    });
+    const defaultWorkspace = await svc.findReusableSharedWorkspace({
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      cwd: "/Users/seb/.paperclip/instances/default/projects/company/project/_default",
+    });
+
+    expect(repoRootWorkspace?.id).toBe(repoRootWorkspaceId);
+    expect(defaultWorkspace?.id).toBe(legacyDefaultWorkspaceId);
   });
 });

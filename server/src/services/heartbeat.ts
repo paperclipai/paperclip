@@ -779,6 +779,27 @@ export function buildRealizedExecutionWorkspaceFromPersisted(input: {
   };
 }
 
+export function selectPersistedExecutionWorkspaceForReuse(input: {
+  requestedExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+  issueExecutionWorkspacePreference: string | null | undefined;
+  existingExecutionWorkspace: ExecutionWorkspace | null;
+  matchingSharedExecutionWorkspace: ExecutionWorkspace | null;
+}): ExecutionWorkspace | null {
+  if (input.requestedExecutionWorkspaceMode === "shared_workspace") {
+    return input.matchingSharedExecutionWorkspace ?? null;
+  }
+
+  if (
+    input.issueExecutionWorkspacePreference === "reuse_existing"
+    && input.existingExecutionWorkspace
+    && input.existingExecutionWorkspace.status !== "archived"
+  ) {
+    return input.existingExecutionWorkspace;
+  }
+
+  return null;
+}
+
 function buildExecutionWorkspaceConfigSnapshot(config: Record<string, unknown>): Partial<ExecutionWorkspaceConfig> | null {
   const strategy = parseObject(config.workspaceStrategy);
   const snapshot: Partial<ExecutionWorkspaceConfig> = {};
@@ -4578,12 +4599,23 @@ export function heartbeatService(db: Db) {
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const shouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace &&
-      existingExecutionWorkspace.status !== "archived";
-    const persistedExecutionWorkspaceMode = shouldReuseExisting && existingExecutionWorkspace
-      ? issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode)
+    const matchingSharedExecutionWorkspace =
+      requestedExecutionWorkspaceMode === "shared_workspace" && executionProjectId
+        ? await executionWorkspacesSvc.findReusableSharedWorkspace({
+            companyId: agent.companyId,
+            projectId: executionProjectId,
+            projectWorkspaceId: resolvedWorkspace.workspaceId,
+            cwd: resolvedWorkspace.cwd,
+          })
+        : null;
+    const reusableExecutionWorkspace = selectPersistedExecutionWorkspaceForReuse({
+      requestedExecutionWorkspaceMode,
+      issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference,
+      existingExecutionWorkspace,
+      matchingSharedExecutionWorkspace,
+    });
+    const persistedExecutionWorkspaceMode = reusableExecutionWorkspace
+      ? issueExecutionWorkspaceModeForPersistedWorkspace(reusableExecutionWorkspace.mode)
       : null;
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       persistedExecutionWorkspaceMode === "isolated_workspace" ||
@@ -4591,7 +4623,7 @@ export function heartbeatService(db: Db) {
       persistedExecutionWorkspaceMode === "agent_default"
         ? persistedExecutionWorkspaceMode
         : requestedExecutionWorkspaceMode;
-    const workspaceManagedConfig = shouldReuseExisting
+    const workspaceManagedConfig = reusableExecutionWorkspace
       ? { ...mappedAgentAdapterConfig }
       : buildExecutionWorkspaceAdapterConfig({
           agentConfig: mappedAgentAdapterConfig,
@@ -4602,7 +4634,7 @@ export function heartbeatService(db: Db) {
         });
     const persistedWorkspaceManagedConfig = applyPersistedExecutionWorkspaceConfig({
       config: workspaceManagedConfig,
-      workspaceConfig: existingExecutionWorkspace?.config ?? null,
+      workspaceConfig: reusableExecutionWorkspace?.config ?? null,
       mode: effectiveExecutionWorkspaceMode,
     });
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
@@ -4641,7 +4673,7 @@ export function heartbeatService(db: Db) {
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
-      executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      executionWorkspaceId: reusableExecutionWorkspace?.id ?? null,
     });
     const executionWorkspaceBase = {
       baseCwd: resolvedWorkspace.cwd,
@@ -4651,10 +4683,10 @@ export function heartbeatService(db: Db) {
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
-    const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+    const reusedExecutionWorkspace = reusableExecutionWorkspace
       ? buildRealizedExecutionWorkspaceFromPersisted({
           base: executionWorkspaceBase,
-          workspace: existingExecutionWorkspace,
+          workspace: reusableExecutionWorkspace,
         })
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
@@ -4672,28 +4704,28 @@ export function heartbeatService(db: Db) {
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const persistedCreatedByRuntime =
-      executionWorkspace.created || existingExecutionWorkspace?.metadata?.createdByRuntime === true;
+      executionWorkspace.created || reusableExecutionWorkspace?.metadata?.createdByRuntime === true;
     const branchProvenance = {
       source: executionWorkspace.created ? "runtime_created" : "runtime_reused",
-      branchName: executionWorkspace.branchName ?? existingExecutionWorkspace?.branchName ?? null,
-      baseRef: executionWorkspace.repoRef ?? existingExecutionWorkspace?.baseRef ?? null,
+      branchName: executionWorkspace.branchName ?? reusableExecutionWorkspace?.branchName ?? null,
+      baseRef: executionWorkspace.repoRef ?? reusableExecutionWorkspace?.baseRef ?? null,
       createdByRuntime: persistedCreatedByRuntime,
       recordedAt: new Date().toISOString(),
     };
     const nextExecutionWorkspaceMetadataBase = {
-      ...(existingExecutionWorkspace?.metadata ?? {}),
+      ...(reusableExecutionWorkspace?.metadata ?? {}),
       source: executionWorkspace.source,
       createdByRuntime: persistedCreatedByRuntime,
       branchProvenance,
     } as Record<string, unknown>;
-    const nextExecutionWorkspaceMetadata = shouldReuseExisting
+    const nextExecutionWorkspaceMetadata = reusableExecutionWorkspace
       ? nextExecutionWorkspaceMetadataBase
       : configSnapshot
         ? mergeExecutionWorkspaceConfig(nextExecutionWorkspaceMetadataBase, configSnapshot)
         : nextExecutionWorkspaceMetadataBase;
     try {
-      persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-        ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+      persistedExecutionWorkspace = reusableExecutionWorkspace
+        ? await executionWorkspacesSvc.update(reusableExecutionWorkspace.id, {
             cwd: executionWorkspace.cwd,
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
@@ -4737,7 +4769,7 @@ export function heartbeatService(db: Db) {
         try {
           await cleanupExecutionWorkspaceArtifacts({
             workspace: {
-              id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
+              id: reusableExecutionWorkspace?.id ?? `transient-${run.id}`,
               cwd: executionWorkspace.cwd,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
