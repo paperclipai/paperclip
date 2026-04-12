@@ -26,7 +26,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { errorHandler } from "../middleware/index.js";
 import { accessService } from "../services/access.js";
 
 vi.mock("../services/index.js", async () => {
@@ -90,10 +89,15 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let routineRoutesFactory!: typeof import("../routes/routines.js").routineRoutes;
+  let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
+    vi.resetModules();
+    ({ routineRoutes: routineRoutesFactory } = await import("../routes/routines.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   }, 20_000);
 
   afterEach(async () => {
@@ -120,15 +124,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   async function createApp(actor: Record<string, unknown>) {
-    const { routineRoutes } = await import("../routes/routines.js");
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = actor;
       next();
     });
-    app.use("/api", routineRoutes(db));
-    app.use(errorHandler);
+    app.use("/api", routineRoutesFactory(db));
+    app.use(errorHandlerMiddleware);
     return app;
   }
 

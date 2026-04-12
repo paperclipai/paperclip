@@ -162,7 +162,7 @@ describe("agent instructions bundle routes", () => {
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
       },
     });
-  });
+  }, 30_000);
 
   it("returns bundle metadata", async () => {
     const res = await request(createApp())

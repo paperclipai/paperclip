@@ -73,6 +73,12 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+async function useIsolatedPaperclipWorktreeEnv(prefix: string) {
+  process.env.PAPERCLIP_HOME = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-paperclip-home-`));
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
+  process.env.PAPERCLIP_WORKTREES_DIR = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-paperclip-worktrees-`));
+}
+
 function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
   return {
     baseCwd: cwd,
@@ -728,6 +734,7 @@ describe("realizeExecutionWorkspace", () => {
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
     const repoRoot = await createTempRepo();
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-local-links");
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
@@ -830,6 +837,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
     const repoRoot = await createTempRepo();
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-install");
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "package.json"),
@@ -905,6 +913,7 @@ describe("realizeExecutionWorkspace", () => {
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
     const repoRoot = await createTempRepo();
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-local-links-dup");
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
@@ -1462,6 +1471,7 @@ describe("realizeExecutionWorkspace", () => {
 
 describe("ensureRuntimeServicesForRun", () => {
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-shared-services");
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
     const serviceCommand =
@@ -1561,6 +1571,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("does not reuse project-scoped shared services across different workspace launch contexts", async () => {
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-project-scope");
     const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-primary-"));
     const worktreeWorkspaceRoot = path.join(primaryWorkspaceRoot, ".paperclip", "worktrees", "PAP-874-chat-speed-issues");
     await fs.mkdir(worktreeWorkspaceRoot, { recursive: true });
@@ -1736,6 +1747,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("stops execution workspace runtime services by executionWorkspaceId", async () => {
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-stop");
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-"));
     const workspace = buildWorkspace(workspaceRoot);
     const runId = "run-stop";
@@ -1790,6 +1802,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("does not stop services in sibling directories when matching by workspace cwd", async () => {
+    await useIsolatedPaperclipWorktreeEnv("workspace-runtime-sibling");
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-sibling-"));
     const targetWorkspaceRoot = path.join(workspaceParent, "project");
     const siblingWorkspaceRoot = path.join(workspaceParent, "project-extended", "service");

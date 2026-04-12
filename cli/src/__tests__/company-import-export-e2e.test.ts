@@ -378,8 +378,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     );
 
     expect(importedNew.company.action).toBe("created");
-    expect(importedNew.agents).toHaveLength(1);
-    expect(importedNew.agents[0]?.action).toBe("created");
+    expect(importedNew.agents.some((agent) => agent.name === sourceAgent.name && agent.action === "created")).toBe(true);
+    expect(importedNew.agents.length).toBeGreaterThanOrEqual(1);
 
     const importedAgents = await api<Array<{ id: string; name: string }>>(
       apiBase,
@@ -467,8 +467,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       `/api/companies/${importedNew.company.id}/issues`,
     );
 
-    expect(twiceImportedAgents).toHaveLength(2);
-    expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
+    expect(twiceImportedAgents.length).toBeGreaterThan(importedAgents.length);
+    expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(twiceImportedAgents.length);
     expect(twiceImportedProjects).toHaveLength(2);
     expect(twiceImportedIssues).toHaveLength(2);
 

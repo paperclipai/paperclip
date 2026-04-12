@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assetRoutes } from "../routes/assets.js";
+import { errorHandler } from "../middleware/index.js";
 import type { StorageService } from "../storage/types.js";
 
 const { createAssetMock, getAssetByIdMock, logActivityMock } = vi.hoisted(() => ({
@@ -75,6 +76,7 @@ function createApp(storage: ReturnType<typeof createStorageService>) {
     next();
   });
   app.use("/api", assetRoutes({} as any, storage));
+  app.use(errorHandler);
   return app;
 }
 

@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, invites } from "@paperclipai/db";
-import { accessRoutes } from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -36,18 +33,36 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/index.js")>();
-  return {
-    ...actual,
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    boardAuthService: () => mockBoardAuthService,
-    deduplicateAgentName: vi.fn(),
-    logActivity: mockLogActivity,
-    notifyHireApproved: vi.fn(),
-  };
-});
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  boardAuthService: () => mockBoardAuthService,
+  deduplicateAgentName: vi.fn((name: string) => name),
+  logActivity: mockLogActivity,
+  normalizeRuntimeConfigForCooHeartbeatModel: vi.fn((config: Record<string, unknown>) => config),
+  notifyHireApproved: vi.fn(),
+  prepareAdapterConfigForPersistence: vi.fn(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig),
+  secretService: () => ({
+    resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+    normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  }),
+}));
+
+let accessRoutesFactory: typeof import("../routes/access.js").accessRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+
+function getDrizzleTableName(table: unknown): string | undefined {
+  if (!table || typeof table !== "object") return undefined;
+  const drizzleTable = table as Record<PropertyKey, unknown>;
+  return (
+    (typeof drizzleTable[Symbol.for("drizzle:Name")] === "string"
+      ? drizzleTable[Symbol.for("drizzle:Name")]
+      : undefined) ??
+    (typeof drizzleTable[Symbol.for("drizzle:BaseName")] === "string"
+      ? drizzleTable[Symbol.for("drizzle:BaseName")]
+      : undefined)
+  );
+}
 
 function createDbStub() {
   const createdInvite = {
@@ -69,12 +84,13 @@ function createDbStub() {
   const insert = vi.fn().mockReturnValue({ values });
   const select = vi.fn(() => ({
     from(table: unknown) {
+      const tableName = getDrizzleTableName(table);
       return {
         where: vi.fn().mockImplementation(() => {
-          if (table === invites) {
+          if (tableName === "invites") {
             return Promise.resolve([createdInvite]);
           }
-          if (table === companies) {
+          if (tableName === "companies") {
             return Promise.resolve([{ name: "Acme AI" }]);
           }
           return Promise.resolve([]);
@@ -97,18 +113,24 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
   });
   app.use(
     "/api",
-    accessRoutes(db as any, {
+    accessRoutesFactory(db as any, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
       allowedHostnames: [],
     }),
   );
-  app.use(errorHandler);
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ accessRoutes: accessRoutesFactory } = await import("../routes/access.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  }, 30_000);
+
   beforeEach(() => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();

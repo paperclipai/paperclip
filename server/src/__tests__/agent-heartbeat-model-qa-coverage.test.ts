@@ -136,7 +136,13 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
     const instructions = agentInstructionsService();
     const files = await instructions.exportFiles(qaAgent!);
     const expectedQaBundle = await loadDefaultAgentInstructionsBundle("qa");
-    expect(files.files).toEqual(expectedQaBundle);
+    const { ["AGENTS.md"]: expectedAgentsMd = "", ...expectedOtherFiles } = expectedQaBundle;
+    const { ["AGENTS.md"]: actualAgentsMd = "", ...actualOtherFiles } = files.files;
+    expect(actualOtherFiles).toEqual(expectedOtherFiles);
+    expect(actualAgentsMd).toContain(expectedAgentsMd.trim());
+    expect(actualAgentsMd).toContain("paperclip:qa-baseline:start");
+    expect(actualAgentsMd).toContain("[QA PASS]");
+    expect(actualAgentsMd).toContain("[RELEASE CONFIRMED]");
   });
 
   it("repairs drifted managed QA instructions without deleting custom persona content", async () => {
@@ -186,6 +192,12 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
       .update(agents)
       .set({ adapterConfig: materialized.adapterConfig, updatedAt: new Date() })
       .where(eq(agents.id, qaId));
+
+    await fs.writeFile(
+      path.join(materialized.bundle.rootPath ?? "", "AGENTS.md"),
+      "# Benchmark Archivist\nArchive benchmark runs and replay traces.\n",
+      "utf8",
+    );
 
     const svc = agentHeartbeatModelService(db);
     const report = await svc.syncQaReleaseEngineerInstructions({ apply: true });

@@ -1,7 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
@@ -77,14 +76,21 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutesFactory({} as any, {} as any));
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(err?.status ?? 500).json({ error: err?.message ?? "Internal server error" });
   });
   return app;
 }
 
+let issueRoutesFactory: typeof import("../routes/issues.js").issueRoutes;
+
 describe("issue dependency wakeups in issue routes", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+  }, 30_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getAncestors.mockResolvedValue([]);

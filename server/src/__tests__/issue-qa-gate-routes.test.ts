@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
-import { HttpError } from "../errors.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -90,6 +87,9 @@ vi.mock("../services/issue-merge.js", () => ({
 }));
 
 const mockDb = {} as any;
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let HttpErrorCtor!: typeof import("../errors.js").HttpError;
 
 function createApp(
   actor: Record<string, unknown> = {
@@ -106,8 +106,8 @@ function createApp(
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb, {} as any));
-  app.use(errorHandler);
+  app.use("/api", issueRoutesFactory(mockDb, {} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -157,6 +157,13 @@ function qaComment(body: string) {
 }
 
 describe("issue QA gate routes", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ HttpError: HttpErrorCtor } = await import("../errors.js"));
+  }, 30_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.listComments.mockResolvedValue([]);
@@ -349,7 +356,7 @@ describe("issue QA gate routes", () => {
   it("returns invalid_status_transition reason codes from 422 route errors", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(() => {
-      throw new HttpError(422, "Invalid issue status transition", {
+      throw new HttpErrorCtor(422, "Invalid issue status transition", {
         reasonCode: "invalid_status_transition",
       });
     });

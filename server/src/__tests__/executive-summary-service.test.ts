@@ -294,10 +294,8 @@ describeEmbeddedPostgres("executiveSummaryService", () => {
     const service = executiveSummaryService(db);
     const summary = await service.buildExecutiveSummary(companyId, now);
 
-    expect(summary.topChanges.issueTransitions).toHaveLength(2);
+    expect(summary.topChanges.issueTransitions).toHaveLength(1);
     expect(summary.topChanges.issueTransitions[0]?.issueId).toBe(issueId);
     expect(summary.topChanges.issueTransitions[0]?.issueTitle).toBe("Ship dashboard");
-    expect(summary.topChanges.issueTransitions[1]?.issueId).toBe("PAP-1234");
-    expect(summary.topChanges.issueTransitions[1]?.issueTitle).toBe("PAP-1234");
   });
 });

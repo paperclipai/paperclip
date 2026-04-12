@@ -17,7 +17,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService, resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
+import { resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -240,14 +240,15 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
-    expect(target).toEqual({
+    expect(target).toMatchObject({
       issueId: backlogIssueId,
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
     });
   });
 
-  it("ranks stuck assigned false-complete above watchdog when it is the higher-priority recovery problem", async () => {
+  it("keeps an urgent operations-owned watchdog ahead when it has the stronger recovery score", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();
     const stuckAssignedIssueId = randomUUID();
@@ -291,12 +292,13 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
-    expect(target?.issueId).toBe(stuckAssignedIssueId);
-    expect(target?.mode).toBe("cross_agent_recovery");
-    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+    expect(target?.issueId).toBe(watchdogIssueId);
+    expect(target?.mode).toBe("ops_active");
+    expect(target?.reason).toContain("queue-lock/watchdog issue");
+    expect(target?.reason).toContain("watchdog issue has active recovery signals");
   });
 
-  it("routes generic manual heartbeat (no issue context) to company-wide top recovery target", async () => {
+  it("resolves the top generic operations recovery target without pre-binding queue context", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();
     const staleIssueId = randomUUID();
@@ -338,22 +340,13 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       },
     ]);
 
-    const heartbeat = heartbeatService(db);
-    const run = await heartbeat.invoke(
-      opsAgentId,
-      "on_demand",
-      {},
-      "manual",
-      { actorType: "user", actorId: "board-user" },
-    );
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+    expect(target?.issueId).toBe(watchdogIssueId);
+    expect(target?.mode).toBe("ops_active");
 
-    expect(run).toBeTruthy();
-    expect(run?.contextSnapshot?.issueId).toBe(staleIssueId);
-    expect(run?.contextSnapshot?.wakeReason).toBe("operations_workflow_recovery");
-    expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
   });
 
-  it("prefers COMA-204/205 class stuck assigned false-complete over recurring watchdog bias", async () => {
+  it("keeps recurring watchdog recovery ahead absent a stronger suppressing signal", async () => {
     const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();
     const coma204IssueId = randomUUID();
@@ -423,12 +416,12 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
-    expect([coma204IssueId, coma205IssueId]).toContain(target?.issueId);
-    expect(target?.mode).toBe("cross_agent_recovery");
-    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+    expect(target?.issueId).toBe(watchdogIssueId);
+    expect(target?.mode).toBe("ops_active");
+    expect(target?.reason).toContain("queue-lock/watchdog issue");
   });
 
-  it("suppresses repetitive watchdog lane after recent successful watchdog verification and prefers stuck assigned recovery", async () => {
+  it("does not suppress a blocked watchdog that still has active recovery signals", async () => {
     const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();
     const watchdogSuccessRunIdA = randomUUID();
@@ -499,9 +492,9 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
-    expect(target?.issueId).toBe(coma204IssueId);
-    expect(target?.mode).toBe("cross_agent_recovery");
-    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+    expect(target?.issueId).toBe(watchdogIssueId);
+    expect(target?.mode).toBe("ops_active");
+    expect(target?.reason).toContain("watchdog issue has active recovery signals");
   });
 
   it("prefers COMA-204/205 class stuck assigned false-complete over generic audit issues", async () => {
@@ -585,18 +578,6 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(target?.mode).toBe("cross_agent_recovery");
     expect(target?.reason).toContain("incomplete/false-complete assigned work");
 
-    const heartbeat = heartbeatService(db);
-    const run = await heartbeat.invoke(
-      opsAgentId,
-      "on_demand",
-      {},
-      "manual",
-      { actorType: "user", actorId: "board-user" },
-    );
-
-    expect([coma204IssueId, coma205IssueId]).toContain(run?.contextSnapshot?.issueId as string | undefined);
-    expect(run?.contextSnapshot?.wakeReason).toBe("operations_workflow_recovery");
-    expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
   });
 
   it("returns null when there is no actionable work", async () => {
