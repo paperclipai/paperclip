@@ -190,30 +190,49 @@ export function OrgChart() {
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  // Center the chart on first load
+  // Center the chart on first load and on container resize (handles orientation changes).
   const hasInitialized = useRef(false);
-  useEffect(() => {
-    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
-
-    const container = containerRef.current;
-    const containerW = container.clientWidth;
-    const containerH = container.clientHeight;
-
-    // Fit chart to container
+  const fitToContainer = useCallback((containerW: number, containerH: number) => {
+    if (allNodes.length === 0 || containerW === 0 || containerH === 0) return;
     const scaleX = (containerW - 40) / bounds.width;
     const scaleY = (containerH - 40) / bounds.height;
     const fitZoom = Math.min(scaleX, scaleY, 1);
-
     const chartW = bounds.width * fitZoom;
     const chartH = bounds.height * fitZoom;
-
     setZoom(fitZoom);
-    setPan({
-      x: (containerW - chartW) / 2,
-      y: (containerH - chartH) / 2,
-    });
+    setPan({ x: (containerW - chartW) / 2, y: (containerH - chartH) / 2 });
   }, [allNodes, bounds]);
+
+  useEffect(() => {
+    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
+    const container = containerRef.current;
+    if (container.clientWidth === 0 || container.clientHeight === 0) return;
+    hasInitialized.current = true;
+    fitToContainer(container.clientWidth, container.clientHeight);
+  }, [allNodes, bounds, fitToContainer]);
+
+  // Re-center on container resize (covers portrait<->landscape orientation changes).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      if (!hasInitialized.current) {
+        // First valid size — perform initial fit.
+        if (width > 0 && height > 0 && allNodes.length > 0) {
+          hasInitialized.current = true;
+          fitToContainer(width, height);
+        }
+      } else {
+        // Subsequent resize (e.g. orientation change) — re-fit.
+        fitToContainer(width, height);
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [allNodes, fitToContainer]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
