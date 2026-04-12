@@ -1000,6 +1000,45 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+const CLEANUP_GRACE_MS = 5000;
+
+/**
+ * Best-effort cleanup of a child process by PID.
+ * Sends SIGTERM, waits 5 seconds, then SIGKILL if still alive.
+ * Gracefully handles null/invalid PIDs and already-dead processes (ESRCH).
+ */
+export async function cleanupChildProcess(pid: number | null | undefined): Promise<void> {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return;
+
+  // Check if process is alive first
+  if (!isProcessAlive(pid)) return;
+
+  try {
+    process.kill(pid, "SIGTERM");
+    logger.info({ pid }, "sent SIGTERM to orphaned child process");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH") return; // already dead
+    logger.warn({ err, pid }, "failed to send SIGTERM to child process");
+    return;
+  }
+
+  // Wait grace period then check if still alive
+  await new Promise<void>((resolve) => setTimeout(resolve, CLEANUP_GRACE_MS));
+
+  if (!isProcessAlive(pid)) return;
+
+  try {
+    process.kill(pid, "SIGKILL");
+    logger.info({ pid }, "sent SIGKILL to orphaned child process (SIGTERM did not kill it)");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ESRCH") {
+      logger.warn({ err, pid }, "failed to send SIGKILL to child process");
+    }
+  }
+}
+
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -2384,6 +2423,13 @@ export function heartbeatService(db: Db) {
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
+
+      // Best-effort cleanup: kill the OS process if it's still alive.
+      // Fire-and-forget so the reaper loop isn't blocked by the 5s grace period.
+      if (tracksLocalChild && run.processPid) {
+        void cleanupChildProcess(run.processPid);
+      }
+
       reaped.push(run.id);
     }
 
@@ -3452,6 +3498,18 @@ export function heartbeatService(db: Db) {
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+
+          // Safety-net: if the adapter's child process is still alive after a
+          // terminal state transition, kill it so it doesn't become a zombie.
+          // Re-read the run to get the latest processPid (set by onSpawn callback).
+          const finalRun = await getRun(run.id).catch(() => null);
+          if (finalRun?.processPid) {
+            const finalAgent = await getAgent(run.agentId).catch(() => null);
+            if (finalAgent && isTrackedLocalChildProcessAdapter(finalAgent.adapterType)) {
+              void cleanupChildProcess(finalRun.processPid);
+            }
+          }
+
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
