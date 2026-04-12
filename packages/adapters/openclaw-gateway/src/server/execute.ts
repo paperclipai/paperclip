@@ -332,12 +332,13 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-function resolveClaimedApiKeyPath(value: unknown): string {
-  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+function resolveClaimedApiKeyPath(value: unknown): string | null {
+  return nonEmpty(value) ?? null;
 }
 
-function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
+export function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const claimedApiKeyPathOverride = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
@@ -345,6 +346,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
+  }
+  if (claimedApiKeyPathOverride) {
+    paperclipEnv.PAPERCLIP_CLAIMED_API_KEY_PATH = claimedApiKeyPathOverride;
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
@@ -358,17 +362,19 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(
+export function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath =
+    paperclipEnv.PAPERCLIP_CLAIMED_API_KEY_PATH ?? DEFAULT_CLAIMED_API_KEY_PATH;
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_API_URL",
+    "PAPERCLIP_CLAIMED_API_KEY_PATH",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
