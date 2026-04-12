@@ -120,6 +120,9 @@ export const en = {
 
   // Room
   "room.participants": "Participants",
+  "room.coordinator": "Coordinator",
+  "room.coordinatorAuto": "Auto (issue assignee)",
+  "room.coordinatorHint": "Default recipient for unmentioned messages",
   "room.linkedIssues": "Linked Issues",
   "room.addAgent": "Add agent",
   "room.compose": "Type a message\u2026",

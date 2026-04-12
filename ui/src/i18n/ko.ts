@@ -122,6 +122,9 @@ export const ko: Record<TranslationKey, string> = {
 
   // Room
   "room.participants": "참여자",
+  "room.coordinator": "코디네이터",
+  "room.coordinatorAuto": "자동 (이슈 담당자)",
+  "room.coordinatorHint": "멘션 없는 메시지의 기본 수신자",
   "room.linkedIssues": "연결된 이슈",
   "room.addAgent": "에이전트 추가",
   "room.compose": "메시지를 입력하세요\u2026",
