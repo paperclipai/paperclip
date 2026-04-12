@@ -40,7 +40,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(async () => ({
       id: "agent-1",
       companyId: "company-1",
-      role: "engineer",
+      role: "ceo",
       permissions: { canCreateAgents: false },
     })),
   }),

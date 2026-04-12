@@ -86,7 +86,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     labels: [],
     labelIds: [],
     hiddenAt: null,
-    updatedAt: new Date("2026-04-10T10:00:00Z"),
+    updatedAt: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago (within reopen window)
     ...overrides,
   };
 }

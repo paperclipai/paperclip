@@ -1687,6 +1687,66 @@ export function issueRoutes(
 
     // Issue type hierarchy gate — UNIVERSAL enforcement (agents AND board users)
     const issueType: string = req.body.issueType;
+
+    // Role-based gate: only leadership agents can create initiatives.
+    // Board users (non-agent actors) bypass this check.
+    if (issueType === "initiative" && actor.actorType === "agent" && actor.agentId) {
+      const LEADERSHIP_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "pm"]);
+      const agentRecord = await agentsSvc.getById(actor.agentId);
+      if (!agentRecord || !LEADERSHIP_ROLES.has(agentRecord.role)) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.hierarchy_gate_blocked",
+          entityType: "issue",
+          entityId: actor.agentId ?? actor.actorId,
+          details: { issueType, agentRole: agentRecord?.role, reason: "initiative_requires_leadership_role" },
+        });
+        res.status(422).json({
+          error: "initiative_requires_leadership_role",
+          gate: "initiative_requires_leadership_role",
+          message: `Only leadership agents (ceo, cto, cmo, cfo, pm) can create initiatives. Your role is "${agentRecord?.role ?? "unknown"}". Create this as a task under an existing initiative, or escalate to a leadership agent.`,
+        });
+        return;
+      }
+    }
+
+    // Heuristic gate: reject initiatives whose titles match obvious child-task patterns.
+    // Agents have been caught creating "[DLD-XXXX]" or "[post]" items as initiatives
+    // to bypass the parent_requires_initiative rule.
+    if (issueType === "initiative" && actor.actorType === "agent" && typeof req.body.title === "string") {
+      const title = req.body.title.trim();
+      const childPatterns = [
+        /^\[[A-Z]+-\d+\]/i,         // [DLD-3079] ...
+        /^\[post\]/i,                 // [post] ...
+        /^\[[a-z-]+\]\s*\[post\]/i,  // [DLD-3079][post] ...
+        /^(re-audit|remediate|fix|patch|update)\s/i, // operational verbs as first word
+      ];
+      const matched = childPatterns.find((re) => re.test(title));
+      if (matched) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.hierarchy_gate_blocked",
+          entityType: "issue",
+          entityId: actor.agentId ?? actor.actorId,
+          details: { issueType, title, reason: "initiative_title_looks_like_task", pattern: matched.source },
+        });
+        res.status(422).json({
+          error: "initiative_title_looks_like_task",
+          gate: "initiative_title_looks_like_task",
+          message: `This title looks like a task, not an initiative. Initiatives are top-level work streams like "SEO remediation Q2" or "Customer onboarding overhaul", not individual work items. Create this as a task under an existing initiative instead.`,
+        });
+        return;
+      }
+    }
+
     if (issueType === "initiative" && req.body.parentId) {
       await logActivity(db, {
         companyId,
