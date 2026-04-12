@@ -416,10 +416,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  // When woken via direct_chat, embed the chat message directly in the prompt
+  // so the model can see it without needing to read env vars (which are invisible
+  // in resumed sessions).
+  const ctxWakeReason = asString(context.wakeReason, "");
+  const ctxChatMessage = asString(context.chatMessage, "");
+  const directChatInline =
+    ctxWakeReason === "direct_chat" && ctxChatMessage.length > 0
+      ? `---\nDirect chat message (wake_reason=direct_chat):\n\n${ctxChatMessage}`
+      : "";
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     sessionHandoffNote,
     renderedPrompt,
+    directChatInline,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
