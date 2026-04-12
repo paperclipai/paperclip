@@ -22,6 +22,8 @@ const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
 }));
 
+const localStorageState = new Map<string, string>();
+
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
@@ -118,6 +120,22 @@ vi.mock("@/components/ui/dropdown-menu", async () => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+Object.defineProperty(globalThis, "localStorage", {
+  value: {
+    getItem: (key: string) => localStorageState.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      localStorageState.set(key, value);
+    },
+    removeItem: (key: string) => {
+      localStorageState.delete(key);
+    },
+    clear: () => {
+      localStorageState.clear();
+    },
+  },
+  configurable: true,
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

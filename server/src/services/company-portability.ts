@@ -752,6 +752,25 @@ async function readGitOutput(cwd: string, args: string[]) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizePortableRepoUrl(value: string | null | undefined) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+
+  const scpStyleMatch = /^git@([^:]+):(.+?)(?:\/)?$/.exec(trimmed);
+  if (scpStyleMatch) {
+    return `https://${scpStyleMatch[1]}/${scpStyleMatch[2]}`;
+  }
+
+  const sshStyleMatch = /^ssh:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\/)?$/.exec(trimmed);
+  if (sshStyleMatch) {
+    return `https://${sshStyleMatch[1]}/${sshStyleMatch[2]}`;
+  }
+
+  return trimmed;
+}
+
 async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectLike["workspaces"]>[number]) {
   const cwd = asString(workspace.cwd);
   if (!cwd) {
@@ -816,13 +835,16 @@ async function buildPortableProjectWorkspaces(
       !asString(workspace.repoUrl) || !asString(workspace.repoRef) || !asString(workspace.defaultRef)
         ? await inferPortableWorkspaceGitMetadata(workspace)
         : { repoUrl: null, repoRef: null, defaultRef: null };
-    const repoUrl = asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl;
+    const repoUrl = normalizePortableRepoUrl(asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl);
     if (!repoUrl) {
       warnings.push(`Project ${projectSlug} workspace ${workspace.name} was omitted from export because it does not have a portable repoUrl.`);
       continue;
     }
     const repoRef = asString(workspace.repoRef) ?? inferredGitMetadata.repoRef;
     const defaultRef = asString(workspace.defaultRef) ?? inferredGitMetadata.defaultRef ?? repoRef;
+    const sourceType = repoUrl && asString(workspace.sourceType) === "local_path"
+      ? "git_repo"
+      : asString(workspace.sourceType);
     const workspaceSignature = JSON.stringify({
       name: workspace.name,
       repoUrl,
@@ -866,7 +888,7 @@ async function buildPortableProjectWorkspaces(
 
     const portableWorkspace = stripEmptyValues({
       name: workspace.name,
-      sourceType: workspace.sourceType,
+      sourceType,
       repoUrl,
       repoRef,
       defaultRef,
@@ -882,7 +904,7 @@ async function buildPortableProjectWorkspaces(
     const manifestWorkspace = {
       key: workspaceKey,
       name: workspace.name,
-      sourceType: asString(workspace.sourceType),
+      sourceType,
       repoUrl,
       repoRef,
       defaultRef,
