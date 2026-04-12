@@ -1,0 +1,59 @@
+{
+  "name": "@goldneuron/neuros-electron",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "description": "Electron desktop shell for neurOS workspaces backed by the Paperclip web control plane.",
+  "productName": "neurOS Electron",
+  "main": "electron/main.js",
+  "license": "MIT",
+  "homepage": "https://goldneuron.io",
+  "author": "GoldNeuron",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monrars1995/paperclip.git",
+    "directory": "apps/neuros-electron"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 4173\" \"wait-on tcp:4173 && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:4173 electron .\"",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build && npm run typecheck",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --mac dmg zip"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.0",
+    "cross-env": "^7.0.3",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "io.goldneuron.neurOS.electron",
+    "productName": "neurOS Electron",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}

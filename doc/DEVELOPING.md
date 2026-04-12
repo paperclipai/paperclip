@@ -84,6 +84,40 @@ Notes:
 - local bundle/install now works with a full Xcode toolchain enabled
 - signing is ad hoc for local installs; notarization and public distribution still require the full release pipeline
 
+## neurOS Electron Desktop App
+
+An Electron-first desktop shell now also lives in `apps/neuros-electron`. It is intentionally narrower than the Swift app: it connects to an already running Paperclip server and embeds the working web control plane instead of reimplementing local bootstrap logic.
+
+Install dependencies:
+
+```sh
+pnpm neuros:electron:install
+```
+
+Run in development:
+
+```sh
+pnpm neuros:electron:dev
+```
+
+Build the renderer and validate TypeScript:
+
+```sh
+pnpm neuros:electron:build
+```
+
+Package macOS artifacts:
+
+```sh
+pnpm neuros:electron:dist
+```
+
+Notes:
+
+- the Electron app auto-detects `http://127.0.0.1:3100` and `http://localhost:3100`
+- it reads available companies from `/api/companies` and can open workspace routes like `/BC/dashboard`
+- it does not attempt `paperclipai onboard` or local server bootstrap; if the API is down, it stays in a clear disconnected state
+
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
