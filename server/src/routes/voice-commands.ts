@@ -121,16 +121,17 @@ export function voiceCommandRoutes(db: Db) {
             body: wrappedPrompt,
           });
 
-          // Wake the router agent with voice_command reason
+          // Wake the router agent via direct_chat so the standard heartbeat
+          // short-circuits into conversational mode and processes the message
           const run = await heartbeat.wakeup(routerAgentId, {
             source: "on_demand",
             triggerDetail: "manual",
-            reason: "voice_command",
+            reason: "direct_chat",
             payload: { chatId, messageId: msg.id, voiceCommandId: cmd.id },
             requestedByActorType: "user",
             requestedByActorId: userId,
             contextSnapshot: {
-              wakeReason: "voice_command",
+              wakeReason: "direct_chat",
               chatId,
               chatMessageId: msg.id,
               chatMessage: wrappedPrompt,
@@ -149,11 +150,7 @@ export function voiceCommandRoutes(db: Db) {
   // Get a single voice command
   router.get("/voice-commands/:id", async (req, res) => {
     const id = req.params.id as string;
-    // We need to look up the command first to check company access
-    // For now, use assertBoard to ensure the caller is authenticated
-    assertBoard(req);
 
-    // Query without company filter since we don't know it yet
     const cmd = await svc.getById(id);
     if (!cmd) {
       res.status(404).json({ error: "Voice command not found" });
@@ -168,7 +165,6 @@ export function voiceCommandRoutes(db: Db) {
     "/voice-commands/:id",
     validate(updateSchema),
     async (req, res) => {
-      assertBoard(req);
       const id = req.params.id as string;
 
       // Look up command to get companyId
@@ -243,12 +239,12 @@ export function voiceCommandRoutes(db: Db) {
           await heartbeat.wakeup(existing.routerAgentId, {
             source: "on_demand",
             triggerDetail: "manual",
-            reason: "voice_correction",
+            reason: "direct_chat",
             payload: { chatId: corrChat.id, messageId: msg.id, voiceCommandId: id },
             requestedByActorType: "user",
             requestedByActorId: corrUserId,
             contextSnapshot: {
-              wakeReason: "voice_correction",
+              wakeReason: "direct_chat",
               chatId: corrChat.id,
               chatMessageId: msg.id,
               chatMessage: corrPrompt,
