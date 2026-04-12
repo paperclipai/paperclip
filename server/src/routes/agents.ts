@@ -2296,6 +2296,10 @@ export function agentRoutes(db: Db) {
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (existing) {
+      assertCompanyAccess(req, existing.companyId);
+    }
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
@@ -2437,15 +2441,14 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, issue.companyId);
 
-    let run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (run && run.status !== "queued" && run.status !== "running") {
       run = null;
     }
 
     if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      const candidateRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
-      const candidateContext = asRecord(candidateRun?.contextSnapshot);
-      const candidateIssueId = asNonEmptyString(candidateContext?.issueId);
+      const candidateRun = await heartbeat.getActiveRunIssueSummaryForAgent(issue.assigneeAgentId);
+      const candidateIssueId = asNonEmptyString(candidateRun?.issueId);
       if (candidateRun && candidateIssueId === issue.id) {
         run = candidateRun;
       }
@@ -2462,7 +2465,7 @@ export function agentRoutes(db: Db) {
     }
 
     res.json({
-      ...redactCurrentUserValue(run, await getCurrentUserRedactionOptions()),
+      ...run,
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

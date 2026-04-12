@@ -21,7 +21,6 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
-  defaultIssueFilterState,
   type IssueFilterState,
 } from "../lib/issue-filters";
 import {
@@ -31,7 +30,12 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
-import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import {
+  hasBlockingShortcutDialog,
+  isKeyboardShortcutTextInputTarget,
+  shouldBlurPageSearchOnEnter,
+  shouldBlurPageSearchOnEscape,
+} from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
@@ -91,13 +95,17 @@ import {
   buildInboxNesting,
   getAvailableInboxIssueColumns,
   getApprovalsForTab,
+  getArchivedInboxSearchIssues,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
+  getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
+  matchesInboxIssueSearch,
   getRecentTouchedIssues,
   groupInboxWorkItems,
   isInboxEntityDismissed,
   isMineInboxTab,
+  loadInboxFilterPreferences,
   loadInboxIssueColumns,
   loadInboxNesting,
   loadInboxWorkItemGroupBy,
@@ -105,10 +113,13 @@ import {
   resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
+  saveInboxFilterPreferences,
   saveInboxIssueColumns,
   saveInboxNesting,
   saveInboxWorkItemGroupBy,
   type InboxApprovalFilter,
+  type InboxCategoryFilter,
+  type InboxFilterPreferences,
   type InboxIssueColumn,
   saveLastInboxTab,
   shouldShowInboxSection,
@@ -119,14 +130,6 @@ import {
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
-
-type InboxCategoryFilter =
-  | "everything"
-  | "issues_i_touched"
-  | "join_requests"
-  | "approvals"
-  | "failed_runs"
-  | "alerts";
 type SectionKey =
   | "work_items"
   | "alerts";
@@ -141,7 +144,31 @@ type InboxGroupedSection = {
   label: string | null;
   displayItems: InboxWorkItem[];
   childrenByIssueId: Map<string, Issue[]>;
+  isArchivedSearch: boolean;
 };
+
+function buildGroupedInboxSections(
+  items: InboxWorkItem[],
+  groupBy: InboxWorkItemGroupBy,
+  nestingEnabled: boolean,
+  options?: { keyPrefix?: string; isArchivedSearch?: boolean },
+): InboxGroupedSection[] {
+  const keyPrefix = options?.keyPrefix ?? "";
+  const isArchivedSearch = options?.isArchivedSearch ?? false;
+  return groupInboxWorkItems(items, groupBy).map((group) => {
+    const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
+      ? buildInboxNesting(group.items)
+      : { displayItems: group.items, childrenByIssueId: new Map<string, Issue[]>() };
+
+    return {
+      key: `${keyPrefix}${group.key}`,
+      label: group.label,
+      displayItems: nestedGroup.displayItems,
+      childrenByIssueId: nestedGroup.childrenByIssueId,
+      isArchivedSearch,
+    };
+  });
+}
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -616,14 +643,16 @@ export function Inbox() {
     retry: false,
   });
   const [searchQuery, setSearchQuery] = useState("");
-  const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
-  const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
-  const [issueFilters, setIssueFilters] = useState<IssueFilterState>(defaultIssueFilterState);
+  const normalizedSearchQuery = searchQuery.trim();
+  const [filterPreferences, setFilterPreferences] = useState<InboxFilterPreferences>(
+    () => loadInboxFilterPreferences(selectedCompanyId),
+  );
   const [groupBy, setGroupBy] = useState<InboxWorkItemGroupBy>(() => loadInboxWorkItemGroupBy());
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
   const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
+  const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
@@ -680,6 +709,14 @@ export function Inbox() {
     setSelectedIndex(-1);
     setSearchQuery("");
   }, [tab]);
+
+  const previousSelectedCompanyIdRef = useRef<string | null>(selectedCompanyId);
+  useEffect(() => {
+    if (previousSelectedCompanyIdRef.current !== selectedCompanyId) {
+      previousSelectedCompanyIdRef.current = selectedCompanyId;
+      setFilterPreferences(loadInboxFilterPreferences(selectedCompanyId));
+    }
+  }, [selectedCompanyId]);
 
   const {
     data: approvals,
@@ -753,6 +790,13 @@ export function Inbox() {
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
@@ -852,13 +896,11 @@ export function Inbox() {
   );
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const run of heartbeatRuns ?? []) {
-      if (run.status !== "running" && run.status !== "queued") continue;
-      const issueId = readIssueIdFromRun(run);
-      if (issueId) ids.add(issueId);
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) ids.add(run.issueId);
     }
     return ids;
-  }, [heartbeatRuns]);
+  }, [liveRuns]);
 
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter);
@@ -905,23 +947,16 @@ export function Inbox() {
   );
 
   const filteredWorkItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = normalizedSearchQuery.toLowerCase();
     if (!q) return workItemsToRender;
     return workItemsToRender.filter((item) => {
       if (item.kind === "issue") {
-        const issue = item.issue;
-        if (issue.title.toLowerCase().includes(q)) return true;
-        if (issue.identifier?.toLowerCase().includes(q)) return true;
-        if (issue.description?.toLowerCase().includes(q)) return true;
-        if (isolatedWorkspacesEnabled) {
-          const workspaceName = resolveIssueWorkspaceName(issue, {
-            executionWorkspaceById,
-            projectWorkspaceById,
-            defaultProjectWorkspaceIdByProjectId,
-          });
-          if (workspaceName?.toLowerCase().includes(q)) return true;
-        }
-        return false;
+        return matchesInboxIssueSearch(item.issue, q, {
+          isolatedWorkspacesEnabled,
+          executionWorkspaceById,
+          projectWorkspaceById,
+          defaultProjectWorkspaceIdByProjectId,
+        });
       }
       if (item.kind === "approval") {
         const a = item.approval;
@@ -954,14 +989,90 @@ export function Inbox() {
     });
   }, [
     workItemsToRender,
-    searchQuery,
     agentById,
     defaultProjectWorkspaceIdByProjectId,
     executionWorkspaceById,
     issueById,
     isolatedWorkspacesEnabled,
+    normalizedSearchQuery,
     projectWorkspaceById,
   ]);
+
+  const archivedSearchIssues = useMemo(
+    () =>
+      tab === "mine"
+        ? getArchivedInboxSearchIssues({
+          visibleIssues: visibleMineIssues,
+          searchableIssues: visibleTouchedIssues,
+          query: normalizedSearchQuery,
+          isolatedWorkspacesEnabled,
+          executionWorkspaceById,
+          projectWorkspaceById,
+          defaultProjectWorkspaceIdByProjectId,
+        })
+        : [],
+    [
+      defaultProjectWorkspaceIdByProjectId,
+      executionWorkspaceById,
+      isolatedWorkspacesEnabled,
+      normalizedSearchQuery,
+      projectWorkspaceById,
+      tab,
+      visibleMineIssues,
+      visibleTouchedIssues,
+    ],
+  );
+  const shouldUseIssueSearchSupplement =
+    !!selectedCompanyId
+    && normalizedSearchQuery.length > 0;
+  const { data: remoteIssueSearchResults = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
+      "inbox-supplement",
+    ],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        q: normalizedSearchQuery,
+        limit: 25,
+        includeRoutineExecutions: true,
+      }),
+    enabled: shouldUseIssueSearchSupplement,
+    placeholderData: (previousData) => previousData,
+  });
+  const issueSearchSupplementResults = useMemo(
+    () =>
+      getInboxSearchSupplementIssues({
+        query: normalizedSearchQuery,
+        filteredWorkItems,
+        archivedSearchIssues,
+        remoteIssues: remoteIssueSearchResults,
+        issueFilters,
+        currentUserId,
+        enableRoutineVisibilityFilter: true,
+      }),
+    [
+      archivedSearchIssues,
+      currentUserId,
+      filteredWorkItems,
+      issueFilters,
+      normalizedSearchQuery,
+      remoteIssueSearchResults,
+    ],
+  );
+  const effectiveWorkItems = useMemo(
+    () =>
+      issueSearchSupplementResults.length > 0
+        ? [
+          ...filteredWorkItems,
+          ...getInboxWorkItems({ issues: issueSearchSupplementResults, approvals: [] }),
+        ]
+        : filteredWorkItems,
+    [filteredWorkItems, issueSearchSupplementResults],
+  );
+  const archivedSearchIssueIds = useMemo(
+    () => new Set(archivedSearchIssues.map((issue) => issue.id)),
+    [archivedSearchIssues],
+  );
 
   // --- Parent-child nesting for inbox issues ---
   const [nestingPreferenceEnabled, setNestingPreferenceEnabled] = useState(() => loadInboxNesting());
@@ -974,33 +1085,15 @@ export function Inbox() {
     });
   }, []);
   const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
-    return groupInboxWorkItems(filteredWorkItems, groupBy).map((group) => {
-      const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
-        ? buildInboxNesting(group.items)
-        : { displayItems: group.items, childrenByIssueId: new Map<string, Issue[]>() };
-
-      return {
-        key: group.key,
-        label: group.label,
-        displayItems: nestedGroup.displayItems,
-        childrenByIssueId: nestedGroup.childrenByIssueId,
-      };
-    });
-  }, [filteredWorkItems, groupBy, nestingEnabled]);
-  const nestedWorkItems = useMemo(
-    () => groupedSections.flatMap((group) => group.displayItems),
-    [groupedSections],
-  );
-  const childrenByIssueId = useMemo(() => {
-    const merged = new Map<string, Issue[]>();
-    for (const group of groupedSections) {
-      for (const [issueId, children] of group.childrenByIssueId) {
-        merged.set(issueId, children);
-      }
-    }
-    return merged;
-  }, [groupedSections]);
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+    ...buildGroupedInboxSections(effectiveWorkItems, groupBy, nestingEnabled),
+    ...buildGroupedInboxSections(
+      getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
+      groupBy,
+      nestingEnabled,
+      { keyPrefix: "archived-search:", isArchivedSearch: true },
+    ),
+  ], [archivedSearchIssues, effectiveWorkItems, groupBy, nestingEnabled]);
   const totalVisibleWorkItems = useMemo(
     () => groupedSections.reduce((count, group) => count + group.displayItems.length, 0),
     [groupedSections],
@@ -1052,9 +1145,28 @@ export function Inbox() {
     }
     setIssueColumns(visibleIssueColumns.filter((value) => value !== column));
   }, [setIssueColumns, visibleIssueColumns]);
+  const updateFilterPreferences = useCallback(
+    (updater: (previous: InboxFilterPreferences) => InboxFilterPreferences) => {
+      setFilterPreferences((previous) => {
+        const next = updater(previous);
+        saveInboxFilterPreferences(selectedCompanyId, next);
+        return next;
+      });
+    },
+    [selectedCompanyId],
+  );
   const updateIssueFilters = useCallback((patch: Partial<IssueFilterState>) => {
-    setIssueFilters((previous) => ({ ...previous, ...patch }));
-  }, []);
+    updateFilterPreferences((previous) => ({
+      ...previous,
+      issueFilters: { ...previous.issueFilters, ...patch },
+    }));
+  }, [updateFilterPreferences]);
+  const updateAllCategoryFilter = useCallback((value: InboxCategoryFilter) => {
+    updateFilterPreferences((previous) => ({ ...previous, allCategoryFilter: value }));
+  }, [updateFilterPreferences]);
+  const updateAllApprovalFilter = useCallback((value: InboxApprovalFilter) => {
+    updateFilterPreferences((previous) => ({ ...previous, allApprovalFilter: value }));
+  }, [updateFilterPreferences]);
   const updateGroupBy = useCallback((nextGroupBy: InboxWorkItemGroupBy) => {
     setGroupBy(nextGroupBy);
     saveInboxWorkItemGroupBy(nextGroupBy);
@@ -1325,6 +1437,7 @@ export function Inbox() {
     flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    archivedSearchIssueIds,
     archivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
@@ -1335,6 +1448,7 @@ export function Inbox() {
     flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    archivedSearchIssueIds,
     archivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
@@ -1415,10 +1529,12 @@ export function Inbox() {
           e.preventDefault();
           const { issue, item } = resolveNavEntry(st.selectedIndex);
           if (issue) {
-            if (!st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
+            if (!st.archivedSearchIssueIds.has(issue.id) && !st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
           } else if (item) {
             if (item.kind === "issue") {
-              if (!st.archivingIssueIds.has(item.issue.id)) act.archiveIssue(item.issue.id);
+              if (!st.archivedSearchIssueIds.has(item.issue.id) && !st.archivingIssueIds.has(item.issue.id)) {
+                act.archiveIssue(item.issue.id);
+              }
             } else {
               const key = getWorkItemKey(item);
               if (!st.archivingNonIssueIds.has(key)) act.archiveNonIssue(key);
@@ -1553,10 +1669,28 @@ export function Inbox() {
             placeholder="Search inbox…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (shouldBlurPageSearchOnEnter({
+                key: e.key,
+                isComposing: e.nativeEvent.isComposing,
+              })) {
+                e.currentTarget.blur();
+                return;
+              }
+
+              if (shouldBlurPageSearchOnEscape({
+                key: e.key,
+                isComposing: e.nativeEvent.isComposing,
+                currentValue: e.currentTarget.value,
+              })) {
+                e.currentTarget.blur();
+              }
+            }}
             className="h-8 w-full pl-8 text-xs"
+            data-page-search-target="true"
           />
         </div>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
             items={[
@@ -1582,7 +1716,25 @@ export function Inbox() {
               placeholder="Search inbox…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (shouldBlurPageSearchOnEnter({
+                  key: e.key,
+                  isComposing: e.nativeEvent.isComposing,
+                })) {
+                  e.currentTarget.blur();
+                  return;
+                }
+
+                if (shouldBlurPageSearchOnEscape({
+                  key: e.key,
+                  isComposing: e.nativeEvent.isComposing,
+                  currentValue: e.currentTarget.value,
+                })) {
+                  e.currentTarget.blur();
+                }
+              }}
               className="h-8 w-[220px] pl-8 text-xs"
+              data-page-search-target="true"
             />
           </div>
           <Button
@@ -1604,17 +1756,20 @@ export function Inbox() {
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
             enableRoutineVisibilityFilter
+            buttonVariant="outline"
+            iconOnly
+            workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace" && w.status === "active").map((w) => ({ id: w.id, name: w.name })) : undefined}
           />
           <Popover>
             <PopoverTrigger asChild>
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className={cn("h-8 shrink-0 text-xs", groupBy !== "none" && "bg-accent")}
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
+                title="Group"
               >
-                <Layers className="mr-1.5 h-3.5 w-3.5" />
-                Group
+                <Layers className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-40 p-2">
@@ -1645,6 +1800,7 @@ export function Inbox() {
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
             title="Choose which inbox columns stay visible"
+            iconOnly
           />
           {canMarkAllRead && (
             <>
@@ -1691,7 +1847,7 @@ export function Inbox() {
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={allCategoryFilter}
-            onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
+            onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
             <SelectTrigger className="h-8 w-[170px] text-xs">
               <SelectValue placeholder="Category" />
@@ -1709,7 +1865,7 @@ export function Inbox() {
           {showApprovalsCategory && (
             <Select
               value={allApprovalFilter}
-              onValueChange={(value) => setAllApprovalFilter(value as InboxApprovalFilter)}
+              onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-[170px] text-xs">
                 <SelectValue placeholder="Approval status" />
@@ -1783,6 +1939,7 @@ export function Inbox() {
                   isExpanded = false,
                   childCount = 0,
                   collapseParentId = null,
+                  allowArchive = canArchiveFromTab,
                 }: {
                   issue: Issue;
                   depth: number;
@@ -1791,6 +1948,7 @@ export function Inbox() {
                   isExpanded?: boolean;
                   childCount?: number;
                   collapseParentId?: string | null;
+                  allowArchive?: boolean;
                 }) => {
                   const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                   const isFading = fadingOutIssues.has(issue.id);
@@ -1857,7 +2015,7 @@ export function Inbox() {
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
-                      onArchive={canArchiveFromTab ? () => archiveIssueMutation.mutate(issue.id) : undefined}
+                      onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving || archiveIssueMutation.isPending}
                       desktopTrailing={
                         visibleTrailingIssueColumns.length > 0 ? (
@@ -1885,6 +2043,20 @@ export function Inbox() {
                 let previousTimestamp = Number.POSITIVE_INFINITY;
                 return groupedSections.flatMap((group, groupIndex) => {
                   const elements: ReactNode[] = [];
+                  if (group.isArchivedSearch && (groupIndex === 0 || !groupedSections[groupIndex - 1]?.isArchivedSearch)) {
+                    elements.push(
+                      <div
+                        key="archived-search-divider"
+                        className="flex items-center gap-3 border-y border-border/70 bg-muted/30 px-4 py-2"
+                      >
+                        <div className="h-px flex-1 bg-border/80" />
+                        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Archived
+                        </span>
+                        <div className="h-px flex-1 bg-border/80" />
+                      </div>,
+                    );
+                  }
                   if (group.label) {
                     elements.push(
                       <div
@@ -2044,6 +2216,7 @@ export function Inbox() {
                     const childIssues = group.childrenByIssueId.get(issue.id) ?? [];
                     const hasChildren = childIssues.length > 0;
                     const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
+                    const canArchiveIssue = canArchiveFromTab && !group.isArchivedSearch;
                     const parentRow = renderInboxIssue({
                       issue,
                       depth: 0,
@@ -2052,9 +2225,10 @@ export function Inbox() {
                       isExpanded,
                       childCount: childIssues.length,
                       collapseParentId: issue.id,
+                      allowArchive: canArchiveIssue,
                     });
 
-                    elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
+                    elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveIssue ? (
                       <SwipeToArchive
                         key={`issue:${issue.id}`}
                         selected={isSelected}
@@ -2073,6 +2247,7 @@ export function Inbox() {
                           issue: child,
                           depth: 1,
                           selected: isChildSelected,
+                          allowArchive: canArchiveIssue,
                         });
                         const isChildArchiving = archivingIssueIds.has(child.id);
                         elements.push(
@@ -2082,7 +2257,7 @@ export function Inbox() {
                             className="relative"
                             onClick={() => setSelectedIndex(childNavIdx)}
                           >
-                            {canArchiveFromTab ? (
+                            {canArchiveIssue ? (
                               <SwipeToArchive
                                 key={`issue:${child.id}`}
                                 selected={isChildSelected}

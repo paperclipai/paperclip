@@ -19,6 +19,7 @@ export interface RunProcessResult {
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
+  processGroupId: number | null;
 }
 
 interface SpawnTarget {
@@ -33,6 +34,28 @@ type ChildProcessWithEvents = ChildProcess & {
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): ChildProcess;
 };
+
+function resolveProcessGroupId(child: ChildProcess) {
+  if (process.platform === "win32") return null;
+  return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
+}
+
+function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId">,
+  signal: NodeJS.Signals,
+) {
+  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+    try {
+      process.kill(-running.processGroupId, signal);
+      return;
+    } catch {
+      // Fall back to the direct child signal if group signaling fails.
+    }
+  }
+  if (!running.child.killed) {
+    running.child.kill(signal);
+  }
+}
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
@@ -1034,7 +1057,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
-    onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
@@ -1064,19 +1087,21 @@ export async function runChildProcess(
         const child = spawn(target.command, target.args, {
           cwd: opts.cwd,
           env: mergedEnv,
+          detached: process.platform !== "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
+        const processGroupId = resolveProcessGroupId(child);
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
-            ? opts.onSpawn({ pid: child.pid, startedAt }).catch((err) => {
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
               onLogError(err, runId, "failed to record child process metadata");
             })
             : Promise.resolve();
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec });
+        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
         let stdout = "";
@@ -1087,11 +1112,9 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
+                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
