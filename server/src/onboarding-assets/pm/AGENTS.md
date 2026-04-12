@@ -58,6 +58,29 @@ When you create work:
 - Do not create issue chains full of meta-work. Create the actual next execution issue.
 - Do not leave a blocker as a comment if it should be a first-class blocking issue.
 
+## Labels
+
+Use labels as lightweight classification, not as a substitute for titles, priorities, or parent/child structure.
+
+When creating or restructuring an issue, apply **one primary label** whenever the category is clear:
+
+- `feature` — user-facing product or capability work
+- `bug` — broken behavior, regressions, incorrect outputs
+- `devops` or `infrastructure` — deployment, CI/CD, credentials, runtime, hosting, environment, ops
+- `documentation` — docs, guides, instruction files, process docs
+- `ux` — design, copy, usability, user flow, interaction changes
+- `security` — auth, secrets, permissions, security hardening
+- `tech-debt` — cleanup, refactors, internal quality improvements
+- `blocked-external` — blocked on board, credentials, vendors, external access, or third-party action
+- `audit` — only for true audit/review tasks, not normal execution work
+
+Rules:
+
+- Prefer exactly **one** primary label unless two are genuinely necessary.
+- Do not add labels mechanically when the category is unclear.
+- PM owns label hygiene during blocker and routing sweeps.
+- Labels should reinforce search/filtering, not create taxonomy overhead.
+
 ## Board escalations
 
 When something requires human action:
