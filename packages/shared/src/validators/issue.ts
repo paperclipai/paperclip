@@ -195,7 +195,7 @@ export const createIssueAttachmentMetadataSchema = z.object({
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
 
-export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
+export const ISSUE_DOCUMENT_FORMATS = ["markdown", "html"] as const;
 
 export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 

@@ -233,6 +233,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
     const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
     let instructionsPrefix = "";
+    let instructionsFileMissing = false;
     if (resolvedInstructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
@@ -242,6 +243,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
+        instructionsFileMissing = true;
         await onLog(
           "stdout",
           `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
@@ -259,9 +261,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
         return notes;
       }
-      notes.push(
-        `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      );
+      if (instructionsFileMissing) {
+        notes.push(
+          `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file was not found; continuing without injected instructions.`,
+        );
+      } else {
+        notes.push(
+          `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+        );
+      }
       return notes;
     })();
 

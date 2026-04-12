@@ -706,7 +706,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
-    const run = await db.transaction(async (tx) => {
+    const { run, issue: createdIssue } = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
@@ -728,7 +728,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) return { run: existing, issue: null };
       }
 
       const triggeredAt = new Date();
@@ -769,7 +769,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: activeIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return { run: updated ?? createdRun, issue: null };
         }
 
         try {
@@ -818,19 +818,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: existingIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return { run: updated ?? createdRun, issue: null };
         }
 
-        // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
-        });
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
@@ -843,11 +833,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           issueId: createdIssue.id,
           nextRunAt,
         }, txDb);
-        return updated ?? createdRun;
+        return { run: updated ?? createdRun, issue: createdIssue };
       } catch (error) {
-        if (createdIssue) {
-          await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
-        }
+        // Note: If createdIssue is non-null, it was successfully committed before the error.
+        // We intentionally do NOT delete it here to maintain data integrity.
+        // The issue creation succeeded and should remain even if wakeup/logging fails.
         const failureReason = error instanceof Error ? error.message : String(error);
         const failed = await finalizeRun(createdRun.id, {
           status: "failed",
@@ -861,9 +851,36 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: "failed",
           nextRunAt,
         }, txDb);
-        return failed ?? createdRun;
+        return { run: failed ?? createdRun, issue: createdIssue };
       }
     });
+
+    // Wake up the assignee if an issue was created. Done outside the transaction
+    // to avoid rolling back successful issue creation on wakeup failure.
+    if (createdIssue && createdIssue.assigneeAgentId) {
+      try {
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: createdIssue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "routine.dispatch",
+          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          rethrowOnError: true,
+        });
+      } catch (err) {
+        const failureReason = err instanceof Error ? err.message : String(err);
+        logger.warn({ err, issueId: createdIssue.id, runId: run.id }, "failed to wake assignee after routine issue creation");
+        // Clean up the created issue and mark the run as failed
+        await db.delete(issues).where(eq(issues.id, createdIssue.id));
+        const failed = await finalizeRun(run.id, {
+          status: "failed",
+          failureReason,
+          completedAt: new Date(),
+        });
+        return failed ?? run;
+      }
+    }
 
     if (input.source === "schedule" || input.source === "webhook") {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";

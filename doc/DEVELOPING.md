@@ -501,6 +501,89 @@ pnpm paperclipai dashboard get
 
 See full command reference in `doc/CLI.md`.
 
+## Testing
+
+Paperclip uses multiple testing layers:
+
+### Unit Tests (Vitest)
+
+Run unit tests across all packages:
+
+```sh
+pnpm test        # watch mode
+pnpm test:run    # single run
+```
+
+Vitest configuration is in the root `vitest.config.ts` with project-specific configs in each package (e.g., `ui/vitest.config.ts`, `server/vitest.config.ts`).
+
+Test file patterns:
+- `*.test.ts` — unit tests
+- `*.test.tsx` — React component tests
+
+### End-to-End Tests (Playwright)
+
+Run E2E tests:
+
+```sh
+pnpm test:e2e           # headless
+pnpm test:e2e:headed    # with browser UI
+```
+
+E2E tests are in `tests/e2e/` and use Playwright with config at `tests/e2e/playwright.config.ts`.
+
+### Release Smoke Tests
+
+```sh
+pnpm test:release-smoke
+pnpm test:release-smoke:headed
+```
+
+Located in `tests/release-smoke/`.
+
+### Agent Evals (Promptfoo)
+
+Agent behavior testing using promptfoo:
+
+```sh
+pnpm evals:smoke
+```
+
+Evals are in `evals/promptfoo/` and test agent heartbeat behaviors like assignment pickup, progress updates, blocked state reporting, and governance compliance.
+
+### Test Coverage by Component
+
+| Component | Test Framework | Location |
+|-----------|---------------|----------|
+| UI | Vitest | `ui/src/**/*.test.{ts,tsx}` |
+| Server | Vitest | `server/src/__tests__/*.test.ts` |
+| CLI | Vitest | `cli/src/__tests__/*.test.ts` |
+| Adapters | Vitest | `packages/adapters/*/src/**/*.test.ts` |
+| E2E | Playwright | `tests/e2e/*.spec.ts` |
+| Evals | Promptfoo | `evals/promptfoo/cases/*.yaml` |
+
+### Quality Gates (CI)
+
+All tests must pass before a PR can be merged. PR CI runs:
+
+```sh
+pnpm typecheck              # TypeScript type checking
+pnpm test:run              # All unit tests
+pnpm build                 # Build all packages
+pnpm test:e2e              # E2E tests (if changed)
+```
+
+See `.github/workflows/pr.yml` for the full CI pipeline.
+
+### Quality Metrics
+
+| Metric | Tool | Threshold |
+|--------|------|-----------|
+| Type safety | TypeScript | 0 errors |
+| Unit tests | Vitest | All pass |
+| E2E tests | Playwright | All pass |
+| Agent behavior | Promptfoo evals | All assertions pass |
+| Linting | ESLint (if configured) | 0 errors |
+
 ## OpenClaw Invite Onboarding Endpoints
 
 Agent-oriented invite onboarding now exposes machine-readable API docs:

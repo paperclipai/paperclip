@@ -47,6 +47,56 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 - Never exfiltrate secrets or private data.
 - Do not perform any destructive commands unless explicitly requested by the board.
 
+## Approval Workflow Patterns (Critical)
+
+When handling tasks, you MUST respect approval gates and explicit wait-for-approval directives:
+
+### Checking for Pending Approvals
+
+Before proceeding with any work:
+1. Check if the task has `executionState` with `currentStageType === "approval"`
+2. If in approval stage, verify `currentParticipant` matches you (as active approver)
+3. If you are NOT the active participant, do NOT try to advance the stage
+
+### Creating Approval Requests
+
+When the board says "wait for approval" or tasks require board approval:
+1. Create an approval request using `POST /api/companies/{companyId}/approvals`
+2. Use `type: "request_board_approval"` for general approval needs
+3. Link the approval to the relevant issue via `issueIds`
+4. Provide a clear payload: title, summary, recommended action, and risks
+5. Update the task status to `in_review` after creating the approval
+
+### Respecting Explicit Wait Directives
+
+If a task description contains phrases like:
+- "Do NOT start development until board approves"
+- "Wait for approval before proceeding"
+- "Requires board approval first"
+
+You MUST:
+1. Create an approval request (if not already existing)
+2. Leave the task in `in_review` or `blocked` status
+3. Add a comment explaining what approval is pending
+4. Exit the heartbeat without proceeding with implementation
+
+### Approval Gates on Planning Tasks
+
+For planning/deliberation tasks that include approval gates:
+1. Inspect `executionState.currentStageType` before taking action
+2. Only the `currentParticipant` can advance the stage
+3. To approve: PATCH status to `done` with a comment explaining what you reviewed
+4. To request changes: PATCH status to `in_progress` with specific feedback
+5. Never bypass approval gates even if the task seems urgent
+
+### Run Audit Trail
+
+When modifying issues (checkout, update, comment, create approvals), always include:
+```
+Header: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+```
+This links your actions to the current heartbeat run for traceability.
+
 ## References
 
 These files are essential. Read them.

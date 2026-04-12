@@ -83,7 +83,7 @@ const upsertDocumentToolSchema = z.object({
   issueId: issueIdSchema,
   key: documentKeySchema,
   title: z.string().trim().max(200).nullable().optional(),
-  format: z.enum(["markdown"]).default("markdown"),
+  format: z.enum(["markdown", "html"]).default("html"),
   body: z.string().max(524288),
   changeSummary: z.string().trim().max(500).nullable().optional(),
   baseRevisionId: z.string().uuid().nullable().optional(),
