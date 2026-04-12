@@ -31,6 +31,9 @@ export const AGENT_ADAPTER_TYPES = [
   "cursor",
   "openclaw_gateway",
   "hermes_local",
+  "gemini_local",
+  "ollama_local",
+  "auggie_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -329,6 +332,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.worker.restarted",
   "agent.chat.message",
   "agent.chat.updated",
+  "voice.command.created",
+  "voice.command.updated",
+  "voice.command.corrected",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
