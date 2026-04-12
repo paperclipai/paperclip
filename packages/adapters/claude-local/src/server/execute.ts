@@ -385,9 +385,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
+    const reason = isolateSession
+      ? "isolateSession=true"
+      : `saved for cwd "${runtimeSessionCwd}" and current cwd is "${cwd}"`;
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" will not be resumed (${reason}).\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -510,7 +513,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        clearSession: isolateSession || Boolean(opts.clearSessionOnMissingSession),
       };
     }
 
@@ -526,7 +529,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: proc.stdout,
           stderr: proc.stderr,
         },
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        clearSession: isolateSession || Boolean(opts.clearSessionOnMissingSession),
       };
     }
 

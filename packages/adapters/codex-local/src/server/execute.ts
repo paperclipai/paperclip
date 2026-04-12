@@ -409,9 +409,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
+    const reason = isolateSession
+      ? "isolateSession=true"
+      : `saved for cwd "${runtimeSessionCwd}" and current cwd is "${cwd}"`;
     await onLog(
       "stdout",
-      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Codex session "${runtimeSessionId}" will not be resumed (${reason}).\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -551,7 +554,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        clearSession: clearSessionOnMissingSession,
+        clearSession: isolateSession || clearSessionOnMissingSession,
       };
     }
 
