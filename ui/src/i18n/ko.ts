@@ -259,6 +259,8 @@ export const ko: Record<TranslationKey, string> = {
   "common.system": "시스템",
   "common.board": "보드",
   "common.me": "나",
+  "issue.workStarted": "작업 시작 요청됨",
+  "issue.workStartFailed": "작업 시작 실패",
 
   // Comments
   "comment.leaveComment": "코멘트를 남기세요...",

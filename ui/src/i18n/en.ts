@@ -257,6 +257,8 @@ export const en = {
   "common.system": "System",
   "common.board": "Board",
   "common.me": "Me",
+  "issue.workStarted": "Work start requested",
+  "issue.workStartFailed": "Failed to start work",
 
   // Comments
   "comment.leaveComment": "Leave a comment...",

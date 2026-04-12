@@ -582,16 +582,29 @@ export function IssueDetail() {
   });
 
   const wakeupMutation = useMutation({
-    mutationFn: (agentId: string) =>
-      agentsApi.wakeup(agentId, {
+    mutationFn: async (agentId: string) => {
+      // 1. Post a system comment so the leader CLI picks up the issue via channel-bridge
+      const agentName = agents?.find((a) => a.id === agentId)?.name ?? "Agent";
+      await issuesApi.addComment(
+        issueId!,
+        `@${agentName} 이 이슈 작업을 시작해주세요.\n\n**${issue?.title ?? ""}**\n${issue?.description?.slice(0, 500) ?? ""}`,
+      );
+      // 2. Also queue a wakeup as backup
+      return agentsApi.wakeup(agentId, {
         source: "on_demand",
         triggerDetail: "manual",
         reason: `Manual kick for issue ${issue?.identifier ?? issueId}`,
         payload: { issueId },
-      }, selectedCompanyId ?? undefined),
+      }, selectedCompanyId ?? undefined);
+    },
     onSuccess: () => {
+      pushToast({ title: t("issue.workStarted"), tone: "success" });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+    onError: (err: any) => {
+      pushToast({ title: t("issue.workStartFailed"), body: err?.message, tone: "error" });
     },
   });
 
