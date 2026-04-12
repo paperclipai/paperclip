@@ -26,4 +26,15 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Fix ownership of mounted workspace directories so the node user can always
+# write even if root previously created files (e.g. via docker exec or a
+# misconfigured run). Only touches misowned files; idempotent and safe to run
+# on every startup.
+for _ws_dir in /workspace /mnt; do
+    if [ -d "$_ws_dir" ]; then
+        find "$_ws_dir" -maxdepth 5 -not -user node -not -type l \
+            -exec chown node:node {} + 2>/dev/null || true
+    fi
+done
+
 exec gosu node "$@"
