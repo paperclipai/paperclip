@@ -1,20 +1,24 @@
 /**
  * Copy a string to the system clipboard.
  *
- * In secure contexts (HTTPS or `http://localhost`) this uses the async
- * `navigator.clipboard.writeText` API. In non-secure contexts — e.g. when a
- * user self-hosts Paperclip over plain HTTP at `http://<lan-host>:<port>` —
- * `navigator.clipboard` is `undefined` per the Clipboard API spec, so we fall
- * back to the legacy `document.execCommand("copy")` path via a transient
- * off-screen textarea.
+ * In secure contexts (HTTPS or `http://localhost`) this tries the async
+ * `navigator.clipboard.writeText` API first. In non-secure contexts — e.g.
+ * when a user self-hosts Paperclip over plain HTTP at `http://<lan-host>:<port>` —
+ * `navigator.clipboard` is `undefined` per the Clipboard API spec, so we go
+ * straight to the legacy `document.execCommand("copy")` path via a transient
+ * textarea.
+ *
+ * If the native API is present but rejects (e.g. a transient `NotAllowedError`
+ * from the document losing focus mid-click, or a Safari timing quirk), we
+ * cascade to the `execCommand` fallback rather than surfacing the rejection —
+ * the fallback uses the same user-gesture gate as the modern API, so if it
+ * succeeds the user gets their copy through. If both paths fail, the utility
+ * rejects with the most recent error so callers can surface a toast.
  *
  * The fallback must run synchronously inside the user gesture (click handler)
  * that invoked this function; browsers only allow `execCommand("copy")` under
- * a trusted gesture, and this promise's executor runs synchronously on
- * construction, so callers that `await` or chain `.then` inside an onClick
- * preserve the invariant.
- *
- * Rejects if neither path succeeds, so callers can surface a toast on failure.
+ * a trusted gesture. Callers that `await` this inside an onClick preserve the
+ * invariant because the fallback path runs before any microtask suspension.
  */
 export async function copyTextToClipboard(text: string): Promise<void> {
   if (
@@ -23,8 +27,13 @@ export async function copyTextToClipboard(text: string): Promise<void> {
     typeof navigator.clipboard.writeText === "function" &&
     (typeof window === "undefined" || window.isSecureContext)
   ) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Native API rejected (permissions, focus, transient browser error).
+      // Fall through to the execCommand path.
+    }
   }
 
   if (typeof document === "undefined") {

@@ -48,9 +48,21 @@ describe("copyTextToClipboard", () => {
       expect(document.body.children.length).toBe(before);
     });
 
-    it("propagates rejection from the native API", async () => {
-      writeText.mockReturnValueOnce(Promise.reject(new Error("denied")));
-      await expect(copyTextToClipboard("hello")).rejects.toThrow("denied");
+    it("falls back to execCommand when the native API rejects", async () => {
+      writeText.mockReturnValueOnce(Promise.reject(new Error("transient NotAllowedError")));
+      const execCommand = vi.fn(() => true);
+      document.execCommand = execCommand as typeof document.execCommand;
+      await copyTextToClipboard("cascaded");
+      expect(writeText).toHaveBeenCalledWith("cascaded");
+      expect(execCommand).toHaveBeenCalledWith("copy");
+    });
+
+    it("rejects when both the native API and the fallback fail", async () => {
+      writeText.mockReturnValueOnce(Promise.reject(new Error("native denied")));
+      const execCommand = vi.fn(() => false);
+      document.execCommand = execCommand as typeof document.execCommand;
+      await expect(copyTextToClipboard("both fail")).rejects.toThrow(/execCommand/);
+      expect(execCommand).toHaveBeenCalled();
     });
   });
 
