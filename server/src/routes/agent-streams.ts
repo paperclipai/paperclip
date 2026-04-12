@@ -18,6 +18,7 @@ import type { Db } from "@paperclipai/db";
 import { roomMessages, roomParticipants } from "@paperclipai/db";
 import type { AgentStreamBus } from "../services/agent-stream-bus.js";
 import type { AgentStreamEvent } from "../services/agent-stream-bus.js";
+import { resolveMessageAudience } from "../services/rooms.js";
 import type { RoomMessageLike } from "../services/room-stream-bus.js";
 
 interface Deps {
@@ -203,6 +204,25 @@ export function agentStreamRoutes(deps: Deps) {
           });
 
           for (const msg of backlog) {
+            // Apply the same speaker-control routing filter used for
+            // live messages. Without this, a reconnecting agent would
+            // receive ALL missed messages regardless of topic/mention
+            // routing, causing every agent to respond to every message
+            // on restart.
+            const audience = await resolveMessageAudience(
+              db,
+              msg.roomId,
+              msg.body ?? "",
+              msg.senderAgentId ?? null,
+              msg.actionTargetAgentId ?? null,
+              msg.replyToId ?? null,
+            );
+            const targets = new Set([
+              ...audience.deliveredLeaderIds,
+              ...audience.deliveredOtherIds,
+            ]);
+            if (!targets.has(agentId)) continue; // skip — not routed to this agent
+
             deliver({
               type: "message.created",
               roomId: msg.roomId,
