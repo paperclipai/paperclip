@@ -34,6 +34,7 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             "supports_thinking",
             "supports_reasoning_effort",
             "when_thinking_enabled",
+            "when_thinking_disabled",
             "thinking",
             "supports_vision",
         },
@@ -50,14 +51,22 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             raise ValueError(f"Model {name} does not support thinking. Set `supports_thinking` to true in the `config.yaml` to enable thinking.") from None
         if effective_wte:
             model_settings_from_config.update(effective_wte)
-    if not thinking_enabled and has_thinking_settings:
-        if effective_wte.get("extra_body", {}).get("thinking", {}).get("type"):
-            # OpenAI-compatible gateway: thinking is nested under extra_body
-            kwargs.update({"extra_body": {"thinking": {"type": "disabled"}}})
-            kwargs.update({"reasoning_effort": "minimal"})
-        elif effective_wte.get("thinking", {}).get("type"):
-            # Native langchain_anthropic: thinking is a direct constructor parameter
-            kwargs.update({"thinking": {"type": "disabled"}})
+    if not thinking_enabled:
+        if model_config.when_thinking_disabled is not None:
+            # User-provided disable settings take full precedence
+            model_settings_from_config.update(model_config.when_thinking_disabled)
+        elif has_thinking_settings:
+            if effective_wte.get("extra_body", {}).get("thinking", {}).get("type"):
+                # OpenAI-compatible gateway: thinking is nested under extra_body
+                kwargs.update({"extra_body": {"thinking": {"type": "disabled"}}})
+                kwargs.update({"reasoning_effort": "minimal"})
+            elif (disable_chat_template_kwargs := effective_wte.get("extra_body", {}).get("chat_template_kwargs")):
+                # vLLM chat template: disable thinking via chat_template_kwargs
+                disabled_kwargs = {k: False for k in disable_chat_template_kwargs}
+                kwargs.update({"extra_body": {"chat_template_kwargs": disabled_kwargs}})
+            elif effective_wte.get("thinking", {}).get("type"):
+                # Native langchain_anthropic: thinking is a direct constructor parameter
+                kwargs.update({"thinking": {"type": "disabled"}})
     if not model_config.supports_reasoning_effort and "reasoning_effort" in kwargs:
         del kwargs["reasoning_effort"]
 
