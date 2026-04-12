@@ -64,6 +64,10 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Bundle agent instruction files into the image so they can be seeded
+# into the persistent volume on first boot (see docker-entrypoint.sh)
+COPY --chown=node:node instances/ /app/instances/
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \

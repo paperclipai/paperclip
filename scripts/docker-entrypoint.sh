@@ -98,6 +98,27 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Seed agent instruction files from the image into the persistent volume.
+# The volume at /paperclip/instances is empty on first mount; this copies
+# bundled AGENTS.md files so instructions survive without manual SFTP uploads.
+# Existing files are NOT overwritten (volume edits take precedence).
+SEED_SRC="/app/instances/default/agents"
+SEED_DST="/paperclip/instances/default/agents"
+if [ -d "$SEED_SRC" ]; then
+    for agent_dir in "$SEED_SRC"/*/; do
+        agent_id=$(basename "$agent_dir")
+        for file in "$agent_dir"instructions/AGENTS.md; do
+            [ -f "$file" ] || continue
+            dst_file="$SEED_DST/$agent_id/instructions/AGENTS.md"
+            if [ ! -f "$dst_file" ]; then
+                mkdir -p "$(dirname "$dst_file")"
+                cp "$file" "$dst_file"
+                echo "[entrypoint] Seeded instructions for agent $agent_id"
+            fi
+        done
+    done
+fi
+
 # Fly.io mounts persistent volumes as root. Paperclip runs as node and needs
 # write access to instance logs, backups, managed agent homes, and auth homes.
 chown -R node:node /paperclip
