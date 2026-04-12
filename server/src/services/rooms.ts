@@ -194,93 +194,118 @@ export function parseMentions(body: string | null | undefined): string[] {
 }
 
 /**
- * Decide which agent IDs should receive a channel notification for the
- * given message. The rules enforce Phase 5.1's §3 "When to reply"
- * guidance at the runtime level so a misbehaving Claude session cannot
- * double-answer messages not addressed to it.
- *
- * Algorithm:
- *   1. Fetch all participants of the room, joined with agents. The
- *      query ANDs on the room's own `companyId` — defence-in-depth
- *      against orphaned cross-tenant rows (Phase 5.2a P1 finding).
- *   2. Split participants into two sets:
- *        - leaders  = agents where adapterType === "claude_local"
- *        - others   = agents with any other adapter type (sub-agents)
- *                     Non-agent rows (users) are not routed through the
- *                     agent bus at all — the existing UI/WS path keeps
- *                     delivering to them.
- *   3. **Action target override** — if the message carries an explicit
- *      `actionTargetAgentId`, only that agent is delivered (regardless
- *      of mentions or leader/other split).
- *   4. **Empty body short-circuit** — if the body is empty/whitespace
- *      and no action target, deliver to NOBODY. There is nothing for
- *      Claude to read, so waking every leader is pure noise. (Phase
- *      5.2a P1 finding.)
- *   5. Otherwise parse @mentions from the body and:
- *        - If mentions ∩ leader-names is non-empty → deliver to THAT
- *          subset of leaders only.
- *        - Otherwise → deliver to ALL leaders (original broadcast
- *          behaviour for unaddressed messages).
- *   6. Always deliver to every non-leader agent in the room.
- *   7. NEVER deliver to the sender agent — the self-loop guard lives
- *      both here (cheap) and in the bridge (defence in depth).
- *
- * Returns both the authoritative delivery list (`deliveredLeaderIds`
- * + `others`) AND the full candidate `allLeaders` / `allOthers` lists
- * for logging/audit. Callers MUST use the delivered lists for fanout;
- * the "all" fields are explicitly marked as candidates.
+ * Score how well a message body matches an agent's response topics.
+ * Simple case-insensitive substring matching — no LLM, no NLP.
+ * Returns the number of distinct topic keywords found in the body.
  *
  * Exported for unit testing.
  */
+/**
+ * Returns true if the string contains any CJK / Hangul characters.
+ * CJK languages agglutinate (한국어 조사: "렌더링이", "서버에서") so
+ * word-boundary matching would miss valid hits. For CJK keywords we
+ * fall back to plain substring matching, which is safe because CJK
+ * tokens are inherently longer and don't cause the "UI in guid"
+ * problem that Latin short-words have.
+ */
+const CJK_RE = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
+export function scoreTopicMatch(
+  body: string,
+  topics: string[] | null | undefined,
+): number {
+  if (!topics || topics.length === 0) return 0;
+  const normalized = body.normalize("NFKC").toLowerCase();
+  let score = 0;
+  for (const t of topics) {
+    if (typeof t !== "string" || t.length < 2) continue;
+    const keyword = t.normalize("NFKC").toLowerCase();
+    if (CJK_RE.test(keyword)) {
+      // CJK: plain substring match (조사/접미사 대응)
+      if (normalized.includes(keyword)) score++;
+    } else {
+      // Latin/etc: word-boundary match to prevent "UI" matching "guid"
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u");
+      if (re.test(normalized)) score++;
+    }
+  }
+  return score;
+}
+
+/** Minimum topic score to prefer topic-matched agent over coordinator. */
+const TOPIC_SCORE_THRESHOLD = 2;
+
+
+/**
+ * Decide which agent IDs should receive a channel notification for the
+ * given message. Implements single-speaker routing so that at most one
+ * leader agent is woken per message (unless @all or multiple @mentions).
+ *
+ * Routing priority:
+ *   1. actionTargetAgentId  → that agent only
+ *   2. @all                 → all leaders (roundtable)
+ *   3. @mention             → mentioned leader(s) only
+ *   4. replyToId            → original sender of the parent message
+ *   5. topic match (≥2)     → highest-scoring leader by response_topics
+ *   6. coordinator fallback → issue assignee → room creator
+ *   7. first leader         → last resort
+ *
+ * Sub-agents (non-leader) are always delivered to (unchanged).
+ * The sender is never delivered to (self-loop guard).
+ *
+ * Exported for unit testing.
+ */
+export type RouteReason = "action_target" | "mention" | "all" | "reply_to" | "topic_match" | "coordinator" | "first_leader" | "empty_body" | "no_leaders";
+
+export interface MessageAudienceResult {
+  allLeaders: Array<{ agentId: string; name: string }>;
+  allOthers: Array<{ agentId: string; name: string }>;
+  mentioned: string[];
+  deliveredLeaderIds: string[];
+  deliveredOtherIds: string[];
+  mentionHit: boolean;
+  actionTargeted: boolean;
+  routeReason: RouteReason;
+}
+
 export async function resolveMessageAudience(
   db: Db,
   roomId: string,
   body: string | null | undefined,
   senderAgentId: string | null | undefined,
   actionTargetAgentId?: string | null,
-): Promise<{
-  /** All leaders in the room (minus sender), before any filtering. */
-  allLeaders: Array<{ agentId: string; name: string }>;
-  /** All non-leader agents in the room (minus sender), before filtering. */
-  allOthers: Array<{ agentId: string; name: string }>;
-  /** Parsed mentions from the body (normalized, deduped). */
-  mentioned: string[];
-  /** Leaders that should actually receive the event. Use this. */
-  deliveredLeaderIds: string[];
-  /** Sub-agents that should actually receive the event. Use this. */
-  deliveredOtherIds: string[];
-  /** True if at least one mention matched a leader. */
-  mentionHit: boolean;
-  /** True if an action target override was applied. */
-  actionTargeted: boolean;
-}> {
-  // Fetch the room's companyId first so we can AND it into the
-  // participant/agent join below. This closes the defence-in-depth gap
-  // where an orphaned cross-tenant row in room_participants (which
-  // shouldn't exist, but could from a migration bug) would otherwise
-  // leak events to a foreign-company agent.
+  replyToId?: string | null,
+): Promise<MessageAudienceResult> {
+  const emptyResult = (reason: RouteReason): MessageAudienceResult => ({
+    allLeaders: [],
+    allOthers: [],
+    mentioned: [],
+    deliveredLeaderIds: [],
+    deliveredOtherIds: [],
+    mentionHit: false,
+    actionTargeted: false,
+    routeReason: reason,
+  });
+
+  // Fetch room + participants in one go.
   const [roomRow] = await db
-    .select({ companyId: rooms.companyId })
+    .select({
+      companyId: rooms.companyId,
+      coordinatorAgentId: rooms.coordinatorAgentId,
+      createdByAgentId: rooms.createdByAgentId,
+    })
     .from(rooms)
     .where(eq(rooms.id, roomId))
     .limit(1);
-  if (!roomRow) {
-    return {
-      allLeaders: [],
-      allOthers: [],
-      mentioned: [],
-      deliveredLeaderIds: [],
-      deliveredOtherIds: [],
-      mentionHit: false,
-      actionTargeted: false,
-    };
-  }
+  if (!roomRow) return emptyResult("no_leaders");
 
   const rows = await db
     .select({
       agentId: roomParticipants.agentId,
       adapterType: agents.adapterType,
       name: agents.name,
+      responseTopics: agents.responseTopics,
     })
     .from(roomParticipants)
     .innerJoin(agents, eq(roomParticipants.agentId, agents.id))
@@ -292,60 +317,76 @@ export async function resolveMessageAudience(
       ),
     );
 
-  const allLeaders: Array<{ agentId: string; name: string }> = [];
+  const allLeaders: Array<{ agentId: string; name: string; responseTopics: string[] | null }> = [];
   const allOthers: Array<{ agentId: string; name: string }> = [];
   for (const r of rows) {
     if (!r.agentId) continue;
     if (senderAgentId && r.agentId === senderAgentId) continue; // self-loop guard
     if (r.adapterType === "claude_local") {
-      allLeaders.push({ agentId: r.agentId, name: r.name });
+      allLeaders.push({ agentId: r.agentId, name: r.name, responseTopics: r.responseTopics as string[] | null });
     } else {
       allOthers.push({ agentId: r.agentId, name: r.name });
     }
   }
 
-  // Parse mentions once — used both by the action-targeted return
-  // (logged/audited) and by the main routing path.
-  const mentions = parseMentions(body);
+  // Thin versions without responseTopics for the return value.
+  const leadersOut = allLeaders.map(({ agentId, name }) => ({ agentId, name }));
+  const othersOut = allOthers;
+  const otherIds = allOthers.map((o) => o.agentId);
 
-  // Action messages with a concrete target agent override mentions.
-  // The sender has explicitly said "this task goes to this agent" and
-  // every other leader should stay quiet. We still deliver to the
-  // target even if they are a sub-agent (non-leader).
+  const mkResult = (
+    leaderIds: string[],
+    mentions: string[],
+    mentionHit: boolean,
+    actionTargeted: boolean,
+    routeReason: RouteReason,
+  ): MessageAudienceResult => ({
+    allLeaders: leadersOut,
+    allOthers: othersOut,
+    mentioned: mentions,
+    deliveredLeaderIds: leaderIds,
+    deliveredOtherIds: otherIds,
+    mentionHit,
+    actionTargeted,
+    routeReason,
+  });
+
+  // ── Priority 1: Action target override ──
+  const mentions = parseMentions(body);
   if (actionTargetAgentId && actionTargetAgentId !== senderAgentId) {
     const targetLeader = allLeaders.find((l) => l.agentId === actionTargetAgentId);
     const targetOther = allOthers.find((o) => o.agentId === actionTargetAgentId);
     return {
-      allLeaders,
-      allOthers,
-      mentioned: mentions, // still reported — audit trail preserves intent
+      allLeaders: leadersOut,
+      allOthers: othersOut,
+      mentioned: mentions,
       deliveredLeaderIds: targetLeader ? [targetLeader.agentId] : [],
-      deliveredOtherIds: targetOther ? [targetOther.agentId] : [],
+      deliveredOtherIds: targetOther ? [targetOther.agentId] : otherIds,
       mentionHit: false,
       actionTargeted: true,
+      routeReason: "action_target",
     };
   }
 
-  // Empty/whitespace-only body has nothing for Claude to read. Waking
-  // every leader on such a message is pure noise (and a small DoS
-  // vector — an attacker could POST 10k empty messages and flood every
-  // CLI with no-op notifications). Short-circuit.
+  // ── Empty body short-circuit ──
   const isBodyEmpty = !body || body.trim().length === 0;
   if (isBodyEmpty) {
-    return {
-      allLeaders,
-      allOthers,
-      mentioned: [],
-      deliveredLeaderIds: [],
-      deliveredOtherIds: [],
-      mentionHit: false,
-      actionTargeted: false,
-    };
+    return mkResult([], [], false, false, "empty_body");
   }
 
-  // Index leader names (normalized same as parseMentions) for O(1)
-  // lookup. UUIDs are also accepted so humans can @<uuid> to
-  // disambiguate agents with identical names.
+  // ── Priority 2: @all → roundtable (all leaders) ──
+  const hasAll = mentions.includes("all") || mentions.includes("everyone") || mentions.includes("전체") || mentions.includes("모두");
+  if (hasAll) {
+    return mkResult(
+      allLeaders.map((l) => l.agentId),
+      mentions,
+      true,
+      false,
+      "all",
+    );
+  }
+
+  // ── Priority 3: @mention → mentioned leader(s) ──
   const leaderByNormalizedName = new Map<string, string>();
   for (const l of allLeaders) {
     leaderByNormalizedName.set(normalizeMentionToken(l.name), l.agentId);
@@ -359,20 +400,80 @@ export async function resolveMessageAudience(
     else if (leaderIdSet.has(tok)) hitIds.add(tok);
   }
 
-  const mentionHit = hitIds.size > 0;
-  const deliveredLeaders = mentionHit
-    ? allLeaders.filter((l) => hitIds.has(l.agentId))
-    : allLeaders;
+  if (hitIds.size > 0) {
+    return mkResult(
+      allLeaders.filter((l) => hitIds.has(l.agentId)).map((l) => l.agentId),
+      mentions,
+      true,
+      false,
+      "mention",
+    );
+  }
 
-  return {
-    allLeaders,
-    allOthers,
-    mentioned: mentions,
-    deliveredLeaderIds: deliveredLeaders.map((l) => l.agentId),
-    deliveredOtherIds: allOthers.map((o) => o.agentId),
-    mentionHit,
-    actionTargeted: false,
-  };
+  // ── Priority 4: replyToId → original sender ──
+  if (replyToId) {
+    const [parent] = await db
+      .select({ senderAgentId: roomMessages.senderAgentId })
+      .from(roomMessages)
+      .where(eq(roomMessages.id, replyToId))
+      .limit(1);
+    if (parent?.senderAgentId) {
+      const parentLeader = allLeaders.find((l) => l.agentId === parent.senderAgentId);
+      if (parentLeader) {
+        return mkResult([parentLeader.agentId], mentions, false, false, "reply_to");
+      }
+    }
+  }
+
+  // ── Priority 5: topic match (score ≥ TOPIC_SCORE_THRESHOLD) ──
+  if (allLeaders.length > 1) {
+    let bestAgent: string | null = null;
+    let bestScore = 0;
+    for (const l of allLeaders) {
+      const score = scoreTopicMatch(body!, l.responseTopics);
+      if (score > bestScore) {
+        bestScore = score;
+        bestAgent = l.agentId;
+      }
+    }
+    if (bestAgent && bestScore >= TOPIC_SCORE_THRESHOLD) {
+      return mkResult([bestAgent], mentions, false, false, "topic_match");
+    }
+  }
+
+  // ── Priority 6: coordinator fallback ──
+  // Inline coordinator resolution to avoid a redundant room query
+  // (we already have roomRow).
+  let coordinatorId = roomRow.coordinatorAgentId;
+  if (!coordinatorId) {
+    // Check linked issue assignees
+    const linkedIssues = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(roomIssues)
+      .innerJoin(issues, eq(roomIssues.issueId, issues.id))
+      .where(eq(roomIssues.roomId, roomId))
+      .orderBy(desc(roomIssues.linkedAt))
+      .limit(5);
+    for (const li of linkedIssues) {
+      if (li.assigneeAgentId) { coordinatorId = li.assigneeAgentId; break; }
+    }
+  }
+  if (!coordinatorId) {
+    coordinatorId = roomRow.createdByAgentId;
+  }
+  if (coordinatorId) {
+    const coordLeader = allLeaders.find((l) => l.agentId === coordinatorId);
+    if (coordLeader) {
+      return mkResult([coordLeader.agentId], mentions, false, false, "coordinator");
+    }
+  }
+
+  // ── Priority 7: first leader (last resort) ──
+  if (allLeaders.length > 0) {
+    return mkResult([allLeaders[0].agentId], mentions, false, false, "first_leader");
+  }
+
+  return mkResult([], mentions, false, false, "no_leaders");
 }
 
 /**
@@ -409,6 +510,7 @@ async function fanoutMessageEvent(
       message.body ?? "",
       message.senderAgentId ?? null,
       message.actionTargetAgentId ?? null,
+      message.replyToId ?? null,
     );
     const targets = new Set<string>([
       ...audience.deliveredLeaderIds,

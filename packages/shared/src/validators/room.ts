@@ -19,6 +19,7 @@ export const updateRoomSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   description: z.string().optional().nullable(),
   status: z.enum(ROOM_STATUSES).optional(),
+  coordinatorAgentId: z.string().uuid().optional().nullable(),
 });
 export type UpdateRoom = z.infer<typeof updateRoomSchema>;
 

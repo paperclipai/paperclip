@@ -505,6 +505,13 @@
       "when": 1775809800000,
       "tag": "0071_pr_review_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1775809900000,
+      "tag": "0072_cos_speaker_control",
+      "breakpoints": true
     }
   ]
 }
