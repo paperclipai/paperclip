@@ -583,19 +583,12 @@ export function IssueDetail() {
 
   const wakeupMutation = useMutation({
     mutationFn: async (agentId: string) => {
-      // 1. Post a system comment so the leader CLI picks up the issue via channel-bridge
       const agentName = agents?.find((a) => a.id === agentId)?.name ?? "Agent";
-      await issuesApi.addComment(
+      // Post a comment to trigger the agent — server auto-wakes assignee on new comments
+      return issuesApi.addComment(
         issueId!,
-        `@${agentName} 이 이슈 작업을 시작해주세요.\n\n**${issue?.title ?? ""}**\n${issue?.description?.slice(0, 500) ?? ""}`,
+        `@${agentName} 이 이슈 작업을 시작해주세요.`,
       );
-      // 2. Also queue a wakeup as backup
-      return agentsApi.wakeup(agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: `Manual kick for issue ${issue?.identifier ?? issueId}`,
-        payload: { issueId },
-      }, selectedCompanyId ?? undefined);
     },
     onSuccess: () => {
       pushToast({ title: t("issue.workStarted"), tone: "success" });
