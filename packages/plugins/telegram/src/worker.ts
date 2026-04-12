@@ -236,8 +236,55 @@ function runInBackground(
 function sanitizeAgentMessage(message: string): string {
   return message
     .split(/\r?\n/)
-    .filter((line) => !line.trimStart().startsWith("[paperclip]"))
+    .filter((line) => !isTechnicalTelegramNoise(line))
     .join("\n");
+}
+
+function isTechnicalTelegramNoise(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  return (
+    trimmed.startsWith("[paperclip]") ||
+    trimmed.startsWith("Error generating content via API") ||
+    trimmed.startsWith("Full report available at:") ||
+    trimmed.startsWith("Warning: Metrics token unavailable") ||
+    trimmed.includes("No project or prior session workspace was available") ||
+    trimmed.includes("Using fallback workspace") ||
+    trimmed.includes("ProjectIdRequiredError") ||
+    trimmed.includes("GaxiosError") ||
+    trimmed.includes("Traceback ") ||
+    trimmed.includes(" at async ") ||
+    trimmed.includes(" at ")
+  );
+}
+
+function buildTelegramAgentPrompt(prompt: string): string {
+  return [
+    "Ответь пользователю в Telegram.",
+    "",
+    "Правила ответа:",
+    "- Пиши только на русском языке.",
+    "- Пиши понятно, по-человечески и без внутренних технических логов.",
+    "- Не показывай stdout/stderr, stack trace, JSON, [paperclip]-сообщения, workspace paths, session ids и служебные предупреждения.",
+    "- Если задача принята в работу, скажи коротко что именно понял и какой следующий шаг.",
+    "- Если не можешь выполнить действие, объясни простыми словами причину и что нужно сделать дальше.",
+    "",
+    "Сообщение пользователя:",
+    prompt,
+  ].join("\n");
+}
+
+function normalizeTelegramReply(response: string): string {
+  const cleaned = sanitizeAgentMessage(response)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (!cleaned) {
+    return "Пока не получил содержательный ответ от агента. Я уже передал задачу, попробуйте повторить чуть позже или переключить агента командой /status.";
+  }
+
+  return cleaned;
 }
 
 // ─── Agent Session ────────────────────────────────────────────────────────────
@@ -274,7 +321,7 @@ async function askAgent(
   // Fire sendMessage (non-blocking: returns runId, events follow async)
   ctx.agents.sessions
     .sendMessage(session.sessionId, companyId, {
-      prompt,
+      prompt: buildTelegramAgentPrompt(prompt),
       reason: "Telegram message",
       onEvent: (event) => {
         eventCount++;
@@ -330,7 +377,7 @@ async function askAgent(
   });
 
   const response = streamChunks.join("");
-  return response.trim() || "⚠️ Агент не ответил. Попробуйте позже.";
+  return normalizeTelegramReply(response);
 }
 
 // ─── Voice Transcription (Groq Whisper) ──────────────────────────────────────
