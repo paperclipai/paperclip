@@ -256,11 +256,40 @@ jobs:
             gh pr edit "$pr_url" --title "$pr_title" --body-file "$PR_BODY_PATH"
             echo "Reused existing PR: $pr_url"
           else
-            pr_url="$(gh pr create \
-              --base zh-enterprise \
-              --head "$BRANCH_NAME" \
-              --title "$pr_title" \
-              --body-file "$PR_BODY_PATH")"
+            pr_head="${REPO_OWNER}:${BRANCH_NAME}"
+            pr_create_error_log="$(mktemp)"
+
+            for attempt in 1 2 3 4 5; do
+              if pr_url="$(gh pr create \
+                --base zh-enterprise \
+                --head "$pr_head" \
+                --title "$pr_title" \
+                --body-file "$PR_BODY_PATH" \
+                2>"$pr_create_error_log")"; then
+                break
+              fi
+
+              if grep -Eq "Head sha can't be blank|Base sha can't be blank|No commits between|Head ref must be a branch|Base ref must be a branch" "$pr_create_error_log"; then
+                if [ "$attempt" -lt 5 ]; then
+                  echo "GitHub PR refs are not fully visible yet; retrying create in 5 seconds..."
+                  sleep 5
+                  continue
+                fi
+              fi
+
+              cat "$pr_create_error_log" >&2
+              rm -f "$pr_create_error_log"
+              exit 1
+            done
+
+            if [ -z "$pr_url" ]; then
+              cat "$pr_create_error_log" >&2
+              rm -f "$pr_create_error_log"
+              exit 1
+            fi
+
+            rm -f "$pr_create_error_log"
+
             echo "Created new PR: $pr_url"
           fi
 
