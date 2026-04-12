@@ -622,6 +622,7 @@ export function ProjectWorkspaceDetail() {
                   disabled={controlRuntimeServices.isPending || !workspace.cwd}
                   onClick={() => controlRuntimeServices.mutate("restart")}
                 >
+                  {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
                   Restart
                 </Button>
                 <Button
@@ -631,6 +632,7 @@ export function ProjectWorkspaceDetail() {
                   disabled={controlRuntimeServices.isPending || !hasActiveRuntimeServices(workspace)}
                   onClick={() => controlRuntimeServices.mutate("stop")}
                 >
+                  {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
                   Stop
                 </Button>
               </div>
