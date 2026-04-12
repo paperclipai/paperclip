@@ -92,7 +92,23 @@ export const issuesApi = {
       expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
-  listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
+  listComments: (
+    id: string,
+    opts?: {
+      afterCommentId?: string | null;
+      order?: "asc" | "desc";
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.afterCommentId) params.set("afterCommentId", opts.afterCommentId);
+    if (opts?.order) params.set("order", opts.order);
+    if (opts?.limit && Number.isFinite(opts.limit) && opts.limit > 0) {
+      params.set("limit", String(Math.floor(opts.limit)));
+    }
+    const qs = params.toString();
+    return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
+  },
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();

@@ -184,6 +184,179 @@ describe.sequential("copilot routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
+  it("creates a fresh board copilot thread when requested", async () => {
+    const { db } = createDbMock({
+      issueRows: [
+        [
+          {
+            id: "issue-copilot-existing",
+            identifier: "PAP-902",
+            title: "Board Copilot Thread",
+            status: "todo",
+            priority: "high",
+            assigneeAgentId: "agent-existing",
+            assigneeUserId: null,
+            companyId: "company-1",
+            originKind: "board_copilot_thread",
+            originId: "user-1",
+            updatedAt: new Date("2026-04-12T09:55:00.000Z"),
+          },
+        ],
+        [],
+      ],
+    });
+    mockIssueService.update.mockResolvedValueOnce({
+      id: "issue-copilot-existing",
+      identifier: "PAP-902",
+      title: "Board Copilot Thread",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: "agent-existing",
+      assigneeUserId: null,
+      companyId: "company-1",
+      originKind: "board_copilot_thread",
+      originId: "user-1",
+      hiddenAt: new Date("2026-04-12T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-12T10:00:00.000Z"),
+    });
+    mockIssueService.create.mockResolvedValueOnce({
+      id: "issue-copilot-new",
+      identifier: "PAP-903",
+      title: "Board Copilot Thread",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: "agent-fallback",
+      assigneeUserId: null,
+      companyId: "company-1",
+      originKind: "board_copilot_thread",
+      originId: "user-1",
+      updatedAt: new Date("2026-04-12T10:00:01.000Z"),
+    });
+
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      db,
+    );
+
+    const res = await request(app)
+      .post("/api/companies/company-1/copilot/thread/new")
+      .send({ contextIssueId: "PAP-42" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.issueId).toBe("issue-copilot-new");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-copilot-existing",
+      expect.objectContaining({
+        actorUserId: "user-1",
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        originKind: "board_copilot_thread",
+        originId: "user-1",
+      }),
+    );
+  });
+
+  it("creates a fresh board copilot thread when no active thread exists", async () => {
+    const { db } = createDbMock({
+      issueRows: [[], []],
+    });
+    mockIssueService.create.mockResolvedValueOnce({
+      id: "issue-copilot-new",
+      identifier: "PAP-904",
+      title: "Board Copilot Thread",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: "agent-fallback",
+      assigneeUserId: null,
+      companyId: "company-1",
+      originKind: "board_copilot_thread",
+      originId: "user-1",
+      updatedAt: new Date("2026-04-12T10:00:01.000Z"),
+    });
+
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      db,
+    );
+
+    const res = await request(app).post("/api/companies/company-1/copilot/thread/new").send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.issueId).toBe("issue-copilot-new");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists board copilot thread history including archived threads", async () => {
+    const { db } = createDbMock({
+      issueRows: [
+        [
+          {
+            id: "issue-copilot-current",
+            identifier: "PAP-904",
+            title: "Board Copilot Thread",
+            status: "todo",
+            priority: "high",
+            assigneeAgentId: "agent-fallback",
+            assigneeUserId: null,
+            companyId: "company-1",
+            originKind: "board_copilot_thread",
+            originId: "user-1",
+            updatedAt: new Date("2026-04-12T10:10:00.000Z"),
+            hiddenAt: null,
+          },
+          {
+            id: "issue-copilot-archived",
+            identifier: "PAP-903",
+            title: "Board Copilot Thread",
+            status: "done",
+            priority: "high",
+            assigneeAgentId: "agent-fallback",
+            assigneeUserId: null,
+            companyId: "company-1",
+            originKind: "board_copilot_thread",
+            originId: "user-1",
+            updatedAt: new Date("2026-04-11T08:00:00.000Z"),
+            hiddenAt: new Date("2026-04-12T09:00:00.000Z"),
+          },
+        ],
+      ],
+    });
+
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      db,
+    );
+
+    const res = await request(app).get("/api/companies/company-1/copilot/threads").query({ limit: "5" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0]).toMatchObject({
+      issueId: "issue-copilot-current",
+      hiddenAt: null,
+    });
+    expect(res.body[1]).toMatchObject({
+      issueId: "issue-copilot-archived",
+    });
+    expect(typeof res.body[1]?.hiddenAt).toBe("string");
+  });
+
   it("posts a contextual message and enqueues a high-priority dedicated wakeup", async () => {
     const { db } = createDbMock({
       issueRows: [

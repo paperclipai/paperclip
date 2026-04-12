@@ -14,6 +14,8 @@ const BOARD_COPILOT_THREAD_DESCRIPTION =
   "Dedicated high-priority board copilot conversation thread. Created automatically.";
 const BOARD_COPILOT_WAKE_PRIORITY = 100;
 const BOARD_COPILOT_DUPLICATE_WINDOW_MS = 10_000;
+const BOARD_COPILOT_HISTORY_DEFAULT_LIMIT = 30;
+const BOARD_COPILOT_HISTORY_MAX_LIMIT = 100;
 const BOARD_COPILOT_CONTEXT_MAX_FILTERS = 24;
 
 const routeContextSchema = z.object({
@@ -34,6 +36,10 @@ const routeContextSchema = z.object({
 const sendCopilotMessageSchema = z.object({
   body: z.string().min(1).max(40000),
   context: routeContextSchema.optional(),
+});
+
+const createCopilotThreadSchema = z.object({
+  contextIssueId: z.string().trim().min(1).max(128).optional().nullable(),
 });
 
 function isWakeableAgentStatus(status: string) {
@@ -103,11 +109,58 @@ function toThreadResponse(issue: {
   };
 }
 
+function toThreadHistoryResponse(issue: {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  originId?: string | null;
+  updatedAt: Date;
+  hiddenAt?: Date | null;
+}) {
+  return {
+    ...toThreadResponse(issue),
+    hiddenAt: issue.hiddenAt ?? null,
+  };
+}
+
 export function copilotRoutes(db: Db) {
   const router = Router();
   const issuesSvc = issueService(db);
   const agentsSvc = agentService(db);
   const heartbeat = heartbeatService(db);
+
+  async function findOpenThreadIssue(companyId: string, userId: string) {
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        companyId: issues.companyId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "board_copilot_thread"),
+          eq(issues.originId, userId),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
 
   async function pickCopilotAssignee(companyId: string, contextIssueRef?: string | null) {
     const contextRef = contextIssueRef?.trim() || null;
@@ -144,32 +197,7 @@ export function copilotRoutes(db: Db) {
     userId: string;
     contextIssueRef?: string | null;
   }) {
-    const existing = await db
-      .select({
-        id: issues.id,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        companyId: issues.companyId,
-        originKind: issues.originKind,
-        originId: issues.originId,
-        updatedAt: issues.updatedAt,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, input.companyId),
-          eq(issues.originKind, "board_copilot_thread"),
-          eq(issues.originId, input.userId),
-          isNull(issues.hiddenAt),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+    const existing = await findOpenThreadIssue(input.companyId, input.userId);
 
     if (!existing) {
       const preferredAssignee = await pickCopilotAssignee(input.companyId, input.contextIssueRef);
@@ -251,6 +279,117 @@ export function copilotRoutes(db: Db) {
     const thread = await ensureThreadIssue({ companyId, userId, contextIssueRef });
     res.json(toThreadResponse(thread));
   });
+
+  router.get("/companies/:companyId/copilot/threads", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board users can access copilot thread history");
+    }
+
+    const userId = req.actor.userId ?? "local-board";
+    const parsedLimit =
+      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
+        ? Number(req.query.limit)
+        : null;
+    const limit =
+      parsedLimit && Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(Math.floor(parsedLimit), BOARD_COPILOT_HISTORY_MAX_LIMIT)
+        : BOARD_COPILOT_HISTORY_DEFAULT_LIMIT;
+
+    const threads = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        originId: issues.originId,
+        updatedAt: issues.updatedAt,
+        hiddenAt: issues.hiddenAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "board_copilot_thread"),
+          eq(issues.originId, userId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(limit);
+
+    res.json(threads.map((thread) => toThreadHistoryResponse(thread)));
+  });
+
+  router.post(
+    "/companies/:companyId/copilot/thread/new",
+    validate(createCopilotThreadSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board") {
+        throw forbidden("Only board users can create copilot threads");
+      }
+
+      const actor = getActorInfo(req);
+      const userId = req.actor.userId ?? "local-board";
+      const contextIssueRef =
+        typeof req.body.contextIssueId === "string" && req.body.contextIssueId.trim().length > 0
+          ? req.body.contextIssueId.trim()
+          : null;
+
+      const existingThread = await findOpenThreadIssue(companyId, userId);
+      if (existingThread) {
+        const hiddenAt = new Date();
+        const archived = await issuesSvc.update(existingThread.id, {
+          hiddenAt,
+          actorUserId: userId,
+        });
+        if (archived) {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.copilot_thread_archived",
+            entityType: "issue",
+            entityId: existingThread.id,
+            details: {
+              source: "board_copilot",
+              identifier: existingThread.identifier,
+              issueTitle: existingThread.title,
+              hiddenAt: hiddenAt.toISOString(),
+            },
+          });
+        }
+      }
+
+      const thread = await ensureThreadIssue({ companyId, userId, contextIssueRef });
+      await logActivity(db, {
+        companyId: thread.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.copilot_thread_created",
+        entityType: "issue",
+        entityId: thread.id,
+        details: {
+          source: "board_copilot",
+          identifier: thread.identifier,
+          issueTitle: thread.title,
+          contextIssueRef,
+          replacedThreadIssueId: existingThread?.id ?? null,
+        },
+      });
+
+      res.status(201).json(toThreadResponse(thread));
+    },
+  );
 
   router.post(
     "/companies/:companyId/copilot/thread/messages",

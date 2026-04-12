@@ -170,6 +170,7 @@ export type {
   ExecutiveSummary,
   CopilotRouteContext,
   CopilotThreadSummary,
+  CopilotThreadHistoryEntry,
   CopilotMessageCreateResponse,
   FeedbackVote,
   FeedbackDataSharingPreference,
