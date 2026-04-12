@@ -14,7 +14,7 @@ interface TelegramConfig {
   companyId: string;
   personalAssistantAgentId: string;
   ceoAgentId: string;
-  openAiApiKey?: string;
+  groqApiKey?: string;
   notifyChatId?: string;
   enableNotifications: boolean;
 }
@@ -95,7 +95,7 @@ async function getConfig(ctx: PluginContext): Promise<TelegramConfig> {
       "6fbe7253-4746-4b0b-b371-3218e9c03ea6",
     ceoAgentId:
       (raw.ceoAgentId as string) ?? "76cf0ea1-d736-4245-8959-388faa5513ad",
-    openAiApiKey: (raw.openAiApiKey as string | undefined),
+    groqApiKey: (raw.groqApiKey as string | undefined),
     notifyChatId: (raw.notifyChatId as string | undefined) || undefined,
     enableNotifications: (raw.enableNotifications as boolean) ?? true,
   };
@@ -199,17 +199,39 @@ async function askAgent(
     reason: "Telegram",
   });
 
+  ctx.logger.info("Session created", { sessionId: session.sessionId });
+
+  // AgentSessionEvent fields:
+  //   eventType: "chunk" | "status" | "done" | "error"
+  //   stream:    "stdout" | "stderr" | "system" | null  ← stream TYPE, not content
+  //   message:   string | null                          ← actual text content
+  //   payload:   Record<string, unknown> | null
   const streamChunks: string[] = [];
-  let doneMessage = "";
+  let eventCount = 0;
 
   try {
     await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
       prompt,
       reason: "Telegram message",
       onEvent: (event) => {
-        if (typeof event.stream === "string") streamChunks.push(event.stream);
-        if (event.eventType === "done" && typeof event.message === "string") {
-          doneMessage = event.message;
+        eventCount++;
+        ctx.logger.info("Agent event", {
+          eventType: event.eventType,
+          streamType: event.stream,
+          messageLen: event.message?.length ?? 0,
+        });
+
+        // "chunk" events carry output text in .message
+        if (event.eventType === "chunk" && event.message) {
+          streamChunks.push(event.message);
+        }
+
+        // "done" event may also carry the final assembled message
+        if (event.eventType === "done" && event.message) {
+          // Only use done.message if we have no chunks (avoid duplication)
+          if (streamChunks.length === 0) {
+            streamChunks.push(event.message);
+          }
         }
       },
     });
@@ -217,11 +239,16 @@ async function askAgent(
     await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
   }
 
-  const response = doneMessage || streamChunks.join("");
+  ctx.logger.info("Agent response collected", {
+    eventCount,
+    streamChunks: streamChunks.length,
+  });
+
+  const response = streamChunks.join("");
   return response.trim() || "⚠️ Агент не ответил. Попробуйте позже.";
 }
 
-// ─── Voice Transcription ─────────────────────────────────────────────────────
+// ─── Voice Transcription (Groq Whisper) ──────────────────────────────────────
 
 async function downloadTgFile(
   ctx: PluginContext,
@@ -240,25 +267,31 @@ async function transcribeVoice(
   ctx: PluginContext,
   token: string,
   fileId: string,
-  openAiKey: string,
+  groqKey: string,
 ): Promise<string> {
   const audioBuffer = await downloadTgFile(ctx, token, fileId);
 
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: "audio/ogg" }), "voice.ogg");
-  form.append("model", "whisper-1");
+  form.append("model", "whisper-large-v3");
   form.append("language", "ru");
+  form.append("response_format", "json");
 
+  // Using Groq's free Whisper API (OpenAI-compatible)
   const resp = await ctx.http.fetch(
-    "https://api.openai.com/v1/audio/transcriptions",
+    "https://api.groq.com/openai/v1/audio/transcriptions",
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${openAiKey}` },
+      headers: { Authorization: `Bearer ${groqKey}` },
       body: form,
     },
   );
 
-  const result = (await resp.json()) as { text?: string };
+  const result = (await resp.json()) as { text?: string; error?: unknown };
+  if (result.error) {
+    ctx.logger.error("Groq transcription error", { error: result.error });
+    return "";
+  }
   return result.text?.trim() ?? "";
 }
 
@@ -282,12 +315,12 @@ async function handleVoice(
   chatId: string,
   fileId: string,
 ): Promise<void> {
-  if (!config.openAiApiKey) {
+  if (!config.groqApiKey) {
     await sendMsg(
       ctx,
       config.botToken,
       chatId,
-      "⚠️ Голосовые не поддерживаются — настройте OpenAI API Key в конфиге плагина.",
+      "⚠️ Голосовые не поддерживаются — настройте Groq API Key в конфиге плагина.\n\nПолучить бесплатно: https://console.groq.com",
     );
     return;
   }
@@ -298,8 +331,11 @@ async function handleVoice(
     ctx,
     config.botToken,
     fileId,
-    config.openAiApiKey,
-  ).catch(() => "");
+    config.groqApiKey,
+  ).catch((err) => {
+    ctx.logger.error("Transcription failed", { error: String(err) });
+    return "";
+  });
 
   if (!transcribed) {
     await sendMsg(ctx, config.botToken, chatId, "⚠️ Не удалось распознать голос.");
@@ -473,7 +509,7 @@ const plugin = definePlugin({
         status: "ok",
         message: "Telegram bot ready",
         details: {
-          hasOpenAI: !!config.openAiApiKey,
+          hasGroq: !!config.groqApiKey,
           notifications: config.enableNotifications,
           notifyChatId: config.notifyChatId ?? "not set",
         },

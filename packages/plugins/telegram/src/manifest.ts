@@ -56,10 +56,10 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Holding CEO Agent ID",
         default: "76cf0ea1-d736-4245-8959-388faa5513ad",
       },
-      openAiApiKey: {
+      groqApiKey: {
         type: "string",
-        title: "OpenAI API Key",
-        description: "Для транскрипции голосовых сообщений через Whisper (опционально).",
+        title: "Groq API Key (бесплатно)",
+        description: "Для транскрипции голосовых сообщений через Whisper-large-v3. Бесплатно на console.groq.com.",
       },
       notifyChatId: {
         type: "string",
