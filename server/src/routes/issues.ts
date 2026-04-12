@@ -401,9 +401,7 @@ export function issueRoutes(
       );
     }
 
-    const targetAgent =
-      (await agentsSvc.list(issue.companyId)).find((candidate) => candidate.role === escalationConfig.targetRole) ??
-      null;
+    const targetAgent = await agentsSvc.getByRole(issue.companyId, escalationConfig.targetRole);
     if (!targetAgent) {
       throw new HttpError(
         422,
@@ -435,7 +433,6 @@ export function issueRoutes(
     });
     const existingEscalation =
       existingEscalations.find((candidate) => candidate.originKind === "issue_escalation") ??
-      existingEscalations[0] ??
       null;
     if (existingEscalation) return existingEscalation;
 

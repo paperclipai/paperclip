@@ -383,6 +383,22 @@ export function agentService(db: Db) {
       return hydrated.map(normalizeAgentRow);
     },
 
+    getByRole: async (companyId: string, role: string, options?: { includeTerminated?: boolean }) => {
+      const conditions = [eq(agents.companyId, companyId), eq(agents.role, role)];
+      if (!options?.includeTerminated) {
+        conditions.push(ne(agents.status, "terminated"));
+      }
+      const row = await db
+        .select()
+        .from(agents)
+        .where(and(...conditions))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [hydrated] = await hydrateAgentSpend([row]);
+      return normalizeAgentRow(hydrated);
+    },
+
     getById,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {

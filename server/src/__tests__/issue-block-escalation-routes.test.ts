@@ -19,6 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByRole: vi.fn(),
   list: vi.fn(),
 }));
 
@@ -131,9 +132,13 @@ describe("issue blocked escalation route", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.list.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(makeActorAgent());
-    mockAgentService.list.mockResolvedValue([
-      { id: "agent-cto", companyId: "company-1", role: "cto", name: "CTO", title: "CTO" },
-    ]);
+    mockAgentService.getByRole.mockResolvedValue({
+      id: "agent-cto",
+      companyId: "company-1",
+      role: "cto",
+      name: "CTO",
+      title: "CTO",
+    });
   });
 
   it("does not create an escalation child if the parent update fails", async () => {
@@ -186,12 +191,58 @@ describe("issue blocked escalation route", () => {
       parentId: issue.id,
       assigneeAgentId: "agent-cto",
     }));
+    expect(mockAgentService.getByRole).toHaveBeenCalledWith("company-1", "cto");
     expect(mockIssueService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
         parentId: issue.id,
         assigneeAgentId: "agent-cto",
         originKind: "issue_escalation",
+      }),
+    );
+  });
+
+  it("does not reuse an unrelated open child issue as the escalation issue", async () => {
+    const issue = makeIssue();
+    const unrelatedChild = {
+      ...issue,
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-582",
+      parentId: issue.id,
+      originKind: "child_request",
+      assigneeAgentId: "agent-cto",
+      status: "todo",
+      title: "Existing CTO follow-up",
+    };
+    const escalationIssue = {
+      ...issue,
+      id: "44444444-4444-4444-8444-444444444444",
+      identifier: "PAP-583",
+      parentId: issue.id,
+      originKind: "issue_escalation",
+      assigneeAgentId: "agent-cto",
+      status: "todo",
+      title: "CTO escalation: PAP-580",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      status: "blocked",
+      updatedAt: new Date(),
+    });
+    mockIssueService.list.mockResolvedValue([unrelatedChild]);
+    mockIssueService.create.mockResolvedValue(escalationIssue);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        originKind: "issue_escalation",
+        assigneeAgentId: "agent-cto",
       }),
     );
   });

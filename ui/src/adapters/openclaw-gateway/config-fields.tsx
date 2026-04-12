@@ -100,8 +100,10 @@ export function OpenClawGatewayConfigFields({
     config.issueBlockEscalation && typeof config.issueBlockEscalation === "object" && !Array.isArray(config.issueBlockEscalation)
       ? (config.issueBlockEscalation as Record<string, unknown>)
       : {};
+  const effectiveIssueBlockEscalation =
+    (eff("adapterConfig", "issueBlockEscalation", issueBlockEscalation) as Record<string, unknown> | undefined) ?? {};
   const issueBlockEscalationEnabled = Boolean(
-    (eff("adapterConfig", "issueBlockEscalation", issueBlockEscalation) ?? {}).enabled,
+    effectiveIssueBlockEscalation.enabled,
   );
 
   const setIssueBlockEscalation = (patch: Record<string, unknown>) => {
@@ -270,7 +272,7 @@ export function OpenClawGatewayConfigFields({
           {issueBlockEscalationEnabled && (
             <Field label="Blocked issue escalation target role">
               <DraftInput
-                value={String(issueBlockEscalation.targetRole ?? "cto")}
+                value={String(effectiveIssueBlockEscalation.targetRole ?? issueBlockEscalation.targetRole ?? "cto")}
                 onCommit={(v) => setIssueBlockEscalation({ enabled: true, targetRole: v || "cto" })}
                 immediate
                 className={inputClass}
