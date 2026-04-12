@@ -3,6 +3,9 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { voiceCommandService } from "../services/voice-commands.js";
+import { chatService } from "../services/chats.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { agentService } from "../services/agents.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 const createSchema = z.object({
@@ -33,6 +36,9 @@ const correctSchema = z.object({
 export function voiceCommandRoutes(db: Db) {
   const router = Router();
   const svc = voiceCommandService(db);
+  const chats = chatService(db);
+  const heartbeat = heartbeatService(db);
+  const agents = agentService(db);
 
   // List voice commands for a company
   router.get("/companies/:companyId/voice-commands", async (req, res) => {
@@ -69,15 +75,74 @@ export function voiceCommandRoutes(db: Db) {
       assertBoard(req);
 
       const userId = (req as any).userId ?? (req as any).agentId;
+      const routerAgentId = req.body.routerAgentId;
+
+      // If a router agent is specified, create a chat and trigger the agent
+      let chatId = req.body.chatId;
+      let routerRun: { id: string } | null = null;
+
       const cmd = await svc.create({
         companyId,
         initiatedByUserId: userId,
         rawText: req.body.rawText,
-        routerAgentId: req.body.routerAgentId,
-        chatId: req.body.chatId,
+        routerAgentId,
+        chatId,
         metadata: req.body.metadata,
       });
-      res.status(201).json(cmd);
+
+      if (routerAgentId) {
+        const agent = await agents.getById(routerAgentId);
+        if (agent && agent.companyId === companyId) {
+          // Create a fresh chat for this voice command
+          const chat = await chats.createChat({
+            companyId,
+            agentId: routerAgentId,
+            initiatedByUserId: userId,
+          });
+          chatId = chat.id;
+
+          // Update the voice command with the chat ID
+          await svc.update(cmd.id, companyId, { chatId, status: "processing" });
+
+          // Wrap the raw voice text in a structured prompt
+          const wrappedPrompt = [
+            `VOICE COMMAND (id: ${cmd.id})`,
+            `From: ${userId}`,
+            ``,
+            `"${req.body.rawText}"`,
+            ``,
+            `Classify this voice command and take action. Update the voice command record when done.`,
+          ].join("\n");
+
+          // Add as a user message in the chat
+          const msg = await chats.addUserMessage({
+            companyId,
+            chatId,
+            body: wrappedPrompt,
+          });
+
+          // Wake the router agent with voice_command reason
+          const run = await heartbeat.wakeup(routerAgentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "voice_command",
+            payload: { chatId, messageId: msg.id, voiceCommandId: cmd.id },
+            requestedByActorType: "user",
+            requestedByActorId: userId,
+            contextSnapshot: {
+              wakeReason: "voice_command",
+              chatId,
+              chatMessageId: msg.id,
+              chatMessage: wrappedPrompt,
+              voiceCommandId: cmd.id,
+              rawText: req.body.rawText,
+            },
+          });
+          routerRun = run ?? null;
+        }
+      }
+
+      res.status(201).json({ ...cmd, chatId, routerRunId: routerRun?.id ?? null });
     },
   );
 
@@ -143,6 +208,59 @@ export function voiceCommandRoutes(db: Db) {
         res.status(404).json({ error: "Voice command not found" });
         return;
       }
+
+      // If there's a router agent, wake it with correction context
+      if (existing.routerAgentId) {
+        const agent = await agents.getById(existing.routerAgentId);
+        if (agent) {
+          const corrUserId = (req as any).userId ?? (req as any).agentId;
+          const corrChat = await chats.createChat({
+            companyId: existing.companyId,
+            agentId: existing.routerAgentId,
+            initiatedByUserId: corrUserId,
+          });
+
+          const corrPrompt = [
+            `VOICE CORRECTION (voiceCommandId: ${id})`,
+            ``,
+            `Original input: "${existing.rawText}"`,
+            `Original classification: ${existing.classification ?? "unknown"}`,
+            `Original action: ${existing.actionTaken ?? "unknown"}`,
+            `Original issue: ${existing.createdIssueId ?? "none"}`,
+            ``,
+            `Correction: "${req.body.correctionText}"`,
+            `Correction action: ${req.body.action}`,
+            ``,
+            `Rectify this mistake, update the voice command, and log the correction to Obsidian.`,
+          ].join("\n");
+
+          const msg = await chats.addUserMessage({
+            companyId: existing.companyId,
+            chatId: corrChat.id,
+            body: corrPrompt,
+          });
+
+          await heartbeat.wakeup(existing.routerAgentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "voice_correction",
+            payload: { chatId: corrChat.id, messageId: msg.id, voiceCommandId: id },
+            requestedByActorType: "user",
+            requestedByActorId: corrUserId,
+            contextSnapshot: {
+              wakeReason: "voice_correction",
+              chatId: corrChat.id,
+              chatMessageId: msg.id,
+              chatMessage: corrPrompt,
+              voiceCommandId: id,
+              correctionText: req.body.correctionText,
+              originalClassification: existing.classification,
+              originalIssueId: existing.createdIssueId,
+            },
+          });
+        }
+      }
+
       res.json(corrected);
     },
   );
