@@ -1,0 +1,513 @@
+import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import type {
+  PluginContext,
+  PluginEvent,
+  PluginWebhookInput,
+  PluginHealthDiagnostics,
+} from "@paperclipai/plugin-sdk";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface TelegramConfig {
+  botToken: string;
+  personalChatId: string;
+  companyId: string;
+  personalAssistantAgentId: string;
+  ceoAgentId: string;
+  openAiApiKey?: string;
+  notifyChatId?: string;
+  enableNotifications: boolean;
+}
+
+interface ActiveAgent {
+  agentId: string;
+  name: string;
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+}
+
+interface TelegramMessage {
+  message_id: number;
+  from?: { id: number; first_name: string; username?: string };
+  chat: { id: number; type: string };
+  date: number;
+  text?: string;
+  voice?: { file_id: string; duration: number };
+  audio?: { file_id: string; duration: number };
+}
+
+// ─── Agent Registry ───────────────────────────────────────────────────────────
+
+// Команды переключения агентов. Ключи — lowercase команды.
+const AGENT_COMMANDS: Record<string, ActiveAgent> = {
+  "/pa":        { agentId: "6fbe7253-4746-4b0b-b371-3218e9c03ea6", name: "Personal Assistant" },
+  "/assistant": { agentId: "6fbe7253-4746-4b0b-b371-3218e9c03ea6", name: "Personal Assistant" },
+  "/ceo":       { agentId: "76cf0ea1-d736-4245-8959-388faa5513ad", name: "Holding CEO" },
+  "/cto":       { agentId: "a2673ab4-58fa-4404-a111-b2bc9d3e7fda", name: "Arty CTO" },
+  "/hftcto":    { agentId: "03b7cb3e-f06b-4a76-be5d-952801dfccc0", name: "HFT CTO" },
+  "/cfo":       { agentId: "849e1879-6aa2-437e-8a9e-3ebc24baa2a7", name: "CFO" },
+  "/coo":       { agentId: "9e620991-4085-4c91-8af9-591c22c16333", name: "Arty COO" },
+  "/pm":        { agentId: "e759dbe1-31c1-4764-9604-02b312da8023", name: "Arty PM" },
+  "/hftpm":     { agentId: "318040b3-080e-4486-8355-ec4f511e923f", name: "HFT PM" },
+  "/hftrisk":   { agentId: "ac29e660-d0e2-43dc-a9eb-675ef1bde81a", name: "HFT Risk" },
+  "/cbo":       { agentId: "3862b770-d5a4-45df-b406-a9bfd3eb45a4", name: "Arty CBO" },
+};
+
+const HELP_TEXT = `🤖 <b>ARTI Holding Bot</b>
+
+Отправьте текст или голосовое сообщение — ответит активный агент.
+
+<b>Переключить агента:</b>
+/pa — Personal Assistant (по умолчанию для вас)
+/ceo — Holding CEO
+/cto — Arty CTO
+/hftcto — HFT CTO
+/cfo — CFO
+/coo — COO
+/cbo — CBO
+/pm — Arty PM
+/hftpm — HFT PM
+/hftrisk — HFT Risk
+
+<b>Утилиты:</b>
+/status — текущий агент
+/help — это сообщение`;
+
+// ─── Module state ─────────────────────────────────────────────────────────────
+
+let currentContext: PluginContext | undefined;
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+async function getConfig(ctx: PluginContext): Promise<TelegramConfig> {
+  const raw = (await ctx.config.get()) as Record<string, unknown>;
+  return {
+    botToken: (raw.botToken as string) ?? "",
+    personalChatId: (raw.personalChatId as string) ?? "",
+    companyId:
+      (raw.companyId as string) ?? "752d12a0-c30a-45c0-ad18-a285ae5acf7a",
+    personalAssistantAgentId:
+      (raw.personalAssistantAgentId as string) ??
+      "6fbe7253-4746-4b0b-b371-3218e9c03ea6",
+    ceoAgentId:
+      (raw.ceoAgentId as string) ?? "76cf0ea1-d736-4245-8959-388faa5513ad",
+    openAiApiKey: (raw.openAiApiKey as string | undefined),
+    notifyChatId: (raw.notifyChatId as string | undefined) || undefined,
+    enableNotifications: (raw.enableNotifications as boolean) ?? true,
+  };
+}
+
+// ─── Telegram API ─────────────────────────────────────────────────────────────
+
+async function tgApi(
+  ctx: PluginContext,
+  token: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<unknown> {
+  const resp = await ctx.http.fetch(
+    `https://api.telegram.org/bot${token}/${method}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    },
+  );
+  return resp.json();
+}
+
+async function sendMsg(
+  ctx: PluginContext,
+  token: string,
+  chatId: string | number,
+  html: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  // Telegram limit: 4096 chars per message
+  const MAX = 4000;
+  const chunks: string[] = [];
+  for (let i = 0; i < html.length; i += MAX) chunks.push(html.slice(i, i + MAX));
+
+  for (const chunk of chunks) {
+    await tgApi(ctx, token, "sendMessage", {
+      chat_id: chatId,
+      text: chunk,
+      parse_mode: "HTML",
+      ...extra,
+    }).catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
+  }
+}
+
+async function sendTyping(
+  ctx: PluginContext,
+  token: string,
+  chatId: string | number,
+): Promise<void> {
+  await tgApi(ctx, token, "sendChatAction", {
+    chat_id: chatId,
+    action: "typing",
+  }).catch(() => {});
+}
+
+// ─── Plugin State (active agent per chat) ────────────────────────────────────
+
+async function getActiveAgent(
+  ctx: PluginContext,
+  chatId: string,
+  config: TelegramConfig,
+): Promise<ActiveAgent> {
+  const stored = (await ctx.state.get({
+    scopeKind: "instance",
+    namespace: "active-agents",
+    stateKey: chatId,
+  })) as ActiveAgent | null;
+
+  if (stored?.agentId) return stored;
+
+  // Default: личный чат → PA, остальные → CEO
+  return chatId === config.personalChatId
+    ? { agentId: config.personalAssistantAgentId, name: "Personal Assistant" }
+    : { agentId: config.ceoAgentId, name: "Holding CEO" };
+}
+
+async function setActiveAgent(
+  ctx: PluginContext,
+  chatId: string,
+  agent: ActiveAgent,
+): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", namespace: "active-agents", stateKey: chatId },
+    agent,
+  );
+}
+
+// ─── Agent Session ────────────────────────────────────────────────────────────
+
+async function askAgent(
+  ctx: PluginContext,
+  agentId: string,
+  companyId: string,
+  prompt: string,
+): Promise<string> {
+  ctx.logger.info("Routing to agent", { agentId, chars: prompt.length });
+
+  const session = await ctx.agents.sessions.create(agentId, companyId, {
+    reason: "Telegram",
+  });
+
+  const streamChunks: string[] = [];
+  let doneMessage = "";
+
+  try {
+    await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
+      prompt,
+      reason: "Telegram message",
+      onEvent: (event) => {
+        if (typeof event.stream === "string") streamChunks.push(event.stream);
+        if (event.eventType === "done" && typeof event.message === "string") {
+          doneMessage = event.message;
+        }
+      },
+    });
+  } finally {
+    await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
+  }
+
+  const response = doneMessage || streamChunks.join("");
+  return response.trim() || "⚠️ Агент не ответил. Попробуйте позже.";
+}
+
+// ─── Voice Transcription ─────────────────────────────────────────────────────
+
+async function downloadTgFile(
+  ctx: PluginContext,
+  token: string,
+  fileId: string,
+): Promise<ArrayBuffer> {
+  const info = (await tgApi(ctx, token, "getFile", { file_id: fileId })) as {
+    result: { file_path: string };
+  };
+  const url = `https://api.telegram.org/file/bot${token}/${info.result.file_path}`;
+  const resp = await ctx.http.fetch(url);
+  return resp.arrayBuffer();
+}
+
+async function transcribeVoice(
+  ctx: PluginContext,
+  token: string,
+  fileId: string,
+  openAiKey: string,
+): Promise<string> {
+  const audioBuffer = await downloadTgFile(ctx, token, fileId);
+
+  const form = new FormData();
+  form.append("file", new Blob([audioBuffer], { type: "audio/ogg" }), "voice.ogg");
+  form.append("model", "whisper-1");
+  form.append("language", "ru");
+
+  const resp = await ctx.http.fetch(
+    "https://api.openai.com/v1/audio/transcriptions",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${openAiKey}` },
+      body: form,
+    },
+  );
+
+  const result = (await resp.json()) as { text?: string };
+  return result.text?.trim() ?? "";
+}
+
+// ─── Message Handlers ─────────────────────────────────────────────────────────
+
+async function handleText(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  chatId: string,
+  text: string,
+): Promise<void> {
+  await sendTyping(ctx, config.botToken, chatId);
+  const agent = await getActiveAgent(ctx, chatId, config);
+  const reply = await askAgent(ctx, agent.agentId, config.companyId, text);
+  await sendMsg(ctx, config.botToken, chatId, reply);
+}
+
+async function handleVoice(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  chatId: string,
+  fileId: string,
+): Promise<void> {
+  if (!config.openAiApiKey) {
+    await sendMsg(
+      ctx,
+      config.botToken,
+      chatId,
+      "⚠️ Голосовые не поддерживаются — настройте OpenAI API Key в конфиге плагина.",
+    );
+    return;
+  }
+
+  await sendTyping(ctx, config.botToken, chatId);
+
+  const transcribed = await transcribeVoice(
+    ctx,
+    config.botToken,
+    fileId,
+    config.openAiApiKey,
+  ).catch(() => "");
+
+  if (!transcribed) {
+    await sendMsg(ctx, config.botToken, chatId, "⚠️ Не удалось распознать голос.");
+    return;
+  }
+
+  // Показываем расшифровку, потом ответ агента
+  await sendMsg(ctx, config.botToken, chatId, `🎙 <i>${escapeHtml(transcribed)}</i>`);
+  await handleText(ctx, config, chatId, transcribed);
+}
+
+async function handleCommand(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  chatId: string,
+  command: string,
+  args: string,
+): Promise<void> {
+  // Переключение агента
+  if (AGENT_COMMANDS[command]) {
+    const agent = AGENT_COMMANDS[command];
+    await setActiveAgent(ctx, chatId, agent);
+    await sendMsg(
+      ctx,
+      config.botToken,
+      chatId,
+      `✅ Переключён на: <b>${agent.name}</b>\n\nЗадавайте вопросы.`,
+    );
+    return;
+  }
+
+  switch (command) {
+    case "/start":
+    case "/help":
+      await sendMsg(ctx, config.botToken, chatId, HELP_TEXT);
+      break;
+
+    case "/status": {
+      const active = await getActiveAgent(ctx, chatId, config);
+      await sendMsg(
+        ctx,
+        config.botToken,
+        chatId,
+        `🎯 Активный агент: <b>${active.name}</b>`,
+      );
+      break;
+    }
+
+    default:
+      // Неизвестная команда — если есть аргументы, трактуем как вопрос
+      if (args.trim()) {
+        await handleText(ctx, config, chatId, `${command} ${args}`);
+      } else {
+        await sendMsg(
+          ctx,
+          config.botToken,
+          chatId,
+          `Неизвестная команда: <code>${escapeHtml(command)}</code>\n/help — список команд`,
+        );
+      }
+  }
+}
+
+async function handleUpdate(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  update: TelegramUpdate,
+): Promise<void> {
+  const message = update.message ?? update.edited_message;
+  if (!message) return;
+
+  const chatId = String(message.chat.id);
+
+  if (message.text) {
+    const text = message.text.trim();
+    if (text.startsWith("/")) {
+      const spaceIdx = text.indexOf(" ");
+      const command =
+        spaceIdx === -1 ? text : text.slice(0, spaceIdx);
+      const args = spaceIdx === -1 ? "" : text.slice(spaceIdx + 1);
+      // Убираем @username суффикс у команды
+      const baseCmd = command.split("@")[0].toLowerCase();
+      await handleCommand(ctx, config, chatId, baseCmd, args);
+    } else {
+      await handleText(ctx, config, chatId, text);
+    }
+    return;
+  }
+
+  if (message.voice) {
+    await handleVoice(ctx, config, chatId, message.voice.file_id);
+    return;
+  }
+
+  if (message.audio) {
+    await handleVoice(ctx, config, chatId, message.audio.file_id);
+    return;
+  }
+
+  await sendMsg(
+    ctx,
+    config.botToken,
+    chatId,
+    "⚠️ Поддерживаются текстовые и голосовые сообщения.",
+  );
+}
+
+// ─── Push Notifications ───────────────────────────────────────────────────────
+
+async function handleIssueCommented(
+  ctx: PluginContext,
+  event: PluginEvent,
+): Promise<void> {
+  const config = await getConfig(ctx);
+  if (!config.enableNotifications || !config.notifyChatId) return;
+  if (event.actorType !== "agent") return;
+
+  const payload = event.payload as Record<string, unknown>;
+  const comment = payload.comment as Record<string, unknown> | undefined;
+  const issue = payload.issue as Record<string, unknown> | undefined;
+  if (!comment || !issue) return;
+
+  const agentName = event.actorId ?? "Agent";
+  const issueTitle = (issue.title as string) ?? "задача";
+  const commentText = (comment.content as string) ?? "";
+
+  const html = [
+    `💬 <b>${escapeHtml(agentName)}</b> → <i>${escapeHtml(issueTitle)}</i>`,
+    "",
+    escapeHtml(commentText).slice(0, 1000),
+  ].join("\n");
+
+  await sendMsg(ctx, config.botToken, config.notifyChatId, html);
+}
+
+// ─── HTML escape ──────────────────────────────────────────────────────────────
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// ─── Plugin ───────────────────────────────────────────────────────────────────
+
+const plugin = definePlugin({
+  async setup(ctx): Promise<void> {
+    currentContext = ctx;
+    ctx.logger.info("Telegram plugin ready");
+
+    ctx.events.on("issue.comment.created", async (event: PluginEvent) => {
+      try {
+        await handleIssueCommented(ctx, event);
+      } catch (err) {
+        ctx.logger.error("Push notification failed", { error: String(err) });
+      }
+    });
+  },
+
+  async onHealth(): Promise<PluginHealthDiagnostics> {
+    const ctx = currentContext;
+    if (!ctx) return { status: "degraded", message: "Initializing..." };
+
+    try {
+      const config = await getConfig(ctx);
+      if (!config.botToken) {
+        return { status: "degraded", message: "Bot token not configured — set it in plugin settings" };
+      }
+      return {
+        status: "ok",
+        message: "Telegram bot ready",
+        details: {
+          hasOpenAI: !!config.openAiApiKey,
+          notifications: config.enableNotifications,
+          notifyChatId: config.notifyChatId ?? "not set",
+        },
+      };
+    } catch {
+      return { status: "error", message: "Failed to load config" };
+    }
+  },
+
+  async onWebhook(input: PluginWebhookInput): Promise<void> {
+    if (input.endpointKey !== "telegram-update") return;
+
+    const ctx = currentContext;
+    if (!ctx) return;
+
+    try {
+      const config = await getConfig(ctx);
+      if (!config.botToken) {
+        ctx.logger.warn("Webhook received but bot token not configured");
+        return;
+      }
+
+      const update = input.parsedBody as TelegramUpdate;
+      await handleUpdate(ctx, config, update);
+    } catch (err) {
+      ctx?.logger.error("Telegram webhook error", { error: String(err) });
+    }
+  },
+
+  async onShutdown(): Promise<void> {
+    currentContext?.logger.info("Telegram plugin shutting down");
+    currentContext = undefined;
+  },
+});
+
+export default plugin;
+runWorker(plugin, import.meta.url);
