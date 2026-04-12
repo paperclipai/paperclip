@@ -62,6 +62,27 @@ private struct CompanyDTO: Decodable, Sendable {
     let issuePrefix: String?
 }
 
+private struct CompanyDetailDTO: Decodable, Sendable {
+    let id: String
+    let name: String
+    let description: String?
+    let status: String
+    let issuePrefix: String
+    let issueCounter: Int
+    let budgetMonthlyCents: Int
+    let spentMonthlyCents: Int
+    let requireBoardApprovalForNewAgents: Bool
+    let feedbackDataSharingEnabled: Bool
+    let feedbackDataSharingConsentAt: Date?
+    let feedbackDataSharingConsentByUserId: String?
+    let feedbackDataSharingTermsVersion: String?
+    let brandColor: String?
+    let logoAssetId: String?
+    let logoUrl: String?
+    let createdAt: Date
+    let updatedAt: Date
+}
+
 private struct ApprovalDTO: Decodable, Sendable {
     let id: String
     let type: String
@@ -108,6 +129,14 @@ private struct AgentDTO: Decodable, Sendable {
     let role: String
     let status: String
     let spentMonthlyCents: Int
+}
+
+private struct OrgTreeNodeDTO: Decodable, Sendable {
+    let id: String
+    let name: String
+    let role: String
+    let status: String
+    let reports: [OrgTreeNodeDTO]
 }
 
 private struct IssueDTO: Decodable, Sendable {
@@ -394,8 +423,16 @@ private actor PaperclipAPIClient {
         try await get("companies")
     }
 
+    func company(companyId: String) async throws -> CompanyDetailDTO {
+        try await get("companies/\(companyId)")
+    }
+
     func companyStats() async throws -> [String: CompanyStatsDTO] {
         try await get("companies/stats")
+    }
+
+    func updateCompany(companyId: String, body: UpdateCompanyRequest) async throws -> CompanyDetailDTO {
+        try await patch("companies/\(companyId)", body: body)
     }
 
     func dashboard(companyId: String) async throws -> DashboardDTO {
@@ -518,10 +555,25 @@ private actor PaperclipAPIClient {
         )
     }
 
+    // MARK: - Extended API methods
+
+    func routines(companyId: String) async throws -> [RoutineListItemDTO] { try await get("companies/\(companyId)/routines") }
+    func routine(id: String) async throws -> RoutineDetailDTO { try await get("routines/\(id)") }
+    func runRoutine(id: String) async throws -> RoutineDetailDTO { try await post("routines/\(id)/run", body: EmptyRequest()) }
+    func costSummary(companyId: String) async throws -> CostSummaryDTO { try await get("companies/\(companyId)/costs/summary") }
+    func costByAgent(companyId: String) async throws -> [CostBreakdownDTO] { try await get("companies/\(companyId)/costs/by-agent") }
+    func adapters() async throws -> [AdapterInfoDTO] { try await get("adapters") }
+    func companySkills(companyId: String) async throws -> [CompanySkillDTO] { try await get("companies/\(companyId)/skills") }
+    func org(companyId: String) async throws -> [OrgTreeNodeDTO] { try await get("companies/\(companyId)/org") }
+    func createIssue(companyId: String, body: CreateIssueRequest) async throws -> IssueDTO { try await post("companies/\(companyId)/issues", body: body) }
+    func createAgentEndpoint(companyId: String, body: CreateAgentRequest) async throws -> ApprovalDetailDTO { try await post("companies/\(companyId)/approvals", body: body) }
+    func patchAdapter(type: String, body: AdapterDisableRequest) async throws { try await patchVoid("adapters/\(type)", body: body) }
+    func installAdapterEndpoint(body: AdapterInstallRequest) async throws { try await postVoid("adapters/install", body: body) }
+    func deleteAdapter(type: String) async throws { try await deleteVoid("adapters/\(type)") }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let url = try makeURL(path: path)
         let (data, response) = try await session.data(from: url)
-
         return try decodeResponse(data: data, response: response, url: url)
     }
 
@@ -531,7 +583,6 @@ private actor PaperclipAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try Self.encoder.encode(body)
-
         let (data, response) = try await session.data(for: request)
         return try decodeResponse(data: data, response: response, url: url)
     }
@@ -542,9 +593,36 @@ private actor PaperclipAPIClient {
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try Self.encoder.encode(body)
-
         let (data, response) = try await session.data(for: request)
         return try decodeResponse(data: data, response: response, url: url)
+    }
+
+    private func postVoid<B: Encodable>(_ path: String, body: B) async throws {
+        let url = try makeURL(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try Self.encoder.encode(body)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+    }
+
+    private func patchVoid<B: Encodable>(_ path: String, body: B) async throws {
+        let url = try makeURL(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try Self.encoder.encode(body)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+    }
+
+    private func deleteVoid(_ path: String) async throws {
+        let url = try makeURL(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
     }
 
     private func makeURL(path: String) throws -> URL {
@@ -630,6 +708,59 @@ private actor PaperclipAPIClient {
 }
 
 private struct EmptyRequest: Encodable, Sendable {}
+private struct AdapterDisableRequest: Encodable, Sendable { let disabled: Bool }
+private struct AdapterInstallRequest: Encodable, Sendable { let packageName: String; let isLocalPath: Bool; let version: String? }
+
+private struct UpdateCompanyRequest: Encodable, Sendable {
+    let name: String
+    let description: String?
+    let status: String
+    let budgetMonthlyCents: Int
+    let requireBoardApprovalForNewAgents: Bool
+    let feedbackDataSharingEnabled: Bool
+    let brandColor: String?
+
+    init(settings: CompanySettingsDraft) {
+        self.name = settings.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDescription = settings.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.description = trimmedDescription.isEmpty ? nil : trimmedDescription
+        self.status = settings.status.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.budgetMonthlyCents = settings.budgetMonthlyCents
+        self.requireBoardApprovalForNewAgents = settings.requireBoardApprovalForNewAgents
+        self.feedbackDataSharingEnabled = settings.feedbackDataSharingEnabled
+        let trimmedColor = settings.brandColor.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.brandColor = trimmedColor.isEmpty ? nil : trimmedColor
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case description
+        case status
+        case budgetMonthlyCents
+        case requireBoardApprovalForNewAgents
+        case feedbackDataSharingEnabled
+        case brandColor
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        if let description {
+            try container.encode(description, forKey: .description)
+        } else {
+            try container.encodeNil(forKey: .description)
+        }
+        try container.encode(status, forKey: .status)
+        try container.encode(budgetMonthlyCents, forKey: .budgetMonthlyCents)
+        try container.encode(requireBoardApprovalForNewAgents, forKey: .requireBoardApprovalForNewAgents)
+        try container.encode(feedbackDataSharingEnabled, forKey: .feedbackDataSharingEnabled)
+        if let brandColor {
+            try container.encode(brandColor, forKey: .brandColor)
+        } else {
+            try container.encodeNil(forKey: .brandColor)
+        }
+    }
+}
 
 public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsConsoleProviding, ConnectionStateProviding, InstanceSettingsProviding {
     public init() {}
@@ -778,7 +909,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
                 .filter { ["done", "cancelled"].contains($0.status) == false }
                 .sorted(by: { $0.updatedAt > $1.updatedAt })
                 .prefix(24)
-                .map(Self.mapIssue),
+                .map { Self.mapIssue($0, agentNamesByID: agentNamesByID) },
             goals: goalSummaries,
             projects: projects.map(Self.mapProject),
             plugins: plugins.map(Self.mapPlugin),
@@ -788,27 +919,36 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
 
     public func loadApprovalDetail(
         configuration: ServerConnectionConfiguration,
-        approvalID: String
+        approvalID: String,
+        companyId: String
     ) async throws -> ApprovalDetail {
         let client = PaperclipAPIClient(configuration: configuration)
         async let approvalTask = client.approval(id: approvalID)
         async let issuesTask = client.approvalIssues(id: approvalID)
         async let commentsTask = client.approvalComments(id: approvalID)
+        async let agentsTask = client.agents(companyId: companyId)
 
         let approval = try await approvalTask
         let issues = try await issuesTask
         let comments = try await commentsTask
+        let agents = try await agentsTask
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0.name) })
 
-        return Self.mapApprovalDetail(approval, issues: issues, comments: comments)
+        return Self.mapApprovalDetail(approval, issues: issues, comments: comments, agentNamesByID: agentNamesByID)
     }
 
     public func loadIssueDetail(
         configuration: ServerConnectionConfiguration,
-        issueID: String
+        issueID: String,
+        companyId: String
     ) async throws -> IssueConsoleDetail {
         let client = PaperclipAPIClient(configuration: configuration)
-        let issue = try await client.issue(id: issueID)
-        return Self.mapIssueDetail(issue)
+        async let issueTask = client.issue(id: issueID)
+        async let agentsTask = client.agents(companyId: companyId)
+        let issue = try await issueTask
+        let agents = try await agentsTask
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0.name) })
+        return Self.mapIssueDetail(issue, agentNamesByID: agentNamesByID)
     }
 
     public func loadAgentDetail(
@@ -834,11 +974,12 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         configuration: ServerConnectionConfiguration,
         approvalID: String,
         action: ApprovalDecisionAction,
-        note: String?
+        note: String?,
+        companyId: String
     ) async throws -> ApprovalDetail {
         let client = PaperclipAPIClient(configuration: configuration)
         _ = try await client.performApprovalAction(id: approvalID, action: action, note: note)
-        return try await loadApprovalDetail(configuration: configuration, approvalID: approvalID)
+        return try await loadApprovalDetail(configuration: configuration, approvalID: approvalID, companyId: companyId)
     }
 
     public func loadPluginConsoleSnapshot(
@@ -949,6 +1090,196 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         return Self.mapExperimentalSettings(updated)
     }
 
+    // MARK: - Extended feature implementations
+
+    public func listRoutines(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [RoutineSummary] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let list = try await client.routines(companyId: companyId)
+        async let agentsTask = client.agents(companyId: companyId)
+        async let projectsTask = client.projects(companyId: companyId)
+        let agents = try await agentsTask
+        let projects = try await projectsTask
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0.name) })
+        let projectNamesByID = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0.name) })
+        return list.map { Self.mapRoutineListItem($0, agentNamesByID: agentNamesByID, projectNamesByID: projectNamesByID) }
+    }
+
+    public func loadRoutineDetail(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.routine(id: routineId)
+        return Self.mapRoutineDetail(dto)
+    }
+
+    public func triggerRoutineRun(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.runRoutine(id: routineId)
+        return Self.mapRoutineDetail(dto)
+    }
+
+    public func loadCostSummary(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CostSummarySnapshot {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.costSummary(companyId: companyId)
+        return CostSummarySnapshot(
+            totalCostCents: dto.totalCostCents, eventCount: dto.eventCount,
+            agentCount: dto.agentCount, modelCount: dto.modelCount, providerCount: dto.providerCount
+        )
+    }
+
+    public func loadCostBreakdownByAgent(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CostBreakdownEntry] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let rows = try await client.costByAgent(companyId: companyId)
+        return rows.map { CostBreakdownEntry(
+            id: $0.agentId ?? "unknown", label: $0.agentId ?? "Unknown",
+            costCents: $0.totalCostCents, eventCount: $0.eventCount
+        )}
+    }
+
+    public func listAdapters(configuration: ServerConnectionConfiguration) async throws -> [AdapterSummary] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let list = try await client.adapters()
+        return list.map { AdapterSummary(
+            id: $0.type, type: $0.type, source: $0.source,
+            loaded: $0.loaded, disabled: $0.disabled, modelsCount: $0.modelsCount,
+            version: $0.version, packageName: $0.packageName
+        )}
+    }
+
+    public func toggleAdapterDisabled(configuration: ServerConnectionConfiguration, type: String, disabled: Bool) async throws -> [AdapterSummary] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        try await client.patchAdapter(type: type, body: AdapterDisableRequest(disabled: disabled))
+        return try await listAdapters(configuration: configuration)
+    }
+
+    public func installAdapter(configuration: ServerConnectionConfiguration, packageName: String, isLocalPath: Bool, version: String?) async throws {
+        let client = PaperclipAPIClient(configuration: configuration)
+        try await client.installAdapterEndpoint(body: AdapterInstallRequest(packageName: packageName, isLocalPath: isLocalPath, version: version))
+    }
+
+    public func removeAdapter(configuration: ServerConnectionConfiguration, type: String) async throws {
+        let client = PaperclipAPIClient(configuration: configuration)
+        try await client.deleteAdapter(type: type)
+    }
+
+    public func listCompanySkills(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CompanySkillSummary] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let list = try await client.companySkills(companyId: companyId)
+        return list.map { CompanySkillSummary(
+            id: $0.id, name: $0.name, description: $0.description,
+            status: $0.status, kind: $0.kind, agentCount: $0.agentCount,
+            createdAt: $0.createdAt, updatedAt: $0.updatedAt
+        )}
+    }
+
+    public func loadOrgTree(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [OrgNode] {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let tree = try await client.org(companyId: companyId)
+        return Self.flattenOrgTree(tree)
+    }
+
+    public func loadCompanySettings(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CompanySettingsDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.company(companyId: companyId)
+        return Self.mapCompanySettings(dto)
+    }
+
+    public func updateCompanySettings(configuration: ServerConnectionConfiguration, companyId: String, settings: CompanySettingsDraft) async throws -> CompanySettingsDetail {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.updateCompany(
+            companyId: companyId,
+            body: UpdateCompanyRequest(settings: settings)
+        )
+        return Self.mapCompanySettings(dto)
+    }
+
+    public func createIssue(configuration: ServerConnectionConfiguration, companyId: String, title: String, description: String?, priority: String?, assigneeAgentId: String?, projectId: String?, goalId: String?) async throws -> IssueQueueSummary {
+        let client = PaperclipAPIClient(configuration: configuration)
+        let dto = try await client.createIssue(companyId: companyId, body: CreateIssueRequest(
+            title: title, description: description, priority: priority,
+            assigneeAgentId: assigneeAgentId, projectId: projectId, goalId: goalId
+        ))
+        return Self.mapIssue(dto, agentNamesByID: [:])
+    }
+
+    public func createAgent(configuration: ServerConnectionConfiguration, companyId: String, name: String, role: String?, adapterType: String, reportsTo: String?) async throws {
+        let client = PaperclipAPIClient(configuration: configuration)
+        _ = try await client.createAgentEndpoint(companyId: companyId, body: CreateAgentRequest(
+            name: name, role: role, adapterType: adapterType, reportsTo: reportsTo, budgetMonthlyCents: nil
+        ))
+    }
+
+    // MARK: - Extended feature mappers
+
+    private static func mapRoutineListItem(_ dto: RoutineListItemDTO, agentNamesByID: [String: String], projectNamesByID: [String: String]) -> RoutineSummary {
+        let triggers = dto.triggers ?? []
+        return RoutineSummary(
+            id: dto.id, title: dto.title, status: dto.status, priority: dto.priority,
+            assigneeLabel: dto.assigneeAgentId.flatMap { agentNamesByID[$0] } ?? dto.assigneeAgentId ?? "Unassigned",
+            projectLabel: dto.projectId.flatMap { projectNamesByID[$0] },
+            triggerCount: triggers.count, enabledTriggerCount: triggers.filter(\.enabled).count,
+            lastRunStatus: dto.lastRun?.status, lastRunAt: dto.lastRun?.triggeredAt,
+            createdAt: dto.createdAt, updatedAt: dto.updatedAt
+        )
+    }
+
+    private static func mapRoutineDetail(_ dto: RoutineDetailDTO) -> RoutineDetail {
+        RoutineDetail(
+            id: dto.id, title: dto.title, description: dto.description,
+            status: dto.status, priority: dto.priority,
+            concurrencyPolicy: dto.concurrencyPolicy, catchUpPolicy: dto.catchUpPolicy,
+            assigneeLabel: dto.assigneeAgentId ?? "Unassigned",
+            projectLabel: dto.project?.name,
+            parentIssueTitle: dto.parentIssue?.title,
+            activeIssueTitle: dto.activeIssue?.title,
+            triggers: dto.triggers.map {
+                RoutineTriggerSummary(id: $0.id, kind: $0.kind, label: $0.label, enabled: $0.enabled,
+                    nextRunAt: $0.nextRunAt, lastFiredAt: $0.lastFiredAt, lastResult: $0.lastResult)
+            },
+            recentRuns: dto.recentRuns.map {
+                RoutineRunSummary(id: $0.id, status: $0.status, source: $0.source,
+                    triggeredAt: $0.triggeredAt, completedAt: $0.completedAt,
+                    failureReason: $0.failureReason,
+                    linkedIssueIdentifier: $0.linkedIssue?.identifier,
+                    triggerKind: $0.trigger?.kind, triggerLabel: $0.trigger?.label)
+            },
+            createdAt: dto.createdAt, updatedAt: dto.updatedAt
+        )
+    }
+
+    private static func flattenOrgTree(_ nodes: [OrgTreeNodeDTO], parentID: String? = nil, depth: Int = 0) -> [OrgNode] {
+        nodes.flatMap { node in
+            let current = OrgNode(
+                id: node.id,
+                name: node.name,
+                role: node.role,
+                title: nil,
+                status: node.status,
+                adapterType: "unknown",
+                reportsToId: parentID,
+                childIDs: node.reports.map(\.id),
+                depth: depth
+            )
+            return [current] + flattenOrgTree(node.reports, parentID: node.id, depth: depth + 1)
+        }
+    }
+
+    private static func mapCompanySettings(_ dto: CompanyDetailDTO) -> CompanySettingsDetail {
+        CompanySettingsDetail(
+            id: dto.id,
+            name: dto.name,
+            description: dto.description,
+            status: dto.status,
+            issuePrefix: dto.issuePrefix,
+            budgetMonthlyCents: dto.budgetMonthlyCents,
+            spentMonthlyCents: dto.spentMonthlyCents,
+            requireBoardApprovalForNewAgents: dto.requireBoardApprovalForNewAgents,
+            feedbackDataSharingEnabled: dto.feedbackDataSharingEnabled,
+            brandColor: dto.brandColor,
+            logoURL: dto.logoUrl,
+            createdAt: dto.createdAt,
+            updatedAt: dto.updatedAt
+        )
+    }
+
     private static func mapHealth(_ dto: HealthDTO) -> ServerHealthSummary {
         ServerHealthSummary(
             status: dto.status,
@@ -1038,7 +1369,8 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
     private static func mapApprovalDetail(
         _ dto: ApprovalDetailDTO,
         issues: [IssueDTO],
-        comments: [ApprovalCommentDTO]
+        comments: [ApprovalCommentDTO],
+        agentNamesByID: [String: String] = [:]
     ) -> ApprovalDetail {
         ApprovalDetail(
             id: dto.id,
@@ -1047,7 +1379,7 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
                 ?? dto.type.replacingOccurrences(of: "_", with: " ").capitalized,
             owner: dto.payload["agentName"]?.stringValue
                 ?? dto.payload["name"]?.stringValue
-                ?? dto.requestedByAgentId
+                ?? dto.requestedByAgentId.flatMap { agentNamesByID[$0] ?? $0 }
                 ?? dto.requestedByUserId
                 ?? "Board",
             type: dto.type,
@@ -1061,35 +1393,46 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
             payloadFields: dto.payload
                 .map { ApprovalField(key: $0.key, value: Self.describe(jsonValue: $0.value)) }
                 .sorted(by: { $0.key < $1.key }),
-            linkedIssues: issues.map(Self.mapIssue),
-            comments: comments.sorted(by: { $0.createdAt > $1.createdAt }).map(Self.mapApprovalComment)
+            linkedIssues: issues.map { Self.mapIssue($0, agentNamesByID: agentNamesByID) },
+            comments: comments.sorted(by: { $0.createdAt > $1.createdAt }).map { Self.mapApprovalComment($0, agentNamesByID: agentNamesByID) }
         )
     }
 
-    private static func mapApprovalComment(_ dto: ApprovalCommentDTO) -> ApprovalCommentEntry {
-        ApprovalCommentEntry(
+    private static func mapApprovalComment(_ dto: ApprovalCommentDTO, agentNamesByID: [String: String] = [:]) -> ApprovalCommentEntry {
+        let authorLabel = dto.authorAgentId.flatMap { agentNamesByID[$0] ?? $0 }
+            ?? dto.authorUserId
+            ?? "Board"
+        return ApprovalCommentEntry(
             id: dto.id,
-            authorLabel: dto.authorAgentId ?? dto.authorUserId ?? "Board",
+            authorLabel: authorLabel,
             body: dto.body,
             createdAt: dto.createdAt
         )
     }
 
-    private static func mapIssueReference(_ dto: IssueReferenceDTO) -> IssueQueueSummary {
-        IssueQueueSummary(
+    private static func mapIssueReference(_ dto: IssueReferenceDTO, agentNamesByID: [String: String] = [:]) -> IssueQueueSummary {
+        let assigneeLabel = dto.assigneeAgentId.flatMap { agentNamesByID[$0] }
+            ?? dto.assigneeAgentId
+            ?? dto.assigneeUserId
+            ?? "Em fila operacional"
+        return IssueQueueSummary(
             id: dto.id,
             identifier: dto.identifier ?? dto.id,
             title: dto.title,
             status: dto.status,
             priority: dto.priority,
-            assigneeLabel: dto.assigneeAgentId ?? dto.assigneeUserId ?? "Em fila operacional",
+            assigneeLabel: assigneeLabel,
             updatedAt: .now
         )
     }
 
-    private static func mapIssueDetail(_ dto: IssueDetailDTO) -> IssueConsoleDetail {
+    private static func mapIssueDetail(_ dto: IssueDetailDTO, agentNamesByID: [String: String] = [:]) -> IssueConsoleDetail {
         let parentLabel = dto.ancestors?.last?.title
         let goalLabel = dto.goal?.title ?? dto.ancestors?.compactMap(\.goal?.title).last
+        let assigneeLabel = dto.assigneeAgentId.flatMap { agentNamesByID[$0] }
+            ?? dto.assigneeAgentId
+            ?? dto.assigneeUserId
+            ?? "Em fila operacional"
 
         return IssueConsoleDetail(
             id: dto.id,
@@ -1098,12 +1441,12 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
             description: dto.description,
             status: dto.status,
             priority: dto.priority,
-            assigneeLabel: dto.assigneeAgentId ?? dto.assigneeUserId ?? "Em fila operacional",
+            assigneeLabel: assigneeLabel,
             projectLabel: dto.project?.name,
             goalLabel: goalLabel,
             parentLabel: parentLabel,
-            blockedBy: (dto.blockedBy ?? []).map(Self.mapIssueReference),
-            blocks: (dto.blocks ?? []).map(Self.mapIssueReference),
+            blockedBy: (dto.blockedBy ?? []).map { Self.mapIssueReference($0, agentNamesByID: agentNamesByID) },
+            blocks: (dto.blocks ?? []).map { Self.mapIssueReference($0, agentNamesByID: agentNamesByID) },
             createdAt: dto.createdAt,
             updatedAt: dto.updatedAt
         )
@@ -1129,14 +1472,17 @@ public actor PaperclipDesktopService: OperationsSnapshotProviding, OperationsCon
         )
     }
 
-    private static func mapIssue(_ dto: IssueDTO) -> IssueQueueSummary {
-        IssueQueueSummary(
+    private static func mapIssue(_ dto: IssueDTO, agentNamesByID: [String: String] = [:]) -> IssueQueueSummary {
+        let assigneeLabel = dto.assigneeAgentId.flatMap { agentNamesByID[$0] }
+            ?? dto.assigneeAgentId
+            ?? "Em fila operacional"
+        return IssueQueueSummary(
             id: dto.id,
             identifier: dto.identifier ?? dto.id,
             title: dto.title,
             status: dto.status,
             priority: dto.priority,
-            assigneeLabel: "Em fila operacional",
+            assigneeLabel: assigneeLabel,
             updatedAt: dto.updatedAt
         )
     }
@@ -1391,4 +1737,96 @@ private enum JSONValue: Decodable, Sendable {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
         }
     }
+}
+
+// MARK: - Extended Feature DTOs
+
+private struct RoutineListItemDTO: Decodable, Sendable {
+    let id: String
+    let title: String
+    let status: String
+    let priority: String
+    let assigneeAgentId: String?
+    let projectId: String?
+    let triggers: [RoutineTriggerPickDTO]?
+    let lastRun: RoutineRunSummaryDTO?
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+private struct RoutineTriggerPickDTO: Decodable, Sendable {
+    let id: String; let kind: String; let label: String?
+    let enabled: Bool; let nextRunAt: Date?; let lastFiredAt: Date?; let lastResult: String?
+}
+
+private struct RoutineRunSummaryDTO: Decodable, Sendable {
+    let id: String; let status: String; let source: String
+    let triggeredAt: Date; let completedAt: Date?; let failureReason: String?
+    let linkedIssue: RoutineIssuePickDTO?
+    let trigger: RoutineTriggerLabelDTO?
+}
+
+private struct RoutineIssuePickDTO: Decodable, Sendable {
+    let id: String; let identifier: String?; let title: String
+    let status: String; let priority: String; let updatedAt: Date
+}
+
+private struct RoutineTriggerLabelDTO: Decodable, Sendable {
+    let id: String; let kind: String; let label: String?
+}
+
+private struct RoutineDetailDTO: Decodable, Sendable {
+    let id: String; let title: String; let description: String?
+    let status: String; let priority: String
+    let concurrencyPolicy: String; let catchUpPolicy: String
+    let assigneeAgentId: String?
+    let project: RoutineProjectPickDTO?
+    let parentIssue: RoutineIssuePickDTO?
+    let activeIssue: RoutineIssuePickDTO?
+    let triggers: [RoutineTriggerFullDTO]
+    let recentRuns: [RoutineRunSummaryDTO]
+    let createdAt: Date; let updatedAt: Date
+}
+
+private struct RoutineProjectPickDTO: Decodable, Sendable {
+    let id: String; let name: String
+}
+
+private struct RoutineTriggerFullDTO: Decodable, Sendable {
+    let id: String; let kind: String; let label: String?
+    let enabled: Bool; let cronExpression: String?; let timezone: String?
+    let nextRunAt: Date?; let lastFiredAt: Date?; let lastResult: String?
+    let publicId: String?
+}
+
+private struct CostSummaryDTO: Decodable, Sendable {
+    let totalCostCents: Int; let eventCount: Int; let agentCount: Int
+    let modelCount: Int; let providerCount: Int
+}
+
+private struct CostBreakdownDTO: Decodable, Sendable {
+    let agentId: String?; let model: String?; let provider: String?
+    let totalCostCents: Int; let eventCount: Int
+}
+
+private struct AdapterInfoDTO: Decodable, Sendable {
+    let type: String; let source: String; let modelsCount: Int
+    let loaded: Bool; let disabled: Bool
+    let version: String?; let packageName: String?
+}
+
+private struct CompanySkillDTO: Decodable, Sendable {
+    let id: String; let name: String; let description: String?
+    let status: String; let kind: String?
+    let agentCount: Int; let createdAt: Date; let updatedAt: Date
+}
+
+private struct CreateIssueRequest: Encodable, Sendable {
+    let title: String; let description: String?; let priority: String?
+    let assigneeAgentId: String?; let projectId: String?; let goalId: String?
+}
+
+private struct CreateAgentRequest: Encodable, Sendable {
+    let name: String; let role: String?; let adapterType: String; let reportsTo: String?
+    let budgetMonthlyCents: Int?
 }

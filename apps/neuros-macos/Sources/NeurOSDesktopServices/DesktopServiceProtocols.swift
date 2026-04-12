@@ -11,7 +11,8 @@ public protocol OperationsSnapshotProviding: Sendable {
 public protocol OperationsConsoleProviding: Sendable {
     func loadIssueDetail(
         configuration: ServerConnectionConfiguration,
-        issueID: String
+        issueID: String,
+        companyId: String
     ) async throws -> IssueConsoleDetail
 
     func loadAgentDetail(
@@ -21,7 +22,8 @@ public protocol OperationsConsoleProviding: Sendable {
 
     func loadApprovalDetail(
         configuration: ServerConnectionConfiguration,
-        approvalID: String
+        approvalID: String,
+        companyId: String
     ) async throws -> ApprovalDetail
 
     func addApprovalComment(
@@ -34,7 +36,8 @@ public protocol OperationsConsoleProviding: Sendable {
         configuration: ServerConnectionConfiguration,
         approvalID: String,
         action: ApprovalDecisionAction,
-        note: String?
+        note: String?,
+        companyId: String
     ) async throws -> ApprovalDetail
 
     func loadPluginConsoleSnapshot(
@@ -67,6 +70,29 @@ public protocol OperationsConsoleProviding: Sendable {
         workspaceID: String,
         action: WorkspaceRuntimeAction
     ) async throws -> WorkspaceRuntimeActionResult
+
+    // MARK: - Extended features
+
+    func listRoutines(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [RoutineSummary]
+    func loadRoutineDetail(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail
+    func triggerRoutineRun(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail
+
+    func loadCostSummary(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CostSummarySnapshot
+    func loadCostBreakdownByAgent(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CostBreakdownEntry]
+
+    func listAdapters(configuration: ServerConnectionConfiguration) async throws -> [AdapterSummary]
+    func toggleAdapterDisabled(configuration: ServerConnectionConfiguration, type: String, disabled: Bool) async throws -> [AdapterSummary]
+    func installAdapter(configuration: ServerConnectionConfiguration, packageName: String, isLocalPath: Bool, version: String?) async throws
+    func removeAdapter(configuration: ServerConnectionConfiguration, type: String) async throws
+
+    func listCompanySkills(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CompanySkillSummary]
+
+    func loadOrgTree(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [OrgNode]
+    func loadCompanySettings(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CompanySettingsDetail
+    func updateCompanySettings(configuration: ServerConnectionConfiguration, companyId: String, settings: CompanySettingsDraft) async throws -> CompanySettingsDetail
+
+    func createIssue(configuration: ServerConnectionConfiguration, companyId: String, title: String, description: String?, priority: String?, assigneeAgentId: String?, projectId: String?, goalId: String?) async throws -> IssueQueueSummary
+    func createAgent(configuration: ServerConnectionConfiguration, companyId: String, name: String, role: String?, adapterType: String, reportsTo: String?) async throws
 }
 
 public protocol ConnectionStateProviding: Sendable {

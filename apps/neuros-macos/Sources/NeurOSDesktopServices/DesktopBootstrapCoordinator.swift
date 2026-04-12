@@ -83,9 +83,13 @@ public final class DesktopBootstrapCoordinator {
     }
 
     public func loadIssueDetail(issueID: String, appModel: AppModel) async throws -> IssueConsoleDetail {
-        try await services.console.loadIssueDetail(
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        return try await services.console.loadIssueDetail(
             configuration: appModel.serverConfiguration,
-            issueID: issueID
+            issueID: issueID,
+            companyId: companyId
         )
     }
 
@@ -97,9 +101,13 @@ public final class DesktopBootstrapCoordinator {
     }
 
     public func loadApprovalDetail(approvalID: String, appModel: AppModel) async throws -> ApprovalDetail {
-        try await services.console.loadApprovalDetail(
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        return try await services.console.loadApprovalDetail(
             configuration: appModel.serverConfiguration,
-            approvalID: approvalID
+            approvalID: approvalID,
+            companyId: companyId
         )
     }
 
@@ -125,11 +133,15 @@ public final class DesktopBootstrapCoordinator {
         note: String?,
         appModel: AppModel
     ) async throws -> ApprovalDetail {
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
         let detail = try await services.console.performApprovalAction(
             configuration: appModel.serverConfiguration,
             approvalID: approvalID,
             action: action,
-            note: note
+            note: note,
+            companyId: companyId
         )
         await refresh(appModel: appModel)
         appModel.statusMessage = "Aprovação atualizada com ação \(action.label.lowercased())."
@@ -360,5 +372,116 @@ public final class DesktopBootstrapCoordinator {
 
     private func shouldAutoStartLocalServer(_ configuration: ServerConnectionConfiguration) -> Bool {
         shouldManageLocalServer(configuration) && configuration.localServer.autoStartOnLaunch
+    }
+
+    // MARK: - Extended feature methods
+
+    public func listRoutines(appModel: AppModel) async throws -> [RoutineSummary] {
+        guard let companyId = appModel.selectedCompanyID else { return [] }
+        return try await services.console.listRoutines(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func loadRoutineDetail(routineId: String, appModel: AppModel) async throws -> RoutineDetail {
+        return try await services.console.loadRoutineDetail(configuration: appModel.serverConfiguration, routineId: routineId)
+    }
+
+    public func triggerRoutineRun(routineId: String, appModel: AppModel) async throws -> RoutineDetail {
+        let detail = try await services.console.triggerRoutineRun(configuration: appModel.serverConfiguration, routineId: routineId)
+        await refresh(appModel: appModel)
+        return detail
+    }
+
+    public func loadCostSummary(appModel: AppModel) async throws -> CostSummarySnapshot {
+        guard let companyId = appModel.selectedCompanyID else {
+            return CostSummarySnapshot(totalCostCents: 0, eventCount: 0, agentCount: 0, modelCount: 0, providerCount: 0)
+        }
+        return try await services.console.loadCostSummary(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func loadCostBreakdown(appModel: AppModel) async throws -> [CostBreakdownEntry] {
+        guard let companyId = appModel.selectedCompanyID else { return [] }
+        return try await services.console.loadCostBreakdownByAgent(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func listAdapters(appModel: AppModel) async throws -> [AdapterSummary] {
+        return try await services.console.listAdapters(configuration: appModel.serverConfiguration)
+    }
+
+    public func toggleAdapterDisabled(type: String, disabled: Bool, appModel: AppModel) async throws -> [AdapterSummary] {
+        return try await services.console.toggleAdapterDisabled(configuration: appModel.serverConfiguration, type: type, disabled: disabled)
+    }
+
+    public func installAdapter(packageName: String, isLocalPath: Bool, version: String?, appModel: AppModel) async throws -> [AdapterSummary] {
+        try await services.console.installAdapter(
+            configuration: appModel.serverConfiguration,
+            packageName: packageName,
+            isLocalPath: isLocalPath,
+            version: version
+        )
+        await refresh(appModel: appModel)
+        appModel.statusMessage = "Adapter instalado."
+        return try await listAdapters(appModel: appModel)
+    }
+
+    public func removeAdapter(type: String, appModel: AppModel) async throws -> [AdapterSummary] {
+        try await services.console.removeAdapter(configuration: appModel.serverConfiguration, type: type)
+        await refresh(appModel: appModel)
+        appModel.statusMessage = "Adapter removido."
+        return try await listAdapters(appModel: appModel)
+    }
+
+    public func listCompanySkills(appModel: AppModel) async throws -> [CompanySkillSummary] {
+        guard let companyId = appModel.selectedCompanyID else { return [] }
+        return try await services.console.listCompanySkills(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func loadOrgTree(appModel: AppModel) async throws -> [OrgNode] {
+        guard let companyId = appModel.selectedCompanyID else { return [] }
+        return try await services.console.loadOrgTree(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func loadCompanySettings(appModel: AppModel) async throws -> CompanySettingsDetail {
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        return try await services.console.loadCompanySettings(configuration: appModel.serverConfiguration, companyId: companyId)
+    }
+
+    public func updateCompanySettings(_ settings: CompanySettingsDraft, appModel: AppModel) async throws -> CompanySettingsDetail {
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        let detail = try await services.console.updateCompanySettings(
+            configuration: appModel.serverConfiguration,
+            companyId: companyId,
+            settings: settings
+        )
+        await refresh(appModel: appModel)
+        appModel.statusMessage = "Configurações da empresa atualizadas."
+        return detail
+    }
+
+    public func createIssue(title: String, description: String?, priority: String?, assigneeAgentId: String?, projectId: String?, goalId: String?, appModel: AppModel) async throws -> IssueQueueSummary {
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        let issue = try await services.console.createIssue(
+            configuration: appModel.serverConfiguration, companyId: companyId,
+            title: title, description: description, priority: priority,
+            assigneeAgentId: assigneeAgentId, projectId: projectId, goalId: goalId
+        )
+        await refresh(appModel: appModel)
+        return issue
+    }
+
+    public func createAgent(name: String, role: String?, adapterType: String, reportsTo: String?, appModel: AppModel) async throws {
+        guard let companyId = appModel.selectedCompanyID else {
+            throw NSError(domain: "io.goldneuron.neurOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Nenhuma empresa selecionada."])
+        }
+        try await services.console.createAgent(
+            configuration: appModel.serverConfiguration, companyId: companyId,
+            name: name, role: role, adapterType: adapterType, reportsTo: reportsTo
+        )
+        await refresh(appModel: appModel)
     }
 }

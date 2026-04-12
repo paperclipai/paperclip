@@ -3,7 +3,7 @@ import Foundation
 public struct AppIdentity: Sendable {
     public static let fallbackProductName = "neurOS"
     public static let fallbackBundleIdentifier = "io.goldneuron.neurOS"
-    public static let fallbackVersion = "0.1.0-alpha.12"
+    public static let fallbackVersion = "0.1.0-alpha.13"
 
     public let productName: String
     public let bundleIdentifier: String

@@ -140,9 +140,10 @@ public actor PreviewOperationsSnapshotProvider: OperationsSnapshotProviding, Ope
 
     public func loadApprovalDetail(
         configuration: ServerConnectionConfiguration,
-        approvalID: String
+        approvalID: String,
+        companyId: String
     ) async throws -> ApprovalDetail {
-        _ = configuration
+        _ = (configuration, companyId)
         return ApprovalDetail(
             id: approvalID,
             title: "Aprovar novo squad criativo",
@@ -184,9 +185,10 @@ public actor PreviewOperationsSnapshotProvider: OperationsSnapshotProviding, Ope
 
     public func loadIssueDetail(
         configuration: ServerConnectionConfiguration,
-        issueID: String
+        issueID: String,
+        companyId: String
     ) async throws -> IssueConsoleDetail {
-        _ = configuration
+        _ = (configuration, companyId)
         return IssueConsoleDetail(
             id: issueID,
             identifier: "GN-52",
@@ -253,8 +255,10 @@ public actor PreviewOperationsSnapshotProvider: OperationsSnapshotProviding, Ope
         configuration: ServerConnectionConfiguration,
         approvalID: String,
         action: ApprovalDecisionAction,
-        note: String?
+        note: String?,
+        companyId: String
     ) async throws -> ApprovalDetail {
+        _ = (configuration, companyId)
         _ = configuration
         return ApprovalDetail(
             id: approvalID,
@@ -604,4 +608,129 @@ public extension DesktopServices {
         localNetwork: BonjourDiscoveryService(),
         primaryNode: ManualPrimaryNodePromoter()
     )
+}
+
+// MARK: - Extended features (preview stubs)
+
+extension PreviewOperationsSnapshotProvider {
+    public func listRoutines(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [RoutineSummary] {
+        _ = (configuration, companyId)
+        return [
+            RoutineSummary(id: "r-1", title: "Revisão diária de KPIs", status: "active", priority: "high",
+                assigneeLabel: "COO", projectLabel: "Operações", triggerCount: 1, enabledTriggerCount: 1,
+                lastRunStatus: "success", lastRunAt: .now.addingTimeInterval(-3600), createdAt: .now, updatedAt: .now),
+            RoutineSummary(id: "r-2", title: "Backup de dados", status: "active", priority: "medium",
+                assigneeLabel: "CTO", projectLabel: nil, triggerCount: 1, enabledTriggerCount: 1,
+                lastRunStatus: nil, lastRunAt: nil, createdAt: .now, updatedAt: .now),
+        ]
+    }
+
+    public func loadRoutineDetail(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail {
+        _ = (configuration, routineId)
+        return RoutineDetail(id: routineId, title: "Revisão diária de KPIs", description: "Verificar métricas operacionais.",
+            status: "active", priority: "high", concurrencyPolicy: "skip", catchUpPolicy: "none",
+            assigneeLabel: "COO", projectLabel: "Operações", parentIssueTitle: nil, activeIssueTitle: nil,
+            triggers: [RoutineTriggerSummary(id: "t-1", kind: "cron", label: "Diário às 9h", enabled: true,
+                nextRunAt: .now.addingTimeInterval(86400), lastFiredAt: .now.addingTimeInterval(-3600), lastResult: "success")],
+            recentRuns: [], createdAt: .now, updatedAt: .now)
+    }
+
+    public func triggerRoutineRun(configuration: ServerConnectionConfiguration, routineId: String) async throws -> RoutineDetail {
+        try await loadRoutineDetail(configuration: configuration, routineId: routineId)
+    }
+
+    public func loadCostSummary(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CostSummarySnapshot {
+        _ = (configuration, companyId)
+        return CostSummarySnapshot(totalCostCents: 452300, eventCount: 1284, agentCount: 3, modelCount: 4, providerCount: 2)
+    }
+
+    public func loadCostBreakdownByAgent(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CostBreakdownEntry] {
+        _ = (configuration, companyId)
+        return [
+            CostBreakdownEntry(id: "a-1", label: "COO", costCents: 215000, eventCount: 640),
+            CostBreakdownEntry(id: "a-2", label: "CTO", costCents: 150000, eventCount: 420),
+            CostBreakdownEntry(id: "a-3", label: "CFO", costCents: 87300, eventCount: 224),
+        ]
+    }
+
+    public func listAdapters(configuration: ServerConnectionConfiguration) async throws -> [AdapterSummary] {
+        _ = configuration
+        return [
+            AdapterSummary(id: "codex_local", type: "codex_local", source: "builtin", loaded: true, disabled: false, modelsCount: 3, version: nil, packageName: nil),
+            AdapterSummary(id: "claude_local", type: "claude_local", source: "builtin", loaded: true, disabled: false, modelsCount: 2, version: nil, packageName: nil),
+            AdapterSummary(id: "opencode_local", type: "opencode_local", source: "builtin", loaded: true, disabled: false, modelsCount: 4, version: nil, packageName: nil),
+        ]
+    }
+
+    public func toggleAdapterDisabled(configuration: ServerConnectionConfiguration, type: String, disabled: Bool) async throws -> [AdapterSummary] {
+        try await listAdapters(configuration: configuration)
+    }
+
+    public func installAdapter(configuration: ServerConnectionConfiguration, packageName: String, isLocalPath: Bool, version: String?) async throws {}
+
+    public func removeAdapter(configuration: ServerConnectionConfiguration, type: String) async throws {}
+
+    public func listCompanySkills(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [CompanySkillSummary] {
+        _ = (configuration, companyId)
+        return [
+            CompanySkillSummary(id: "s-1", name: "Code Review", description: "Revisão de código automatizada", status: "active", kind: "agent", agentCount: 2, createdAt: .now, updatedAt: .now),
+            CompanySkillSummary(id: "s-2", name: "Deploy", description: "Pipeline de deploy", status: "active", kind: "workflow", agentCount: 1, createdAt: .now, updatedAt: .now),
+        ]
+    }
+
+    public func loadOrgTree(configuration: ServerConnectionConfiguration, companyId: String) async throws -> [OrgNode] {
+        _ = (configuration, companyId)
+        return [
+            OrgNode(id: "a-1", name: "CEO", role: "ceo", title: "Chief Executive Officer", status: "active", adapterType: "codex_local", reportsToId: nil, childIDs: ["a-2", "a-3"], depth: 0),
+            OrgNode(id: "a-2", name: "COO", role: "coo", title: "Chief Operating Officer", status: "active", adapterType: "codex_local", reportsToId: "a-1", childIDs: [], depth: 1),
+            OrgNode(id: "a-3", name: "CTO", role: "cto", title: "Chief Technology Officer", status: "active", adapterType: "claude_local", reportsToId: "a-1", childIDs: [], depth: 1),
+        ]
+    }
+
+    public func loadCompanySettings(configuration: ServerConnectionConfiguration, companyId: String) async throws -> CompanySettingsDetail {
+        _ = (configuration, companyId)
+        return CompanySettingsDetail(
+            id: companyId,
+            name: "GoldNeuron Ops",
+            description: "Operação principal da GoldNeuron.",
+            status: "active",
+            issuePrefix: "GN",
+            budgetMonthlyCents: 250000,
+            spentMonthlyCents: 121400,
+            requireBoardApprovalForNewAgents: true,
+            feedbackDataSharingEnabled: true,
+            brandColor: "#C9A227",
+            logoURL: nil,
+            createdAt: .now.addingTimeInterval(-86_400 * 30),
+            updatedAt: .now.addingTimeInterval(-900)
+        )
+    }
+
+    public func updateCompanySettings(configuration: ServerConnectionConfiguration, companyId: String, settings: CompanySettingsDraft) async throws -> CompanySettingsDetail {
+        _ = configuration
+        return CompanySettingsDetail(
+            id: companyId,
+            name: settings.name,
+            description: settings.description.isEmpty ? nil : settings.description,
+            status: settings.status,
+            issuePrefix: "GN",
+            budgetMonthlyCents: settings.budgetMonthlyCents,
+            spentMonthlyCents: 121400,
+            requireBoardApprovalForNewAgents: settings.requireBoardApprovalForNewAgents,
+            feedbackDataSharingEnabled: settings.feedbackDataSharingEnabled,
+            brandColor: settings.brandColor.isEmpty ? nil : settings.brandColor,
+            logoURL: nil,
+            createdAt: .now.addingTimeInterval(-86_400 * 30),
+            updatedAt: .now
+        )
+    }
+
+    public func createIssue(configuration: ServerConnectionConfiguration, companyId: String, title: String, description: String?, priority: String?, assigneeAgentId: String?, projectId: String?, goalId: String?) async throws -> IssueQueueSummary {
+        _ = (configuration, companyId, description, priority, assigneeAgentId, projectId, goalId)
+        return IssueQueueSummary(id: UUID().uuidString, identifier: "GN-99", title: title, status: "open", priority: priority ?? "medium", assigneeLabel: "Unassigned", updatedAt: .now)
+    }
+
+    public func createAgent(configuration: ServerConnectionConfiguration, companyId: String, name: String, role: String?, adapterType: String, reportsTo: String?) async throws {
+        _ = (configuration, companyId, name, role, adapterType, reportsTo)
+    }
 }

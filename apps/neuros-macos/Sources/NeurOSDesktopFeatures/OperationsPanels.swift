@@ -72,6 +72,14 @@ struct SectionHeroView<Actions: View>: View {
     }
 }
 
+extension SectionHeroView where Actions == EmptyView {
+    init(title: String, subtitle: String) {
+        self.init(title: title, subtitle: subtitle) {
+            EmptyView()
+        }
+    }
+}
+
 struct DashboardMetricsGrid: View {
     let appModel: AppModel
     private let columns = [GridItem(.adaptive(minimum: 180), spacing: 16)]
@@ -92,6 +100,14 @@ struct MetricTile: View {
     let title: String
     let value: String
     let accent: Color
+    let icon: String?
+
+    init(title: String, value: String, accent: Color = GoldNeuronBrand.gold, icon: String? = nil) {
+        self.title = title
+        self.value = value
+        self.accent = accent
+        self.icon = icon
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -102,9 +118,15 @@ struct MetricTile: View {
             Text(value)
                 .font(.system(size: 24, weight: .semibold, design: .rounded))
                 .foregroundStyle(GoldNeuronBrand.textPrimary)
-            RoundedRectangle(cornerRadius: 999)
-                .fill(accent.opacity(0.8))
-                .frame(width: 48, height: 5)
+            if let icon {
+                Image(systemName: icon)
+                    .foregroundStyle(accent)
+                    .font(.title3.weight(.semibold))
+            } else {
+                RoundedRectangle(cornerRadius: 999)
+                    .fill(accent.opacity(0.8))
+                    .frame(width: 48, height: 5)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1201,6 +1223,13 @@ public struct PluginsSectionView: View {
 public struct OrganizationSectionView: View {
     let appModel: AppModel
     let coordinator: DesktopBootstrapCoordinator
+    @State private var orgNodes: [OrgNode] = []
+    @State private var companySettings: CompanySettingsDetail?
+    @State private var companyDraft = CompanySettingsDraft()
+    @State private var isLoading = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    private let statusOptions = ["active", "paused", "archived"]
 
     public init(appModel: AppModel, coordinator: DesktopBootstrapCoordinator) {
         self.appModel = appModel
@@ -1210,49 +1239,279 @@ public struct OrganizationSectionView: View {
     public var body: some View {
         OperationalSectionScaffold(
             title: "Empresa e Equipe",
-            subtitle: "Contexto organizacional.",
+            subtitle: "Org chart, políticas operacionais e contexto da empresa ativa.",
             coordinator: coordinator,
             appModel: appModel
         ) {
-            MetricTile(title: "Empresas", value: "\(appModel.companies.count)", accent: .blue)
-            MetricTile(title: "Agentes", value: "\(appModel.totalActiveAgents)", accent: .green)
-            MetricTile(title: "Issues", value: "\(appModel.totalActiveIssues)", accent: .orange)
+            MetricTile(title: "Empresa ativa", value: appModel.selectedCompanyName, accent: .blue, icon: "building.2")
+            MetricTile(title: "Níveis", value: "\(maxOrgDepth + 1)", accent: .purple, icon: "square.3.layers.3d.down.right")
+            MetricTile(title: "Pessoas", value: "\(orgNodes.count)", accent: .green, icon: "person.3")
+            MetricTile(title: "Budget", value: formatCurrency(companySettings?.budgetMonthlyCents ?? 0), accent: .orange, icon: "banknote")
         } content: {
             VStack(alignment: .leading, spacing: 20) {
-                SurfaceCard {
-                    Text("Empresa ativa")
-                        .font(.headline)
-                    SummaryRow(
-                        title: appModel.selectedCompanyName,
-                        detail: "Status \(appModel.selectedCompanyStatus)",
-                        trailing: "\(appModel.dashboard?.pendingApprovals ?? appModel.approvals.count) aprovações"
-                    )
-                    if let selectedCompany = appModel.selectedCompany {
-                        SummaryRow(
-                            title: "Capacidade",
-                            detail: "\(selectedCompany.activeAgentsCount) agentes · \(selectedCompany.activeIssuesCount) issues",
-                            trailing: "\(selectedCompany.recentSignalsCount) sinais"
-                        )
+                if let errorMessage {
+                    SurfaceCard {
+                        InlineErrorView(message: errorMessage)
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 20) {
+                    SurfaceCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("Org Chart")
+                                    .font(.headline)
+                                Spacer()
+                                if isLoading {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+
+                            if orgRoots.isEmpty {
+                                EmptyCollectionState(
+                                    icon: "person.3.sequence",
+                                    title: "Sem estrutura carregada",
+                                    subtitle: "A empresa ativa ainda não retornou um organograma."
+                                )
+                            } else {
+                                ForEach(orgRoots) { root in
+                                    OrgTreeBranchView(node: root, nodesByID: nodesByID)
+                                }
+                            }
+                        }
+                    }
+
+                    SurfaceCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("Configurações da empresa")
+                                    .font(.headline)
+                                Spacer()
+                                if isSaving {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+
+                            if let companySettings {
+                                SummaryRow(
+                                    title: companySettings.name,
+                                    detail: "Prefixo \(companySettings.issuePrefix) · gasto atual \(formatCurrency(companySettings.spentMonthlyCents))",
+                                    trailing: companySettings.status.uppercased()
+                                )
+
+                                TextField("Nome da empresa", text: $companyDraft.name)
+                                    .textFieldStyle(.roundedBorder)
+
+                                TextField("Descrição", text: $companyDraft.description, axis: .vertical)
+                                    .textFieldStyle(.roundedBorder)
+
+                                Picker("Status", selection: $companyDraft.status) {
+                                    ForEach(statusOptions, id: \.self) { status in
+                                        Text(status.capitalized).tag(status)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+
+                                TextField(
+                                    "Budget mensal (em cents)",
+                                    value: $companyDraft.budgetMonthlyCents,
+                                    format: .number.grouping(.never)
+                                )
+                                .textFieldStyle(.roundedBorder)
+
+                                Toggle("Exigir aprovação do board para novos agentes", isOn: $companyDraft.requireBoardApprovalForNewAgents)
+                                Toggle("Compartilhar feedback com laboratórios", isOn: $companyDraft.feedbackDataSharingEnabled)
+
+                                TextField("Cor da marca (#RRGGBB)", text: $companyDraft.brandColor)
+                                    .textFieldStyle(.roundedBorder)
+
+                                HStack {
+                                    Button("Salvar alterações") {
+                                        Task { await saveCompanySettings() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(isSaving || hasInvalidCompanyDraft || hasUnsavedCompanyChanges == false)
+
+                                    if hasUnsavedCompanyChanges {
+                                        Button("Reverter") {
+                                            companyDraft = CompanySettingsDraft(detail: companySettings)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(isSaving)
+                                    }
+                                }
+
+                                if hasInvalidBrandColor {
+                                    Text("A cor da marca deve estar no formato #RRGGBB.")
+                                        .font(.footnote)
+                                        .foregroundStyle(.orange)
+                                }
+
+                                if let logoURL = companySettings.logoURL, logoURL.isEmpty == false {
+                                    SummaryRow(
+                                        title: "Logo",
+                                        detail: logoURL,
+                                        trailing: companySettings.updatedAt.formatted(date: .abbreviated, time: .shortened)
+                                    )
+                                }
+                            } else if isLoading {
+                                ProgressView("Carregando configurações da empresa...")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                EmptyCollectionState(message: "Selecione uma empresa para editar suas configurações.")
+                            }
+                        }
                     }
                 }
 
                 SurfaceCard {
-                    Text("Todas as empresas")
-                        .font(.headline)
-                    if appModel.companies.isEmpty {
-                        EmptyCollectionState(message: "A instância não possui empresas disponíveis.")
-                    } else {
-                        ForEach(appModel.companies) { company in
-                            SummaryRow(
-                                title: company.name,
-                                detail: "\(company.activeAgentsCount) agentes · \(company.activeIssuesCount) issues",
-                                trailing: company.status.uppercased()
-                            )
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Panorama da instância")
+                            .font(.headline)
+                        if appModel.companies.isEmpty {
+                            EmptyCollectionState(message: "A instância não possui empresas disponíveis.")
+                        } else {
+                            ForEach(appModel.companies) { company in
+                                SummaryRow(
+                                    title: company.name,
+                                    detail: "\(company.activeAgentsCount) agentes · \(company.activeIssuesCount) issues · \(company.projectsCount) projetos",
+                                    trailing: company.status.uppercased()
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+        .task(id: appModel.selectedCompanyID) {
+            await loadOrganizationData()
+        }
+        .refreshable {
+            await loadOrganizationData()
+        }
+    }
+
+    private var nodesByID: [String: OrgNode] {
+        Dictionary(uniqueKeysWithValues: orgNodes.map { ($0.id, $0) })
+    }
+
+    private var orgRoots: [OrgNode] {
+        orgNodes
+            .filter { $0.reportsToId == nil }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var maxOrgDepth: Int {
+        orgNodes.map(\.depth).max() ?? 0
+    }
+
+    private var hasInvalidBrandColor: Bool {
+        let trimmed = companyDraft.brandColor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return false }
+        return trimmed.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil
+    }
+
+    private var hasInvalidCompanyDraft: Bool {
+        companyDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasInvalidBrandColor
+    }
+
+    private var hasUnsavedCompanyChanges: Bool {
+        guard let companySettings else { return false }
+        return companyDraft != CompanySettingsDraft(detail: companySettings)
+    }
+
+    @MainActor
+    private func loadOrganizationData() async {
+        guard appModel.selectedCompanyID != nil else {
+            orgNodes = []
+            companySettings = nil
+            companyDraft = CompanySettingsDraft()
+            errorMessage = nil
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        do {
+            async let treeTask = coordinator.loadOrgTree(appModel: appModel)
+            async let settingsTask = coordinator.loadCompanySettings(appModel: appModel)
+            let loadedTree = try await treeTask
+            let loadedSettings = try await settingsTask
+            orgNodes = loadedTree.sorted {
+                if $0.depth == $1.depth {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.depth < $1.depth
+            }
+            companySettings = loadedSettings
+            companyDraft = CompanySettingsDraft(detail: loadedSettings)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    @MainActor
+    private func saveCompanySettings() async {
+        guard hasInvalidCompanyDraft == false else { return }
+        isSaving = true
+        errorMessage = nil
+        do {
+            let updated = try await coordinator.updateCompanySettings(companyDraft, appModel: appModel)
+            companySettings = updated
+            companyDraft = CompanySettingsDraft(detail: updated)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isSaving = false
+    }
+}
+
+private struct OrgTreeBranchView: View {
+    let node: OrgNode
+    let nodesByID: [String: OrgNode]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                RoundedRectangle(cornerRadius: 999)
+                    .fill(statusColor(for: node.status))
+                    .frame(width: 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(node.name)
+                            .font(.subheadline.weight(.semibold))
+                        StatusPill(label: node.role, color: .blue)
+                        StatusPill(label: node.status, color: statusColor(for: node.status))
+                    }
+
+                    if let title = node.title, title.isEmpty == false {
+                        Text(title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                Text("Nível \(node.depth)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.leading, CGFloat(node.depth) * 20)
+
+            ForEach(children) { child in
+                OrgTreeBranchView(node: child, nodesByID: nodesByID)
+            }
+        }
+    }
+
+    private var children: [OrgNode] {
+        node.childIDs.compactMap { nodesByID[$0] }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -1332,16 +1591,37 @@ struct SummaryRow: View {
 }
 
 struct EmptyCollectionState: View {
+    let icon: String
+    let title: String?
     let message: String
+
+    init(message: String) {
+        self.icon = "sparkles"
+        self.title = nil
+        self.message = message
+    }
+
+    init(icon: String, title: String, subtitle: String) {
+        self.icon = icon
+        self.title = title
+        self.message = subtitle
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "sparkles")
+            Image(systemName: icon)
                 .foregroundStyle(GoldNeuronBrand.goldDeep)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(GoldNeuronBrand.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if let title {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(GoldNeuronBrand.textPrimary)
+                }
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(GoldNeuronBrand.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 6)
     }

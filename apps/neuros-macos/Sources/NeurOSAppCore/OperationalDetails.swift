@@ -412,3 +412,277 @@ public struct WorkspaceRuntimeActionResult: Sendable, Hashable {
         self.runtimeServiceCount = runtimeServiceCount
     }
 }
+
+// MARK: - Routines
+
+public struct RoutineSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var title: String
+    public var status: String
+    public var priority: String
+    public var assigneeLabel: String
+    public var projectLabel: String?
+    public var triggerCount: Int
+    public var enabledTriggerCount: Int
+    public var lastRunStatus: String?
+    public var lastRunAt: Date?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(id: String, title: String, status: String, priority: String,
+                assigneeLabel: String, projectLabel: String?, triggerCount: Int,
+                enabledTriggerCount: Int, lastRunStatus: String?, lastRunAt: Date?,
+                createdAt: Date, updatedAt: Date) {
+        self.id = id; self.title = title; self.status = status; self.priority = priority
+        self.assigneeLabel = assigneeLabel; self.projectLabel = projectLabel
+        self.triggerCount = triggerCount; self.enabledTriggerCount = enabledTriggerCount
+        self.lastRunStatus = lastRunStatus; self.lastRunAt = lastRunAt
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+}
+
+public struct RoutineTriggerSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var kind: String
+    public var label: String?
+    public var enabled: Bool
+    public var nextRunAt: Date?
+    public var lastFiredAt: Date?
+    public var lastResult: String?
+
+    public init(id: String, kind: String, label: String?, enabled: Bool,
+                nextRunAt: Date?, lastFiredAt: Date?, lastResult: String?) {
+        self.id = id; self.kind = kind; self.label = label; self.enabled = enabled
+        self.nextRunAt = nextRunAt; self.lastFiredAt = lastFiredAt; self.lastResult = lastResult
+    }
+}
+
+public struct RoutineRunSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var status: String
+    public var source: String
+    public var triggeredAt: Date
+    public var completedAt: Date?
+    public var failureReason: String?
+    public var linkedIssueIdentifier: String?
+    public var triggerKind: String?
+    public var triggerLabel: String?
+
+    public init(id: String, status: String, source: String, triggeredAt: Date,
+                completedAt: Date?, failureReason: String?, linkedIssueIdentifier: String?,
+                triggerKind: String?, triggerLabel: String?) {
+        self.id = id; self.status = status; self.source = source; self.triggeredAt = triggeredAt
+        self.completedAt = completedAt; self.failureReason = failureReason
+        self.linkedIssueIdentifier = linkedIssueIdentifier; self.triggerKind = triggerKind
+        self.triggerLabel = triggerLabel
+    }
+}
+
+public struct RoutineDetail: Identifiable, Sendable {
+    public let id: String
+    public var title: String
+    public var description: String?
+    public var status: String
+    public var priority: String
+    public var concurrencyPolicy: String
+    public var catchUpPolicy: String
+    public var assigneeLabel: String
+    public var projectLabel: String?
+    public var parentIssueTitle: String?
+    public var activeIssueTitle: String?
+    public var triggers: [RoutineTriggerSummary]
+    public var recentRuns: [RoutineRunSummary]
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(id: String, title: String, description: String?, status: String,
+                priority: String, concurrencyPolicy: String, catchUpPolicy: String,
+                assigneeLabel: String, projectLabel: String?, parentIssueTitle: String?,
+                activeIssueTitle: String?, triggers: [RoutineTriggerSummary],
+                recentRuns: [RoutineRunSummary], createdAt: Date, updatedAt: Date) {
+        self.id = id; self.title = title; self.description = description
+        self.status = status; self.priority = priority
+        self.concurrencyPolicy = concurrencyPolicy; self.catchUpPolicy = catchUpPolicy
+        self.assigneeLabel = assigneeLabel; self.projectLabel = projectLabel
+        self.parentIssueTitle = parentIssueTitle; self.activeIssueTitle = activeIssueTitle
+        self.triggers = triggers; self.recentRuns = recentRuns
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - Costs
+
+public struct CostSummarySnapshot: Sendable, Hashable {
+    public var totalCostCents: Int
+    public var eventCount: Int
+    public var agentCount: Int
+    public var modelCount: Int
+    public var providerCount: Int
+
+    public init(totalCostCents: Int, eventCount: Int, agentCount: Int,
+                modelCount: Int, providerCount: Int) {
+        self.totalCostCents = totalCostCents; self.eventCount = eventCount
+        self.agentCount = agentCount; self.modelCount = modelCount
+        self.providerCount = providerCount
+    }
+}
+
+public struct CostBreakdownEntry: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var label: String
+    public var costCents: Int
+    public var eventCount: Int
+
+    public init(id: String, label: String, costCents: Int, eventCount: Int) {
+        self.id = id; self.label = label; self.costCents = costCents; self.eventCount = eventCount
+    }
+}
+
+// MARK: - Adapters
+
+public struct AdapterSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var type: String
+    public var source: String
+    public var loaded: Bool
+    public var disabled: Bool
+    public var modelsCount: Int
+    public var version: String?
+    public var packageName: String?
+
+    public init(id: String, type: String, source: String, loaded: Bool,
+                disabled: Bool, modelsCount: Int, version: String?, packageName: String?) {
+        self.id = id; self.type = type; self.source = source
+        self.loaded = loaded; self.disabled = disabled; self.modelsCount = modelsCount
+        self.version = version; self.packageName = packageName
+    }
+}
+
+// MARK: - Company Skills
+
+public struct CompanySkillSummary: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var description: String?
+    public var status: String
+    public var kind: String?
+    public var agentCount: Int
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(id: String, name: String, description: String?, status: String,
+                kind: String?, agentCount: Int, createdAt: Date, updatedAt: Date) {
+        self.id = id; self.name = name; self.description = description
+        self.status = status; self.kind = kind; self.agentCount = agentCount
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - Org Chart
+
+public struct OrgNode: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var role: String
+    public var title: String?
+    public var status: String
+    public var adapterType: String
+    public var reportsToId: String?
+    public var childIDs: [String]
+    public var depth: Int
+
+    public init(id: String, name: String, role: String, title: String?, status: String,
+                adapterType: String, reportsToId: String?, childIDs: [String], depth: Int) {
+        self.id = id; self.name = name; self.role = role; self.title = title
+        self.status = status; self.adapterType = adapterType
+        self.reportsToId = reportsToId; self.childIDs = childIDs; self.depth = depth
+    }
+}
+
+// MARK: - Company Settings
+
+public struct CompanySettingsDetail: Identifiable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var description: String?
+    public var status: String
+    public var issuePrefix: String
+    public var budgetMonthlyCents: Int
+    public var spentMonthlyCents: Int
+    public var requireBoardApprovalForNewAgents: Bool
+    public var feedbackDataSharingEnabled: Bool
+    public var brandColor: String?
+    public var logoURL: String?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: String,
+        name: String,
+        description: String?,
+        status: String,
+        issuePrefix: String,
+        budgetMonthlyCents: Int,
+        spentMonthlyCents: Int,
+        requireBoardApprovalForNewAgents: Bool,
+        feedbackDataSharingEnabled: Bool,
+        brandColor: String?,
+        logoURL: String?,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.status = status
+        self.issuePrefix = issuePrefix
+        self.budgetMonthlyCents = budgetMonthlyCents
+        self.spentMonthlyCents = spentMonthlyCents
+        self.requireBoardApprovalForNewAgents = requireBoardApprovalForNewAgents
+        self.feedbackDataSharingEnabled = feedbackDataSharingEnabled
+        self.brandColor = brandColor
+        self.logoURL = logoURL
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct CompanySettingsDraft: Hashable, Sendable {
+    public var name: String
+    public var description: String
+    public var status: String
+    public var budgetMonthlyCents: Int
+    public var requireBoardApprovalForNewAgents: Bool
+    public var feedbackDataSharingEnabled: Bool
+    public var brandColor: String
+
+    public init(
+        name: String = "",
+        description: String = "",
+        status: String = "active",
+        budgetMonthlyCents: Int = 0,
+        requireBoardApprovalForNewAgents: Bool = false,
+        feedbackDataSharingEnabled: Bool = false,
+        brandColor: String = ""
+    ) {
+        self.name = name
+        self.description = description
+        self.status = status
+        self.budgetMonthlyCents = budgetMonthlyCents
+        self.requireBoardApprovalForNewAgents = requireBoardApprovalForNewAgents
+        self.feedbackDataSharingEnabled = feedbackDataSharingEnabled
+        self.brandColor = brandColor
+    }
+
+    public init(detail: CompanySettingsDetail) {
+        self.init(
+            name: detail.name,
+            description: detail.description ?? "",
+            status: detail.status,
+            budgetMonthlyCents: detail.budgetMonthlyCents,
+            requireBoardApprovalForNewAgents: detail.requireBoardApprovalForNewAgents,
+            feedbackDataSharingEnabled: detail.feedbackDataSharingEnabled,
+            brandColor: detail.brandColor ?? ""
+        )
+    }
+}
