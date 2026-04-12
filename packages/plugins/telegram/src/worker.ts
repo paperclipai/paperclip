@@ -142,6 +142,24 @@ async function sendMsg(
   }
 }
 
+async function sendPlainMsg(
+  ctx: PluginContext,
+  token: string,
+  chatId: string | number,
+  text: string,
+): Promise<void> {
+  const MAX = 4000;
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += MAX) chunks.push(text.slice(i, i + MAX));
+
+  for (const chunk of chunks) {
+    await tgApi(ctx, token, "sendMessage", {
+      chat_id: chatId,
+      text: chunk,
+    }).catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
+  }
+}
+
 async function sendTyping(
   ctx: PluginContext,
   token: string,
@@ -183,6 +201,36 @@ async function setActiveAgent(
     { scopeKind: "instance", namespace: "active-agents", stateKey: chatId },
     agent,
   );
+}
+
+async function claimUpdate(
+  ctx: PluginContext,
+  updateId: number,
+): Promise<boolean> {
+  const stateKey = String(updateId);
+  const existing = await ctx.state.get({
+    scopeKind: "instance",
+    namespace: "telegram-updates",
+    stateKey,
+  });
+
+  if (existing) return false;
+
+  await ctx.state.set(
+    { scopeKind: "instance", namespace: "telegram-updates", stateKey },
+    { status: "accepted", acceptedAt: new Date().toISOString() },
+  );
+  return true;
+}
+
+function runInBackground(
+  ctx: PluginContext,
+  label: string,
+  task: () => Promise<void>,
+): void {
+  void task().catch((err) => {
+    ctx.logger.error(label, { error: String(err) });
+  });
 }
 
 // ─── Agent Session ────────────────────────────────────────────────────────────
@@ -334,7 +382,28 @@ async function handleText(
   await sendTyping(ctx, config.botToken, chatId);
   const agent = await getActiveAgent(ctx, chatId, config);
   const reply = await askAgent(ctx, agent.agentId, config.companyId, text);
-  await sendMsg(ctx, config.botToken, chatId, reply);
+  await sendPlainMsg(ctx, config.botToken, chatId, reply);
+}
+
+async function enqueueText(
+  ctx: PluginContext,
+  config: TelegramConfig,
+  chatId: string,
+  text: string,
+): Promise<void> {
+  const agent = await getActiveAgent(ctx, chatId, config);
+  await sendMsg(
+    ctx,
+    config.botToken,
+    chatId,
+    `✅ Принял. Передаю задачу агенту: <b>${escapeHtml(agent.name)}</b>. Ответ пришлю сюда отдельным сообщением.`,
+  );
+
+  runInBackground(ctx, "Telegram async text handling failed", async () => {
+    await sendTyping(ctx, config.botToken, chatId);
+    const reply = await askAgent(ctx, agent.agentId, config.companyId, text);
+    await sendPlainMsg(ctx, config.botToken, chatId, reply);
+  });
 }
 
 async function handleVoice(
@@ -353,26 +422,37 @@ async function handleVoice(
     return;
   }
 
-  await sendTyping(ctx, config.botToken, chatId);
+  const groqApiKey = config.groqApiKey;
 
-  const transcribed = await transcribeVoice(
+  await sendMsg(
     ctx,
     config.botToken,
-    fileId,
-    config.groqApiKey,
-  ).catch((err) => {
-    ctx.logger.error("Transcription failed", { error: String(err) });
-    return "";
+    chatId,
+    "✅ Принял голосовое. Сейчас расшифрую и передам активному агенту.",
+  );
+
+  runInBackground(ctx, "Telegram async voice handling failed", async () => {
+    await sendTyping(ctx, config.botToken, chatId);
+
+    const transcribed = await transcribeVoice(
+      ctx,
+      config.botToken,
+      fileId,
+      groqApiKey,
+    ).catch((err) => {
+      ctx.logger.error("Transcription failed", { error: String(err) });
+      return "";
+    });
+
+    if (!transcribed) {
+      await sendMsg(ctx, config.botToken, chatId, "⚠️ Не удалось распознать голос.");
+      return;
+    }
+
+    // Показываем расшифровку, потом ответ агента
+    await sendMsg(ctx, config.botToken, chatId, `🎙 <i>${escapeHtml(transcribed)}</i>`);
+    await handleText(ctx, config, chatId, transcribed);
   });
-
-  if (!transcribed) {
-    await sendMsg(ctx, config.botToken, chatId, "⚠️ Не удалось распознать голос.");
-    return;
-  }
-
-  // Показываем расшифровку, потом ответ агента
-  await sendMsg(ctx, config.botToken, chatId, `🎙 <i>${escapeHtml(transcribed)}</i>`);
-  await handleText(ctx, config, chatId, transcribed);
 }
 
 async function handleCommand(
@@ -415,7 +495,7 @@ async function handleCommand(
     default:
       // Неизвестная команда — если есть аргументы, трактуем как вопрос
       if (args.trim()) {
-        await handleText(ctx, config, chatId, `${command} ${args}`);
+        await enqueueText(ctx, config, chatId, `${command} ${args}`);
       } else {
         await sendMsg(
           ctx,
@@ -432,6 +512,12 @@ async function handleUpdate(
   config: TelegramConfig,
   update: TelegramUpdate,
 ): Promise<void> {
+  const claimed = await claimUpdate(ctx, update.update_id);
+  if (!claimed) {
+    ctx.logger.info("Skipping duplicate Telegram update", { updateId: update.update_id });
+    return;
+  }
+
   const message = update.message ?? update.edited_message;
   if (!message) return;
 
@@ -448,7 +534,7 @@ async function handleUpdate(
       const baseCmd = command.split("@")[0].toLowerCase();
       await handleCommand(ctx, config, chatId, baseCmd, args);
     } else {
-      await handleText(ctx, config, chatId, text);
+      await enqueueText(ctx, config, chatId, text);
     }
     return;
   }
