@@ -14,6 +14,8 @@ const BOARD_COPILOT_THREAD_DESCRIPTION =
   "Dedicated high-priority board copilot conversation thread. Created automatically.";
 const BOARD_COPILOT_WAKE_PRIORITY = 100;
 const BOARD_COPILOT_DUPLICATE_WINDOW_MS = 10_000;
+const BOARD_COPILOT_HISTORY_DEFAULT_LIMIT = 30;
+const BOARD_COPILOT_HISTORY_MAX_LIMIT = 100;
 const BOARD_COPILOT_CONTEXT_MAX_FILTERS = 24;
 
 const routeContextSchema = z.object({
@@ -104,6 +106,24 @@ function toThreadResponse(issue: {
     assigneeUserId: issue.assigneeUserId,
     threadOwnerUserId: issue.originId ?? null,
     updatedAt: issue.updatedAt,
+  };
+}
+
+function toThreadHistoryResponse(issue: {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  originId?: string | null;
+  updatedAt: Date;
+  hiddenAt?: Date | null;
+}) {
+  return {
+    ...toThreadResponse(issue),
+    hiddenAt: issue.hiddenAt ?? null,
   };
 }
 
@@ -258,6 +278,50 @@ export function copilotRoutes(db: Db) {
     const contextIssueRef = typeof req.query.contextIssueId === "string" ? req.query.contextIssueId : null;
     const thread = await ensureThreadIssue({ companyId, userId, contextIssueRef });
     res.json(toThreadResponse(thread));
+  });
+
+  router.get("/companies/:companyId/copilot/threads", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board users can access copilot thread history");
+    }
+
+    const userId = req.actor.userId ?? "local-board";
+    const parsedLimit =
+      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
+        ? Number(req.query.limit)
+        : null;
+    const limit =
+      parsedLimit && Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(Math.floor(parsedLimit), BOARD_COPILOT_HISTORY_MAX_LIMIT)
+        : BOARD_COPILOT_HISTORY_DEFAULT_LIMIT;
+
+    const threads = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        originId: issues.originId,
+        updatedAt: issues.updatedAt,
+        hiddenAt: issues.hiddenAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "board_copilot_thread"),
+          eq(issues.originId, userId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(limit);
+
+    res.json(threads.map((thread) => toThreadHistoryResponse(thread)));
   });
 
   router.post(

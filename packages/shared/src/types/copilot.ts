@@ -21,6 +21,10 @@ export interface CopilotThreadSummary {
   updatedAt: Date;
 }
 
+export interface CopilotThreadHistoryEntry extends CopilotThreadSummary {
+  hiddenAt: Date | null;
+}
+
 export interface CopilotMessageCreateResponse {
   thread: CopilotThreadSummary;
   comment: IssueComment;
@@ -29,4 +33,3 @@ export interface CopilotMessageCreateResponse {
     warning: string | null;
   };
 }
-

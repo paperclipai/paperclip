@@ -15,6 +15,7 @@ export const queryKeys = {
   },
   copilot: {
     thread: (companyId: string) => ["copilot", companyId, "thread"] as const,
+    history: (companyId: string) => ["copilot", companyId, "history"] as const,
   },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,

@@ -298,6 +298,65 @@ describe.sequential("copilot routes", () => {
     expect(mockIssueService.create).toHaveBeenCalledTimes(1);
   });
 
+  it("lists board copilot thread history including archived threads", async () => {
+    const { db } = createDbMock({
+      issueRows: [
+        [
+          {
+            id: "issue-copilot-current",
+            identifier: "PAP-904",
+            title: "Board Copilot Thread",
+            status: "todo",
+            priority: "high",
+            assigneeAgentId: "agent-fallback",
+            assigneeUserId: null,
+            companyId: "company-1",
+            originKind: "board_copilot_thread",
+            originId: "user-1",
+            updatedAt: new Date("2026-04-12T10:10:00.000Z"),
+            hiddenAt: null,
+          },
+          {
+            id: "issue-copilot-archived",
+            identifier: "PAP-903",
+            title: "Board Copilot Thread",
+            status: "done",
+            priority: "high",
+            assigneeAgentId: "agent-fallback",
+            assigneeUserId: null,
+            companyId: "company-1",
+            originKind: "board_copilot_thread",
+            originId: "user-1",
+            updatedAt: new Date("2026-04-11T08:00:00.000Z"),
+            hiddenAt: new Date("2026-04-12T09:00:00.000Z"),
+          },
+        ],
+      ],
+    });
+
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      db,
+    );
+
+    const res = await request(app).get("/api/companies/company-1/copilot/threads").query({ limit: "5" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0]).toMatchObject({
+      issueId: "issue-copilot-current",
+      hiddenAt: null,
+    });
+    expect(res.body[1]).toMatchObject({
+      issueId: "issue-copilot-archived",
+    });
+    expect(typeof res.body[1]?.hiddenAt).toBe("string");
+  });
+
   it("posts a contextual message and enqueues a high-priority dedicated wakeup", async () => {
     const { db } = createDbMock({
       issueRows: [

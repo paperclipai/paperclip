@@ -12,6 +12,7 @@ export type {
 export type {
   CopilotRouteContext,
   CopilotThreadSummary,
+  CopilotThreadHistoryEntry,
   CopilotMessageCreateResponse,
 } from "./copilot.js";
 export type {
