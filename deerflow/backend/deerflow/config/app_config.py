@@ -20,6 +20,12 @@ from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
 load_dotenv()
 
 
+class CircuitBreakerConfig(BaseModel):
+    """Circuit breaker settings for LLM error handling."""
+    failure_threshold: int = Field(default=5, description="Consecutive failures before opening circuit")
+    recovery_timeout_sec: int = Field(default=60, description="Seconds to fast-fail before probing")
+
+
 class AppConfig(BaseModel):
     """Config for the DeerFlow application"""
 
@@ -27,6 +33,7 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(description="Sandbox configuration")
     tools: list[ToolConfig] = Field(default_factory=list, description="Available tools")
     tool_groups: list[ToolGroupConfig] = Field(default_factory=list, description="Available tool groups")
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig, description="Circuit breaker config")
     skills: SkillsConfig = Field(default_factory=SkillsConfig, description="Skills configuration")
     extensions: ExtensionsConfig = Field(default_factory=ExtensionsConfig, description="Extensions configuration (MCP servers and skills state)")
     model_config = ConfigDict(extra="allow", frozen=False)
