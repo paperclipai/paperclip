@@ -1764,6 +1764,41 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows.length);
   }
 
+  const MAX_TASK_SESSIONS_PER_AGENT = 5;
+
+  async function pruneStaleTaskSessions(
+    companyId: string,
+    agentId: string,
+  ) {
+    const allSessions = await db
+      .select({ id: agentTaskSessions.id })
+      .from(agentTaskSessions)
+      .where(
+        and(
+          eq(agentTaskSessions.companyId, companyId),
+          eq(agentTaskSessions.agentId, agentId),
+        ),
+      )
+      .orderBy(desc(agentTaskSessions.updatedAt), desc(agentTaskSessions.createdAt));
+
+    if (allSessions.length <= MAX_TASK_SESSIONS_PER_AGENT) return 0;
+
+    const staleIds = allSessions.slice(MAX_TASK_SESSIONS_PER_AGENT).map((s) => s.id);
+    const deleted = await db
+      .delete(agentTaskSessions)
+      .where(inArray(agentTaskSessions.id, staleIds))
+      .returning()
+      .then((rows) => rows.length);
+
+    if (deleted > 0) {
+      logger.info(
+        { companyId, agentId, pruned: deleted, kept: MAX_TASK_SESSIONS_PER_AGENT },
+        "pruned stale task sessions",
+      );
+    }
+    return deleted;
+  }
+
   async function ensureRuntimeState(agent: typeof agents.$inferSelect) {
     const existing = await getRuntimeState(agent.id);
     if (existing) return existing;
@@ -3469,6 +3504,7 @@ export function heartbeatService(db: Db) {
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
             });
           }
+          await pruneStaleTaskSessions(agent.companyId, agent.id);
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
@@ -3533,6 +3569,7 @@ export function heartbeatService(db: Db) {
             lastRunId: failedRun.id,
             lastError: message,
           });
+          await pruneStaleTaskSessions(agent.companyId, agent.id);
         }
       }
 

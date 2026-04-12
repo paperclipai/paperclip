@@ -550,7 +550,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const resolvedSessionId = attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const resolvedSessionId = clearSessionOnMissingSession
+      ? (attempt.parsed.sessionId ?? null)
+      : (attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null);
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
