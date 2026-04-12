@@ -69,9 +69,9 @@ index 93cddf8..1688a70 100644
 -1. List ALL open issues assigned to you (todo, backlog, in_progress):
 -   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
 +0. Deterministic assignment guard:
-+   - If `$PAPERCLIP_WAKE_REASON` is `issue_assigned`, do NOT run discovery.
-+   - Require `$PAPERCLIP_ISSUE_ID`; if missing, fail immediately with: `missing assigned issue context`.
-+   - For assignment wake, fetch issue directly: `curl -s "${AUTH[@]}" "{{paperclipApiUrl}}/issues/$PAPERCLIP_ISSUE_ID"`
++   - If \`$PAPERCLIP_WAKE_REASON\` is \`issue_assigned\`, do NOT run discovery.
++   - Require \`$PAPERCLIP_ISSUE_ID\`; if missing, fail immediately with: \`missing assigned issue context\`.
++   - For assignment wake, fetch issue directly: \`curl -s "\${AUTH[@]}" "{{paperclipApiUrl}}/issues/$PAPERCLIP_ISSUE_ID"\`
 +
 +1. List ALL open issues assigned to you (todo, backlog, in_progress) safely:
 +   \`curl -fsS "\${AUTH[@]}" -o /tmp/paperclip-issues.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}"\`
