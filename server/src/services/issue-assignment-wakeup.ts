@@ -29,6 +29,10 @@ export function queueIssueAssignmentWakeup(input: {
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  // Suppress wake when the issue is created (or transitioned) into a terminal
+  // state in the same request. There is nothing for the assignee to do, and
+  // any procedure that re-creates such an issue on each wake would loop.
+  if (input.issue.status === "done" || input.issue.status === "cancelled") return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {
