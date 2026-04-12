@@ -246,7 +246,7 @@ public struct SettingsView: View {
                                 .padding(10)
                         }
                         .frame(minHeight: 120, maxHeight: 180)
-                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                        .background(GoldNeuronBrand.surfaceRaised.opacity(0.96), in: RoundedRectangle(cornerRadius: 12))
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 }

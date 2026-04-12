@@ -13,6 +13,7 @@ struct NeurOSDesktopApp: App {
             RootSplitView(appModel: appModel, coordinator: coordinator)
                 .frame(minWidth: 1200, minHeight: 760)
                 .tint(GoldNeuronBrand.gold)
+                .preferredColorScheme(.dark)
         }
         .defaultSize(width: 1440, height: 900)
 
@@ -20,6 +21,7 @@ struct NeurOSDesktopApp: App {
             SettingsView(appModel: appModel, coordinator: coordinator)
                 .frame(minWidth: 860, minHeight: 780)
                 .tint(GoldNeuronBrand.gold)
+                .preferredColorScheme(.dark)
         }
 
         MenuBarExtra("neurOS", systemImage: "waveform.path.ecg.rectangle") {

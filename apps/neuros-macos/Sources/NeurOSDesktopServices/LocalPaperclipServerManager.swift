@@ -319,6 +319,7 @@ public actor LocalPaperclipServerManager: LocalServerControlling {
 
     private func workspaceBootstrapCommand() -> String {
         """
+        export PAPERCLIP_AUTO_ONBOARD=1
         if command -v pnpm >/dev/null 2>&1; then
           exec pnpm paperclipai run
         elif command -v node >/dev/null 2>&1 && [ -f cli/node_modules/tsx/dist/cli.mjs ]; then

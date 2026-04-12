@@ -30,6 +30,8 @@ interface StartedServer {
   listenPort: number;
 }
 
+const AUTO_ONBOARD_ENV = "PAPERCLIP_AUTO_ONBOARD";
+
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
@@ -50,14 +52,23 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.message(pc.dim(`Config: ${configPath}`));
 
   if (!configExists(configPath)) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    const isInteractive = process.stdin.isTTY && process.stdout.isTTY;
+    const shouldAutoOnboard = process.env[AUTO_ONBOARD_ENV] === "1";
+
+    if (!isInteractive && shouldAutoOnboard) {
+      p.log.step("No config found. Bootstrapping quickstart config for managed non-interactive launch...");
+      await onboard({ config: configPath, yes: true, invokedByRun: true });
+    } else if (!isInteractive) {
       p.log.error("No config found and terminal is non-interactive.");
       p.log.message(`Run ${pc.cyan("paperclipai onboard")} once, then retry ${pc.cyan("paperclipai run")}.`);
       process.exit(1);
+      return;
     }
 
-    p.log.step("No config found. Starting onboarding...");
-    await onboard({ config: configPath, invokedByRun: true });
+    if (!configExists(configPath)) {
+      p.log.step("No config found. Starting onboarding...");
+      await onboard({ config: configPath, invokedByRun: true });
+    }
   }
 
   p.log.step("Running doctor checks...");

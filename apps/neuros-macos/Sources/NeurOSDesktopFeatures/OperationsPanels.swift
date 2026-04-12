@@ -22,12 +22,13 @@ struct SurfaceCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(GoldNeuronBrand.background.opacity(0.18))
+                .fill(GoldNeuronBrand.surface.opacity(0.96))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(GoldNeuronBrand.separator, lineWidth: 1)
         )
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
     }
 }
 
@@ -63,7 +64,7 @@ struct SectionHeroView<Actions: View>: View {
         .padding(24)
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(GoldNeuronBrand.background.opacity(0.18))
+                .fill(GoldNeuronBrand.surfaceRaised.opacity(0.96))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -132,7 +133,7 @@ struct MetricTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(GoldNeuronBrand.background.opacity(0.18))
+                .fill(GoldNeuronBrand.surface.opacity(0.96))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -178,7 +179,7 @@ struct OperationsHeroView: View {
         .padding(24)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(GoldNeuronBrand.background.opacity(0.18))
+                .fill(GoldNeuronBrand.surfaceRaised.opacity(0.96))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -805,7 +806,7 @@ public struct ApprovalsSectionView: View {
                             TextEditor(text: $actionNote)
                                 .frame(minHeight: 90)
                                 .padding(10)
-                                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
+                                .background(GoldNeuronBrand.surfaceRaised.opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
 
                             HStack {
                                 ForEach(ApprovalDecisionAction.allCases) { action in
