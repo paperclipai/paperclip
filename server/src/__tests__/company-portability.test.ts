@@ -1019,6 +1019,7 @@ describe("company portability", () => {
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
     expect(extension).toContain('repoUrl: "https://github.com/paperclipai/paperclip.git"');
+    expect(extension).toContain('sourceType: "git_repo"');
     expect(extension).toContain('projectWorkspaceKey: "paperclip"');
     expect(exported.warnings).not.toContainEqual(expect.stringContaining("does not have a portable repoUrl"));
     expect(exported.warnings).not.toContainEqual(expect.stringContaining("reference workspace workspace-1"));

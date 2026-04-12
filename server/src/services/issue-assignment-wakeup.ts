@@ -46,7 +46,12 @@ export function queueIssueAssignmentWakeup(input: {
       payload: { issueId: input.issue.id, mutation: input.mutation },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
-      contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        wakeReason: input.reason,
+        source: input.contextSource,
+      },
     })
     .catch((err) => {
       if (isAgentNotInvokableWakeupError(err)) {

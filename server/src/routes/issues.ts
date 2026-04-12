@@ -426,6 +426,42 @@ export function issueRoutes(
     return null;
   }
 
+  async function resolveAssignmentScopedRunContext(req: Request, companyId: string) {
+    if (req.actor.type !== "agent") return null;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return null;
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
+    if (!run.contextSnapshot || typeof run.contextSnapshot !== "object") return null;
+    const snapshot = run.contextSnapshot as Record<string, unknown>;
+    const wakeReason = typeof snapshot.wakeReason === "string" ? snapshot.wakeReason : null;
+    const issueId = typeof snapshot.issueId === "string" ? snapshot.issueId : null;
+    if (wakeReason !== "issue_assigned" || !issueId) return null;
+    return { runId, issueId };
+  }
+
+  function queryHasNonEmptyValue(value: unknown) {
+    if (typeof value === "string") return value.trim().length > 0;
+    if (Array.isArray(value)) return value.some((entry) => typeof entry === "string" && entry.trim().length > 0);
+    return false;
+  }
+
+  function hasAssignmentContextualIssueListFilter(req: Request) {
+    return [
+      req.query.projectId,
+      req.query.executionWorkspaceId,
+      req.query.parentId,
+      req.query.labelId,
+      req.query.originKind,
+      req.query.originId,
+      req.query.participantAgentId,
+      req.query.assigneeUserId,
+      req.query.touchedByUserId,
+      req.query.inboxArchivedByUserId,
+      req.query.unreadForUserId,
+    ].some(queryHasNonEmptyValue);
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -572,6 +608,15 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const assignmentScopedRun = await resolveAssignmentScopedRunContext(req, companyId);
+    if (assignmentScopedRun && !hasAssignmentContextualIssueListFilter(req)) {
+      res.status(409).json({
+        error: "assignment mode forbids discovery queries; fetch /issues/:id directly",
+        code: "assignment_mode_forbids_discovery",
+        issueId: assignmentScopedRun.issueId,
+      });
+      return;
+    }
     const includeClosed = parseBooleanQuery(req.query.includeClosed);
     const includeRelations = parseBooleanQuery(req.query.includeRelations);
     const assigneeAgentId = parseOptionalQueryString(req.query.assigneeAgentId);

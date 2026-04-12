@@ -32,6 +32,12 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { createAgentStartLockController } from "./agent-start-lock.js";
+import {
+  hasFalseCompleteRecoverySignal,
+  isSuccessfulHeartbeatRunStatus,
+  selectReadyUnassignedCandidate,
+} from "./operations-heartbeat-target.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
@@ -78,7 +84,6 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const ACTIVE_ASSIGNEE_HEARTBEAT_RUN_STATUSES = ["running"] as const;
-const HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS = 30 * 1000;
 const WATCHDOG_RECOVERY_COOLDOWN_HOURS = 12;
 const WATCHDOG_RECOVERY_REPEAT_THRESHOLD = 1;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -93,7 +98,7 @@ const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
-const startLocksByAgent = new Map<string, Promise<void>>();
+const agentStartLockController = createAgentStartLockController();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -509,13 +514,10 @@ async function resolveOperationsHeartbeatTargets(
           (issue.status === "in_progress" && !issue.executionRunId)
           || issue.status === "blocked"
           || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
-        const hasFalseCompleteSignals = Boolean(
-          run
-          && run.status === "completed"
-          && truthType !== "completion"
-          && truthType !== "blocker"
-          && truthType !== "handoff",
-        );
+        const hasFalseCompleteSignals = hasFalseCompleteRecoverySignal({
+          runStatus: run?.status,
+          truthType,
+        });
         const hasContradictoryTruthSignals =
           (truthType === "completion" && issue.status !== "in_review")
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
@@ -603,7 +605,7 @@ async function resolveOperationsHeartbeatTargets(
           score -= 120;
           reasons.push(`fresh ${truthType} truth already present`);
         }
-        if (truthType === "completion" && run?.status === "completed" && issue.status === "in_review") {
+        if (truthType === "completion" && isSuccessfulHeartbeatRunStatus(run?.status) && issue.status === "in_review") {
           score -= 160;
           reasons.push("completion truth aligns with current state");
         }
@@ -642,7 +644,7 @@ async function resolveOperationsHeartbeatTargets(
     }
   }
 
-  const readyUnassigned = await db
+  const readyUnassignedRows = await db
     .select({
       id: issues.id,
       priority: issues.priority,
@@ -656,9 +658,8 @@ async function resolveOperationsHeartbeatTargets(
         sql`${issues.hiddenAt} is null`,
         sql`${issues.assigneeAgentId} is null`,
       ),
-    )
-    .orderBy(desc(issues.updatedAt))
-    .then((rows) => rows[0] ?? null);
+    );
+  const readyUnassigned = selectReadyUnassignedCandidate(readyUnassignedRows);
 
   if (readyUnassigned) {
     return [{
@@ -923,20 +924,7 @@ function normalizeMaxLiveRuns(value: unknown) {
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
-  const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
-  const run = previous.then(fn);
-  const marker = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  startLocksByAgent.set(agentId, marker);
-  try {
-    return await run;
-  } finally {
-    if (startLocksByAgent.get(agentId) === marker) {
-      startLocksByAgent.delete(agentId);
-    }
-  }
+  return agentStartLockController.withAgentStartLock(agentId, fn);
 }
 
 interface WakeupOptions {
@@ -4325,6 +4313,7 @@ export function heartbeatService(db: Db) {
             title: issues.title,
             status: issues.status,
             priority: issues.priority,
+            description: issues.description,
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
             executionWorkspaceId: issues.executionWorkspaceId,
@@ -4478,6 +4467,20 @@ export function heartbeatService(db: Db) {
         paperclipRuntimeSkills: runtimeSkillEntries,
       },
     );
+    const contextIssueId = issueId;
+    const assignedIssueTaskId = wakeReason === "issue_assigned" ? contextIssueId ?? issueContext?.id ?? null : null;
+    if (assignedIssueTaskId && !readNonEmptyString(context.taskId)) {
+      context.taskId = assignedIssueTaskId;
+    }
+    const adapterExecutionConfig = {
+      ...runtimeConfig,
+      taskId: assignedIssueTaskId ?? readNonEmptyString(context.taskId) ?? contextIssueId ?? undefined,
+      taskTitle: readNonEmptyString(context.taskTitle) ?? issueContext?.title ?? undefined,
+      taskBody: readNonEmptyString(context.taskBody) ?? issueContext?.description ?? undefined,
+      wakeReason: wakeReason ?? undefined,
+      commentId:
+        readNonEmptyString(context.commentId) ?? readNonEmptyString(context.wakeCommentId) ?? undefined,
+    };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -4938,7 +4941,7 @@ export function heartbeatService(db: Db) {
           adapterConfig: mappedAgentAdapterConfig,
         },
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: adapterExecutionConfig,
         context,
         onLog,
         onMeta: onAdapterMeta,

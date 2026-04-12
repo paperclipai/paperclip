@@ -258,6 +258,8 @@ export function copilotRoutes(db: Db) {
         actorUserId: input.userId,
       });
       if (updated) return updated;
+    } else {
+      return existing;
     }
 
     const hydrated = await issuesSvc.getById(existing.id);

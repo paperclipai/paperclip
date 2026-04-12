@@ -1,7 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -60,6 +59,8 @@ vi.mock("../adapters/index.js", () => ({
   listAdapterModels: vi.fn(),
 }));
 
+let agentRoutesFactory: typeof import("../routes/agents.js").agentRoutes;
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -73,7 +74,7 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutesFactory({} as any));
   app.use(errorHandler);
   return app;
 }
@@ -97,7 +98,9 @@ function makeAgent() {
 }
 
 describe("agent instructions bundle routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     vi.clearAllMocks();
     mockRoleRequiresQaCoverage.mockReturnValue(false);
     mockAgentService.getById.mockResolvedValue(makeAgent());

@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { costRoutes } from "../routes/costs.js";
-import { errorHandler } from "../middleware/index.js";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -88,6 +86,9 @@ vi.mock("../services/quota-windows.js", () => ({
   fetchAllQuotaWindows: mockFetchAllQuotaWindows,
 }));
 
+let costRoutesFactory: typeof import("../routes/costs.js").costRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -95,8 +96,8 @@ function createApp() {
     req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
     next();
   });
-  app.use("/api", costRoutes(makeDb() as any));
-  app.use(errorHandler);
+  app.use("/api", costRoutesFactory(makeDb() as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -107,12 +108,15 @@ function createAppWithActor(actor: any) {
     req.actor = actor;
     next();
   });
-  app.use("/api", costRoutes(makeDb() as any));
-  app.use(errorHandler);
+  app.use("/api", costRoutesFactory(makeDb() as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  ({ costRoutes: costRoutesFactory } = await import("../routes/costs.js"));
+  ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
   vi.clearAllMocks();
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",

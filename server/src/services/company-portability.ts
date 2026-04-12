@@ -840,22 +840,25 @@ async function readGitOutput(cwd: string, args: string[]) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizePortableRepoUrl(repoUrl: string | null) {
+function normalizePortableRepoUrl(repoUrl: string | null | undefined) {
   if (!repoUrl) return null;
   const trimmed = repoUrl.trim();
   if (!trimmed) return null;
 
-  const scpLikeGitHubMatch = /^git@github\.com:(.+)$/i.exec(trimmed);
-  if (scpLikeGitHubMatch?.[1]) {
-    return `https://github.com/${scpLikeGitHubMatch[1].replace(/^\/+/, "")}`;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  const scpLikeGitMatch = /^git@([^:]+):(.+)$/i.exec(trimmed);
+  if (scpLikeGitMatch?.[1] && scpLikeGitMatch[2]) {
+    return `https://${scpLikeGitMatch[1]}/${scpLikeGitMatch[2].replace(/^\/+/, "")}`;
   }
 
   try {
     const parsed = new URL(trimmed);
-    const isGitHub = parsed.hostname.toLowerCase() === "github.com";
     const isSsh = parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:";
-    if (isGitHub && isSsh && parsed.username === "git") {
-      return `https://github.com${parsed.pathname}`;
+    if (isSsh && parsed.hostname) {
+      return `https://${parsed.hostname}${parsed.pathname}`;
     }
   } catch {
     return trimmed;
@@ -935,6 +938,11 @@ async function buildPortableProjectWorkspaces(
     }
     const repoRef = asString(workspace.repoRef) ?? inferredGitMetadata.repoRef;
     const defaultRef = asString(workspace.defaultRef) ?? inferredGitMetadata.defaultRef ?? repoRef;
+    const workspaceSourceType = asString(workspace.sourceType);
+    const sourceType =
+      repoUrl && (workspaceSourceType === "local_path" || workspaceSourceType == null)
+        ? "git_repo"
+        : workspaceSourceType;
     const workspaceSignature = JSON.stringify({
       name: workspace.name,
       repoUrl,
@@ -978,7 +986,7 @@ async function buildPortableProjectWorkspaces(
 
     const portableWorkspace = stripEmptyValues({
       name: workspace.name,
-      sourceType: workspace.sourceType,
+      sourceType,
       repoUrl,
       repoRef,
       defaultRef,
@@ -994,7 +1002,7 @@ async function buildPortableProjectWorkspaces(
     const manifestWorkspace = {
       key: workspaceKey,
       name: workspace.name,
-      sourceType: asString(workspace.sourceType),
+      sourceType,
       repoUrl,
       repoRef,
       defaultRef,
