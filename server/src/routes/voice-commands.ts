@@ -20,7 +20,7 @@ const updateSchema = z.object({
   actionTaken: z.string().optional(),
   createdIssueId: z.string().uuid().optional(),
   chatId: z.string().uuid().optional(),
-  status: z.enum(["pending", "processing", "completed", "corrected", "failed"]).optional(),
+  status: z.enum(["pending", "queued", "processing", "completed", "corrected", "failed"]).optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 
@@ -32,6 +32,62 @@ const correctSchema = z.object({
   newIssueId: z.string().uuid().nullable().optional().default(null),
   action: z.enum(["reclassified", "cancelled", "recreated", "updated"]),
 });
+
+// ─── Shared helper: create a chat and wake the router for a voice command ───
+async function wakeRouter({
+  svc,
+  chats,
+  heartbeat,
+  companyId,
+  routerAgentId,
+  userId,
+  cmdId,
+  rawText,
+}: {
+  svc: ReturnType<typeof voiceCommandService>;
+  chats: ReturnType<typeof chatService>;
+  heartbeat: ReturnType<typeof heartbeatService>;
+  companyId: string;
+  routerAgentId: string;
+  userId: string;
+  cmdId: string;
+  rawText: string;
+}) {
+  const chat = await chats.createChat({ companyId, agentId: routerAgentId, initiatedByUserId: userId });
+  const chatId = chat.id;
+
+  await svc.update(cmdId, companyId, { chatId, status: "processing" });
+
+  const wrappedPrompt = [
+    `VOICE COMMAND (id: ${cmdId})`,
+    `From: ${userId}`,
+    ``,
+    `"${rawText}"`,
+    ``,
+    `Classify this voice command and take action. Update the voice command record when done.`,
+  ].join("\n");
+
+  const msg = await chats.addUserMessage({ companyId, chatId, body: wrappedPrompt });
+
+  const run = await heartbeat.wakeup(routerAgentId, {
+    source: "on_demand",
+    triggerDetail: "manual",
+    reason: "direct_chat",
+    payload: { chatId, messageId: msg.id, voiceCommandId: cmdId },
+    requestedByActorType: "user",
+    requestedByActorId: userId,
+    contextSnapshot: {
+      wakeReason: "direct_chat",
+      chatId,
+      chatMessageId: msg.id,
+      chatMessage: wrappedPrompt,
+      voiceCommandId: cmdId,
+      rawText,
+    },
+  });
+
+  return { chatId, routerRun: run ?? null };
+}
 
 export function voiceCommandRoutes(db: Db) {
   const router = Router();
@@ -77,9 +133,12 @@ export function voiceCommandRoutes(db: Db) {
       const userId = (req.actor as { userId: string }).userId;
       const routerAgentId = req.body.routerAgentId;
 
-      // If a router agent is specified, create a chat and trigger the agent
       let chatId = req.body.chatId;
       let routerRun: { id: string } | null = null;
+
+      // If the router is already processing a command, queue this one
+      const processingCount = routerAgentId ? await svc.getProcessingCount(companyId) : 0;
+      const shouldQueue = routerAgentId && processingCount > 0;
 
       const cmd = await svc.create({
         companyId,
@@ -88,62 +147,28 @@ export function voiceCommandRoutes(db: Db) {
         routerAgentId,
         chatId,
         metadata: req.body.metadata,
+        initialStatus: shouldQueue ? "queued" : "pending",
       });
 
-      if (routerAgentId) {
+      if (routerAgentId && !shouldQueue) {
         const agent = await agents.getById(routerAgentId);
         if (agent && agent.companyId === companyId) {
-          // Create a fresh chat for this voice command
-          const chat = await chats.createChat({
+          const result = await wakeRouter({
+            svc,
+            chats,
+            heartbeat,
             companyId,
-            agentId: routerAgentId,
-            initiatedByUserId: userId,
+            routerAgentId,
+            userId,
+            cmdId: cmd.id,
+            rawText: req.body.rawText,
           });
-          chatId = chat.id;
-
-          // Update the voice command with the chat ID
-          await svc.update(cmd.id, companyId, { chatId, status: "processing" });
-
-          // Wrap the raw voice text in a structured prompt
-          const wrappedPrompt = [
-            `VOICE COMMAND (id: ${cmd.id})`,
-            `From: ${userId}`,
-            ``,
-            `"${req.body.rawText}"`,
-            ``,
-            `Classify this voice command and take action. Update the voice command record when done.`,
-          ].join("\n");
-
-          // Add as a user message in the chat
-          const msg = await chats.addUserMessage({
-            companyId,
-            chatId,
-            body: wrappedPrompt,
-          });
-
-          // Wake the router agent via direct_chat so the standard heartbeat
-          // short-circuits into conversational mode and processes the message
-          const run = await heartbeat.wakeup(routerAgentId, {
-            source: "on_demand",
-            triggerDetail: "manual",
-            reason: "direct_chat",
-            payload: { chatId, messageId: msg.id, voiceCommandId: cmd.id },
-            requestedByActorType: "user",
-            requestedByActorId: userId,
-            contextSnapshot: {
-              wakeReason: "direct_chat",
-              chatId,
-              chatMessageId: msg.id,
-              chatMessage: wrappedPrompt,
-              voiceCommandId: cmd.id,
-              rawText: req.body.rawText,
-            },
-          });
-          routerRun = run ?? null;
+          chatId = result.chatId;
+          routerRun = result.routerRun;
         }
       }
 
-      res.status(201).json({ ...cmd, chatId, routerRunId: routerRun?.id ?? null });
+      res.status(201).json({ ...cmd, status: shouldQueue ? "queued" : "processing", chatId, routerRunId: routerRun?.id ?? null });
     },
   );
 
@@ -167,7 +192,6 @@ export function voiceCommandRoutes(db: Db) {
     async (req, res) => {
       const id = req.params.id as string;
 
-      // Look up command to get companyId
       const existing = await svc.getById(id);
       if (!existing) {
         res.status(404).json({ error: "Voice command not found" });
@@ -180,9 +204,48 @@ export function voiceCommandRoutes(db: Db) {
         res.status(404).json({ error: "Voice command not found" });
         return;
       }
+
+      // When a command finishes, promote the next queued one
+      const newStatus = req.body.status;
+      if ((newStatus === "completed" || newStatus === "failed") && existing.routerAgentId) {
+        const next = await svc.promoteNextQueued(existing.companyId);
+        if (next?.routerAgentId) {
+          const agent = await agents.getById(next.routerAgentId);
+          if (agent) {
+            // Use a system user id derived from the original initiator — best we have in this context
+            await wakeRouter({
+              svc,
+              chats,
+              heartbeat,
+              companyId: existing.companyId,
+              routerAgentId: next.routerAgentId,
+              userId: next.initiatedByUserId,
+              cmdId: next.id,
+              rawText: next.rawText,
+            });
+          }
+        }
+      }
+
       res.json(updated);
     },
   );
+
+  // Delete a voice command
+  router.delete("/voice-commands/:id", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Voice command not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    await svc.remove(id, existing.companyId);
+    res.status(204).end();
+  });
 
   // Submit a correction for a voice command
   router.post(

@@ -70,4 +70,6 @@ export const voiceApi = {
     newIssueId?: string | null;
     action: "reclassified" | "cancelled" | "recreated" | "updated";
   }) => api.post<VoiceCommand>(`/voice-commands/${id}/correct`, data),
+
+  delete: (id: string) => api.delete<void>(`/voice-commands/${id}`),
 };

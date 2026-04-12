@@ -9,7 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
-import { Mic, MicOff, Send, ExternalLink, CornerDownLeft, Loader2, CheckCircle2, XCircle, Clock, AlertCircle } from "lucide-react";
+import { Mic, MicOff, Send, ExternalLink, CornerDownLeft, Loader2, CheckCircle2, XCircle, Clock, AlertCircle, Trash2 } from "lucide-react";
 
 // ─── Speech recognition types ───
 interface SpeechRecognitionEvent extends Event {
@@ -44,6 +44,7 @@ declare global {
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { icon: typeof Clock; label: string; className: string }> = {
     pending: { icon: Clock, label: "Pending", className: "text-yellow-600 bg-yellow-50 border-yellow-200" },
+    queued: { icon: Clock, label: "Queued", className: "text-yellow-600 bg-yellow-50 border-yellow-200" },
     processing: { icon: Loader2, label: "Processing", className: "text-blue-600 bg-blue-50 border-blue-200" },
     completed: { icon: CheckCircle2, label: "Completed", className: "text-green-600 bg-green-50 border-green-200" },
     corrected: { icon: AlertCircle, label: "Corrected", className: "text-orange-600 bg-orange-50 border-orange-200" },
@@ -64,12 +65,15 @@ function VoiceCommandRow({
   cmd,
   companyPrefix,
   onCorrect,
+  onDelete,
 }: {
   cmd: VoiceCommand;
   companyPrefix: string;
   onCorrect: (cmd: VoiceCommand) => void;
+  onDelete: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const isActive = cmd.status === "processing" || cmd.status === "queued";
 
   return (
     <div className="border-b border-border last:border-b-0">
@@ -82,7 +86,13 @@ function VoiceCommandRow({
           <div className="min-w-0 flex-1">
             <p className="text-sm truncate">{cmd.rawText}</p>
             {cmd.actionTaken && (
-              <p className="text-xs text-muted-foreground mt-0.5">{cmd.actionTaken}</p>
+              <p className={cn(
+                "text-xs mt-0.5 truncate",
+                isActive ? "text-blue-600" : "text-muted-foreground"
+              )}>
+                {isActive && <Loader2 className="h-3 w-3 inline mr-1 animate-spin" />}
+                {cmd.actionTaken}
+              </p>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -141,6 +151,18 @@ function VoiceCommandRow({
               <CornerDownLeft className="h-3 w-3 mr-1" />
               Correct
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(cmd.id);
+              }}
+            >
+              <Trash2 className="h-3 w-3 mr-1" />
+              Delete
+            </Button>
           </div>
         </div>
       )}
@@ -187,6 +209,14 @@ export function Voice() {
       }),
     onSuccess: () => {
       setInputText("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.voice.list(selectedCompanyId!) });
+    },
+  });
+
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => voiceApi.delete(id),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.voice.list(selectedCompanyId!) });
     },
   });
@@ -417,6 +447,7 @@ export function Voice() {
                   setCorrecting(c);
                   setCorrectionText("");
                 }}
+                onDelete={(id) => deleteMutation.mutate(id)}
               />
             ))
           )}

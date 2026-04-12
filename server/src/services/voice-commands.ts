@@ -11,6 +11,7 @@ export function voiceCommandService(db: Db) {
     routerAgentId?: string;
     chatId?: string;
     metadata?: Record<string, unknown>;
+    initialStatus?: string;
   }) {
     const [cmd] = await db
       .insert(voiceCommands)
@@ -20,7 +21,7 @@ export function voiceCommandService(db: Db) {
         rawText: input.rawText,
         routerAgentId: input.routerAgentId ?? null,
         chatId: input.chatId ?? null,
-        status: "pending",
+        status: input.initialStatus ?? "pending",
         metadata: input.metadata ?? null,
       })
       .returning();
@@ -163,6 +164,49 @@ export function voiceCommandService(db: Db) {
     return updated ?? null;
   }
 
+  async function remove(id: string, companyId: string) {
+    const [deleted] = await db
+      .delete(voiceCommands)
+      .where(and(eq(voiceCommands.id, id), eq(voiceCommands.companyId, companyId)))
+      .returning();
+    return deleted ?? null;
+  }
+
+  async function getProcessingCount(companyId: string) {
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(voiceCommands)
+      .where(and(eq(voiceCommands.companyId, companyId), eq(voiceCommands.status, "processing")));
+    return rows[0]?.count ?? 0;
+  }
+
+  async function promoteNextQueued(companyId: string) {
+    const rows = await db
+      .select()
+      .from(voiceCommands)
+      .where(and(eq(voiceCommands.companyId, companyId), eq(voiceCommands.status, "queued")))
+      .orderBy(voiceCommands.createdAt)
+      .limit(1);
+    const next = rows[0];
+    if (!next) return null;
+
+    const [promoted] = await db
+      .update(voiceCommands)
+      .set({ status: "processing", updatedAt: new Date() })
+      .where(eq(voiceCommands.id, next.id))
+      .returning();
+
+    if (promoted) {
+      publishLiveEvent({
+        companyId,
+        type: "voice.command.updated",
+        payload: { voiceCommandId: promoted.id, status: "processing" },
+      });
+    }
+
+    return promoted ?? null;
+  }
+
   async function countByStatus(companyId: string, initiatedByUserId?: string) {
     const conditions = [eq(voiceCommands.companyId, companyId)];
     if (initiatedByUserId) {
@@ -187,7 +231,10 @@ export function voiceCommandService(db: Db) {
     getById,
     get,
     update,
+    remove,
     addCorrection,
     countByStatus,
+    getProcessingCount,
+    promoteNextQueued,
   };
 }
