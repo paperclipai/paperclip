@@ -36,6 +36,16 @@ type CooInstructionsSyncReport = {
   updatedAgentIds: string[];
 };
 
+type QaInstructionsSyncReport = {
+  apply: boolean;
+  scannedQaAgents: number;
+  updatedAgents: number;
+  unchangedAgents: number;
+  skippedExternalBundles: number;
+  touchedCompanyIds: string[];
+  updatedAgentIds: string[];
+};
+
 type CooCoverageReason = "already_has_coo" | "coo_created" | "no_ceo" | "company_not_found";
 
 type CompanyCooCoverageResult = {
@@ -754,6 +764,83 @@ export function agentHeartbeatModelService(db: Db) {
       return {
         apply,
         scannedCooAgents,
+        updatedAgents,
+        unchangedAgents,
+        skippedExternalBundles,
+        touchedCompanyIds: Array.from(touchedCompanyIds),
+        updatedAgentIds: Array.from(updatedAgentIds),
+      };
+    },
+
+    async syncQaReleaseEngineerInstructions(options?: { apply?: boolean }): Promise<QaInstructionsSyncReport> {
+      const apply = options?.apply === true;
+      const rows = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          title: agents.title,
+          role: agents.role,
+          adapterConfig: agents.adapterConfig,
+        })
+        .from(agents)
+        .where(and(ne(agents.status, "terminated"), ne(agents.status, "pending_approval")));
+
+      const touchedCompanyIds = new Set<string>();
+      const updatedAgentIds = new Set<string>();
+      let scannedQaAgents = 0;
+      let updatedAgents = 0;
+      let unchangedAgents = 0;
+      let skippedExternalBundles = 0;
+
+      for (const row of rows) {
+        if (normalizeRole(row.role) !== "qa") continue;
+
+        scannedQaAgents += 1;
+        const bundle = await instructions.getBundle(row);
+        if (bundle.mode === "external") {
+          skippedExternalBundles += 1;
+          unchangedAgents += 1;
+          continue;
+        }
+
+        const hasEntryFile = bundle.files.some((file) => file.path === bundle.entryFile);
+        let currentEntryContent: string | null = null;
+        if (hasEntryFile) {
+          try {
+            currentEntryContent = (await instructions.readFile(row, bundle.entryFile)).content;
+          } catch {
+            currentEntryContent = null;
+          }
+        }
+
+        const exported = await instructions.exportFiles(row);
+        const expectedEntryContent = exported.files[bundle.entryFile] ?? "";
+        const needsSync = bundle.mode !== "managed"
+          || !hasEntryFile
+          || currentEntryContent !== expectedEntryContent;
+
+        if (!needsSync) {
+          unchangedAgents += 1;
+          continue;
+        }
+
+        updatedAgents += 1;
+        touchedCompanyIds.add(row.companyId);
+        updatedAgentIds.add(row.id);
+        if (!apply) continue;
+
+        const materialized = await instructions.materializeManagedBundle(row, exported.files, {
+          entryFile: exported.entryFile,
+          replaceExisting: true,
+          clearLegacyPromptTemplate: true,
+        });
+        await agentsSvc.update(row.id, { adapterConfig: materialized.adapterConfig });
+      }
+
+      return {
+        apply,
+        scannedQaAgents,
         updatedAgents,
         unchangedAgents,
         skippedExternalBundles,

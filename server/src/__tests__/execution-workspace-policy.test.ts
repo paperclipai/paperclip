@@ -123,6 +123,13 @@ describe("execution workspace policy helpers", () => {
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           teardownCommand: "bash ./scripts/teardown-worktree.sh",
         },
+        branchPolicy: {
+          targetBranch: "origin/master",
+        },
+        pullRequestPolicy: {
+          mergeOnQaPass: true,
+          deleteBranchAfterMerge: true,
+        },
       }),
     ).toEqual({
       enabled: true,
@@ -132,6 +139,13 @@ describe("execution workspace policy helpers", () => {
         worktreeParentDir: ".paperclip/worktrees",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
+      },
+      branchPolicy: {
+        targetBranch: "origin/master",
+      },
+      pullRequestPolicy: {
+        mergeOnQaPass: true,
+        deleteBranchAfterMerge: true,
       },
     });
     expect(

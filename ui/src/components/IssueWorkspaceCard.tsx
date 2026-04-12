@@ -371,6 +371,12 @@ export function IssueWorkspaceCard({
               <CopyableInline value={workspace.branchName} mono />
             </div>
           )}
+          {workspace?.branchProvenance && (
+            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
+              Branch source: {workspace.branchProvenance.source ?? (workspace.branchProvenance.createdByRuntime ? "runtime_created" : "unknown")}
+              {workspace.branchProvenance.baseRef ? ` · Base ${workspace.branchProvenance.baseRef}` : ""}
+            </div>
+          )}
           {workspace?.cwd && (
             <div className="flex items-center gap-1.5">
               <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />

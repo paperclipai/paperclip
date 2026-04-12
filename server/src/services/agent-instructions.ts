@@ -31,6 +31,7 @@ type AgentLike = {
   id: string;
   companyId: string;
   name: string;
+  role?: string | null;
   adapterConfig: unknown;
 };
 
@@ -76,6 +77,19 @@ type BundleState = {
   legacyBootstrapPromptTemplateActive: boolean;
 };
 
+const QA_BASELINE_START = "<!-- paperclip:qa-baseline:start -->";
+const QA_BASELINE_END = "<!-- paperclip:qa-baseline:end -->";
+const QA_BASELINE_BLOCK = [
+  QA_BASELINE_START,
+  "## QA Release Gate Contract",
+  "- When an issue reaches QA, you own the release gate until it is either shipped or explicitly blocked.",
+  "- Always leave an issue comment with the concrete verification evidence you ran and the current ship verdict.",
+  "- Only use `[QA PASS]` when verification is complete and the change is ready to ship.",
+  "- Only use `[RELEASE CONFIRMED]` when the validated branch is confirmed ready for release handling.",
+  "- If merge or release handling is blocked, keep the issue in `in_review` and explain the blocker in the issue comment.",
+  QA_BASELINE_END,
+].join("\n");
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -109,6 +123,29 @@ function inferLanguage(relativePath: string): string {
 
 function isMarkdown(relativePath: string) {
   return relativePath.toLowerCase().endsWith(".md");
+}
+
+function withQaBaseline(content: string): string {
+  const normalized = content.replace(
+    /<!-- paperclip:qa-baseline:start -->[\s\S]*?<!-- paperclip:qa-baseline:end -->\s*/g,
+    "",
+  ).trimEnd();
+  return normalized.length > 0
+    ? `${normalized}\n\n${QA_BASELINE_BLOCK}\n`
+    : `${QA_BASELINE_BLOCK}\n`;
+}
+
+function applyRoleBaselineToEntryFile(
+  agent: AgentLike,
+  entryFile: string,
+  files: Record<string, string>,
+): Record<string, string> {
+  if (agent.role !== "qa") return files;
+  const entryContent = files[entryFile] ?? "";
+  return {
+    ...files,
+    [entryFile]: withQaBaseline(entryContent),
+  };
 }
 
 function normalizeRelativeFilePath(candidatePath: string): string {
@@ -420,8 +457,8 @@ async function writeBundleFiles(
   options?: { overwriteExisting?: boolean },
 ) {
   for (const [relativePath, content] of Object.entries(files)) {
-    const normalizedPath = normalizeRelativeFilePath(relativePath);
-    const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
+      const normalizedPath = normalizeRelativeFilePath(relativePath);
+      const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
     const existingStat = await statIfExists(absolutePath);
     if (existingStat?.isFile() && !options?.overwriteExisting) continue;
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
@@ -621,13 +658,18 @@ export function agentInstructionsService() {
     }
 
     const prepared = await ensureWritableBundle(agent, options);
-    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    const normalizedPath = normalizeRelativeFilePath(relativePath);
+    const nextContent =
+      agent.role === "qa" && normalizedPath === prepared.state.entryFile
+        ? withQaBaseline(content)
+        : content;
+    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, normalizedPath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, content, "utf8");
+    await fs.writeFile(absolutePath, nextContent, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
     const [bundle, file] = await Promise.all([
       getBundle(nextAgent),
-      readFile(nextAgent, relativePath),
+      readFile(nextAgent, normalizedPath),
     ]);
     return { bundle, file, adapterConfig: prepared.adapterConfig };
   }
@@ -669,14 +711,20 @@ export function agentInstructionsService() {
           return [relativePath, content] as const;
         })));
         if (Object.keys(files).length > 0) {
-          return { files, entryFile: state.entryFile, warnings: state.warnings };
+          return {
+            files: applyRoleBaselineToEntryFile(agent, state.entryFile, files),
+            entryFile: state.entryFile,
+            warnings: state.warnings,
+          };
         }
       }
     }
 
     const legacyBody = await readLegacyInstructions(agent, state.config);
     return {
-      files: { [state.entryFile]: legacyBody || "_No AGENTS instructions were resolved from current agent config._" },
+      files: applyRoleBaselineToEntryFile(agent, state.entryFile, {
+        [state.entryFile]: legacyBody || "_No AGENTS instructions were resolved from current agent config._",
+      }),
       entryFile: state.entryFile,
       warnings: state.warnings,
     };
@@ -699,7 +747,8 @@ export function agentInstructionsService() {
     }
     await fs.mkdir(rootPath, { recursive: true });
 
-    const normalizedEntries = Object.entries(files).map(([relativePath, content]) => [
+    const normalizedFiles = applyRoleBaselineToEntryFile(agent, entryFile, files);
+    const normalizedEntries = Object.entries(normalizedFiles).map(([relativePath, content]) => [
       normalizeRelativeFilePath(relativePath),
       content,
     ] as const);

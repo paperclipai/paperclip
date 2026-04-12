@@ -65,6 +65,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
+import { logActivity } from "./activity-log.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
   isOrchestratorOnlyAgent,
@@ -92,6 +93,7 @@ const OPERATIONS_IDLE_WAKE_MARKER = "[operations-heartbeat-wakeup]";
 const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
 const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
 const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
+const ISSUE_COMMENT_RECOVERY_MARKER = "[issue-comment-recovery]";
 const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
 const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
   /\bcart|checkout|frontend|backend|api|component|typescript|react|db|database|migration|refactor|bug|fix|code\b/i;
@@ -2533,6 +2535,135 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  function isInvokableCoordinatorStatus(status: string | null | undefined) {
+    return status !== "paused" && status !== "terminated" && status !== "pending_approval";
+  }
+
+  async function findRecoveryCoordinatorAgent(companyId: string, excludeAgentIds: string[] = []) {
+    const excluded = new Set(excludeAgentIds.filter((value) => value.length > 0));
+    const rows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const eligible = rows.filter((row) =>
+      !excluded.has(row.id)
+      && isInvokableCoordinatorStatus(row.status)
+      && (row.role === "coo" || row.role === "operations")
+    );
+    return eligible.find((row) => row.role === "coo") ?? eligible[0] ?? null;
+  }
+
+  async function recordIssueCommentRecoveryRequired(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    issueId: string,
+  ) {
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return;
+
+    try {
+      await issuesSvc.addComment(
+        issue.id,
+        [
+          ISSUE_COMMENT_RECOVERY_MARKER,
+          `Run completed without publishing an issue comment after the retry policy was exhausted.`,
+          `Latest run: ${run.id}`,
+          `Assigned agent: ${agent.name}`,
+          `This issue now requires operator recovery before QA can proceed.`,
+        ].join("\n"),
+        {},
+      );
+    } catch (error) {
+      logger.warn(
+        { error, runId: run.id, issueId: issue.id },
+        "failed to add issue comment recovery notice after retry exhaustion",
+      );
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat-comment-policy",
+      agentId: null,
+      runId: run.id,
+      action: "issue.comment_recovery_required",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        issueTitle: issue.title,
+        issueStatus: issue.status,
+        sourceAgentId: agent.id,
+        sourceAgentName: agent.name,
+        sourceRunId: run.id,
+        issueCommentStatus: "retry_exhausted",
+      },
+    }).catch((error) =>
+      logger.warn(
+        { error, runId: run.id, issueId: issue.id },
+        "failed to write issue comment recovery activity after retry exhaustion",
+      ));
+
+    if (!issue.assigneeAgentId) return;
+
+    const assignee = await db
+      .select({
+        id: agents.id,
+        role: agents.role,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (assignee?.role !== "qa") return;
+
+    const recoveryCoordinator = await findRecoveryCoordinatorAgent(issue.companyId, [agent.id, assignee.id]);
+    if (!recoveryCoordinator) return;
+
+    await enqueueWakeup(recoveryCoordinator.id, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "qa_comment_recovery_required",
+      payload: {
+        issueId: issue.id,
+        sourceRunId: run.id,
+        sourceAgentId: agent.id,
+        mutation: "qa_comment_recovery_required",
+        source: "issue.comment.recovery",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        sourceRunId: run.id,
+        sourceAgentId: agent.id,
+        source: "issue.comment.recovery",
+        wakeReason: "qa_comment_recovery_required",
+      },
+    }).catch((error) =>
+      logger.warn(
+        { error, runId: run.id, issueId: issue.id, recoveryCoordinatorId: recoveryCoordinator.id },
+        "failed to enqueue coordinator recovery wakeup after issue comment retry exhaustion",
+      ));
+  }
+
   async function enqueueMissingIssueCommentRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -2680,6 +2811,7 @@ export function heartbeatService(db: Db) {
         issueCommentStatus: "retry_exhausted",
         issueCommentSatisfiedByCommentId: null,
       });
+      await recordIssueCommentRecoveryRequired(run, agent, issueId);
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -2703,6 +2835,13 @@ export function heartbeatService(db: Db) {
     await patchRunIssueCommentStatus(run.id, {
       issueCommentStatus: "retry_exhausted",
       issueCommentSatisfiedByCommentId: null,
+    });
+    await recordIssueCommentRecoveryRequired(run, agent, issueId);
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Run ended without an issue comment and PrivateClip could not queue another retry; operator recovery is required",
     });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
@@ -3963,29 +4102,47 @@ export function heartbeatService(db: Db) {
       }
 
       try {
-        const reassigned = await issuesSvc.update(sourceIssue.id, {
+        const continuation = await issuesSvc.create(sourceIssue.companyId, {
+          projectId: sourceIssue.projectId,
+          projectWorkspaceId: sourceIssue.projectWorkspaceId,
+          goalId: sourceIssue.goalId,
+          parentId: sourceIssue.parentId,
+          title: sourceIssue.title,
+          description: sourceIssue.description,
+          status: "todo",
+          priority: sourceIssue.priority,
           assigneeAgentId: candidate.id,
           assigneeUserId: null,
-          actorAgentId: input.agent.id,
+          requestDepth: sourceIssue.requestDepth ?? 0,
+          billingCode: sourceIssue.billingCode,
+          assigneeAdapterOverrides: sourceIssue.assigneeAdapterOverrides,
+          executionPolicy: sourceIssue.executionPolicy,
+          executionWorkspacePreference: sourceIssue.executionWorkspacePreference,
+          executionWorkspaceSettings: sourceIssue.executionWorkspaceSettings,
+          labelIds: sourceIssue.labelIds,
+          inheritExecutionWorkspaceFromIssueId: sourceIssue.id,
+          recoveryFromIssueId: sourceIssue.id,
+          recoveryDisposition: "recovered_by_reissue",
+          createdByAgentId: input.agent.id,
         });
-        if (!reassigned) continue;
+        if (!continuation) continue;
         recoveryReissueCount += 1;
 
         try {
           await issuesSvc.addComment(
-            reassigned.id,
+            continuation.id,
             buildOperationsAssignmentComment({
               assigneeAgentId: candidate.id,
               assigneeName: candidate.name,
-              reason: `recovery reassignment from ${sourceIssue.identifier ?? sourceIssue.id}: ${reissueTarget.reason}`,
+              reason: `recovery reissue from ${sourceIssue.identifier ?? sourceIssue.id}: ${reissueTarget.reason}`,
             }),
             { agentId: input.agent.id, runId: input.run.id },
           );
           assignmentCommentCount += 1;
         } catch (err) {
           logger.warn(
-            { err, issueId: reassigned.id, assigneeAgentId: candidate.id },
-            "operations heartbeat failed to post recovery reassignment assignment comment",
+            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
+            "operations heartbeat failed to post recovery reissue assignment comment",
           );
         }
 
@@ -3993,35 +4150,35 @@ export function heartbeatService(db: Db) {
           await enqueueWakeup(candidate.id, {
             source: "automation",
             triggerDetail: "system",
-            reason: "operations_recovery_reassignment",
+            reason: "operations_recovery_reissue",
             payload: {
-              issueId: reassigned.id,
+              issueId: continuation.id,
               sourceIssueId: sourceIssue.id,
-              mutation: "operations_recovery_reassignment",
+              mutation: "operations_recovery_reissue",
               sourceRunId: input.run.id,
             },
             requestedByActorType: "agent",
             requestedByActorId: input.agent.id,
             contextSnapshot: {
-              issueId: reassigned.id,
+              issueId: continuation.id,
               sourceIssueId: sourceIssue.id,
-              taskId: reassigned.id,
+              taskId: continuation.id,
               source: "operations.heartbeat",
-              wakeReason: "operations_recovery_reassignment",
+              wakeReason: "operations_recovery_reissue",
             },
           });
           recoveryReissueWakeupCount += 1;
         } catch (err) {
           if (isAgentNotInvokableConflict(err)) continue;
           logger.warn(
-            { err, issueId: reassigned.id, assigneeAgentId: candidate.id },
-            "operations heartbeat failed to enqueue recovery reassignment wakeup",
+            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
+            "operations heartbeat failed to enqueue recovery reissue wakeup",
           );
         }
       } catch (err) {
         logger.warn(
           { err, issueId: sourceIssue.id, assigneeAgentId: candidate.id },
-          "operations heartbeat failed to reassign issue during recovery",
+          "operations heartbeat failed to create recovery reissue during recovery",
         );
         await requestCrossAgentRecoveryWake(reissueTarget.issue, reissueTarget.reason);
       }
@@ -4514,10 +4671,20 @@ export function heartbeatService(db: Db) {
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
+    const persistedCreatedByRuntime =
+      executionWorkspace.created || existingExecutionWorkspace?.metadata?.createdByRuntime === true;
+    const branchProvenance = {
+      source: executionWorkspace.created ? "runtime_created" : "runtime_reused",
+      branchName: executionWorkspace.branchName ?? existingExecutionWorkspace?.branchName ?? null,
+      baseRef: executionWorkspace.repoRef ?? existingExecutionWorkspace?.baseRef ?? null,
+      createdByRuntime: persistedCreatedByRuntime,
+      recordedAt: new Date().toISOString(),
+    };
     const nextExecutionWorkspaceMetadataBase = {
       ...(existingExecutionWorkspace?.metadata ?? {}),
       source: executionWorkspace.source,
-      createdByRuntime: executionWorkspace.created,
+      createdByRuntime: persistedCreatedByRuntime,
+      branchProvenance,
     } as Record<string, unknown>;
     const nextExecutionWorkspaceMetadata = shouldReuseExisting
       ? nextExecutionWorkspaceMetadataBase
@@ -4581,8 +4748,9 @@ export function heartbeatService(db: Db) {
               projectWorkspaceId: resolvedProjectWorkspaceId,
               sourceIssueId: issueRef?.id ?? null,
               metadata: {
-                createdByRuntime: true,
+                createdByRuntime: persistedCreatedByRuntime,
                 source: executionWorkspace.source,
+                branchProvenance,
               },
             },
             projectWorkspace: {

@@ -128,6 +128,8 @@ const QA_DIMENSION_TITLES = [
   { key: "docsImpact", label: "Docs Impact" },
 ] as const;
 const QA_GATE_REASON_LABELS: Record<string, string> = {
+  qa_gate_requires_qa_assignee: "Delivery issues entering QA must be assigned to a QA agent.",
+  qa_gate_no_eligible_qa_agent: "No eligible QA agent is available to own this review.",
   qa_gate_requires_in_review: "Issue must be in QA before shipping.",
   qa_gate_missing_qa_pass: "Latest QA comment is missing [QA PASS].",
   qa_gate_missing_release_confirmation: "Latest QA comment is missing [RELEASE CONFIRMED].",
@@ -145,6 +147,33 @@ function formatQaState(value: string) {
   if (value === "na") return "N/A";
   if (value === "unknown") return "Unknown";
   return value.toUpperCase();
+}
+
+function mergeStateBadgeClass(value: string) {
+  if (value === "merged") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  if (value === "ready") return "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400";
+  if (value === "pending") return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+  if (value === "blocked") return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400";
+  return "border-muted bg-muted/40 text-muted-foreground";
+}
+
+function formatMergeState(value: string) {
+  return value.replace(/_/g, " ");
+}
+
+function formatIssueCommentPublicationStatus(value: string | null | undefined) {
+  switch (value) {
+    case "satisfied":
+      return "published";
+    case "retry_queued":
+      return "retry queued";
+    case "retry_exhausted":
+      return "retry exhausted";
+    case "not_applicable":
+      return "not applicable";
+    default:
+      return "unknown";
+  }
 }
 
 function humanizeValue(value: unknown): string {
@@ -1276,6 +1305,7 @@ export function IssueDetail() {
     </>
   );
   const qaGate = issue.qaGate ?? null;
+  const mergeStatus = issue.mergeStatus ?? null;
   const qaDimensions = qaGate
     ? QA_DIMENSION_TITLES.map(({ key, label }) => ({
       key,
@@ -1514,6 +1544,63 @@ export function IssueDetail() {
               {qaGateMissing.map((reasonCode) => (
                 <p key={reasonCode}>{QA_GATE_REASON_LABELS[reasonCode] ?? reasonCode}</p>
               ))}
+            </div>
+          )}
+
+          {mergeStatus && (
+            <div className="space-y-2 rounded-md border border-border bg-background/70 px-2 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">Merge</span>
+                <span className={cn("rounded-full border px-1.5 py-0.5 text-[10px] font-medium capitalize", mergeStateBadgeClass(mergeStatus.state))}>
+                  {formatMergeState(mergeStatus.state)}
+                </span>
+                <span className="ml-auto text-muted-foreground">
+                  Comment output: {formatIssueCommentPublicationStatus(mergeStatus.lastIssueCommentStatus)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="rounded-md border border-border px-2 py-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Source</div>
+                  <div className="font-mono">{mergeStatus.sourceBranch ?? "Missing branch metadata"}</div>
+                </div>
+                <div className="rounded-md border border-border px-2 py-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Target</div>
+                  <div className="font-mono">{mergeStatus.targetBranch ?? "master"}</div>
+                </div>
+                {mergeStatus.repoRoot && (
+                  <div className="rounded-md border border-border px-2 py-1.5 sm:col-span-2">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Repo Root</div>
+                    <div className="font-mono" style={{ overflowWrap: "anywhere" }}>{mergeStatus.repoRoot}</div>
+                  </div>
+                )}
+                <div className="rounded-md border border-border px-2 py-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Branch Source</div>
+                  <div>{mergeStatus.branchProvenanceSource ?? (mergeStatus.createdByRuntime ? "runtime_created" : "unknown")}</div>
+                </div>
+                <div className="rounded-md border border-border px-2 py-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Workspace Origin</div>
+                  <div>{mergeStatus.createdByRuntime === true ? "Runtime-created" : mergeStatus.createdByRuntime === false ? "Pre-existing" : "Unknown"}</div>
+                </div>
+              </div>
+
+              {mergeStatus.reason && (
+                <div className={cn(
+                  "rounded-md px-2 py-2",
+                  mergeStatus.state === "blocked"
+                    ? "border border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
+                    : "border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                )}>
+                  {mergeStatus.reason}
+                </div>
+              )}
+
+              {mergeStatus.mergedCommit && (
+                <div className="text-muted-foreground">
+                  Merged commit: <span className="font-mono text-foreground">{truncate(mergeStatus.mergedCommit, 14)}</span>
+                  {mergeStatus.mergedAt ? ` · ${relativeTime(mergeStatus.mergedAt)}` : ""}
+                </div>
+              )}
             </div>
           )}
 

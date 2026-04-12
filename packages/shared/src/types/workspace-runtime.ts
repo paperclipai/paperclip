@@ -56,6 +56,15 @@ export interface ExecutionWorkspaceStrategy {
   teardownCommand?: string | null;
 }
 
+export interface ExecutionWorkspaceBranchPolicy {
+  targetBranch?: string | null;
+}
+
+export interface ExecutionWorkspacePullRequestPolicy {
+  mergeOnQaPass?: boolean;
+  deleteBranchAfterMerge?: boolean;
+}
+
 export interface ExecutionWorkspaceConfig {
   provisionCommand: string | null;
   teardownCommand: string | null;
@@ -99,6 +108,14 @@ export interface ExecutionWorkspaceCloseGitReadiness {
   createdByRuntime: boolean;
 }
 
+export interface ExecutionWorkspaceBranchProvenance {
+  source: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+  createdByRuntime: boolean;
+  recordedAt: Date | null;
+}
+
 export interface ExecutionWorkspaceCloseReadiness {
   workspaceId: string;
   state: ExecutionWorkspaceCloseReadinessState;
@@ -120,8 +137,8 @@ export interface ProjectExecutionWorkspacePolicy {
   defaultProjectWorkspaceId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
-  branchPolicy?: Record<string, unknown> | null;
-  pullRequestPolicy?: Record<string, unknown> | null;
+  branchPolicy?: ExecutionWorkspaceBranchPolicy | null;
+  pullRequestPolicy?: ExecutionWorkspacePullRequestPolicy | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
 }
@@ -156,6 +173,7 @@ export interface ExecutionWorkspace {
   cleanupReason: string | null;
   config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
+  branchProvenance?: ExecutionWorkspaceBranchProvenance | null;
   runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;
   updatedAt: Date;

@@ -139,6 +139,76 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
     expect(files.files).toEqual(expectedQaBundle);
   });
 
+  it("repairs drifted managed QA instructions without deleting custom persona content", async () => {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-heartbeat-model-qa-sync-home-"));
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "agent-heartbeat-model-qa-sync-test";
+
+    const companyId = "66666666-6666-4666-8666-666666666666";
+    const qaId = "77777777-7777-4777-8777-777777777777";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: qaId,
+      companyId,
+      name: "Benchmark Archivist",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const instructions = agentInstructionsService();
+    const materialized = await instructions.materializeManagedBundle(
+      {
+        id: qaId,
+        companyId,
+        name: "Benchmark Archivist",
+        role: "qa",
+        adapterConfig: {},
+      },
+      {
+        "AGENTS.md": "# Benchmark Archivist\nArchive benchmark runs and replay traces.\n",
+      },
+      { entryFile: "AGENTS.md", replaceExisting: true },
+    );
+
+    await db
+      .update(agents)
+      .set({ adapterConfig: materialized.adapterConfig, updatedAt: new Date() })
+      .where(eq(agents.id, qaId));
+
+    const svc = agentHeartbeatModelService(db);
+    const report = await svc.syncQaReleaseEngineerInstructions({ apply: true });
+
+    expect(report.scannedQaAgents).toBe(1);
+    expect(report.updatedAgents).toBe(1);
+    expect(report.updatedAgentIds).toEqual([qaId]);
+
+    const qaAgent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, qaId))
+      .then((rows) => rows[0] ?? null);
+
+    const files = await instructions.exportFiles(qaAgent!);
+    const agentsMd = files.files["AGENTS.md"] ?? "";
+    expect(agentsMd).toContain("# Benchmark Archivist");
+    expect(agentsMd).toContain("Archive benchmark runs and replay traces.");
+    expect(agentsMd).toContain("paperclip:qa-baseline:start");
+    expect(agentsMd).toContain("[QA PASS]");
+    expect(agentsMd).toContain("[RELEASE CONFIRMED]");
+  });
+
   it("skips companies that do not have a tech team", async () => {
     const companyId = "44444444-4444-4444-8444-444444444444";
 

@@ -21,6 +21,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -29,6 +30,11 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+}));
+
+const mockIssueMergeService = vi.hoisted(() => ({
+  getIssueMergeStatus: vi.fn(async () => null),
+  attemptQaPassAutoMerge: vi.fn(async () => ({ outcome: "not_applicable" as const, status: null })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -77,6 +83,10 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
+}));
+
+vi.mock("../services/issue-merge.js", () => ({
+  issueMergeService: () => mockIssueMergeService,
 }));
 
 const mockDb = {} as any;
@@ -166,11 +176,17 @@ describe("issue QA gate routes", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    mockIssueMergeService.getIssueMergeStatus.mockResolvedValue(null);
+    mockIssueMergeService.attemptQaPassAutoMerge.mockResolvedValue({ outcome: "not_applicable", status: null });
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
       if (id === "agent-qa") return { id, companyId: "company-1", role: "qa", name: "QA" };
       return null;
     });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: "agent-qa", companyId: "company-1", role: "qa", name: "QA", status: "idle" },
+    ]);
   });
 
   it("rejects delivery issue done transition when current status is not in_review", async () => {
@@ -236,6 +252,82 @@ describe("issue QA gate routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "done" }),
     );
+  });
+
+  it("auto-assigns the sole eligible QA agent when moving a delivery issue into in_review", async () => {
+    const existing = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({
+      ...existing,
+      status: "in_review",
+      assigneeAgentId: "agent-qa",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "agent-qa",
+        assigneeUserId: null,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.stringContaining("Routed to QA"),
+      expect.any(Object),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-qa",
+      expect.objectContaining({
+        reason: "issue_assigned",
+      }),
+    );
+  });
+
+  it("rejects delivery issue in_review transition when no eligible QA agent exists", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: "agent-qa", companyId: "company-1", role: "qa", name: "QA", status: "paused" },
+    ]);
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_no_eligible_qa_agent",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects delivery issue in_review transition when assigned agent is not QA", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "22222222-2222-4222-8222-222222222222") {
+        return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      }
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      if (id === "agent-qa") return { id, companyId: "company-1", role: "qa", name: "QA" };
+      return null;
+    });
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_review", assigneeAgentId: "22222222-2222-4222-8222-222222222222" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_requires_qa_assignee",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("supports board-only forceDone override with overrideReason", async () => {
@@ -357,6 +449,50 @@ describe("issue QA gate routes", () => {
       expect.objectContaining({
         reason: "qa_autofix_requested",
       }),
+    );
+  });
+
+  it("auto-merges and closes an in_review issue when a QA comment includes both release markers", async () => {
+    const existing = { ...makeIssue("in_review"), assigneeAgentId: "agent-qa" };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done" });
+    mockIssueService.addComment.mockResolvedValue({
+      ...qaComment("[QA PASS]\n[RELEASE CONFIRMED]"),
+      createdByRunId: null,
+    });
+    mockIssueMergeService.attemptQaPassAutoMerge.mockResolvedValue({
+      outcome: "merged",
+      status: {
+        enabled: true,
+        state: "merged",
+        targetBranch: "master",
+        sourceBranch: "feature/qa-pass",
+        repoRoot: "/repo",
+        reason: null,
+        mergedCommit: "abc1234",
+        mergedAt: new Date("2026-04-10T12:00:00Z"),
+        lastAttemptedAt: new Date("2026-04-10T12:00:00Z"),
+        lastIssueCommentStatus: null,
+        createdByRuntime: true,
+        branchProvenanceSource: "runtime_created",
+      },
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-qa",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "[QA PASS]\n[RELEASE CONFIRMED]" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueMergeService.attemptQaPassAutoMerge).toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "done" }),
     );
   });
 });

@@ -74,6 +74,10 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
   switch (reasonCode) {
     case "invalid_status_transition":
       return "Invalid issue status transition";
+    case "qa_gate_requires_qa_assignee":
+      return "Delivery issues must be assigned to a QA agent before entering in_review";
+    case "qa_gate_no_eligible_qa_agent":
+      return "No eligible QA agent is available to own this in_review issue";
     case "qa_gate_requires_in_review":
       return "Delivery issues can only move to done from in_review";
     case "qa_gate_missing_qa_pass":
@@ -152,4 +156,3 @@ export function buildIssueQaGate(input: {
     },
   };
 }
-

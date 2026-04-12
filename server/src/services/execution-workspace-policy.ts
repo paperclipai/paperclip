@@ -1,5 +1,7 @@
 import type {
   ExecutionWorkspaceMode,
+  ExecutionWorkspaceBranchPolicy,
+  ExecutionWorkspacePullRequestPolicy,
   ExecutionWorkspaceStrategy,
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
@@ -30,11 +32,30 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   };
 }
 
+function parseExecutionWorkspaceBranchPolicy(raw: unknown): ExecutionWorkspaceBranchPolicy | null {
+  const parsed = parseObject(raw);
+  if (Object.keys(parsed).length === 0) return null;
+  return {
+    ...(typeof parsed.targetBranch === "string" ? { targetBranch: parsed.targetBranch } : {}),
+  };
+}
+
+function parseExecutionWorkspacePullRequestPolicy(raw: unknown): ExecutionWorkspacePullRequestPolicy | null {
+  const parsed = parseObject(raw);
+  if (Object.keys(parsed).length === 0) return null;
+  return {
+    ...(typeof parsed.mergeOnQaPass === "boolean" ? { mergeOnQaPass: parsed.mergeOnQaPass } : {}),
+    ...(typeof parsed.deleteBranchAfterMerge === "boolean" ? { deleteBranchAfterMerge: parsed.deleteBranchAfterMerge } : {}),
+  };
+}
+
 export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecutionWorkspacePolicy | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
   const enabled = typeof parsed.enabled === "boolean" ? parsed.enabled : false;
   const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
+  const branchPolicy = parseExecutionWorkspaceBranchPolicy(parsed.branchPolicy);
+  const pullRequestPolicy = parseExecutionWorkspacePullRequestPolicy(parsed.pullRequestPolicy);
   const defaultMode = asString(parsed.defaultMode, "");
   const defaultProjectWorkspaceId =
     typeof parsed.defaultProjectWorkspaceId === "string" ? parsed.defaultProjectWorkspaceId : undefined;
@@ -62,12 +83,8 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
-    ...(parsed.branchPolicy && typeof parsed.branchPolicy === "object" && !Array.isArray(parsed.branchPolicy)
-      ? { branchPolicy: { ...(parsed.branchPolicy as Record<string, unknown>) } }
-      : {}),
-    ...(parsed.pullRequestPolicy && typeof parsed.pullRequestPolicy === "object" && !Array.isArray(parsed.pullRequestPolicy)
-      ? { pullRequestPolicy: { ...(parsed.pullRequestPolicy as Record<string, unknown>) } }
-      : {}),
+    ...(branchPolicy ? { branchPolicy } : {}),
+    ...(pullRequestPolicy ? { pullRequestPolicy } : {}),
     ...(parsed.runtimePolicy && typeof parsed.runtimePolicy === "object" && !Array.isArray(parsed.runtimePolicy)
       ? { runtimePolicy: { ...(parsed.runtimePolicy as Record<string, unknown>) } }
       : {}),

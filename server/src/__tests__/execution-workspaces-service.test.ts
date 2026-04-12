@@ -22,6 +22,7 @@ import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
+  toExecutionWorkspace,
 } from "../services/execution-workspaces.ts";
 
 const execFileAsync = promisify(execFile);
@@ -92,6 +93,51 @@ describe("execution workspace config helpers", () => {
     )).toEqual({
       source: "project_primary",
     });
+  });
+
+  it("parses branch provenance from persisted execution workspace metadata", () => {
+    const workspace = toExecutionWorkspace({
+      id: randomUUID(),
+      companyId: randomUUID(),
+      projectId: randomUUID(),
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Workspace",
+      status: "active",
+      cwd: "/tmp/workspace",
+      repoUrl: null,
+      baseRef: "master",
+      branchName: "feature/test",
+      providerType: "git_worktree",
+      providerRef: "/tmp/workspace",
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date("2026-04-12T10:00:00Z"),
+      openedAt: new Date("2026-04-12T09:00:00Z"),
+      closedAt: null,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      metadata: {
+        branchProvenance: {
+          source: "runtime_created",
+          branchName: "feature/test",
+          baseRef: "master",
+          createdByRuntime: true,
+          recordedAt: "2026-04-12T10:00:00.000Z",
+        },
+      },
+      createdAt: new Date("2026-04-12T09:00:00Z"),
+      updatedAt: new Date("2026-04-12T10:00:00Z"),
+    } as typeof executionWorkspaces.$inferSelect);
+
+    expect(workspace.branchProvenance).toMatchObject({
+      source: "runtime_created",
+      branchName: "feature/test",
+      baseRef: "master",
+      createdByRuntime: true,
+    });
+    expect(workspace.branchProvenance?.recordedAt).toBeInstanceOf(Date);
   });
 });
 

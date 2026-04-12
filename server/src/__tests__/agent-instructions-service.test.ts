@@ -8,6 +8,7 @@ type TestAgent = {
   id: string;
   companyId: string;
   name: string;
+  role?: string;
   adapterConfig: Record<string, unknown>;
 };
 
@@ -20,6 +21,7 @@ function makeAgent(adapterConfig: Record<string, unknown>): TestAgent {
     id: "agent-1",
     companyId: "company-1",
     name: "Agent 1",
+    role: "engineer",
     adapterConfig,
   };
 }
@@ -234,6 +236,71 @@ describe("agent instructions service", () => {
       "Recovered managed instructions entry file from disk as AGENTS.md; previous entry docs/MISSING.md was missing.",
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
+  });
+
+  it("injects the canonical QA baseline into managed QA bundles while preserving custom instructions", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-qa-baseline-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = {
+      ...makeAgent({}),
+      role: "qa",
+      name: "Benchmark Archivist",
+    };
+
+    const result = await svc.materializeManagedBundle(
+      agent,
+      {
+        "AGENTS.md": "# Benchmark Archivist\nKeep benchmark evidence organized.\n",
+      },
+      { entryFile: "AGENTS.md", replaceExisting: true },
+    );
+
+    const exported = await svc.exportFiles({ ...agent, adapterConfig: result.adapterConfig });
+    const agentsMd = exported.files["AGENTS.md"] ?? "";
+
+    expect(agentsMd).toContain("# Benchmark Archivist");
+    expect(agentsMd).toContain("Keep benchmark evidence organized.");
+    expect(agentsMd).toContain("paperclip:qa-baseline:start");
+    expect(agentsMd).toContain("[QA PASS]");
+    expect(agentsMd).toContain("[RELEASE CONFIRMED]");
+  });
+
+  it("keeps the QA baseline idempotent when rewriting a managed QA bundle", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-qa-idempotent-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = {
+      ...makeAgent({}),
+      role: "qa",
+      name: "Benchmark Archivist",
+    };
+
+    const first = await svc.materializeManagedBundle(
+      agent,
+      {
+        "AGENTS.md": "# Benchmark Archivist\nKeep benchmark evidence organized.\n",
+      },
+      { entryFile: "AGENTS.md", replaceExisting: true },
+    );
+    const firstFiles = await svc.exportFiles({ ...agent, adapterConfig: first.adapterConfig });
+
+    const second = await svc.materializeManagedBundle(
+      { ...agent, adapterConfig: first.adapterConfig },
+      firstFiles.files,
+      { entryFile: "AGENTS.md", replaceExisting: true },
+    );
+    const secondFiles = await svc.exportFiles({ ...agent, adapterConfig: second.adapterConfig });
+    const agentsMd = secondFiles.files["AGENTS.md"] ?? "";
+    const baselineMatches = agentsMd.match(/paperclip:qa-baseline:start/g) ?? [];
+
+    expect(baselineMatches).toHaveLength(1);
   });
 
   it("heals stale managed metadata when writing bundle files", async () => {

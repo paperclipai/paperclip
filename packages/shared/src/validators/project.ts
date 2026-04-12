@@ -13,6 +13,19 @@ const executionWorkspaceStrategySchema = z
   })
   .strict();
 
+const executionWorkspaceBranchPolicySchema = z
+  .object({
+    targetBranch: z.string().optional().nullable(),
+  })
+  .strict();
+
+const executionWorkspacePullRequestPolicySchema = z
+  .object({
+    mergeOnQaPass: z.boolean().optional(),
+    deleteBranchAfterMerge: z.boolean().optional(),
+  })
+  .strict();
+
 export const projectExecutionWorkspacePolicySchema = z
   .object({
     enabled: z.boolean(),
@@ -21,8 +34,8 @@ export const projectExecutionWorkspacePolicySchema = z
     defaultProjectWorkspaceId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-    branchPolicy: z.record(z.unknown()).optional().nullable(),
-    pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
+    branchPolicy: executionWorkspaceBranchPolicySchema.optional().nullable(),
+    pullRequestPolicy: executionWorkspacePullRequestPolicySchema.optional().nullable(),
     runtimePolicy: z.record(z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.unknown()).optional().nullable(),
   })

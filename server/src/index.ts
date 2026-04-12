@@ -555,6 +555,18 @@ export async function startServer(): Promise<StartedServer> {
         "synchronized COO instructions bundles to managed default",
       );
     }
+    const qaInstructionsReport = await heartbeatModel.syncQaReleaseEngineerInstructions({ apply: true });
+    if (qaInstructionsReport.updatedAgents > 0) {
+      logger.info(
+        {
+          scannedQaAgents: qaInstructionsReport.scannedQaAgents,
+          updatedAgents: qaInstructionsReport.updatedAgents,
+          touchedCompanies: qaInstructionsReport.touchedCompanyIds.length,
+          skippedExternalBundles: qaInstructionsReport.skippedExternalBundles,
+        },
+        "synchronized QA instructions bundles to managed baseline",
+      );
+    }
   } catch (err) {
     logger.error({ err }, "failed to align COO coordinator startup defaults");
   }

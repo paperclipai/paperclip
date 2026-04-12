@@ -724,7 +724,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .select()
         .from(issueComments)
         .where(eq(issueComments.issueId, issueId));
-      expect(comments).toHaveLength(0);
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain("Run completed without publishing an issue comment");
+      expect(comments[0]?.body).toContain("operator recovery");
 
       await waitFor(async () => {
         const wakeups = await db

@@ -6,6 +6,14 @@ const REASON_TEXT: Record<IssueQaGateReasonCode, { title: string; body: string }
     title: "Invalid status move",
     body: "That status change is not allowed by the issue workflow.",
   },
+  qa_gate_requires_qa_assignee: {
+    title: "QA routing required",
+    body: "Delivery issues entering QA must be assigned to an eligible QA agent.",
+  },
+  qa_gate_no_eligible_qa_agent: {
+    title: "QA routing blocked",
+    body: "No eligible QA agent is available to own this review right now.",
+  },
   qa_gate_requires_in_review: {
     title: "Ship blocked: move to QA first",
     body: "Delivery issues can only ship to Done from QA (in_review).",
@@ -46,4 +54,3 @@ export function describeIssueUpdateError(err: unknown): { title: string; body?: 
     body: typeof body?.error === "string" ? body.error : err.message,
   };
 }
-

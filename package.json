@@ -17,6 +17,7 @@
     "test:run": "vitest run",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
+    "branch:audit": "pnpm --filter @paperclipai/server exec tsx ../scripts/branch-audit.ts",
     "agents:migrate-operations-to-coo": "tsx scripts/migrate-operations-role-to-coo.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",

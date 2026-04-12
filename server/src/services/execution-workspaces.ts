@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
+  ExecutionWorkspaceBranchProvenance,
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
@@ -255,6 +256,32 @@ export function mergeExecutionWorkspaceConfig(
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
 
+function readExecutionWorkspaceBranchProvenance(
+  metadata: Record<string, unknown> | null | undefined,
+): ExecutionWorkspaceBranchProvenance | null {
+  const raw = isRecord(metadata?.branchProvenance) ? metadata.branchProvenance : null;
+  if (!raw) return null;
+
+  const recordedAtRaw = raw.recordedAt;
+  const recordedAt =
+    recordedAtRaw instanceof Date
+      ? (Number.isNaN(recordedAtRaw.getTime()) ? null : recordedAtRaw)
+      : typeof recordedAtRaw === "string"
+        ? (() => {
+            const parsed = new Date(recordedAtRaw);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+          })()
+        : null;
+
+  return {
+    source: readNullableString(raw.source),
+    branchName: readNullableString(raw.branchName),
+    baseRef: readNullableString(raw.baseRef),
+    createdByRuntime: raw.createdByRuntime === true,
+    recordedAt,
+  };
+}
+
 function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
   return {
     id: row.id,
@@ -291,6 +318,7 @@ function toExecutionWorkspace(
   row: ExecutionWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
 ): ExecutionWorkspace {
+  const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
   return {
     id: row.id,
     companyId: row.companyId,
@@ -313,8 +341,9 @@ function toExecutionWorkspace(
     closedAt: row.closedAt ?? null,
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
-    config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    config: readExecutionWorkspaceConfig(metadata),
+    metadata,
+    branchProvenance: readExecutionWorkspaceBranchProvenance(metadata),
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

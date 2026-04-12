@@ -184,9 +184,39 @@ export type IssueQaReviewDimension = "pass" | "warn" | "fail" | "na" | "unknown"
 export type IssueQaReviewOverall = "pass" | "warn" | "fail" | "unknown";
 export type IssueQaGateReasonCode =
   | "invalid_status_transition"
+  | "qa_gate_requires_qa_assignee"
+  | "qa_gate_no_eligible_qa_agent"
   | "qa_gate_requires_in_review"
   | "qa_gate_missing_qa_pass"
   | "qa_gate_missing_release_confirmation";
+
+export type IssueCommentPublicationStatus =
+  | "not_applicable"
+  | "satisfied"
+  | "retry_queued"
+  | "retry_exhausted";
+
+export type IssueMergeState =
+  | "not_applicable"
+  | "pending"
+  | "ready"
+  | "blocked"
+  | "merged";
+
+export interface IssueMergeStatus {
+  enabled: boolean;
+  state: IssueMergeState;
+  targetBranch: string | null;
+  sourceBranch: string | null;
+  repoRoot: string | null;
+  reason: string | null;
+  mergedCommit: string | null;
+  mergedAt: Date | null;
+  lastAttemptedAt: Date | null;
+  lastIssueCommentStatus: IssueCommentPublicationStatus | null;
+  createdByRuntime: boolean | null;
+  branchProvenanceSource: string | null;
+}
 
 export interface IssueQaReviewState {
   codeQuality: IssueQaReviewDimension;
@@ -261,6 +291,7 @@ export interface Issue {
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
   qaGate?: IssueQaGate | null;
+  mergeStatus?: IssueMergeStatus | null;
   createdAt: Date;
   updatedAt: Date;
 }
