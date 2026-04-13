@@ -437,12 +437,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!initialFailed && initial.parsed.hasBackgroundDelegation) {
       const continuationSessionId = initial.parsed.sessionId ?? sessionId;
       if (continuationSessionId) {
+        let lastAttempt = initial;
         for (let i = 0; i < MAX_DELEGATION_CONTINUATIONS; i++) {
           await onLog(
             "stdout",
             `[paperclip] Background delegation detected; resuming session to verify completion (attempt ${i + 1}/${MAX_DELEGATION_CONTINUATIONS}).\n`,
           );
           const continuation = await runAttempt(continuationSessionId);
+          lastAttempt = continuation;
           const continuationFailed =
             !continuation.proc.timedOut &&
             ((continuation.proc.exitCode ?? 0) !== 0 || Boolean(continuation.parsed.errorMessage));
@@ -450,6 +452,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             return toResult(continuation);
           }
         }
+        return toResult(lastAttempt);
       }
     }
 

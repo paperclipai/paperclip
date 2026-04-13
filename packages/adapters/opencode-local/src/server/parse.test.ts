@@ -41,6 +41,16 @@ describe("parseOpenCodeJsonl", () => {
       inputTokens: 120,
       cachedInputTokens: 20,
       outputTokens: 50,
+    });
+    expect(parsed.costUsd).toBeCloseTo(0.0025, 6);
+    expect(parsed.errorMessage).toContain("model unavailable");
+  });
+
+  it("detects unknown session errors", () => {
+    expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
+    expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
+    expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
 });
 
 describe("parseOpenCodeJsonl hasBackgroundDelegation", () => {
@@ -179,15 +189,5 @@ describe("parseOpenCodeJsonl hasBackgroundDelegation", () => {
   it("returns false for malformed JSON lines", () => {
     const parsed = parseOpenCodeJsonl("not json\n{broken");
     expect(parsed.hasBackgroundDelegation).toBe(false);
-  });
-});
-    expect(parsed.costUsd).toBeCloseTo(0.0025, 6);
-    expect(parsed.errorMessage).toContain("model unavailable");
-  });
-
-  it("detects unknown session errors", () => {
-    expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
-    expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
-    expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
   });
 });

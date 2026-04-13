@@ -199,7 +199,7 @@ describe("execute delegation continuation", () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 
-  it("stops continuing after max delegation continuations", async () => {
+  it("stops continuing after max delegation continuations and returns last attempt", async () => {
     const sessionA = "sess_max_test";
     const alwaysDelegatingStdout = [
       JSON.stringify({ type: "text", sessionID: sessionA, part: { text: "Delegating again" } }),
@@ -214,14 +214,27 @@ describe("execute delegation continuation", () => {
       }),
     ].join("\n");
 
+    const finalAttemptStdout = [
+      JSON.stringify({ type: "text", sessionID: sessionA, part: { text: "Final attempt summary" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: sessionA,
+        part: {
+          name: "task",
+          input: { description: "Still delegating", prompt: "Y", run_in_background: true },
+          state: { status: "done" },
+        },
+      }),
+    ].join("\n");
+
     const { mock } = createMockRunChildProcess([
       { exitCode: 0, signal: null, timedOut: false, stdout: alwaysDelegatingStdout, stderr: "" },
       { exitCode: 0, signal: null, timedOut: false, stdout: alwaysDelegatingStdout, stderr: "" },
-      { exitCode: 0, signal: null, timedOut: false, stdout: alwaysDelegatingStdout, stderr: "" },
+      { exitCode: 0, signal: null, timedOut: false, stdout: finalAttemptStdout, stderr: "" },
     ]);
     mockedRunChildProcess.mockImplementation(mock);
 
-    await execute({
+    const result = await execute({
       runId: "test-run-max-continuations",
       agent: {
         id: "agent-1",
@@ -243,5 +256,6 @@ describe("execute delegation continuation", () => {
     } as any);
 
     expect(mock).toHaveBeenCalledTimes(3);
+    expect(result.summary).toBe("Final attempt summary");
   });
 });
