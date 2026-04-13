@@ -1048,6 +1048,23 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+function sanitizeErrorForHeartbeatLog(
+  error: unknown,
+  sanitizedMessage: string,
+  currentUserRedactionOptions?: Parameters<typeof redactCurrentUserText>[1],
+) {
+  if (!(error instanceof Error)) {
+    return { message: sanitizedMessage };
+  }
+  return {
+    type: error.name,
+    message: sanitizedMessage,
+    ...(error.stack
+      ? { stack: redactRunLogCredentialsText(redactCurrentUserText(error.stack, currentUserRedactionOptions)) }
+      : {}),
+  };
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -4527,6 +4544,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    opts?: { lastError?: string | null },
   ) {
     await ensureRuntimeState(agent);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
@@ -4539,6 +4557,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
+    const lastError = opts && "lastError" in opts
+      ? (opts.lastError ?? null)
+      : result.errorMessage
+        ? redactRunLogCredentialsText(
+            redactCurrentUserText(
+              result.errorMessage,
+              await getCurrentUserRedactionOptions().catch(() => undefined),
+            ),
+          )
+        : null;
 
     await db
       .update(agentRuntimeState)
@@ -4547,7 +4575,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
+        lastError,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -5738,6 +5766,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             legacySessionId: nextSessionState.legacySessionId,
           },
           normalizedUsage,
+          { lastError: runErrorMessage },
         );
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
@@ -5754,20 +5783,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (persistedError ?? "run_failed"),
+              lastError: outcome === "succeeded" ? null : (runErrorMessage ?? "run_failed"),
             });
           }
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
+      const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const message = redactRunLogCredentialsText(
         redactCurrentUserText(
           err instanceof Error ? err.message : "Unknown adapter failure",
-          await getCurrentUserRedactionOptions(),
+          currentUserRedactionOptions,
         ),
       );
-      logger.error({ err, runId }, "heartbeat execution failed");
+      logger.error(
+        { err: sanitizeErrorForHeartbeatLog(err, message, currentUserRedactionOptions), runId },
+        "heartbeat execution failed",
+      );
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -5823,7 +5856,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorMessage: message,
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
-        });
+        }, undefined, { lastError: message });
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
           await upsertTaskSession({
@@ -5844,8 +5877,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
-          logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+          const currentUserRedactionOptions = await getCurrentUserRedactionOptions().catch(() => undefined);
+          const message = redactRunLogCredentialsText(
+            redactCurrentUserText(
+              outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+              currentUserRedactionOptions,
+            ),
+          );
+          logger.error(
+            { err: sanitizeErrorForHeartbeatLog(outerErr, message, currentUserRedactionOptions), runId },
+            "heartbeat execution setup failed",
+          );
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
