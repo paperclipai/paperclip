@@ -29,6 +29,33 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeResumeRecoveryCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
+const payload = {
+  argv,
+  prompt,
+  codexHome: process.env.CODEX_HOME || null,
+};
+if (capturePath) {
+  fs.appendFileSync(capturePath, JSON.stringify(payload) + "\\n", "utf8");
+}
+if (argv[argv.length - 3] === "resume") {
+  process.stderr.write("Error: thread/resume: thread/resume failed: no rollout found for thread id stale-thread-123\\n");
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-2" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh session recovered" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2, cached_input_tokens: 0, output_tokens: 3 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -919,6 +946,87 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when Codex reports no rollout for the saved thread", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.jsonl");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeResumeRecoveryCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-resume-recovery",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "stale-thread-123",
+          sessionParams: {
+            sessionId: "stale-thread-123",
+            cwd: workspace,
+          },
+          sessionDisplayId: "stale-thread-123",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("codex-session-2");
+      expect(result.summary).toBe("fresh session recovered");
+
+      const invocations = (await fs.readFile(capturePath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as CapturePayload);
+      expect(invocations).toHaveLength(2);
+      expect(invocations[0]?.argv).toEqual(
+        expect.arrayContaining(["exec", "--json", "resume", "stale-thread-123", "-"]),
+      );
+      expect(invocations[1]?.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining('retrying with a fresh session'),
+        }),
+      );
+      expect(
+        logs.some(
+          (entry) =>
+            entry.stream === "stderr" &&
+            entry.chunk.includes("no rollout found for thread id"),
+        ),
+      ).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

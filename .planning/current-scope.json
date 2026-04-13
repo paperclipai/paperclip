@@ -1,0 +1,11 @@
+{
+  "files": [
+    "ui/src/pages/IssueDetail.tsx",
+    ".planning/current-scope.json",
+    ".planning/baseline.json"
+  ],
+  "source": "2026-04-13 live PR refresh after master advanced",
+  "paperclipIssue": "AET-24",
+  "linearTicket": "AET-273",
+  "scope": "refresh PR #3312 against current origin/master, resolve the IssueDetail.tsx conflict, and preserve AET-273 stale-run recovery plus current master issue-navigation behavior"
+}

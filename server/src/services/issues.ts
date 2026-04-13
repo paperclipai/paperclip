@@ -97,6 +97,10 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueActiveRunLookup = {
+  byIssueId: Map<string, IssueActiveRunRow>;
+  byRunId: Map<string, IssueActiveRunRow>;
+};
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -494,12 +498,16 @@ const ACTIVE_RUN_STATUSES = ["queued", "running"];
 async function activeRunMapForIssues(
   dbOrTx: any,
   issueRows: IssueWithLabels[],
-): Promise<Map<string, IssueActiveRunRow>> {
-  const map = new Map<string, IssueActiveRunRow>();
+): Promise<IssueActiveRunLookup> {
+  const lookup: IssueActiveRunLookup = {
+    byIssueId: new Map<string, IssueActiveRunRow>(),
+    byRunId: new Map<string, IssueActiveRunRow>(),
+  };
+  const issueIds = issueRows.map((row) => row.id);
   const runIds = issueRows
     .map((row) => row.executionRunId)
     .filter((id): id is string => id != null);
-  if (runIds.length === 0) return map;
+  if (runIds.length === 0 && issueIds.length === 0) return lookup;
 
   const rows = await dbOrTx
     .select({
@@ -511,28 +519,43 @@ async function activeRunMapForIssues(
       startedAt: heartbeatRuns.startedAt,
       finishedAt: heartbeatRuns.finishedAt,
       createdAt: heartbeatRuns.createdAt,
+      contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
     })
     .from(heartbeatRuns)
     .where(
       and(
-        inArray(heartbeatRuns.id, runIds),
+        runIds.length > 0 || issueIds.length > 0
+          ? or(
+              ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
+              ...(issueIds.length > 0
+                ? [inArray(sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, issueIds)]
+                : []),
+            )
+          : sql`false`,
         inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
       ),
-    );
+    )
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
   for (const row of rows) {
-    map.set(row.id, row);
+    lookup.byRunId.set(row.id, row);
+    if (row.contextIssueId && !lookup.byIssueId.has(row.contextIssueId)) {
+      lookup.byIssueId.set(row.contextIssueId, row);
+    }
   }
-  return map;
+  return lookup;
 }
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
-  runMap: Map<string, IssueActiveRunRow>,
+  runLookup: IssueActiveRunLookup,
 ): IssueWithLabelsAndRun[] {
   return issueRows.map((row) => ({
     ...row,
-    activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
+    activeRun:
+      (row.executionRunId ? (runLookup.byRunId.get(row.executionRunId) ?? null) : null) ??
+      runLookup.byIssueId.get(row.id) ??
+      null,
   }));
 }
 

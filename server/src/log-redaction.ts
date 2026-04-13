@@ -1,6 +1,15 @@
 import os from "node:os";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
+export const REDACTED_LOG_VALUE = "***REDACTED***";
+
+const SECRET_ENV_ASSIGNMENT_RE =
+  /\b([A-Za-z][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|WEBHOOK_URL|COOKIE|CONNECTIONSTRING))\b\s*([=:])\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi;
+const SECRET_JSON_ASSIGNMENT_RE =
+  /(["']?[A-Za-z][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|WEBHOOK_URL|COOKIE|CONNECTIONSTRING)["']?\s*:\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,}]+)/gi;
+const SLACK_WEBHOOK_RE = /https:\/\/hooks\.slack(?:-gov)?\.com\/services\/[A-Za-z0-9/_-]+/gi;
+const BEARER_TOKEN_RE = /\b(Bearer)\s+[A-Za-z0-9._~+/=-]+\b/gi;
+const JWT_IN_TEXT_RE = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?)(?![A-Za-z0-9_-])/g;
 
 export interface CurrentUserRedactionOptions {
   enabled?: boolean;
@@ -124,6 +133,23 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
     result = result.replace(pattern, maskUserNameForLogs(userName, replacement));
   }
 
+  return result;
+}
+
+export function sanitizeLogText(input: string, opts?: CurrentUserRedactionOptions) {
+  if (!input) return input;
+  if (opts?.enabled === false) return input;
+
+  let result = redactCurrentUserText(input, opts);
+  result = result.replace(SLACK_WEBHOOK_RE, REDACTED_LOG_VALUE);
+  result = result.replace(BEARER_TOKEN_RE, `$1 ${REDACTED_LOG_VALUE}`);
+  result = result.replace(SECRET_ENV_ASSIGNMENT_RE, (_match, key: string, separator: string) =>
+    `${key}${separator}${REDACTED_LOG_VALUE}`,
+  );
+  result = result.replace(SECRET_JSON_ASSIGNMENT_RE, (_match, prefix: string) =>
+    `${prefix}"${REDACTED_LOG_VALUE}"`,
+  );
+  result = result.replace(JWT_IN_TEXT_RE, REDACTED_LOG_VALUE);
   return result;
 }
 

@@ -3,6 +3,8 @@ import {
   maskUserNameForLogs,
   redactCurrentUserText,
   redactCurrentUserValue,
+  REDACTED_LOG_VALUE,
+  sanitizeLogText,
 } from "../log-redaction.js";
 
 describe("log redaction", () => {
@@ -70,5 +72,29 @@ describe("log redaction", () => {
   it("skips redaction when disabled", () => {
     const input = "cwd=/Users/paperclipuser/paperclip";
     expect(redactCurrentUserText(input, { enabled: false })).toBe(input);
+  });
+
+  it("redacts secret-like env assignments and webhook URLs in log text", () => {
+    const input = [
+      "OPENAI_API_KEY=sk-test-123",
+      "PAPERCLIP_API_KEY=pcp_live_token",
+      "SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T123/B456/secret789",
+      'payload={"authToken":"abc123","nested":"safe"}',
+    ].join("\n");
+
+    const result = sanitizeLogText(input);
+
+    expect(result).toContain(`OPENAI_API_KEY=${REDACTED_LOG_VALUE}`);
+    expect(result).toContain(`PAPERCLIP_API_KEY=${REDACTED_LOG_VALUE}`);
+    expect(result).toContain(`SLACK_WEBHOOK_URL=${REDACTED_LOG_VALUE}`);
+    expect(result).toContain(`"authToken":"${REDACTED_LOG_VALUE}"`);
+    expect(result).not.toContain("sk-test-123");
+    expect(result).not.toContain("hooks.slack.com/services/T123/B456/secret789");
+  });
+
+  it("redacts bearer and jwt-like tokens in log text", () => {
+    const input = "Authorization: Bearer abc.def.ghi and jwt=abc.def.ghi";
+    const result = sanitizeLogText(input);
+    expect(result).toBe(`Authorization: Bearer ${REDACTED_LOG_VALUE} and jwt=${REDACTED_LOG_VALUE}`);
   });
 });

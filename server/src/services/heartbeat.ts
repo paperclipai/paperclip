@@ -61,7 +61,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { redactCurrentUserText, redactCurrentUserValue, sanitizeLogText } from "../log-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -91,6 +91,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -688,6 +689,18 @@ function deriveTaskKey(
     readNonEmptyString(payload?.issueId) ??
     null
   );
+}
+
+export function isTerminalIssueStatus(status: string | null | undefined) {
+  return typeof status === "string" && TERMINAL_ISSUE_STATUSES.has(status);
+}
+
+export function shouldPostSystemIssueComment(input: {
+  issueStatus: string | null | undefined;
+  issueExecutionRunId: string | null | undefined;
+  runId: string;
+}) {
+  return !isTerminalIssueStatus(input.issueStatus) && input.issueExecutionRunId === input.runId;
 }
 
 /**
@@ -2314,6 +2327,29 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function getIssueExecutionState(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function canPostSystemIssueComment(issueId: string, companyId: string, runId: string) {
+    const issue = await getIssueExecutionState(companyId, issueId);
+    if (!issue) return false;
+    return shouldPostSystemIssueComment({
+      issueStatus: issue.status,
+      issueExecutionRunId: issue.executionRunId,
+      runId,
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -2327,8 +2363,16 @@ export function heartbeatService(db: Db) {
     }
 
     const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (issueId) {
+      const issue = await getIssueExecutionState(run.companyId, issueId);
+      if (issue && isTerminalIssueStatus(issue.status)) {
+        await cancelRunInternal(run.id, "Cancelled because the issue is already terminal");
+        return null;
+      }
+    }
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId,
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
@@ -3182,7 +3226,7 @@ export function heartbeatService(db: Db) {
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
+        const sanitizedChunk = sanitizeLogText(chunk, currentUserRedactionOptions);
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -3442,7 +3486,7 @@ export function heartbeatService(db: Db) {
         error:
           outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
+            : sanitizeLogText(
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
@@ -3526,7 +3570,7 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
-      const message = redactCurrentUserText(
+      const message = sanitizeLogText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
@@ -3641,6 +3685,7 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          status: issues.status,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -3657,6 +3702,70 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (isTerminalIssueStatus(issue.status)) {
+        const now = new Date();
+        const queuedFollowupRuns = await tx
+          .select({
+            id: heartbeatRuns.id,
+            wakeupRequestId: heartbeatRuns.wakeupRequestId,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.status, "queued"),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+
+        if (queuedFollowupRuns.length > 0) {
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Cancelled because the issue is already terminal",
+              errorCode: "issue_terminal",
+              updatedAt: now,
+            })
+            .where(inArray(heartbeatRuns.id, queuedFollowupRuns.map((queuedRun) => queuedRun.id)));
+
+          const queuedWakeupIds = queuedFollowupRuns
+            .map((queuedRun) => queuedRun.wakeupRequestId)
+            .filter((value): value is string => typeof value === "string" && value.length > 0);
+          if (queuedWakeupIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: "Cancelled because the issue is already terminal",
+                updatedAt: now,
+              })
+              .where(inArray(agentWakeupRequests.id, queuedWakeupIds));
+          }
+        }
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: "Cancelled because the issue is already terminal",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+              sql`${agentWakeupRequests.runId} is null`,
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+
+        return null;
+      }
 
       while (true) {
         const deferred = await tx
@@ -3996,14 +4105,33 @@ export function heartbeatService(db: Db) {
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
+          const queuedSuccessorRun = await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                eq(heartbeatRuns.status, "queued"),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                sql`${heartbeatRuns.id} <> ${activeExecutionRun.id}`,
+              ),
+            )
+            .orderBy(asc(heartbeatRuns.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
           const shouldQueueFollowupForCommentWake =
             Boolean(wakeCommentId) &&
             activeExecutionRun.status === "running" &&
-            isSameExecutionAgent;
+            isSameExecutionAgent &&
+            !queuedSuccessorRun;
+          const coalescedExecutionTarget =
+            queuedSuccessorRun ??
+            (isSameExecutionAgent && !shouldQueueFollowupForCommentWake ? activeExecutionRun : null);
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (coalescedExecutionTarget) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-              activeExecutionRun.contextSnapshot,
+              coalescedExecutionTarget.contextSnapshot,
               enrichedContextSnapshot,
             );
             const mergedRun = await tx
@@ -4012,9 +4140,9 @@ export function heartbeatService(db: Db) {
                 contextSnapshot: mergedContextSnapshot,
                 updatedAt: new Date(),
               })
-              .where(eq(heartbeatRuns.id, activeExecutionRun.id))
+              .where(eq(heartbeatRuns.id, coalescedExecutionTarget.id))
               .returning()
-              .then((rows) => rows[0] ?? activeExecutionRun);
+              .then((rows) => rows[0] ?? coalescedExecutionTarget);
 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
@@ -4597,7 +4725,7 @@ export function heartbeatService(db: Db) {
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        content: redactCurrentUserText(result.content, await getCurrentUserRedactionOptions()),
+        content: sanitizeLogText(result.content, await getCurrentUserRedactionOptions()),
       };
     },
 

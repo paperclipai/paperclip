@@ -67,6 +67,20 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+const FRESH_SESSION_COMMENT_PATTERNS = [
+  /\bfresh session\b/i,
+  /\bnew session\b/i,
+  /\bstart fresh\b/i,
+  /\bfrom scratch\b/i,
+  /\bignore (?:the )?(?:prior|previous) session\b/i,
+  /\breplay\b/i,
+];
+
+function shouldForceFreshSessionFromCommentBody(body: unknown) {
+  if (typeof body !== "string") return false;
+  return FRESH_SESSION_COMMENT_PATTERNS.some((pattern) => pattern.test(body));
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -1680,6 +1694,8 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    const forceFreshSession = shouldForceFreshSessionFromCommentBody(commentBody);
+
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
@@ -1798,6 +1814,7 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
+              ...(forceFreshSession ? { forceFreshSession: true } : {}),
             },
           });
         }
@@ -2233,6 +2250,7 @@ export function issueRoutes(
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
     });
+    const forceFreshSession = shouldForceFreshSessionFromCommentBody(req.body.body);
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
@@ -2265,7 +2283,17 @@ export function issueRoutes(
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      }
+      const mentionedSet = new Set(mentionedIds);
+      const shouldWakeAssigneeByDefault =
+        assigneeId != null && (mentionedSet.size === 0 || mentionedSet.has(assigneeId));
+
+      if (assigneeId && shouldWakeAssigneeByDefault && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -2288,6 +2316,7 @@ export function issueRoutes(
               source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
               reopenedFrom: reopenFromStatus,
+              ...(forceFreshSession ? { forceFreshSession: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
@@ -2311,17 +2340,11 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: "issue.comment",
               wakeReason: "issue_commented",
+              ...(forceFreshSession ? { forceFreshSession: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
       for (const mentionedId of mentionedIds) {
@@ -2341,6 +2364,7 @@ export function issueRoutes(
             wakeCommentId: comment.id,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",
+            ...(forceFreshSession ? { forceFreshSession: true } : {}),
           },
         });
       }

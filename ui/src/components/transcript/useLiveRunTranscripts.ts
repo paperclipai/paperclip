@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
-import { heartbeatsApi } from "../../api/heartbeats";
+import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 
@@ -20,6 +20,12 @@ interface UseLiveRunTranscriptsOptions {
   runs: RunTranscriptSource[];
   companyId?: string | null;
   maxChunksPerRun?: number;
+}
+
+export function shouldPollRunLog(
+  run: Pick<LiveRunForIssue, "status" | "startedAt" | "finishedAt">,
+): boolean {
+  return Boolean(run.startedAt) || isTerminalStatus(run.status) || Boolean(run.finishedAt);
 }
 
 function readString(value: unknown): string | null {

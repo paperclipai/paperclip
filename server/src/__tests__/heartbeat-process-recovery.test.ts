@@ -246,6 +246,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function queueIssueFollowupRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    commentId?: string;
+  }) {
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "on_demand",
+      triggerDetail: "callback",
+      reason: "issue_execution_promoted",
+      payload: {
+        issueId: input.issueId,
+        ...(input.commentId ? { commentId: input.commentId } : {}),
+      },
+      status: "queued",
+      runId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "callback",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        taskKey: input.issueId,
+        ...(input.commentId
+          ? { commentId: input.commentId, wakeCommentId: input.commentId }
+          : {}),
+      },
+    });
+
+    return { runId, wakeupRequestId };
+  }
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);

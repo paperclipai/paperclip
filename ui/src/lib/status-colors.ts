@@ -13,6 +13,8 @@
 export const issueStatusIcon: Record<string, string> = {
   backlog: "text-muted-foreground border-muted-foreground",
   todo: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
+  queued: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  running: "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400",
   in_progress: "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
@@ -26,6 +28,8 @@ export const issueStatusIconDefault = "text-muted-foreground border-muted-foregr
 export const issueStatusText: Record<string, string> = {
   backlog: "text-muted-foreground",
   todo: "text-blue-600 dark:text-blue-400",
+  queued: "text-amber-600 dark:text-amber-400",
+  running: "text-cyan-600 dark:text-cyan-400",
   in_progress: "text-yellow-600 dark:text-yellow-400",
   in_review: "text-violet-600 dark:text-violet-400",
   done: "text-green-600 dark:text-green-400",
@@ -59,6 +63,7 @@ export const statusBadge: Record<string, string> = {
   error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  queued: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
 
   // Approval statuses
   pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",

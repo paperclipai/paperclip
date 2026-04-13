@@ -4,6 +4,7 @@ import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { issueDisplayStatus } from "../lib/issue-execution";
 import { StatusIcon } from "../components/StatusIcon";
 
 import { EntityRow } from "../components/EntityRow";
@@ -56,7 +57,7 @@ export function MyIssues() {
               title={issue.title}
               to={`/issues/${issue.identifier ?? issue.id}`}
               leading={
-                <StatusIcon status={issue.status} />
+                <StatusIcon status={issueDisplayStatus(issue)} />
               }
               trailing={
                 <span className="text-xs text-muted-foreground">

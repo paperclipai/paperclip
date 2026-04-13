@@ -173,6 +173,17 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export interface IssueActiveRun {
+  id: string;
+  status: string;
+  agentId: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -220,6 +231,7 @@ export interface Issue {
   project?: Project | null;
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
+  activeRun?: IssueActiveRun | null;
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;

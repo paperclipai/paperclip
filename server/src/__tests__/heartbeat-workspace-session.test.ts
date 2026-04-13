@@ -9,12 +9,14 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isTerminalIssueStatus,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldPostSystemIssueComment,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -454,6 +456,41 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
       stream: "stdout",
       chunk: "[paperclip] Using fallback workspace\n",
     });
+  });
+});
+
+describe("issue terminal helpers", () => {
+  it("treats done and cancelled as terminal issue states", () => {
+    expect(isTerminalIssueStatus("done")).toBe(true);
+    expect(isTerminalIssueStatus("cancelled")).toBe(true);
+    expect(isTerminalIssueStatus("in_progress")).toBe(false);
+    expect(isTerminalIssueStatus(null)).toBe(false);
+  });
+
+  it("only allows system issue comments while the current run still owns a non-terminal issue", () => {
+    expect(
+      shouldPostSystemIssueComment({
+        issueStatus: "in_progress",
+        issueExecutionRunId: "run-1",
+        runId: "run-1",
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldPostSystemIssueComment({
+        issueStatus: "done",
+        issueExecutionRunId: "run-1",
+        runId: "run-1",
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldPostSystemIssueComment({
+        issueStatus: "in_progress",
+        issueExecutionRunId: "run-2",
+        runId: "run-1",
+      }),
+    ).toBe(false);
   });
 });
 

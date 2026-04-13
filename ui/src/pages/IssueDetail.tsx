@@ -48,6 +48,7 @@ import {
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
 import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
+import { issueDisplayStatus } from "../lib/issue-execution";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -501,6 +502,18 @@ export function IssueDetail() {
     placeholderData: keepPreviousData,
   });
   const activeRun = resolveIssueActiveRun(issue, rawActiveRun);
+  const primaryLiveRun = useMemo(() => {
+    const candidates = [activeRun, ...(liveRuns ?? [])].filter(
+      (run): run is NonNullable<typeof activeRun> => Boolean(run),
+    );
+    if (candidates.length === 0) return null;
+    return candidates.sort((a, b) => {
+      const aTime = new Date(a.startedAt ?? a.createdAt ?? 0).getTime();
+      const bTime = new Date(b.startedAt ?? b.createdAt ?? 0).getTime();
+      return bTime - aTime;
+    })[0];
+  }, [activeRun, liveRuns]);
+  const displayedIssueStatus = issue ? issueDisplayStatus(issue, primaryLiveRun) : null;
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
   const runningIssueRun = useMemo(
@@ -1679,7 +1692,7 @@ export function IssueDetail() {
       <div className="space-y-3">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
-            status={issue.status}
+            status={displayedIssueStatus ?? issue.status}
             onChange={(status) => updateIssue.mutate({ status })}
           />
           <PriorityIcon
@@ -2145,6 +2158,7 @@ export function IssueDetail() {
                 </div>
               ) : null}
               <IssueChatThread
+                key={issue.id}
                 composerRef={commentComposerRef}
                 comments={commentsWithRunMeta}
                 feedbackVotes={feedbackVotes}
