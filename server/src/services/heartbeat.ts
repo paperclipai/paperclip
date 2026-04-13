@@ -1804,6 +1804,7 @@ export function heartbeatService(db: Db) {
           triggerDetail: updated.triggerDetail,
           error: updated.error ?? null,
           errorCode: updated.errorCode ?? null,
+          resultJson: summarizeHeartbeatRunResultJson(updated.resultJson),
           startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },

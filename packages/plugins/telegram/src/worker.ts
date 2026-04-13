@@ -1,5 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type {
+  AgentSessionEvent,
   PluginContext,
   PluginEvent,
   PluginWebhookInput,
@@ -118,7 +119,15 @@ async function tgApi(
       body: JSON.stringify(params),
     },
   );
-  return resp.json();
+  const body = (await resp.json()) as { ok?: boolean; description?: string };
+  if (body.ok === false) {
+    throw new Error(`Telegram ${method} failed: ${body.description ?? "unknown error"}`);
+  }
+  return body;
+}
+
+function previewForLog(text: string, max = 240): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 async function sendMsg(
@@ -139,7 +148,14 @@ async function sendMsg(
       text: chunk,
       parse_mode: "HTML",
       ...extra,
-    }).catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
+    })
+      .then(() => ctx.logger.info("Telegram outbound", {
+        chatId: String(chatId),
+        chars: chunk.length,
+        parseMode: "HTML",
+        preview: previewForLog(chunk),
+      }))
+      .catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
   }
 }
 
@@ -157,7 +173,14 @@ async function sendPlainMsg(
     await tgApi(ctx, token, "sendMessage", {
       chat_id: chatId,
       text: chunk,
-    }).catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
+    })
+      .then(() => ctx.logger.info("Telegram outbound", {
+        chatId: String(chatId),
+        chars: chunk.length,
+        parseMode: "plain",
+        preview: previewForLog(chunk),
+      }))
+      .catch((err) => ctx.logger.error("sendMessage failed", { error: String(err) }));
   }
 }
 
@@ -540,6 +563,26 @@ function normalizeTelegramReply(response: string): string {
   return cleaned;
 }
 
+function extractTerminalResultText(event: AgentSessionEvent): string {
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object") return "";
+
+  const resultJson = payload.resultJson;
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
+    return "";
+  }
+
+  const record = resultJson as Record<string, unknown>;
+  for (const key of ["summary", "result", "message", "error"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
 // ─── Agent Session ────────────────────────────────────────────────────────────
 
 async function askAgent(
@@ -566,6 +609,7 @@ async function askAgent(
   // or "error" event BEFORE calling close(), otherwise close() deletes the
   // callback and we miss all events.
   const streamChunks: string[] = [];
+  let terminalResultText = "";
   let eventCount = 0;
 
   let doneResolve!: () => void;
@@ -595,13 +639,17 @@ async function askAgent(
         // "done" event — agent completed.
         // NOTE: event.message here is always "Run completed" (a system marker,
         // not the agent's text). We intentionally ignore it — only real stdout
-        // content_block_delta chunks are forwarded to the user.
+        // content_block_delta chunks are forwarded to the user. If the stream
+        // was too noisy and no text survived filtering, use the persisted
+        // Paperclip run summary/result from the terminal status payload.
         if (event.eventType === "done") {
+          terminalResultText = extractTerminalResultText(event);
           doneResolve();
         }
 
         // "error" event — agent failed
         if (event.eventType === "error") {
+          terminalResultText = extractTerminalResultText(event);
           doneResolve();
         }
       },
@@ -624,10 +672,12 @@ async function askAgent(
   // Now safe to close (done event already received or timed out)
   await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
 
-  const response = streamChunks.join("");
+  const streamResponse = streamChunks.join("");
+  const response = streamResponse.trim() ? streamResponse : terminalResultText;
   ctx.logger.info("Agent response collected", {
     eventCount,
     streamChunks: streamChunks.length,
+    fallbackChars: terminalResultText.length,
     responseChars: response.length,
     preview: response.slice(0, 120),
   });
