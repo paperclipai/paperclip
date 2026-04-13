@@ -98,13 +98,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(req: Request, companyId: string, projectId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
+      if (allowed) return;
+      if (projectId) {
+        if (await access.isCompanyOwner(companyId, req.actor.userId)) return;
+        const hasProjectPerm = await access.hasProjectPermission(projectId, "user", req.actor.userId!, "project:issues:assign");
+        if (hasProjectPerm) return;
+      }
+      throw forbidden(`Missing permission: tasks:assign${projectId ? " or project:issues:assign" : ""}`);
     }
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
@@ -112,7 +117,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
+      if (projectId) {
+        const hasProjectPerm = await access.hasProjectPermission(projectId, "agent", req.actor.agentId, "project:issues:assign");
+        if (hasProjectPerm) return;
+      }
+      throw forbidden(`Missing permission: tasks:assign${projectId ? " or project:issues:assign" : ""}`);
     }
     throw unauthorized();
   }
@@ -438,7 +447,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       req, access, companyId, "issues:manage", req.body.projectId, "project:issues:create",
     );
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, req.body.projectId);
     }
 
     // Snapshot assigner's permission tier for agent execution policy
@@ -536,7 +545,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, existing.projectId);
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
@@ -748,7 +757,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    await assertCanAssignTasks(req, issue.companyId);
+    await assertCanAssignTasks(req, issue.companyId, issue.projectId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
       res.status(403).json({ error: "Agent can only checkout as itself" });

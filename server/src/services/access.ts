@@ -143,6 +143,7 @@ export function accessService(db: Db) {
     memberId: string,
     grants: GrantInput[],
     grantedByUserId: string | null,
+    membershipRole?: string | null,
   ) {
     const member = await db
       .select()
@@ -175,9 +176,15 @@ export function accessService(db: Db) {
           })),
         );
       }
+      if (membershipRole !== undefined) {
+        await tx
+          .update(companyMemberships)
+          .set({ membershipRole, updatedAt: new Date() })
+          .where(eq(companyMemberships.id, member.id));
+      }
     });
 
-    return member;
+    return membershipRole !== undefined ? { ...member, membershipRole } : member;
   }
 
   async function promoteInstanceAdmin(userId: string) {

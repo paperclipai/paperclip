@@ -2672,6 +2672,7 @@ export function accessRoutes(
         memberId,
         preset.permissions.map((key) => ({ permissionKey: key })),
         req.actor.userId ?? null,
+        presetId,
       );
       if (!updated) throw notFound("Member not found");
       res.json({ ...updated, appliedPreset: presetId });
