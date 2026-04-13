@@ -88,6 +88,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const PROCESSED_COMMENT_IDS_KEY = "processedCommentIds";
+const MAX_PROCESSED_COMMENT_IDS = 50;
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
@@ -1071,6 +1073,31 @@ export function extractWakeCommentIds(
   return out;
 }
 
+function extractProcessedCommentIds(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): Set<string> {
+  const raw = contextSnapshot?.[PROCESSED_COMMENT_IDS_KEY];
+  if (!Array.isArray(raw)) return new Set();
+  const out = new Set<string>();
+  for (const entry of raw) {
+    const value = readNonEmptyString(entry);
+    if (value) out.add(value);
+  }
+  return out;
+}
+
+function mergeProcessedCommentIds(
+  existing: Record<string, unknown> | null | undefined,
+  incoming: Record<string, unknown> | null | undefined,
+): string[] {
+  const merged = new Set<string>();
+  for (const id of extractProcessedCommentIds(existing)) merged.add(id);
+  for (const id of extractProcessedCommentIds(incoming)) merged.add(id);
+  // Keep only the most recent N to bound growth
+  const arr = Array.from(merged);
+  return arr.length > MAX_PROCESSED_COMMENT_IDS ? arr.slice(arr.length - MAX_PROCESSED_COMMENT_IDS) : arr;
+}
+
 function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   const merged: string[] = [];
   const append = (value: unknown) => {
@@ -1176,6 +1203,12 @@ export function mergeCoalescedContextSnapshot(
     // regenerate any structured payload from those ids.
     delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
+  // Preserve processed comment ids across coalesced runs so the next run only
+  // sends bodies for comments the agent has not yet seen.
+  const mergedProcessedIds = mergeProcessedCommentIds(existing, incoming);
+  if (mergedProcessedIds.length > 0) {
+    merged[PROCESSED_COMMENT_IDS_KEY] = mergedProcessedIds;
+  }
   return merged;
 }
 
@@ -1194,7 +1227,13 @@ async function buildPaperclipWakePayload(input: {
     | null;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
-  const commentIds = extractWakeCommentIds(input.contextSnapshot);
+  const allCommentIds = extractWakeCommentIds(input.contextSnapshot);
+  // Delta filter: skip comments already sent to the agent in a prior run of this
+  // coalesced sequence. Avoids replaying full bodies on every heartbeat when
+  // multiple wakes accumulate while the agent is busy.
+  const processedCommentIds = extractProcessedCommentIds(input.contextSnapshot);
+  const commentIds = allCommentIds.filter((id) => !processedCommentIds.has(id));
+  const skippedCommentCount = allCommentIds.length - commentIds.length;
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const issueSummary =
     input.issueSummary ??
@@ -1211,7 +1250,7 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (allCommentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -1277,6 +1316,19 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
+  // Record which comment IDs are included in this wake payload so the next
+  // coalesced run can skip their bodies (delta-only format).
+  const includedCommentIds = comments.map((c) => c.id as string);
+  if (includedCommentIds.length > 0) {
+    const updatedProcessed = Array.from(
+      new Set([...Array.from(processedCommentIds), ...includedCommentIds]),
+    );
+    input.contextSnapshot[PROCESSED_COMMENT_IDS_KEY] =
+      updatedProcessed.length > MAX_PROCESSED_COMMENT_IDS
+        ? updatedProcessed.slice(updatedProcessed.length - MAX_PROCESSED_COMMENT_IDS)
+        : updatedProcessed;
+  }
+
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
@@ -1291,12 +1343,13 @@ async function buildPaperclipWakePayload(input: {
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     commentIds,
-    latestCommentId: commentIds[commentIds.length - 1] ?? null,
+    latestCommentId: allCommentIds[allCommentIds.length - 1] ?? null,
     comments,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
+      skippedAlreadySeenCount: skippedCommentCount,
     },
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
