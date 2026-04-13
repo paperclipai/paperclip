@@ -5,6 +5,7 @@ import type {
   PluginEvent,
   PluginWebhookInput,
   PluginHealthDiagnostics,
+  Agent,
   Issue,
 } from "@paperclipai/plugin-sdk";
 
@@ -128,6 +129,12 @@ async function tgApi(
 
 function previewForLog(text: string, max = 240): string {
   return text.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function hexPreview(buffer: ArrayBuffer, length = 16): string {
+  return Array.from(new Uint8Array(buffer.slice(0, length)))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function cleanTelegramText(text: string): string {
@@ -476,6 +483,62 @@ function isStatusRequest(text: string): boolean {
   return STATUS_REQUEST_RE.test(text);
 }
 
+interface StatusReportScope {
+  assigneeAgentId?: string;
+  label?: string;
+}
+
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-z0-9а-я]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function agentSearchAliases(agent: Agent): string[] {
+  return [
+    agent.name,
+    agent.title,
+    agent.urlKey,
+    agent.name.replace(/\s+/g, ""),
+    agent.urlKey.replace(/[-_]+/g, " "),
+  ].filter((value): value is string => !!value?.trim());
+}
+
+async function resolveStatusReportScope(
+  ctx: PluginContext,
+  companyId: string,
+  text: string,
+): Promise<StatusReportScope> {
+  const normalizedText = normalizeSearchText(text);
+  let agents: Agent[] = [];
+
+  try {
+    agents = await ctx.agents.list({ companyId, limit: 200 });
+  } catch (err) {
+    ctx.logger.warn("agents.list failed while resolving status report scope", { error: String(err) });
+    return {};
+  }
+
+  const ranked = agents
+    .flatMap((agent) => agentSearchAliases(agent).map((alias) => ({
+      agent,
+      alias: normalizeSearchText(alias),
+    })))
+    .filter(({ alias }) => alias.length >= 3 && normalizedText.includes(alias))
+    .sort((left, right) => right.alias.length - left.alias.length);
+
+  const match = ranked[0]?.agent;
+  if (!match) return {};
+
+  return {
+    assigneeAgentId: match.id,
+    label: match.name,
+  };
+}
+
 /**
  * Build a 3-block executive report directly from ctx.issues — no agent invocation.
  * This avoids any stdout JSON leakage since we never spawn a Claude subprocess.
@@ -483,11 +546,16 @@ function isStatusRequest(text: string): boolean {
 async function buildDirectStatusReport(
   ctx: PluginContext,
   companyId: string,
+  scope: StatusReportScope = {},
 ): Promise<string> {
   let issues: Issue[] = [];
 
   try {
-    issues = await ctx.issues.list({ companyId, limit: 500 });
+    issues = await ctx.issues.list({
+      companyId,
+      limit: 500,
+      assigneeAgentId: scope.assigneeAgentId,
+    });
   } catch (err) {
     ctx.logger.error("issues.list failed in status report", { error: String(err) });
     return "⚠️ Не удалось получить список задач.";
@@ -499,6 +567,10 @@ async function buildDirectStatusReport(
   const todo       = newestIssues(issues.filter(i => i.status === "todo" || i.status === "backlog"));
 
   const lines: string[] = [];
+  if (scope.label) {
+    lines.push(`📍 ФИЛЬТР: ${scope.label}`);
+    lines.push("");
+  }
 
   // ── Block 1: What does the board need to do? ────────────────────────────
   lines.push("🔴 ЧТО НУЖНО ОТ БОРДА");
@@ -790,7 +862,10 @@ function audioMimeFromTelegramPath(
     return { mime: detected.mime, filename: `voice.${detected.extension}` };
   }
 
-  return { mime: "application/octet-stream", filename };
+  // Telegram voice messages are normally OGG/Opus, but some Bot API file paths
+  // arrive without an extension. Groq validates file extensions strictly, so
+  // never send an extensionless/octet-stream filename for voice transcription.
+  return { mime: "audio/ogg", filename: "voice.ogg" };
 }
 
 async function transcribeVoice(
@@ -801,6 +876,13 @@ async function transcribeVoice(
 ): Promise<string> {
   const { buffer: audioBuffer, filePath } = await downloadTgFile(ctx, token, fileId);
   const audioMeta = audioMimeFromTelegramPath(filePath, audioBuffer);
+  ctx.logger.info("Telegram voice file prepared for transcription", {
+    filePath,
+    mime: audioMeta.mime,
+    filename: audioMeta.filename,
+    bytes: audioBuffer.byteLength,
+    magic: hexPreview(audioBuffer),
+  });
 
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: audioMeta.mime }), audioMeta.filename);
@@ -822,7 +904,15 @@ async function transcribeVoice(
 
   const result = (await resp.json()) as { text?: string; error?: unknown };
   if (result.error) {
-    ctx.logger.error("Groq transcription error", { status: resp.status, error: result.error });
+    ctx.logger.error("Groq transcription error", {
+      status: resp.status,
+      error: result.error,
+      filePath,
+      mime: audioMeta.mime,
+      filename: audioMeta.filename,
+      bytes: audioBuffer.byteLength,
+      magic: hexPreview(audioBuffer),
+    });
     return "";
   }
   return result.text?.trim() ?? "";
@@ -839,7 +929,8 @@ async function handleText(
   // Status requests bypass the agent and return data directly
   if (isStatusRequest(text)) {
     await sendTyping(ctx, config.botToken, chatId);
-    const report = await buildDirectStatusReport(ctx, config.companyId);
+    const scope = await resolveStatusReportScope(ctx, config.companyId, text);
+    const report = await buildDirectStatusReport(ctx, config.companyId, scope);
     await sendPlainMsg(ctx, config.botToken, chatId, report);
     return;
   }
@@ -860,7 +951,8 @@ async function enqueueText(
   if (isStatusRequest(text)) {
     await sendMsg(ctx, config.botToken, chatId, "⏳ Запрашиваю данные...");
     runInBackground(ctx, "Telegram status report failed", async () => {
-      const report = await buildDirectStatusReport(ctx, config.companyId);
+      const scope = await resolveStatusReportScope(ctx, config.companyId, text);
+      const report = await buildDirectStatusReport(ctx, config.companyId, scope);
       await sendPlainMsg(ctx, config.botToken, chatId, report);
     });
     return;
