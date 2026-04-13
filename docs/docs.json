@@ -96,6 +96,7 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/cursor-local",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
