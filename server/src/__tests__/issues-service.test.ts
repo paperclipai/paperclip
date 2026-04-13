@@ -2149,6 +2149,89 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
     );
   });
 
+  it("rejects terminal same-agent run ids during stale checkout adoption", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleRunId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T13:00:00.000Z"),
+        finishedAt: new Date("2026-04-13T13:05:00.000Z"),
+      },
+      {
+        id: terminalRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        triggerDetail: "process_loss",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T13:06:00.000Z"),
+        finishedAt: new Date("2026-04-13T13:07:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run must not adopt stale checkout",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: null,
+      startedAt: new Date("2026-04-13T13:00:00.000Z"),
+    });
+
+    await expect(
+      svc.assertCheckoutOwner(issueId, agentId, terminalRunId),
+    ).rejects.toThrow("Issue run ownership conflict");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_progress",
+        checkoutRunId: staleRunId,
+        executionRunId: null,
+      }),
+    );
+  });
+
   it("promotes deferred wakeups after clearing terminal checkout ownership", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();

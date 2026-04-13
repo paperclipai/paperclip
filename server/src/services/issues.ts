@@ -981,13 +981,15 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
     expectedExecutionRunId: string | null;
   }) {
+    const actorRunState = await getRunLockState(db, input.actorRunId, input.actorAgentId);
+    if (!actorRunState.liveBelongsToActor) return null;
+
     const stale = await isTerminalOrMissingHeartbeatRun(db, input.expectedCheckoutRunId);
     if (!stale) return null;
 
     let executionClearable = input.expectedExecutionRunId === null;
     if (!executionClearable && input.expectedExecutionRunId === input.actorRunId) {
-      const actorRunState = await getRunLockState(db, input.actorRunId, input.actorAgentId);
-      executionClearable = actorRunState.liveBelongsToActor || actorRunState.terminalOrMissing;
+      executionClearable = true;
     }
     if (!executionClearable && input.expectedExecutionRunId) {
       executionClearable = await isTerminalOrMissingHeartbeatRun(db, input.expectedExecutionRunId);

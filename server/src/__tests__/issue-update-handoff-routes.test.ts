@@ -822,6 +822,98 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
   });
 
+  it("rejects an agent PATCH when a terminal run header would adopt a stale checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleRunId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "terminal-patch-agent-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "test key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T13:00:00.000Z"),
+        finishedAt: new Date("2026-04-13T13:05:00.000Z"),
+      },
+      {
+        id: terminalRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        triggerDetail: "process_loss",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T13:06:00.000Z"),
+        finishedAt: new Date("2026-04-13T13:07:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run patch should not adopt stale checkout",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: null,
+      startedAt: new Date("2026-04-13T13:00:00.000Z"),
+    });
+
+    const res = await request(createRouteApp({ deploymentMode: "authenticated" }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", terminalRunId)
+      .send({
+        status: "done",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Issue run ownership conflict",
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: null,
+    }));
+  });
+
   it("keeps forged agent API-key run headers out of execution decision provenance", async () => {
     const companyId = randomUUID();
     const reviewerAgentId = randomUUID();
