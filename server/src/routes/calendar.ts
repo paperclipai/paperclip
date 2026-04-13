@@ -28,6 +28,7 @@ export function calendarRoutes(db: Db) {
 
     const now = new Date();
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const maxWindowMs = 365 * 24 * 60 * 60 * 1000;
 
     const start = req.query.start
       ? new Date(req.query.start as string)
@@ -35,6 +36,19 @@ export function calendarRoutes(db: Db) {
     const end = req.query.end
       ? new Date(req.query.end as string)
       : new Date(now.getTime() + thirtyDaysMs);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      res.status(400).json({ error: "Invalid start or end date" });
+      return;
+    }
+    if (start >= end) {
+      res.status(400).json({ error: "start must be before end" });
+      return;
+    }
+    if (end.getTime() - start.getTime() > maxWindowMs) {
+      res.status(400).json({ error: "Date window may not exceed 365 days" });
+      return;
+    }
 
     const events = await svc.getEvents(companyId, start, end);
     res.json({ events });

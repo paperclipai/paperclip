@@ -26,6 +26,18 @@ export interface CalendarEvent {
  * a `plugin_job` row so they appear automatically in the Calendar. Ad-hoc shell
  * crons or hardcoded timers are not acceptable — they will be invisible to users.
  */
+/** Maximum number of occurrences returned per cron expression to prevent runaway expansion. */
+const MAX_OCCURRENCES_PER_EXPRESSION = 500;
+
+/**
+ * Expand a cron expression into all occurrence timestamps within [start, end].
+ * Capped at MAX_OCCURRENCES_PER_EXPRESSION to guard against pathological schedules
+ * (e.g. "* * * * *" over a large window).
+ *
+ * NOTE: All recurring schedules MUST be backed by either a `routine_trigger` or
+ * a `plugin_job` row so they appear automatically in the Calendar. Ad-hoc shell
+ * crons or hardcoded timers are not acceptable — they will be invisible to users.
+ */
 export function expandCronOccurrences(expression: string, start: Date, end: Date): Date[] {
   let parsed;
   try {
@@ -38,7 +50,7 @@ export function expandCronOccurrences(expression: string, start: Date, end: Date
   // Start searching from one minute before `start` so we catch hits at exactly `start`
   let cursor = new Date(start.getTime() - 60_000);
 
-  while (true) {
+  while (occurrences.length < MAX_OCCURRENCES_PER_EXPRESSION) {
     const next = nextCronTick(parsed, cursor);
     if (!next || next > end) break;
     if (next >= start) {
