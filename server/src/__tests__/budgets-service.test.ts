@@ -251,6 +251,118 @@ describe("budgetService", () => {
     ).rejects.toThrow("New budget must exceed current observed spend");
   });
 
+  it("emits a soft warning when spend crosses the 80% threshold but does not pause the agent", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    // Call sequence: candidatePolicies -> computeObservedAmount ->
+    // existing soft incident check (none) -> resolveScopeRecord for incident payload
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 80 }],
+      [],
+      [{ companyId: "company-1", name: "Budget Agent", status: "running", pauseReason: null }],
+    ]);
+
+    dbStub.queueInsert([{ id: "incident-1", companyId: "company-1", policyId: "policy-1" }]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "budget.soft_threshold_crossed",
+        entityId: "incident-1",
+      }),
+    );
+    // Agent must NOT be paused -- execution can continue at the 80% warning threshold
+    expect(dbStub.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "paused" }),
+    );
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+  });
+
+  it("emits nothing when spend is below the warn threshold", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 79 }],  // one cent below the soft threshold -- no warning fired
+    ]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(dbStub.updateSet).not.toHaveBeenCalled();
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+  });
+
+  it("returns null from getInvocationBlock when agent spend is below the hard ceiling", async () => {
+    const agentPolicy = {
+      id: "policy-agent-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    // Call sequence: agent -> company -> company policy (none) -> agent policy -> observed amount
+    const dbStub = createDbStub([
+      [{ status: "running", pauseReason: null, companyId: "company-1", name: "Budget Agent" }],
+      [{ status: "active", name: "Paperclip" }],
+      [],
+      [agentPolicy],
+      [{ total: 80 }],  // at the warn threshold but below the hard ceiling of 100
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    // Hard ceiling not reached -- agent must be allowed to run
+    expect(block).toBeNull();
+  });
+
   it("syncs company monthly budget when raising and resuming a company incident", async () => {
     const now = new Date();
     const dbStub = createDbStub([
