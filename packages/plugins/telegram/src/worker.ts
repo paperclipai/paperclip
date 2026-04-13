@@ -352,27 +352,43 @@ function isTechnicalTelegramNoise(line: string): boolean {
 
 function buildTelegramAgentPrompt(prompt: string): string {
   return [
-    "Ответь пользователю в Telegram.",
+    "Ты отвечаешь пользователю через Telegram. Дай короткий, чёткий, человекочитаемый ответ.",
     "",
-    "Правила ответа:",
-    "- Пиши только на русском языке.",
-    "- Пиши понятно, по-человечески и без внутренних технических логов.",
-    "- Не показывай stdout/stderr, stack trace, JSON, [paperclip]-сообщения, workspace paths, session ids и служебные предупреждения.",
-    "- Если задача принята в работу, скажи коротко что именно понял и какой следующий шаг.",
-    "- Если не можешь выполнить действие, объясни простыми словами причину и что нужно сделать дальше.",
+    "СТРОГИЕ ПРАВИЛА — нарушение ломает интерфейс:",
+    "1. Только русский язык.",
+    "2. Никаких markdown-таблиц (| col | col |) — замени на обычный текст.",
+    "3. Никаких API-эндпоинтов, кода, JSON, stack trace, путей к файлам, session id.",
+    "4. Никаких ссылок на внутреннюю документацию или skill-файлы — отвечай своими словами.",
+    "5. Не цитируй содержимое SKILL.md, AGENTS.md или других инструкций.",
+    "6. Максимум 5-7 предложений. Если нужно больше — структурируй с эмодзи-буллетами (•).",
+    "7. Если выполняешь задачу — скажи что сделал, одной фразой.",
     "",
-    "Сообщение пользователя:",
+    "Вопрос пользователя:",
     prompt,
   ].join("\n");
 }
 
 function normalizeTelegramReply(response: string): string {
   const cleaned = sanitizeAgentMessage(response)
+    // Unescape literal \n sequences from JSON-serialized strings
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "  ")
+    // Remove markdown table rows (| col | col |) — API docs noise
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      // Filter pipe-heavy lines that look like API/markdown tables
+      if ((t.match(/\|/g) ?? []).length >= 2) return false;
+      // Filter lines that are just dashes (table separators)
+      if (/^[-|:\s]+$/.test(t) && t.length > 4) return false;
+      return true;
+    })
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
   if (!cleaned) {
-    return "Пока не получил содержательный ответ от агента. Я уже передал задачу, попробуйте повторить чуть позже или переключить агента командой /status.";
+    return "Пока не получил содержательный ответ от агента. Попробуйте повторить чуть позже или переключить агента командой /status.";
   }
 
   return cleaned;
