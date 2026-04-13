@@ -8,6 +8,9 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 
 export function CreateClientDialog() {
@@ -97,8 +100,8 @@ export function CreateClientDialog() {
 
         {/* Name */}
         <div className="px-4 pt-4 pb-2">
-          <input
-            className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
+          <Input
+            className="text-lg font-semibold border-0 shadow-none px-0 h-auto focus-visible:ring-0"
             placeholder="Client name"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -109,45 +112,40 @@ export function CreateClientDialog() {
         {/* Fields */}
         <div className="px-4 pb-3 space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">Email</label>
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input
                 placeholder="email@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">CNPJ</label>
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+            <div className="space-y-2">
+              <Label>CNPJ</Label>
+              <Input
                 placeholder="XX.XXX.XXX/XXXX-XX"
                 value={cnpj}
                 onChange={(e) => setCnpj(e.target.value)}
               />
             </div>
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">Phone</label>
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
               />
             </div>
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">Contact Name</label>
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+            <div className="space-y-2">
+              <Label>Contact Name</Label>
+              <Input
                 value={contactName}
                 onChange={(e) => setContactName(e.target.value)}
               />
             </div>
           </div>
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">Notes</label>
-            <textarea
-              className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm outline-none min-h-[60px]"
+          <div className="space-y-2">
+            <Label>Notes</Label>
+            <Textarea
               placeholder="Additional notes about this client..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}

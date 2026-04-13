@@ -20,7 +20,11 @@ export function clientRoutes(db: Db) {
   router.get("/companies/:companyId/clients", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const limitParam = req.query.limit as string | undefined;
+    const offsetParam = req.query.offset as string | undefined;
+    const limit = limitParam ? Math.max(1, Math.min(200, parseInt(limitParam, 10) || 50)) : undefined;
+    const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : undefined;
+    const result = await svc.list(companyId, { limit, offset });
     res.json(result);
   });
 

@@ -1,15 +1,22 @@
 import type { Db } from "@paperclipai/db";
 import { clients, clientProjects, projects } from "@paperclipai/db";
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, asc, sql } from "drizzle-orm";
 
 export function clientService(db: Db) {
   return {
-    async list(companyId: string) {
-      return db
-        .select()
+    async list(companyId: string, opts?: { limit?: number; offset?: number }) {
+      const where = eq(clients.companyId, companyId);
+      const [countRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
         .from(clients)
-        .where(eq(clients.companyId, companyId))
-        .orderBy(asc(clients.name));
+        .where(where);
+      const total = countRow?.count ?? 0;
+
+      let q = db.select().from(clients).where(where).orderBy(asc(clients.name));
+      if (opts?.limit) q = q.limit(opts.limit) as typeof q;
+      if (opts?.offset) q = q.offset(opts.offset) as typeof q;
+
+      return { data: await q, total };
     },
 
     async getById(id: string) {

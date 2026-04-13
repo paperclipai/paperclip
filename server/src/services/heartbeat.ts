@@ -10,6 +10,8 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  clients,
+  clientProjects,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -2886,6 +2888,51 @@ export function heartbeatService(db: Db) {
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+
+    // Resolve client context for this project (injected into agent instructions)
+    if (resolvedProjectId) {
+      try {
+        const clientLink = await db
+          .select({
+            clientName: clients.name,
+            clientEmail: clients.email,
+            clientPhone: clients.phone,
+            clientContactName: clients.contactName,
+            clientNotes: clients.notes,
+            clientCnpj: clients.cnpj,
+            projectType: clientProjects.projectType,
+            projectDescription: clientProjects.description,
+            tags: clientProjects.tags,
+            projectNameOverride: clientProjects.projectNameOverride,
+          })
+          .from(clientProjects)
+          .innerJoin(clients, eq(clientProjects.clientId, clients.id))
+          .where(
+            and(
+              eq(clientProjects.projectId, resolvedProjectId),
+              eq(clientProjects.status, "active"),
+              eq(clients.status, "active"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (clientLink) {
+          const parts: string[] = ["## Client Context"];
+          parts.push(`- **Client:** ${clientLink.clientName}`);
+          if (clientLink.clientEmail) parts.push(`- **Email:** ${clientLink.clientEmail}`);
+          if (clientLink.clientContactName) parts.push(`- **Contact:** ${clientLink.clientContactName}`);
+          if (clientLink.clientCnpj) parts.push(`- **CNPJ:** ${clientLink.clientCnpj}`);
+          if (clientLink.projectType) parts.push(`- **Project Type:** ${clientLink.projectType}`);
+          if (clientLink.projectNameOverride) parts.push(`- **Project Name:** ${clientLink.projectNameOverride}`);
+          if (clientLink.projectDescription) parts.push(`- **Description:** ${clientLink.projectDescription}`);
+          if (clientLink.tags && clientLink.tags.length > 0) parts.push(`- **Tech Stack:** ${clientLink.tags.join(", ")}`);
+          (runtimeConfig as Record<string, unknown>).clientContextMarkdown = parts.join("\n");
+        }
+      } catch {
+        // Non-critical: if client context fails, agent still runs without it
+      }
+    }
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadataBase = {
       ...(existingExecutionWorkspace?.metadata ?? {}),

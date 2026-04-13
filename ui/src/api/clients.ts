@@ -1,8 +1,21 @@
 import type { Client, ClientProject } from "@paperclipai/shared";
 import { api } from "./client";
 
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+}
+
 export const clientsApi = {
-  list: (companyId: string) => api.get<Client[]>(`/companies/${companyId}/clients`),
+  list: (companyId: string, params?: { limit?: number; offset?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    if (params?.offset) searchParams.set("offset", String(params.offset));
+    const qs = searchParams.toString();
+    return api.get<PaginatedResponse<Client>>(
+      `/companies/${companyId}/clients${qs ? `?${qs}` : ""}`,
+    );
+  },
   get: (id: string) => api.get<Client>(`/clients/${id}`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Client>(`/companies/${companyId}/clients`, data),
