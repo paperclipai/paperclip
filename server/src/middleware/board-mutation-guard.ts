@@ -6,6 +6,25 @@ const DEFAULT_DEV_ORIGINS = [
   "http://127.0.0.1:3100",
 ];
 
+/** Static trusted origins built from config at startup — NOT from per-request headers. */
+let staticTrustedOrigins: Set<string> | null = null;
+
+export function initBoardMutationTrustedOrigins(allowedHostnames: string[], publicUrl?: string) {
+  const origins = new Set(DEFAULT_DEV_ORIGINS.map((v) => v.toLowerCase()));
+  for (const hostname of allowedHostnames) {
+    origins.add(`http://${hostname}`.toLowerCase());
+    origins.add(`https://${hostname}`.toLowerCase());
+    // Include with port for common cases
+    origins.add(`http://${hostname}:3100`.toLowerCase());
+    origins.add(`https://${hostname}:3100`.toLowerCase());
+  }
+  if (publicUrl) {
+    const parsed = parseOrigin(publicUrl);
+    if (parsed) origins.add(parsed);
+  }
+  staticTrustedOrigins = origins;
+}
+
 function parseOrigin(value: string | undefined) {
   if (!value) return null;
   try {
@@ -16,21 +35,10 @@ function parseOrigin(value: string | undefined) {
   }
 }
 
-function trustedOriginsForRequest(req: Request) {
-  const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost || req.header("host")?.trim();
-  if (host) {
-    origins.add(`http://${host}`.toLowerCase());
-    origins.add(`https://${host}`.toLowerCase());
-  }
-  // Behind some reverse proxies the Host / X-Forwarded-Host header may
-  // not match the public URL (for example when TLS terminates at the
-  // edge and the inbound Host is an internal service name). Trust the
-  // explicitly-configured PAPERCLIP_PUBLIC_URL when it's set.
-  const publicUrl = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
-  if (publicUrl) origins.add(publicUrl);
-  return origins;
+function trustedOriginsForRequest(_req: Request) {
+  if (staticTrustedOrigins) return staticTrustedOrigins;
+  // Fallback for tests or pre-init calls — use only static defaults
+  return new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
 }
 
 function isTrustedBoardMutationRequest(req: Request) {
