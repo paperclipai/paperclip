@@ -2492,7 +2492,7 @@ export function heartbeatService(db: Db) {
         .insert(agentWakeupRequests)
         .values({
           companyId: run.companyId,
-          agentId: run.agentId,
+          agentId: agent.id,
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
@@ -2512,7 +2512,7 @@ export function heartbeatService(db: Db) {
         .insert(heartbeatRuns)
         .values({
           companyId: run.companyId,
-          agentId: run.agentId,
+          agentId: agent.id,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
@@ -2801,7 +2801,23 @@ export function heartbeatService(db: Db) {
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
+        // Prefer the issue's assigneeAgentId over the run's agentId so that
+        // a task assigned to Agent A but last executed by Agent B retries on
+        // Agent A (the true owner), not Agent B.
+        const contextSnapshot = parseObject(finalizedRun.contextSnapshot);
+        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        let targetAgentId = run.agentId;
+        if (issueId) {
+          const issueRow = await db
+            .select({ assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0] ?? null);
+          if (issueRow?.assigneeAgentId) {
+            targetAgentId = issueRow.assigneeAgentId;
+          }
+        }
+        const agent = await getAgent(targetAgentId);
         if (agent) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }

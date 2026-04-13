@@ -345,6 +345,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
+  it("retries on assigneeAgentId when executor differs from assignee", async () => {
+    // Scenario: CTO (executorAgentId) created the run while the task was
+    // assigned to Dev Agent (assigneeAgentId).  Retry must wake Dev Agent.
+    const { companyId, agentId: executorAgentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+
+    // Add a separate assignee agent and re-assign the issue to them.
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "DevAgentPlatform",
+      role: "engineer",
+      status: "paused",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeAgentId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    // Retry run must belong to the assignee, not the executor.
+    const allRuns = await db.select().from(heartbeatRuns);
+    const retryRun = allRuns.find((r) => r.id !== runId);
+    expect(retryRun?.agentId).toBe(assigneeAgentId);
+    expect(retryRun?.agentId).not.toBe(executorAgentId);
+
+    const wakeups = await db.select().from(agentWakeupRequests);
+    const retryWakeup = wakeups.find((w) => w.runId === retryRun?.id);
+    expect(retryWakeup?.agentId).toBe(assigneeAgentId);
+  });
+
   it("does not queue a second retry after the first process-loss retry was already used", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
