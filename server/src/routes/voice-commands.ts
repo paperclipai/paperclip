@@ -56,7 +56,7 @@ async function wakeRouter({
   const chat = await chats.createChat({ companyId, agentId: routerAgentId, initiatedByUserId: userId });
   const chatId = chat.id;
 
-  await svc.update(cmdId, companyId, { chatId, status: "processing" });
+  await svc.update(cmdId, companyId, { chatId });
 
   const wrappedPrompt = [
     `VOICE COMMAND (id: ${cmdId})`,
@@ -147,7 +147,7 @@ export function voiceCommandRoutes(db: Db) {
         routerAgentId,
         chatId,
         metadata: req.body.metadata,
-        initialStatus: shouldQueue ? "queued" : "pending",
+        initialStatus: shouldQueue ? "queued" : "processing",
       });
 
       if (routerAgentId && !shouldQueue) {
@@ -168,7 +168,7 @@ export function voiceCommandRoutes(db: Db) {
         }
       }
 
-      res.status(201).json({ ...cmd, status: shouldQueue ? "queued" : "processing", chatId, routerRunId: routerRun?.id ?? null });
+      res.status(201).json({ ...cmd, chatId, routerRunId: routerRun?.id ?? null });
     },
   );
 

@@ -176,7 +176,12 @@ export function voiceCommandService(db: Db) {
     const rows = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(voiceCommands)
-      .where(and(eq(voiceCommands.companyId, companyId), eq(voiceCommands.status, "processing")));
+      .where(
+        and(
+          eq(voiceCommands.companyId, companyId),
+          sql`${voiceCommands.status} IN ('pending', 'processing')`,
+        ),
+      );
     return rows[0]?.count ?? 0;
   }
 
