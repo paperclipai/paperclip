@@ -3413,6 +3413,57 @@ export function heartbeatService(db: Db) {
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  const TIMER_NOOP_MAX_CONSECUTIVE_SKIPS = 3;
+
+  async function checkTimerHasChanges(agentId: string): Promise<boolean> {
+    // 1. Last completed timer run
+    const [lastTimer] = await db
+      .select({ createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.invocationSource, "timer"),
+          eq(heartbeatRuns.status, "completed"),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1);
+
+    // No previous timer run → always run
+    if (!lastTimer) return true;
+
+    // 2. Safety valve: count consecutive skips since last completed timer run
+    const recentSkips = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.source, "timer"),
+          eq(agentWakeupRequests.status, "skipped"),
+          eq(agentWakeupRequests.reason, "timer.no_changes"),
+          gt(agentWakeupRequests.createdAt, lastTimer.createdAt),
+        ),
+      )
+      .limit(TIMER_NOOP_MAX_CONSECUTIVE_SKIPS);
+
+    if (recentSkips.length >= TIMER_NOOP_MAX_CONSECUTIVE_SKIPS) return true;
+
+    // 3. Changed issues since last timer
+    const [changed] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.assigneeAgentId, agentId),
+          gt(issues.updatedAt, lastTimer.createdAt),
+        ),
+      );
+
+    return (changed?.count ?? 0) > 0;
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -3510,6 +3561,16 @@ export function heartbeatService(db: Db) {
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Timer no-op detection: skip session if nothing changed since last timer heartbeat
+    if (source === "timer") {
+      const hasChanges = await checkTimerHasChanges(agentId);
+      if (!hasChanges) {
+        logger.info({ agentId }, "timer heartbeat skipped: no changes since last timer run");
+        await writeSkippedRequest("timer.no_changes");
+        return null;
+      }
     }
 
     const bypassIssueExecutionLock =

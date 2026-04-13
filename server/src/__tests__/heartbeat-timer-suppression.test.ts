@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -207,6 +207,249 @@ describeEmbeddedPostgres("lastTimerHeartbeatAt timer-suppression fix", () => {
       const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
       expect(agent.lastHeartbeatAt).not.toBeNull();
       expect(agent.lastTimerHeartbeatAt).not.toBeNull();
+    });
+  });
+
+  describe("timer no-op detection (checkTimerHasChanges)", () => {
+    async function seedCompletedTimerRun(opts: {
+      companyId: string;
+      agentId: string;
+      createdAt: Date;
+    }) {
+      const runId = randomUUID();
+      const wakeupRequestId = randomUUID();
+
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId: opts.companyId,
+        agentId: opts.agentId,
+        source: "timer",
+        triggerDetail: "system",
+        reason: "heartbeat_timer",
+        payload: {},
+        status: "claimed",
+        runId,
+        claimedAt: opts.createdAt,
+      });
+
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: opts.companyId,
+        agentId: opts.agentId,
+        invocationSource: "timer",
+        triggerDetail: "system",
+        status: "completed",
+        wakeupRequestId,
+        contextSnapshot: {},
+        startedAt: opts.createdAt,
+        finishedAt: new Date(opts.createdAt.getTime() + 30_000),
+        createdAt: opts.createdAt,
+        updatedAt: opts.createdAt,
+      });
+
+      return { runId, wakeupRequestId };
+    }
+
+    async function seedIssue(opts: {
+      companyId: string;
+      agentId: string;
+      updatedAt: Date;
+      issueNumber: number;
+    }) {
+      const issueId = randomUUID();
+      const prefix = `T${opts.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId: opts.companyId,
+        title: `Test issue ${opts.issueNumber}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: opts.agentId,
+        issueNumber: opts.issueNumber,
+        identifier: `${prefix}-${opts.issueNumber}`,
+        updatedAt: opts.updatedAt,
+      });
+
+      return { issueId };
+    }
+
+    async function seedSkippedTimerRequest(opts: {
+      companyId: string;
+      agentId: string;
+      createdAt: Date;
+    }) {
+      await db.insert(agentWakeupRequests).values({
+        companyId: opts.companyId,
+        agentId: opts.agentId,
+        source: "timer",
+        triggerDetail: "system",
+        reason: "timer.no_changes",
+        payload: {},
+        status: "skipped",
+        finishedAt: opts.createdAt,
+        createdAt: opts.createdAt,
+      });
+    }
+
+    async function getSkippedTimerRequests(agentId: string) {
+      return db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "skipped"),
+            eq(agentWakeupRequests.reason, "timer.no_changes"),
+          ),
+        );
+    }
+
+    it("skips timer heartbeat when no issues have changed since last timer run", async () => {
+      const lastTimerAt = new Date("2026-04-01T10:00:00.000Z");
+      const issueOlderThanTimer = new Date("2026-04-01T09:00:00.000Z");
+
+      const { companyId, agentId } = await seedAgent();
+      await seedCompletedTimerRun({ companyId, agentId, createdAt: lastTimerAt });
+      await seedIssue({
+        companyId,
+        agentId,
+        updatedAt: issueOlderThanTimer,
+        issueNumber: 1,
+      });
+
+      const svc = heartbeatService(db);
+      const result = await svc.wakeup(agentId, {
+        source: "timer",
+        triggerDetail: "system",
+      });
+
+      expect(result).toBeNull();
+
+      const skipped = await getSkippedTimerRequests(agentId);
+      expect(skipped.length).toBe(1);
+      expect(skipped[0].reason).toBe("timer.no_changes");
+    });
+
+    it("runs timer heartbeat when issues have changed since last timer run", async () => {
+      const lastTimerAt = new Date("2026-04-01T10:00:00.000Z");
+      const issueNewerThanTimer = new Date("2026-04-01T11:00:00.000Z");
+
+      const { companyId, agentId } = await seedAgent();
+      await seedCompletedTimerRun({ companyId, agentId, createdAt: lastTimerAt });
+      await seedIssue({
+        companyId,
+        agentId,
+        updatedAt: issueNewerThanTimer,
+        issueNumber: 1,
+      });
+
+      const svc = heartbeatService(db);
+      // wakeup will proceed past our check (hasChanges = true) and then
+      // fail downstream (no adapter configured etc.) — that's expected.
+      // We verify it does NOT return null with a "timer.no_changes" skip.
+      try {
+        await svc.wakeup(agentId, {
+          source: "timer",
+          triggerDetail: "system",
+        });
+      } catch {
+        // Expected: the run proceeds past no-op check but fails later
+      }
+
+      const skipped = await getSkippedTimerRequests(agentId);
+      expect(skipped.length).toBe(0);
+    });
+
+    it("always runs first timer heartbeat when no previous timer run exists", async () => {
+      const { companyId, agentId } = await seedAgent();
+      // No completed timer run seeded — first time ever
+
+      const svc = heartbeatService(db);
+      try {
+        await svc.wakeup(agentId, {
+          source: "timer",
+          triggerDetail: "system",
+        });
+      } catch {
+        // Expected: proceeds past no-op check but fails later
+      }
+
+      const skipped = await getSkippedTimerRequests(agentId);
+      expect(skipped.length).toBe(0);
+    });
+
+    it("forces run after 3 consecutive skips (safety valve)", async () => {
+      const lastTimerAt = new Date("2026-04-01T10:00:00.000Z");
+      const issueOlderThanTimer = new Date("2026-04-01T09:00:00.000Z");
+
+      const { companyId, agentId } = await seedAgent();
+      await seedCompletedTimerRun({ companyId, agentId, createdAt: lastTimerAt });
+      await seedIssue({
+        companyId,
+        agentId,
+        updatedAt: issueOlderThanTimer,
+        issueNumber: 1,
+      });
+
+      // Seed 3 consecutive skips after the last completed timer run
+      for (let i = 0; i < 3; i++) {
+        await seedSkippedTimerRequest({
+          companyId,
+          agentId,
+          createdAt: new Date(lastTimerAt.getTime() + (i + 1) * 60_000),
+        });
+      }
+
+      const svc = heartbeatService(db);
+      // With 3 consecutive skips and no changes, the safety valve should force a run
+      try {
+        await svc.wakeup(agentId, {
+          source: "timer",
+          triggerDetail: "system",
+        });
+      } catch {
+        // Expected: proceeds past no-op check but fails later
+      }
+
+      // Should not have added another skip — the safety valve forced a run
+      const skipped = await getSkippedTimerRequests(agentId);
+      expect(skipped.length).toBe(3); // Only the 3 we seeded, no new one
+    });
+
+    it("skips when consecutive skips are below the safety valve threshold", async () => {
+      const lastTimerAt = new Date("2026-04-01T10:00:00.000Z");
+      const issueOlderThanTimer = new Date("2026-04-01T09:00:00.000Z");
+
+      const { companyId, agentId } = await seedAgent();
+      await seedCompletedTimerRun({ companyId, agentId, createdAt: lastTimerAt });
+      await seedIssue({
+        companyId,
+        agentId,
+        updatedAt: issueOlderThanTimer,
+        issueNumber: 1,
+      });
+
+      // Only 2 consecutive skips — below the threshold of 3
+      for (let i = 0; i < 2; i++) {
+        await seedSkippedTimerRequest({
+          companyId,
+          agentId,
+          createdAt: new Date(lastTimerAt.getTime() + (i + 1) * 60_000),
+        });
+      }
+
+      const svc = heartbeatService(db);
+      const result = await svc.wakeup(agentId, {
+        source: "timer",
+        triggerDetail: "system",
+      });
+
+      expect(result).toBeNull();
+
+      // Should have added one more skip (now 3 total)
+      const skipped = await getSkippedTimerRequests(agentId);
+      expect(skipped.length).toBe(3);
     });
   });
 });
