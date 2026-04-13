@@ -1,0 +1,14 @@
+{
+  "name": "acceptance-viracue",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Playwright acceptance specs for Viracue.ai, executed by the Paperclip verification worker",
+  "scripts": {
+    "test": "playwright test",
+    "test:anonymous": "playwright test --project=anonymous",
+    "test:authenticated": "playwright test --project=authenticated"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

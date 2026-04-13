@@ -58,3 +58,23 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export {
+  verificationRuns,
+  type VerificationRun,
+  type NewVerificationRun,
+  type VerificationRunStatus,
+  type VerificationRunContext,
+} from "./verification_runs.js";
+export {
+  verificationEscalations,
+  type VerificationEscalation,
+  type NewVerificationEscalation,
+  type VerificationEscalationResolution,
+} from "./verification_escalations.js";
+export {
+  verificationOverrides,
+  type VerificationOverride,
+  type NewVerificationOverride,
+} from "./verification_overrides.js";
+export { specMetadata, type SpecMetadata, type NewSpecMetadata } from "./spec_metadata.js";
+export { verificationChaosRuns, type VerificationChaosRun } from "./verification_chaos_runs.js";

@@ -379,6 +379,13 @@
       "when": 1774483202000,
       "tag": "0053_issue_type",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775001600000,
+      "tag": "0054_verification_system",
+      "breakpoints": true
     }
   ]
 }
