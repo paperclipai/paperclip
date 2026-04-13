@@ -408,6 +408,7 @@ function isTechnicalTelegramNoise(line: string): boolean {
 
   return (
     trimmed.startsWith("[paperclip]") ||
+    trimmed.startsWith("API Error:") ||
     trimmed.startsWith("Error generating content via API") ||
     trimmed.startsWith("Full report available at:") ||
     trimmed.startsWith("Warning: Metrics token unavailable") ||
@@ -554,6 +555,10 @@ function buildTelegramAgentPrompt(prompt: string): string {
 }
 
 function normalizeTelegramReply(response: string): string {
+  if (/API Error|api_error|Internal server error/i.test(response)) {
+    return "Агент сейчас не смог ответить из-за временной ошибки модели. Попробуйте ещё раз через минуту.";
+  }
+
   const cleaned = cleanTelegramText(sanitizeAgentMessage(response)
     // Unescape literal \n sequences from JSON-serialized strings
     .replace(/\\n/g, "\n")
@@ -719,7 +724,28 @@ async function downloadTgFile(
   return { buffer: await resp.arrayBuffer(), filePath };
 }
 
-function audioMimeFromTelegramPath(filePath: string): { mime: string; filename: string } {
+function detectAudioFromBytes(buffer: ArrayBuffer): { mime: string; extension: string } | null {
+  const bytes = new Uint8Array(buffer.slice(0, 16));
+  const ascii = String.fromCharCode(...bytes);
+  if (ascii.startsWith("OggS")) return { mime: "audio/ogg", extension: "ogg" };
+  if (ascii.includes("ftyp")) return { mime: "audio/mp4", extension: "m4a" };
+  if (ascii.startsWith("RIFF")) return { mime: "audio/wav", extension: "wav" };
+  if (ascii.startsWith("fLaC")) return { mime: "audio/flac", extension: "flac" };
+  if (ascii.startsWith("ID3")) return { mime: "audio/mpeg", extension: "mp3" };
+  if (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) {
+    return { mime: "audio/mpeg", extension: "mp3" };
+  }
+  // EBML header: common for webm.
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return { mime: "audio/webm", extension: "webm" };
+  }
+  return null;
+}
+
+function audioMimeFromTelegramPath(
+  filePath: string,
+  buffer: ArrayBuffer,
+): { mime: string; filename: string } {
   const filename = filePath.split("/").pop() || "voice.ogg";
   const lower = filename.toLowerCase();
   if (lower.endsWith(".oga") || lower.endsWith(".ogg") || lower.endsWith(".opus")) {
@@ -731,6 +757,12 @@ function audioMimeFromTelegramPath(filePath: string): { mime: string; filename: 
   }
   if (lower.endsWith(".wav")) return { mime: "audio/wav", filename };
   if (lower.endsWith(".webm")) return { mime: "audio/webm", filename };
+
+  const detected = detectAudioFromBytes(buffer);
+  if (detected) {
+    return { mime: detected.mime, filename: `voice.${detected.extension}` };
+  }
+
   return { mime: "application/octet-stream", filename };
 }
 
@@ -741,7 +773,7 @@ async function transcribeVoice(
   groqKey: string,
 ): Promise<string> {
   const { buffer: audioBuffer, filePath } = await downloadTgFile(ctx, token, fileId);
-  const audioMeta = audioMimeFromTelegramPath(filePath);
+  const audioMeta = audioMimeFromTelegramPath(filePath, audioBuffer);
 
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: audioMeta.mime }), audioMeta.filename);
