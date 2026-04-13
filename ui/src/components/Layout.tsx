@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { BookOpen, Laptop, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -61,7 +61,7 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { theme, toggleTheme } = useTheme();
+  const { preference, theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -70,7 +70,7 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
-  const nextTheme = theme === "dark" ? "light" : "dark";
+  const nextTheme = preference === "dark" ? "light" : preference === "light" ? "system" : "dark";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -359,7 +359,7 @@ export function Layout() {
                   aria-label={`Switch to ${nextTheme} mode`}
                   title={`Switch to ${nextTheme} mode`}
                 >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  {preference === "dark" ? <Sun className="h-4 w-4" /> : preference === "light" ? <Moon className="h-4 w-4" /> : <Laptop className="h-4 w-4" />}
                 </Button>
               </div>
             </div>
@@ -432,7 +432,7 @@ export function Layout() {
                   aria-label={`Switch to ${nextTheme} mode`}
                   title={`Switch to ${nextTheme} mode`}
                 >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  {preference === "dark" ? <Sun className="h-4 w-4" /> : preference === "light" ? <Moon className="h-4 w-4" /> : <Laptop className="h-4 w-4" />}
                 </Button>
               </div>
             </div>
