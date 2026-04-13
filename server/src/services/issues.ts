@@ -1859,8 +1859,9 @@ export function issueService(db: Db) {
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
       if (checkoutRunId) {
-        const checkoutRunState = await getRunLockState(db, checkoutRunId, agentId);
-        if (!checkoutRunState.terminalOrMissing && !checkoutRunState.liveBelongsToActor) {
+        const checkoutRun = await getHeartbeatRun(db, checkoutRunId);
+        const checkoutRunIsLive = checkoutRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(checkoutRun.status);
+        if (!checkoutRunIsLive || checkoutRun.agentId !== agentId) {
           throw conflict("Issue checkout conflict", {
             issueId: id,
             assigneeAgentId: agentId,

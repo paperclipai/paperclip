@@ -2129,6 +2129,10 @@ export function issueRoutes(
       entityId: released.id,
     });
 
+    await heartbeat
+      .promoteDeferredIssueWakeupForIssue(released.id, released.companyId)
+      .catch((err) => logger.warn({ err, issueId: released.id }, "failed to promote deferred wakeup on issue release"));
+
     res.json(released);
   });
 

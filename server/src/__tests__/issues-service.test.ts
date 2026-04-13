@@ -1905,7 +1905,7 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
     expect(builderRuns).toHaveLength(0);
   });
 
-  it("defers assignment wakeups while prior checkout-only ownership is still live", async () => {
+  it("defers assignment wakeups while prior checkout-only ownership is still live despite stale agent key", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();
     const staffAgentId = randomUUID();
@@ -1965,7 +1965,7 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
       assigneeAgentId: staffAgentId,
       checkoutRunId: qaRunId,
       executionRunId: null,
-      executionAgentNameKey: "qa-engineer",
+      executionAgentNameKey: "staff-engineer",
       executionLockedAt: new Date("2026-04-11T21:00:00.000Z"),
     });
 
@@ -2000,6 +2000,153 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
       .where(eq(heartbeatRuns.agentId, staffAgentId));
 
     expect(staffRuns).toHaveLength(0);
+  });
+
+  it("coalesces checkout-only wakeups onto the actual run owner despite stale agent key", async () => {
+    const companyId = randomUUID();
+    const qaAgentId = randomUUID();
+    const qaRunId = randomUUID();
+    const issueId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: qaRunId,
+      companyId,
+      agentId: qaAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, existing: true },
+      startedAt: new Date("2026-04-11T21:00:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout-only wake should coalesce onto actual owner",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      checkoutRunId: qaRunId,
+      executionRunId: null,
+      executionAgentNameKey: "staff-engineer",
+      executionLockedAt: new Date("2026-04-11T21:00:00.000Z"),
+    });
+
+    const wake = await heartbeat.wakeup(qaAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, fresh: true },
+    });
+
+    expect(wake).toEqual(expect.objectContaining({
+      id: qaRunId,
+      agentId: qaAgentId,
+    }));
+
+    const [coalesced] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, qaAgentId));
+
+    expect(coalesced).toEqual(
+      expect.objectContaining({
+        agentId: qaAgentId,
+        companyId,
+        status: "coalesced",
+        reason: "issue_execution_same_name",
+        runId: qaRunId,
+      }),
+    );
+  });
+
+  it("rejects terminal same-agent run ids at checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-13T13:00:00.000Z"),
+      finishedAt: new Date("2026-04-13T13:05:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run must not checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo"], terminalRunId),
+    ).rejects.toThrow("Issue checkout conflict");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "todo",
+        checkoutRunId: null,
+        executionRunId: null,
+      }),
+    );
   });
 
   it("promotes deferred wakeups after clearing terminal checkout ownership", async () => {
@@ -2144,6 +2291,147 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
         assigneeAgentId: staffAgentId,
         checkoutRunId: promotedRunId,
         executionRunId: promotedRunId,
+      }),
+    );
+  });
+
+  it("promotes deferred wakeups after an owning run explicitly releases before finishing", async () => {
+    const companyId = randomUUID();
+    const qaAgentId = randomUUID();
+    const staffAgentId = randomUUID();
+    const qaRunId = randomUUID();
+    const staffBlockerRunId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const issueId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QA Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: staffAgentId,
+        companyId,
+        name: "Staff Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: qaRunId,
+        companyId,
+        agentId: qaAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {},
+        startedAt: new Date("2026-04-13T13:10:00.000Z"),
+      },
+      {
+        id: staffBlockerRunId,
+        companyId,
+        agentId: staffAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId: blockerIssueId },
+        startedAt: new Date("2026-04-13T13:10:30.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Deferred wakeup should promote after explicit release",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: staffAgentId,
+      checkoutRunId: qaRunId,
+      executionRunId: qaRunId,
+      executionAgentNameKey: "qa-engineer",
+      executionLockedAt: new Date("2026-04-13T13:10:00.000Z"),
+    });
+
+    await expect(heartbeat.wakeup(staffAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+    })).resolves.toBeNull();
+
+    const released = await svc.release(issueId, {
+      actorAgentId: qaAgentId,
+      actorRunId: qaRunId,
+    });
+
+    expect(released).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_review",
+        assigneeAgentId: staffAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+      }),
+    );
+
+    const promotedRun = await heartbeat.promoteDeferredIssueWakeupForIssue(issueId, companyId);
+
+    expect(promotedRun).toEqual(
+      expect.objectContaining({
+        agentId: staffAgentId,
+        status: "queued",
+      }),
+    );
+
+    const [promotedWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, staffAgentId));
+
+    expect(promotedWake).toEqual(
+      expect.objectContaining({
+        status: "queued",
+        reason: "issue_execution_promoted",
+        runId: promotedRun?.id,
+      }),
+    );
+
+    const promotedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(promotedIssue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_review",
+        assigneeAgentId: staffAgentId,
+        checkoutRunId: null,
+        executionRunId: promotedRun?.id,
+        executionAgentNameKey: "staff engineer",
       }),
     );
   });

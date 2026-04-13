@@ -984,6 +984,84 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
   });
 
+  it("rejects agent checkout when the run header is a terminal same-agent run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "terminal-agent-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "test key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-13T13:00:00.000Z"),
+      finishedAt: new Date("2026-04-13T13:05:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run checkout should fail",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const res = await request(createRouteApp({ deploymentMode: "authenticated" }))
+      .post(`/api/issues/${issueId}/checkout`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", terminalRunId)
+      .send({
+        agentId,
+        expectedStatuses: ["todo"],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Issue checkout conflict",
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      status: "todo",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    }));
+  });
+
   it("rejects direct agent checkout when checkout is unlocked but execution belongs to a foreign live run", async () => {
     const { issueId, assignedAgentId, foreignRunId, agentToken, lockedAt } =
       await seedForeignExecutionFixture({

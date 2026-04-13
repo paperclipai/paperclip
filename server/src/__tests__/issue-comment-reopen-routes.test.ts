@@ -25,6 +25,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  promoteDeferredIssueWakeupForIssue: vi.fn(async () => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({

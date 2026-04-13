@@ -37,6 +37,7 @@ vi.mock("../services/index.js", () => ({
         }
         : null),
     reportRunActivity: vi.fn(async () => undefined),
+    promoteDeferredIssueWakeupForIssue: vi.fn(async () => null),
   }),
   instanceSettingsService: () => ({}),
   issueApprovalService: () => ({}),
