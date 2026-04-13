@@ -997,8 +997,8 @@ export function issueService(db: Db) {
           WHEN ${titleContainsMatch} THEN 1
           WHEN ${identifierStartsWithMatch} THEN 2
           WHEN ${identifierContainsMatch} THEN 3
-          WHEN ${descriptionContainsMatch} THEN 4
-          WHEN ${commentContainsMatch} THEN 5
+          WHEN ${commentContainsMatch} THEN 4
+          WHEN ${descriptionContainsMatch} THEN 5
           ELSE 6
         END
       `;

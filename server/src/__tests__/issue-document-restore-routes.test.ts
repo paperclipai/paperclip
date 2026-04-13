@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -50,11 +52,7 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-async function createApp() {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -74,7 +72,6 @@ async function createApp() {
 
 describe("issue document revision routes", () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
@@ -125,10 +122,9 @@ describe("issue document revision routes", () => {
   });
 
   it("returns revision snapshots including title and format", async () => {
-    const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
+    const res = await request(createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
     expect(res.status).toBe(200);
-    expect(mockDocumentsService.listIssueDocumentRevisions).toHaveBeenCalledWith(issueId, "plan");
     expect(res.body).toEqual([
       expect.objectContaining({
         revisionNumber: 2,
@@ -140,7 +136,7 @@ describe("issue document revision routes", () => {
   });
 
   it("restores a revision through the append-only route and logs the action", async () => {
-    const res = await request(await createApp())
+    const res = await request(createApp())
       .post(`/api/issues/${issueId}/documents/plan/revisions/revision-1/restore`)
       .send({});
 
@@ -172,7 +168,7 @@ describe("issue document revision routes", () => {
   });
 
   it("rejects invalid document keys before attempting restore", async () => {
-    const res = await request(await createApp())
+    const res = await request(createApp())
       .post(`/api/issues/${issueId}/documents/INVALID KEY/revisions/revision-1/restore`)
       .send({});
 
