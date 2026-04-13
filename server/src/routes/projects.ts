@@ -283,7 +283,7 @@ export function projectRoutes(db: Db) {
 
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
-      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can manage local runtime services" });
+      res.status(422).json({ error: "Project workspace needs a local path before Toca da IA can manage local runtime services" });
       return;
     }
 

@@ -114,7 +114,7 @@ export function CodexLocalConfigFields({
         <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           {fastModeSupported
             ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
-            : `Fast mode currently only works on ${supportedModelsLabel}. Paperclip will ignore this toggle until the model is switched.`}
+            : `Fast mode currently only works on ${supportedModelsLabel}. Toca da IA will ignore this toggle until the model is switched.`}
         </div>
       )}
       <LocalWorkspaceRuntimeFields

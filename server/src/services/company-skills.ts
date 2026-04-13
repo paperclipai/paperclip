@@ -1341,8 +1341,8 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
+      editableReason: "Bundled Toca da IA skills are read-only.",
+      sourceLabel: "Toca da IA bundled",
       sourceBadge: "paperclip",
       sourcePath: null,
     };
@@ -1391,7 +1391,7 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
+        sourceLabel: "Toca da IA workspace",
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
