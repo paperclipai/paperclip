@@ -9,6 +9,8 @@ import {
 } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
 import { runPlaywrightSpec, type RunPlaywrightResult } from "./runners/playwright-runner.js";
+import { runApiSpec, type RunApiSpecResult } from "./runners/api-runner.js";
+import { runMigrationSpec, type RunMigrationSpecResult } from "./runners/migration-runner.js";
 import { traceUploader, type TraceUploader } from "./trace-uploader.js";
 
 export type DeliverableType =
@@ -57,8 +59,24 @@ export interface VerificationWorkerOptions {
   retryBudget?: number;
   retryDelayMs?: number;
   runUrl?: typeof runPlaywrightSpec;
+  runApi?: typeof runApiSpec;
+  runMigration?: typeof runMigrationSpec;
   uploader?: TraceUploader;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Normalized dispatch result for all runner types. Each runner returns its own richer type, but
+ * the worker only needs status + optional traceDir (url runner only) + durationMs + failure/unavailable
+ * details. The `traceDir` is set only when the runner has a Playwright trace to upload.
+ */
+interface NormalizedRunResult {
+  status: "passed" | "failed" | "unavailable";
+  durationMs: number;
+  traceDir?: string;
+  deployedSha?: string;
+  failureSummary?: string;
+  unavailableReason?: string;
 }
 
 export interface VerificationWorker {
@@ -78,6 +96,8 @@ export function createVerificationWorker(
     retryBudget = 3,
     retryDelayMs = 60_000,
     runUrl = runPlaywrightSpec,
+    runApi = runApiSpec,
+    runMigration = runMigrationSpec,
     uploader = traceUploader(db, storage),
     sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = options;
@@ -125,26 +145,73 @@ export function createVerificationWorker(
     return row;
   }
 
-  async function dispatchRunner(input: RunSpecInput): Promise<RunPlaywrightResult> {
-    if (input.deliverableType !== "url") {
+  async function dispatchRunner(input: RunSpecInput): Promise<NormalizedRunResult> {
+    if (input.deliverableType === "url") {
+      if (!input.targetUrl || !input.targetSha) {
+        return {
+          status: "unavailable",
+          durationMs: 0,
+          unavailableReason: "url deliverables require targetUrl and targetSha",
+        };
+      }
+      const result = await runUrl({
+        issueId: input.issueId,
+        specPath: input.specPath,
+        context: input.context ?? "anonymous",
+        targetSha: input.targetSha,
+        targetUrl: input.targetUrl,
+      });
+      if (result.status === "unavailable") {
+        return {
+          status: "unavailable",
+          durationMs: 0,
+          unavailableReason: result.unavailableReason,
+        };
+      }
+      if (result.status === "passed") {
+        return {
+          status: "passed",
+          durationMs: Math.floor(result.durationMs),
+          traceDir: result.traceDir,
+          deployedSha: result.deployedSha,
+        };
+      }
       return {
-        status: "unavailable",
-        unavailableReason: `deliverable_type ${input.deliverableType} not yet supported (Phase 1 only handles url)`,
+        status: "failed",
+        durationMs: Math.floor(result.durationMs),
+        traceDir: result.traceDir,
+        deployedSha: result.deployedSha,
+        failureSummary: result.failureSummary,
       };
     }
-    if (!input.targetUrl || !input.targetSha) {
-      return {
-        status: "unavailable",
-        unavailableReason: "url deliverables require targetUrl and targetSha",
-      };
+
+    if (input.deliverableType === "api") {
+      const result = await runApi({ issueId: input.issueId, specPath: input.specPath });
+      if (result.status === "unavailable") {
+        return { status: "unavailable", durationMs: 0, unavailableReason: result.unavailableReason };
+      }
+      if (result.status === "passed") {
+        return { status: "passed", durationMs: result.durationMs };
+      }
+      return { status: "failed", durationMs: result.durationMs, failureSummary: result.failureSummary };
     }
-    return runUrl({
-      issueId: input.issueId,
-      specPath: input.specPath,
-      context: input.context ?? "anonymous",
-      targetSha: input.targetSha,
-      targetUrl: input.targetUrl,
-    });
+
+    if (input.deliverableType === "migration") {
+      const result = await runMigration({ issueId: input.issueId, specPath: input.specPath, db });
+      if (result.status === "unavailable") {
+        return { status: "unavailable", durationMs: 0, unavailableReason: result.unavailableReason };
+      }
+      if (result.status === "passed") {
+        return { status: "passed", durationMs: result.durationMs };
+      }
+      return { status: "failed", durationMs: result.durationMs, failureSummary: result.failureSummary };
+    }
+
+    return {
+      status: "unavailable",
+      durationMs: 0,
+      unavailableReason: `deliverable_type ${input.deliverableType} not yet supported by verification worker`,
+    };
   }
 
   return {
@@ -163,22 +230,23 @@ export function createVerificationWorker(
         totalAttempts += 1;
         const runRow = await recordAttempt(input, totalAttempts);
         const startedAt = Date.now();
-        let runResult: RunPlaywrightResult;
+        let runResult: NormalizedRunResult;
         try {
           runResult = await dispatchRunner(input);
         } catch (err) {
           runResult = {
             status: "unavailable",
+            durationMs: Math.floor(Date.now() - startedAt),
             unavailableReason: err instanceof Error ? err.message : String(err),
           };
         }
 
         if (runResult.status === "unavailable") {
-          lastUnavailableReason = runResult.unavailableReason;
+          lastUnavailableReason = runResult.unavailableReason ?? "unknown";
           await finalizeAttempt(runRow.id, {
             status: "unavailable",
             unavailableReason: runResult.unavailableReason,
-            durationMs: Date.now() - startedAt,
+            durationMs: Math.floor(Date.now() - startedAt),
           });
           // Unavailable attempts do NOT consume the retry budget, but DO consume the safety ceiling.
           if (retryDelayMs > 0) await sleep(retryDelayMs);
@@ -188,7 +256,9 @@ export function createVerificationWorker(
         failedAttempts += 1;
 
         let traceAssetId: string | null = null;
-        if (runResult.status === "passed" || runResult.status === "failed") {
+        // Trace upload only applies to runners that produced a traceDir (url runner).
+        // API/migration runners have no trace artifact — the pass/fail verdict itself is the evidence.
+        if (runResult.traceDir) {
           try {
             const upload = await uploader.upload({
               companyId,
@@ -207,7 +277,6 @@ export function createVerificationWorker(
           }
         }
 
-        // Defensive: Playwright's stats.duration can be a float; duration_ms column is integer.
         const durationMsInt = Math.floor(runResult.durationMs);
 
         if (runResult.status === "passed") {
@@ -227,7 +296,7 @@ export function createVerificationWorker(
         }
 
         // failed
-        lastFailureSummary = runResult.failureSummary;
+        lastFailureSummary = runResult.failureSummary ?? "unknown failure";
         lastFailureRunId = runRow.id;
         lastFailureAssetId = traceAssetId;
         lastFailureDurationMs = durationMsInt;

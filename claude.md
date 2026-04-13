@@ -237,11 +237,12 @@ docker exec paperclip-server-1 bash -c '
     -f description="PASS – ..." -f target_url="<PR URL>"
   ```
   **Required secret**: `MINIMAX_API_KEY` must be configured in GitHub Actions secrets.
-- **Deploy Vultr auto-triggers on push to master (2026-04-04)**: `deploy-vultr.yml` now triggers automatically when code is pushed to master (including auto-merges). Manual fallback still available:
+- **Deploy Vultr auto-triggers on push to master (2026-04-04)**: `deploy-vultr.yml` is configured to trigger automatically when code is pushed to master (including auto-merges). Manual fallback still available:
   ```bash
   gh workflow run deploy-vultr.yml --repo Viraforge/paperclip --ref master
   ```
   The concurrency guard (`cancel-in-progress: false`) ensures rapid merges queue safely — each deploy waits for the previous one to complete.
+- **⚠️ DEPLOY AUTO-TRIGGER CURRENTLY BROKEN (2026-04-13)**: Observed during verification system phase 1 rollout: after `merge-automation.yml` auto-merged PRs #290, #292, and #293 to master, `deploy-vultr.yml` did NOT automatically kick off. Every merge required manual `gh workflow run deploy-vultr.yml --ref master` to deploy. The chained workflow (`workflow_run` trigger) appears not to be firing reliably. Until this is diagnosed and fixed, **every merge to master must be followed by a manual deploy trigger**. This matches the "we've been having deployment issues" warning in the root instructions.
 - **`docker.yml` is tags-only**: The general Docker workflow only triggers on version tags (`v*`) and manual dispatch. It does NOT build on push to master — `deploy-vultr.yml` handles production image builds with `Dockerfile.vps`.
 - **Drift check validates deploy health**: `deploy-drift-check.yml` runs on a schedule. With auto-deploy enabled, a failing drift check means the deploy workflow FAILED, not that someone forgot to deploy. Investigate the failed deploy run.
 - **Lockfile changes must go through `refresh-lockfile.yml`**: Never commit `pnpm-lock.yaml` manually in a PR — `pr-policy` will block it. The correct path when the lockfile is stale:
