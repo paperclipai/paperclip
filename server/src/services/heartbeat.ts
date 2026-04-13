@@ -95,6 +95,7 @@ const startLocksByAgent = new Map<string, Promise<void>>();
 /**
  * Returns available memory in bytes.
  * On Linux, reads MemAvailable from /proc/meminfo (includes reclaimable page cache).
+ * On macOS, uses vm_stat to sum free + inactive + speculative pages (mirrors Linux MemAvailable).
  * Falls back to os.freemem() on other platforms.
  */
 async function getAvailableMemBytes(): Promise<number> {
@@ -103,6 +104,26 @@ async function getAvailableMemBytes(): Promise<number> {
       const meminfo = await fs.readFile("/proc/meminfo", "utf8");
       const match = meminfo.match(/^MemAvailable:\s+(\d+) kB/m);
       if (match) return parseInt(match[1], 10) * 1024;
+    } catch {
+      // fall through to os.freemem()
+    }
+  }
+  if (process.platform === "darwin") {
+    try {
+      // vm_stat reports counts in pages; page size varies (typically 16384 on Apple Silicon, 4096 on Intel).
+      const { stdout } = await execFile("vm_stat");
+      const pageSizeMatch = stdout.match(/page size of (\d+) bytes/);
+      const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 4096;
+      const parsePages = (key: string): number => {
+        const m = stdout.match(new RegExp(`${key}:\\s+(\\d+)\\.`));
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      // Free + inactive + speculative ≈ macOS equivalent of Linux MemAvailable
+      const availPages =
+        parsePages("Pages free") +
+        parsePages("Pages inactive") +
+        parsePages("Pages speculative");
+      return availPages * pageSize;
     } catch {
       // fall through to os.freemem()
     }
