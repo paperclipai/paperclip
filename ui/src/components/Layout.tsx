@@ -7,7 +7,7 @@ import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
-import { GitChangesPanel } from "./GitChangesPanel";
+import { WorkspacePanel } from "./WorkspacePanel";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { CommandPalette } from "./CommandPalette";
 import { NewIssueDialog } from "./NewIssueDialog";
@@ -479,7 +479,7 @@ export function Layout() {
               )}
             </main>
             <PropertiesPanel />
-            {gitPanelOpen && <GitChangesPanel onClose={toggleGitPanel} />}
+            {gitPanelOpen && <WorkspacePanel onClose={toggleGitPanel} />}
           </div>
         </div>
       </div>
