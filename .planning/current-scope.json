@@ -1,11 +1,11 @@
 {
   "files": [
-    "server/src/routes/agents.ts",
+    "ui/src/pages/IssueDetail.tsx",
     ".planning/current-scope.json",
     ".planning/baseline.json"
   ],
-  "source": "surgeon_brief conflict repair addendum",
+  "source": "2026-04-13 live PR refresh after master advanced",
   "paperclipIssue": "AET-24",
   "linearTicket": "AET-273",
-  "scope": "resolve PR #3312 merge conflict against origin/master without broadening behavior"
+  "scope": "refresh PR #3312 against current origin/master, resolve the IssueDetail.tsx conflict, and preserve AET-273 stale-run recovery plus current master issue-navigation behavior"
 }

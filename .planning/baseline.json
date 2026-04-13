@@ -1,11 +1,16 @@
 {
-  "timestamp": "2026-04-11T15:24:00Z",
+  "timestamp": "2026-04-13T04:04:07Z",
   "worktree": "/Users/macbook/Developer/paperclip/.worktrees/aet-273-thread-resume-rollout",
   "branch": "codex/aet-273-thread-resume-rollout",
-  "baseline": "pre-conflict-repair",
-  "head": "5d36c55799147c63ab620413fbad1929bdabbc02",
-  "originMaster": "b649bd454fce0c5d9aed64e6b75eb302b5d255ba",
+  "baseline": "pre-2026-04-13-conflict-refresh",
+  "head": "a9e0e69aa8ff7806895d83ae68c6b8aa34ebf7c8",
+  "originMaster": "d6b06788f6efacb002791c1a60b4889d7bfdb22d",
   "currentFocus": "missing",
   "hygieneAudit": "pass",
-  "tests": null
+  "tests": {
+    "focused": "pnpm exec vitest run server/src/__tests__/agent-live-run-routes.test.ts server/src/__tests__/issue-active-run-route.test.ts server/src/__tests__/codex-local-execute.test.ts server/src/__tests__/heartbeat-comment-wake-batching.test.ts server/src/__tests__/workspace-runtime.test.ts ui/src/lib/issueActiveRun.test.ts ui/src/lib/issueDetailCache.test.ts ui/src/lib/navigation-scroll.test.ts ui/src/components/IssueRow.test.tsx -- pass, 9 files, 73 tests",
+    "typecheck": "pnpm -r typecheck -- pass",
+    "full": "pnpm test:run -- pass, 232 files, 1268 tests passed, 1 skipped",
+    "build": "pnpm build -- pass with existing Vite large chunk warning"
+  }
 }
