@@ -2158,6 +2158,7 @@ export function IssueDetail() {
                 </div>
               ) : null}
               <IssueChatThread
+                key={issue.id}
                 composerRef={commentComposerRef}
                 comments={commentsWithRunMeta}
                 feedbackVotes={feedbackVotes}
