@@ -340,7 +340,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", "");
+    args.push("--prompt", prompt);
     return args;
   };
 
@@ -353,7 +353,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd,
         commandNotes,
         commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? '""' : value
+          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
         )),
         env: loggedEnv,
         prompt,
@@ -369,7 +369,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
-      stdin: prompt,
     });
     return {
       proc,

@@ -83,6 +83,12 @@ function registerModuleMocks() {
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));
 
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: vi.fn(() => ({
+      getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+    })),
+  }));
+
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(() => mockAdapter),
     findActiveServerAdapter: vi.fn(() => mockAdapter),

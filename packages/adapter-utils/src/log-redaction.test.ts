@@ -18,7 +18,7 @@ describe("redactHomePathUserSegments", () => {
 
   it("redacts Windows home paths", () => {
     const result = redactHomePathUserSegments("C:\\Users\\Admin\\Desktop");
-    expect(result).toBe("C:\\Users\\A****/Desktop");
+    expect(result).toBe("C:\\Users\\A****\\Desktop");
   });
 
   it("redacts multiple occurrences", () => {

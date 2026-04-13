@@ -115,9 +115,8 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("yolo");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(["", '""']).toContain(promptArg);
-      expect(capture.stdin).toContain("Follow the paperclip heartbeat.");
-      expect(capture.stdin).toContain("Paperclip runtime note:");
+      expect(promptArg).toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).toContain("Paperclip runtime note:");
       expect(capture.paperclipEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
