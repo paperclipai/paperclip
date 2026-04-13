@@ -5,6 +5,8 @@ import pytest
 from deerflow.agents.middlewares.sandbox_audit_middleware import (
     RiskLevel,
     classify_command,
+    split_compound_command,
+    classify_compound_command,
 )
 
 
@@ -62,3 +64,31 @@ class TestClassifyCommand:
 
     def test_grep(self):
         assert classify_command("grep -r pattern .") == RiskLevel.LOW
+
+
+class TestSplitCompoundCommand:
+    def test_simple_command(self):
+        assert split_compound_command("ls -la") == ["ls -la"]
+
+    def test_and_operator(self):
+        assert split_compound_command("cd /tmp && rm -rf /") == ["cd /tmp", "rm -rf /"]
+
+    def test_or_operator(self):
+        assert split_compound_command("test -f foo || echo missing") == ["test -f foo", "echo missing"]
+
+    def test_semicolon(self):
+        assert split_compound_command("echo a; echo b") == ["echo a", "echo b"]
+
+    def test_pipe(self):
+        assert split_compound_command("cat file | grep pattern") == ["cat file", "grep pattern"]
+
+
+class TestClassifyCompoundCommand:
+    def test_safe_compound(self):
+        assert classify_compound_command("cd /tmp && ls") == RiskLevel.LOW
+
+    def test_high_risk_in_compound(self):
+        assert classify_compound_command("ls && rm -rf /") == RiskLevel.HIGH
+
+    def test_medium_in_compound(self):
+        assert classify_compound_command("ls && pip install foo") == RiskLevel.MEDIUM

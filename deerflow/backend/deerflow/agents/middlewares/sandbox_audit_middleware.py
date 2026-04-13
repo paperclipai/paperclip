@@ -58,3 +58,29 @@ def classify_command(command: str) -> RiskLevel:
         if pattern.search(command):
             return RiskLevel.MEDIUM
     return RiskLevel.LOW
+
+
+# Compound command separators
+_COMPOUND_SEPARATORS = re.compile(r"\s*(?:&&|\|\||[;|])\s*")
+
+
+def split_compound_command(command: str) -> list[str]:
+    """Split a compound command into individual segments."""
+    parts = _COMPOUND_SEPARATORS.split(command.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def classify_compound_command(command: str) -> RiskLevel:
+    """Classify a compound command. Returns the highest risk of any segment."""
+    segments = split_compound_command(command)
+    if not segments:
+        return RiskLevel.LOW
+    risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+    highest = RiskLevel.LOW
+    for segment in segments:
+        level = classify_command(segment)
+        if risk_order[level] > risk_order[highest]:
+            highest = level
+        if highest == RiskLevel.HIGH:
+            break
+    return highest
