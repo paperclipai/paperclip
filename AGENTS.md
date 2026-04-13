@@ -84,6 +84,9 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
+6. PR-only merges to protected branches.
+Never commit directly to `main` or `master` (or any branch configured as protected in GitHub). All changes must land through a pull request and be merged only after required approvals/checks pass. If branch protection is missing or misconfigured, treat that as a blocker and escalate rather than pushing directly.
+
 ## 6. Database Change Workflow
 
 When changing data model:
