@@ -335,17 +335,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : null;
 
   try {
-    const inputMessages: Array<{ role: string; content: string }> = [];
-    if (systemPrompt) inputMessages.push({ role: "system", content: systemPrompt });
-    inputMessages.push({ role: "user", content: userPrompt });
-
     const result = openrouter.callModel({
       model,
-      input: inputMessages,
+      input: userPrompt,
+      instructions: systemPrompt || undefined,
       tools,
       stopWhen: stepCountIs(maxSteps),
       temperature,
-      max_tokens: maxTokens,
+      maxOutputTokens: maxTokens,
     });
 
     // Stream tool calls to log
@@ -363,9 +360,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     responseText = await result.getText();
     const response = await result.getResponse();
-    inputTokens = (response as Record<string, unknown> & { usage?: { prompt_tokens?: number } }).usage?.prompt_tokens ?? 0;
-    outputTokens = (response as Record<string, unknown> & { usage?: { completion_tokens?: number } }).usage?.completion_tokens ?? 0;
-    usedModel = (response as Record<string, unknown> & { model?: string }).model ?? model;
+    inputTokens = response.usage?.inputTokens ?? 0;
+    outputTokens = response.usage?.outputTokens ?? 0;
+    usedModel = model;
 
     if (timeoutHandle) clearTimeout(timeoutHandle);
 
