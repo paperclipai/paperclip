@@ -233,15 +233,21 @@ function runInBackground(
   });
 }
 
-// ─── Claude CLI JSON stream filtering ────────────────────────────────────────
+// ─── Output filtering ─────────────────────────────────────────────────────────
 //
-// Claude CLI outputs structured JSON events to stdout (one per line):
-//   {"type":"system","subtype":"init",...}
-//   {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."},...}
-//   {"type":"tool_use",...}
-// etc.
+// The agent stdout contains multiple kinds of noise:
 //
-// We extract only human-readable text and discard all technical events.
+// 1. Claude CLI JSON stream events (one JSON object per line):
+//      {"type":"system","subtype":"init",...}
+//      {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."},...}
+//
+// 2. Raw tool_result dumps — API responses printed as escaped JSON strings:
+//      [{"id":"31d16...","companyId":"752d12a0...","body":\"...\",...}]
+//      "stdout":"[{\"id\":\"...
+//
+// 3. Skill documentation leaked into stdout (SKILL.md content).
+//
+// Strategy: extract only natural-language text; discard everything else.
 
 // JSON event types that carry no user-visible text
 const JSON_NOISE_TYPES = new Set([
@@ -251,21 +257,39 @@ const JSON_NOISE_TYPES = new Set([
   "ping", "error",
 ]);
 
+/** Returns true if this chunk is a raw API/tool-result JSON dump. */
+function isToolResultDump(text: string): boolean {
+  const t = text.trim();
+  // Escaped JSON (tool result printed as a string)
+  const escapedQuotes = (t.match(/\\"/g) ?? []).length;
+  if (escapedQuotes > 10) return true;
+  // Large JSON arrays/objects starting with [ or {
+  if ((t.startsWith("[{") || t.startsWith("{\"")) && t.length > 200) return true;
+  // Looks like a serialised Paperclip issue/comment object
+  if (t.includes('"companyId"') || t.includes('"issueId"') || t.includes('"authorAgentId"')) return true;
+  // tool_use_result wrapper format
+  if (t.includes('"tool_use_result"') || t.includes('"stdout":"[{')) return true;
+  return false;
+}
+
 function extractHumanText(chunk: string): string {
   const trimmed = chunk.trim();
   if (!trimmed) return "";
 
-  // Fast path: single-line JSON event
+  // Reject tool-result dumps immediately
+  if (isToolResultDump(trimmed)) return "";
+
+  // Fast path: single-line JSON event (Claude CLI stream)
   if (trimmed.startsWith("{")) {
     try {
       const event = JSON.parse(trimmed) as Record<string, unknown>;
       return extractFromJsonEvent(event);
     } catch {
-      // Not single-line JSON — fall through to line-by-line processing
+      // Not valid JSON — fall through to line-by-line
     }
   }
 
-  // Line-by-line: each line may be a JSON event or plain text
+  // Line-by-line processing
   const lines = chunk.split(/\r?\n/);
   const parts: string[] = [];
 
@@ -273,6 +297,10 @@ function extractHumanText(chunk: string): string {
     const lt = line.trim();
     if (!lt) { parts.push(""); continue; }
 
+    // Skip escaped JSON / tool result lines
+    if (isToolResultDump(lt)) continue;
+
+    // Try to parse as a Claude CLI JSON event
     if (lt.startsWith("{")) {
       try {
         const event = JSON.parse(lt) as Record<string, unknown>;
@@ -294,10 +322,8 @@ function extractFromJsonEvent(event: Record<string, unknown>): string {
   const type = event.type as string | undefined;
   if (!type) return "";
 
-  // Discard known noise types
   if (JSON_NOISE_TYPES.has(type)) return "";
 
-  // Extract text from streaming delta events
   if (type === "content_block_delta") {
     const delta = event.delta as Record<string, unknown> | undefined;
     if (delta?.type === "text_delta" && typeof delta.text === "string") {
@@ -306,7 +332,6 @@ function extractFromJsonEvent(event: Record<string, unknown>): string {
     return "";
   }
 
-  // Extract text from assistant message events
   if (type === "message") {
     const content = event.content;
     if (Array.isArray(content)) {
@@ -317,7 +342,6 @@ function extractFromJsonEvent(event: Record<string, unknown>): string {
     }
   }
 
-  // Unknown JSON type — discard (better safe than spammy)
   return "";
 }
 
@@ -332,8 +356,12 @@ function isTechnicalTelegramNoise(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  // JSON event lines from Claude CLI — always noise
+  // JSON event lines from Claude CLI
   if (trimmed.startsWith("{") && trimmed.includes('"type"')) return true;
+  // Escaped JSON / tool result dumps
+  if (isToolResultDump(trimmed)) return true;
+  // Very long lines are almost always API data, not prose
+  if (trimmed.length > 400) return true;
 
   return (
     trimmed.startsWith("[paperclip]") ||
