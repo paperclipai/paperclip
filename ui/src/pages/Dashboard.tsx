@@ -12,6 +12,10 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
+import { GraphRAGOpsBoard } from "../components/GraphRAGOpsBoard";
+import { MarketingCreativeOpsBoard } from "../components/MarketingCreativeOpsBoard";
+import { MissionControlCompanyBoard } from "../components/MissionControlCompanyBoard";
+import { TinkerAtroposOpsBoard } from "../components/TinkerAtroposOpsBoard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 
@@ -204,6 +208,22 @@ export function Dashboard() {
             Create one here
           </button>
         </div>
+      )}
+
+      {selectedCompanyId === "ec03757a-f470-4453-89c1-5a7a1a6640db" && (
+        <GraphRAGOpsBoard companyId={selectedCompanyId!} />
+      )}
+
+      {selectedCompanyId === "742a8ac1-96c7-467d-9b13-5266912aed9a" && (
+        <MarketingCreativeOpsBoard companyId={selectedCompanyId!} />
+      )}
+
+      {selectedCompanyId === "3014ef48-d6c5-4ce2-90b7-5e05e6483686" && (
+        <MissionControlCompanyBoard companyId={selectedCompanyId!} />
+      )}
+
+      {selectedCompanyId === "162e6af8-809e-4d24-b270-213f5603cf7b" && (
+        <TinkerAtroposOpsBoard companyId={selectedCompanyId!} />
       )}
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
