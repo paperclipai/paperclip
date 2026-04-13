@@ -53,3 +53,8 @@ tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
 cowork-inbox/
+
+# Temporal scratch / agent session logs
+docs/scratch/
+logs/
+server/logs/
