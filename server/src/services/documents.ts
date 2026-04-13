@@ -171,6 +171,7 @@ export function documentService(db: Db) {
       baseRevisionId?: string | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
+      createdByRunId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
@@ -231,6 +232,7 @@ export function documentService(db: Db) {
                 changeSummary: input.changeSummary ?? null,
                 createdByAgentId: input.createdByAgentId ?? null,
                 createdByUserId: input.createdByUserId ?? null,
+                createdByRunId: input.createdByRunId ?? null,
                 createdAt: now,
               })
               .returning();
@@ -304,6 +306,7 @@ export function documentService(db: Db) {
               changeSummary: input.changeSummary ?? null,
               createdByAgentId: input.createdByAgentId ?? null,
               createdByUserId: input.createdByUserId ?? null,
+              createdByRunId: input.createdByRunId ?? null,
               createdAt: now,
             })
             .returning();

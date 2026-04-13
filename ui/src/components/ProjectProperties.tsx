@@ -7,6 +7,7 @@ import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
@@ -16,8 +17,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
+import { EnvVarEditor } from "./EnvVarEditor";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -42,6 +45,7 @@ export type ProjectConfigFieldKey =
   | "description"
   | "status"
   | "goals"
+  | "env"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
   | "execution_workspace_base_ref"
@@ -105,9 +109,9 @@ function PropertyRow({
   valueClassName?: string;
 }) {
   return (
-    <div className={cn("flex gap-3 py-1.5", alignStart ? "items-start" : "items-center")}>
-      <div className="shrink-0 w-20">{label}</div>
-      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5", valueClassName)}>
+    <div className={cn("flex gap-3 py-1.5 items-start")}>
+      <div className="shrink-0 w-20 mt-0.5">{label}</div>
+      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5 flex-wrap", valueClassName)}>
         {children}
       </div>
     </div>
@@ -242,6 +246,22 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      return secretsApi.create(selectedCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
   });
 
   const linkedGoalIds = project.goalIds.length > 0
@@ -343,11 +363,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const isGitHubRepoUrl = (value: string) => {
+  const looksLikeRepoUrl = (value: string) => {
     try {
       const parsed = new URL(value);
-      const host = parsed.hostname.toLowerCase();
-      if (host !== "github.com" && host !== "www.github.com") return false;
+      if (parsed.protocol !== "https:") return false;
       const segments = parsed.pathname.split("/").filter(Boolean);
       return segments.length >= 2;
     } catch {
@@ -432,8 +451,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       persistCodebase({ repoUrl: null });
       return;
     }
-    if (!isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub repo URL.");
+    if (!looksLikeRepoUrl(repoUrl)) {
+      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
       return;
     }
     setWorkspaceError(null);
@@ -493,6 +512,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <InlineEditor
               value={project.description ?? ""}
               onSave={(description) => commitField("description", { description })}
+              nullable
               as="p"
               className="text-sm text-muted-foreground"
               placeholder="Add a description..."
@@ -531,7 +551,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   key={goal.id}
                   className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
                 >
-                  <Link to={`/goals/${goal.id}`} className="hover:underline max-w-[220px] truncate">
+                  <Link to={`/goals/${goal.id}`} className="hover:underline break-words min-w-0">
                     {goal.title}
                   </Link>
                   {(onUpdate || onFieldUpdate) && (
@@ -581,6 +601,26 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </Popover>
           )}
         </PropertyRow>
+        <PropertyRow
+          label={<FieldLabel label="Env" state={fieldState("env")} />}
+          alignStart
+          valueClassName="space-y-2"
+        >
+          <div className="space-y-2">
+            <EnvVarEditor
+              value={project.env ?? {}}
+              secrets={availableSecrets}
+              onCreateSecret={async (name, value) => {
+                const created = await createSecret.mutateAsync({ name, value });
+                return created;
+              }}
+              onChange={(env) => commitField("env", { env: env ?? null })}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
+            </p>
+          </div>
+        </PropertyRow>
         <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
           <span className="text-sm">{formatDate(project.createdAt)}</span>
         </PropertyRow>
@@ -628,13 +668,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
                     >
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{formatRepoUrl(codebase.repoUrl)}</span>
+                      <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
                       <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   ) : (
                     <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{codebase.repoUrl}</span>
+                      <span className="break-all min-w-0">{codebase.repoUrl}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-1">
@@ -683,7 +723,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 space-y-1">
-                  <div className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                  <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
@@ -886,26 +926,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </div>
                   </div>
                   {onUpdate || onFieldUpdate ? (
-                    <button
-                      data-slot="toggle"
-                      className={cn(
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
-                      )}
-                      type="button"
-                      onClick={() =>
+                    <ToggleSwitch
+                      checked={executionWorkspacesEnabled}
+                      onCheckedChange={() =>
                         commitField(
                           "execution_workspace_enabled",
                           updateExecutionWorkspacePolicy({ enabled: !executionWorkspacesEnabled })!,
                         )}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                          executionWorkspacesEnabled ? "translate-x-4.5" : "translate-x-0.5",
-                        )}
-                      />
-                    </button>
+                    />
                   ) : (
                     <span className="text-xs text-muted-foreground">
                       {executionWorkspacesEnabled ? "Enabled" : "Disabled"}
@@ -925,14 +953,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           If disabled, new issues stay on the project's primary checkout unless someone opts in.
                         </div>
                       </div>
-                      <button
-                        data-slot="toggle"
-                        className={cn(
-                          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                          executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",
-                        )}
-                        type="button"
-                        onClick={() =>
+                      <ToggleSwitch
+                        checked={executionWorkspaceDefaultMode === "isolated_workspace"}
+                        onCheckedChange={() =>
                           commitField(
                             "execution_workspace_default_mode",
                             updateExecutionWorkspacePolicy({
@@ -942,16 +965,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                                   : "isolated_workspace",
                             })!,
                           )}
-                      >
-                        <span
-                          className={cn(
-                            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                            executionWorkspaceDefaultMode === "isolated_workspace"
-                              ? "translate-x-4.5"
-                              : "translate-x-0.5",
-                          )}
-                        />
-                      </button>
+                      />
                     </div>
 
                     <div className="border-t border-border/60 pt-2">

@@ -142,6 +142,11 @@
   label {
     touch-action: manipulation;
   }
+  /* Let font-mono (utilities layer) override for monospace editors */
+  .paperclip-mdxeditor [class*="_placeholder_"],
+  .paperclip-mdxeditor-content {
+    font-family: inherit;
+  }
 }
 
 @media (pointer: coarse) {
@@ -193,13 +198,24 @@
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
 }
+/* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
-  background: oklch(0.205 0 0) !important;
+  background: oklch(0.92 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0) !important;
+  background: oklch(0.7 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.6 0 0) !important;
+}
+/* Dark mode scrollbar on hover */
+.dark .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
+  background: oklch(0.205 0 0) !important;
+}
+.dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0 0) !important;
+}
+.dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
   background: oklch(0.5 0 0) !important;
 }
 
@@ -247,6 +263,67 @@
 @media (prefers-reduced-motion: reduce) {
   .activity-row-enter {
     animation: none;
+  }
+}
+
+/* Chain-of-thought reasoning line ticker animations.
+   Pure translate, no opacity — the overflow-hidden container clips.
+   Both keyframes share the same easing so the two spans move in lockstep. */
+@keyframes cot-line-slide-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@keyframes cot-line-slide-out {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-100%); }
+}
+
+.cot-line-enter {
+  animation: cot-line-slide-in 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.cot-line-exit {
+  animation: cot-line-slide-out 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cot-line-enter,
+  .cot-line-exit {
+    animation: none;
+  }
+}
+
+/* Shimmer text effect for active "Working" state — Cursor-style sweep */
+@keyframes shimmer-text-slide {
+  0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
+  100% { background-position: 0% center; }
+}
+
+.shimmer-text {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    -webkit-text-fill-color: unset;
+    background: none;
   }
 }
 
@@ -308,14 +385,12 @@
 }
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
-  font-family: inherit;
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
 
 .paperclip-mdxeditor-content {
-  font-family: inherit;
   font-size: inherit;
   line-height: inherit;
   color: inherit;

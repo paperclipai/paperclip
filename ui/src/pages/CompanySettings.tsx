@@ -1,5 +1,7 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -21,6 +23,8 @@ type AgentSnippetInput = {
   connectionCandidates?: string[] | null;
   testResolutionUrl?: string | null;
 };
+
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function CompanySettings() {
   const {
@@ -78,6 +82,27 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -392,6 +417,48 @@ export function CompanySettings() {
         </div>
       </div>
 
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Feedback Sharing
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label="Allow sharing voted AI outputs with Paperclip Labs"
+            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
+          />
+          <p className="text-sm text-muted-foreground">
+            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <div>
+              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+            </div>
+            {selectedCompany.feedbackDataSharingConsentAt ? (
+              <div>
+                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {selectedCompany.feedbackDataSharingConsentByUserId
+                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  : ""}
+              </div>
+            ) : (
+              <div>Sharing is currently disabled.</div>
+            )}
+            {FEEDBACK_TERMS_URL ? (
+              <a
+                href={FEEDBACK_TERMS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-foreground underline underline-offset-4"
+              >
+                Read our terms of service
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -482,16 +549,16 @@ export function CompanySettings() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/export">
+              <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Export
-              </a>
+              </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/import">
+              <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
-              </a>
+              </Link>
             </Button>
           </div>
         </div>

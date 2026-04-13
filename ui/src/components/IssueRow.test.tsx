@@ -7,8 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: React.ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({
+    children,
+    className,
+    disableIssueQuicklook: _disableIssueQuicklook,
+    issuePrefetch,
+    ...props
+  }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null }) => (
+    <a
+      className={className}
+      data-disable-issue-quicklook={_disableIssueQuicklook ? "true" : undefined}
+      data-issue-prefetch-id={issuePrefetch?.id}
+      {...props}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -108,6 +121,96 @@ describe("IssueRow", () => {
     expect(statusIcon).not.toBeNull();
     expect(statusIcon?.className).toContain("!border-muted-foreground");
     expect(statusIcon?.className).toContain("!text-muted-foreground");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("preserves the issue detail breadcrumb source and href in the link target", () => {
+    const root = createRoot(container);
+    const issue = createIssue();
+    const state = {
+      issueDetailBreadcrumb: { label: "Inbox", href: "/PAP/inbox/mine" },
+      issueDetailSource: "inbox",
+    };
+
+    act(() => {
+      root.render(<IssueRow issue={issue} issueLinkState={state} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toBe("/issues/PAP-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opts issue quicklook out for dense inbox rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("data-disable-issue-quicklook")).toBe("true");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes the visible row issue into the navigation prefetch path", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link?.getAttribute("data-issue-prefetch-id")).toBe("issue-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders titleSuffix inline after the issue title", () => {
+    const root = createRoot(container);
+    const issue = createIssue({ title: "Parent task" });
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={issue}
+          titleSuffix={<span data-testid="suffix">(3 sub-tasks)</span>}
+        />,
+      );
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2, .truncate");
+    expect(titleEl?.textContent).toContain("Parent task");
+    expect(titleEl?.textContent).toContain("(3 sub-tasks)");
+    expect(container.querySelector('[data-testid="suffix"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders without error when titleSuffix is omitted", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2, .truncate");
+    expect(titleEl?.textContent).toContain("Inbox item");
 
     act(() => {
       root.unmount();

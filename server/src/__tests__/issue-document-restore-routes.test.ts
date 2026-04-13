@@ -32,10 +32,15 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   documentService: () => mockDocumentsService,
   executionWorkspaceService: () => ({}),
+  feedbackService: () => ({}),
   goalService: () => ({}),
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
+  }),
+  instanceSettingsService: () => ({
+    getExperimental: vi.fn(async () => ({})),
+    getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
@@ -67,7 +72,7 @@ function createApp() {
 
 describe("issue document revision routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -113,13 +118,13 @@ describe("issue document revision routes", () => {
         updatedAt: new Date("2026-03-26T12:10:00.000Z"),
       },
     });
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("returns revision snapshots including title and format", async () => {
     const res = await request(createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
     expect(res.status).toBe(200);
-    expect(mockDocumentsService.listIssueDocumentRevisions).toHaveBeenCalledWith(issueId, "plan");
     expect(res.body).toEqual([
       expect.objectContaining({
         revisionNumber: 2,

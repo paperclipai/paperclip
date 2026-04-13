@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -28,11 +29,16 @@ import {
   type RealmPlugin,
 } from "@mdxeditor/editor";
 import { buildAgentMentionHref, buildProjectMentionHref } from "@paperclipai/shared";
+import { Boxes } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
+import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
+import { normalizeMarkdown } from "../lib/normalize-markdown";
+import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
+import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
 
@@ -56,6 +62,8 @@ interface MarkdownEditorProps {
   contentClassName?: string;
   onBlur?: () => void;
   imageUploadHandler?: (file: File) => Promise<string>;
+  /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
+  onDropFile?: (file: File) => Promise<void>;
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
@@ -80,6 +88,8 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
+  trigger: "mention" | "skill";
+  marker: "@" | "/";
   query: string;
   top: number;
   left: number;
@@ -90,6 +100,26 @@ interface MentionState {
   atPos: number;
   endPos: number;
 }
+
+type AutocompleteOption = MentionOption | SkillCommandOption;
+
+interface MentionMenuViewport {
+  offsetLeft: number;
+  offsetTop: number;
+  width: number;
+  height: number;
+}
+
+interface MentionMenuSize {
+  width: number;
+  height: number;
+}
+
+const MENTION_MENU_WIDTH = 188;
+const MENTION_MENU_HEIGHT = 208;
+const MENTION_MENU_PADDING = 8;
+const MENTION_MENU_ROW_HEIGHT = 34;
+const MENTION_MENU_CHROME_HEIGHT = 8;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -119,6 +149,39 @@ const FALLBACK_CODE_BLOCK_DESCRIPTOR: CodeBlockEditorDescriptor = {
   Editor: CodeMirrorEditor,
 };
 
+export function findMentionMatch(
+  text: string,
+  offset: number,
+): Pick<MentionState, "trigger" | "marker" | "query" | "atPos" | "endPos"> | null {
+  let atPos = -1;
+  let trigger: MentionState["trigger"] | null = null;
+  let marker: MentionState["marker"] | null = null;
+  for (let i = offset - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === "@" || ch === "/") {
+      if (i === 0 || /\s/.test(text[i - 1])) {
+        atPos = i;
+        trigger = ch === "@" ? "mention" : "skill";
+        marker = ch;
+      }
+      break;
+    }
+    if (ch === "\n" || ch === "\r") break;
+  }
+
+  if (atPos === -1) return null;
+  const query = text.slice(atPos + 1, offset);
+  if (trigger === "skill" && /\s/.test(query)) return null;
+
+  return {
+    trigger: trigger ?? "mention",
+    marker: marker ?? "@",
+    query,
+    atPos,
+    endPos: offset,
+  };
+}
+
 function detectMention(container: HTMLElement): MentionState | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
@@ -130,41 +193,92 @@ function detectMention(container: HTMLElement): MentionState | null {
 
   const text = textNode.textContent ?? "";
   const offset = range.startOffset;
-
-  // Walk backwards from cursor to find @
-  let atPos = -1;
-  for (let i = offset - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === "@") {
-      if (i === 0 || /\s/.test(text[i - 1])) {
-        atPos = i;
-      }
-      break;
-    }
-    if (/\s/.test(ch)) break;
-  }
-
-  if (atPos === -1) return null;
-
-  const query = text.slice(atPos + 1, offset);
+  const match = findMentionMatch(text, offset);
+  if (!match) return null;
 
   // Get position relative to container
   const tempRange = document.createRange();
-  tempRange.setStart(textNode, atPos);
-  tempRange.setEnd(textNode, atPos + 1);
+  tempRange.setStart(textNode, match.atPos);
+  tempRange.setEnd(textNode, match.atPos + 1);
   const rect = tempRange.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
 
   return {
-    query,
+    trigger: match.trigger,
+    marker: match.marker,
+    query: match.query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
     viewportTop: rect.bottom,
     viewportLeft: rect.left,
     textNode: textNode as Text,
-    atPos,
-    endPos: offset,
+    atPos: match.atPos,
+    endPos: match.endPos,
   };
+}
+
+function getMentionMenuViewport(): MentionMenuViewport {
+  const viewport = window.visualViewport;
+  if (viewport) {
+    return {
+      offsetLeft: viewport.offsetLeft,
+      offsetTop: viewport.offsetTop,
+      width: viewport.width,
+      height: viewport.height,
+    };
+  }
+
+  return {
+    offsetLeft: 0,
+    offsetTop: 0,
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+}
+
+export function computeMentionMenuPosition(
+  anchor: Pick<MentionState, "viewportTop" | "viewportLeft">,
+  viewport: MentionMenuViewport,
+  menuSize: MentionMenuSize = { width: MENTION_MENU_WIDTH, height: MENTION_MENU_HEIGHT },
+) {
+  const minLeft = viewport.offsetLeft + MENTION_MENU_PADDING;
+  const maxLeft = viewport.offsetLeft + viewport.width - menuSize.width;
+  const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
+  const maxTop = viewport.offsetTop + viewport.height - menuSize.height;
+
+  return {
+    top: Math.max(minTop, Math.min(viewport.offsetTop + anchor.viewportTop + 4, maxTop)),
+    left: Math.max(minLeft, Math.min(viewport.offsetLeft + anchor.viewportLeft, maxLeft)),
+  };
+}
+
+function getMentionMenuSize(optionCount: number): MentionMenuSize {
+  const visibleRows = Math.max(1, Math.min(optionCount, 8));
+  return {
+    width: MENTION_MENU_WIDTH,
+    height: Math.min(
+      MENTION_MENU_HEIGHT,
+      visibleRows * MENTION_MENU_ROW_HEIGHT + MENTION_MENU_CHROME_HEIGHT,
+    ),
+  };
+}
+
+function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
+  if (!node || !container.contains(node)) return false;
+  const el = node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : node.parentElement;
+  return Boolean(el?.closest("pre, code"));
+}
+
+function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
+  if (!container) return false;
+  const selection = window.getSelection();
+  if (!selection) return false;
+  for (const node of [selection.anchorNode, selection.focusNode]) {
+    if (nodeInsideCodeLike(container, node)) return true;
+  }
+  return false;
 }
 
 function mentionMarkdown(option: MentionOption): string {
@@ -175,10 +289,114 @@ function mentionMarkdown(option: MentionOption): string {
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
-/** Replace `@<query>` in the markdown string with the selected mention token. */
-function applyMention(markdown: string, query: string, option: MentionOption): string {
-  const search = `@${query}`;
-  const replacement = mentionMarkdown(option);
+function skillMarkdown(option: SkillCommandOption): string {
+  return `[/${option.slug}](${option.href}) `;
+}
+
+function autocompleteMarkdown(option: AutocompleteOption): string {
+  return option.kind === "skill" ? skillMarkdown(option) : mentionMarkdown(option);
+}
+
+export function shouldAcceptAutocompleteKey(
+  key: string,
+  trigger: MentionState["trigger"] | null,
+  skillEnterArmed = false,
+): boolean {
+  if (key === "Tab") return true;
+  if (key !== "Enter") return false;
+  return trigger === "mention" || (trigger === "skill" && skillEnterArmed);
+}
+
+export function isSameAutocompleteSession(
+  left: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
+  right: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
+): boolean {
+  if (!left || !right) return false;
+  return left.trigger === right.trigger
+    && left.marker === right.marker
+    && left.query === right.query
+    && left.textNode === right.textNode
+    && left.atPos === right.atPos
+    && left.endPos === right.endPos;
+}
+
+function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string): boolean {
+  const parsed = parseMentionChipHref(href);
+  if (!parsed) return false;
+
+  if (option.kind === "skill") {
+    return parsed.kind === "skill" && parsed.skillId === option.skillId;
+  }
+
+  if (option.kind === "project" && option.projectId) {
+    return parsed.kind === "project" && parsed.projectId === option.projectId;
+  }
+
+  const agentId = option.agentId ?? option.id.replace(/^agent:/, "");
+  return parsed.kind === "agent" && parsed.agentId === agentId;
+}
+
+export function findClosestAutocompleteAnchor(
+  editable: HTMLElement,
+  option: AutocompleteOption,
+  origin?: Pick<MentionState, "left" | "top"> | null,
+): HTMLAnchorElement | null {
+  const matchingMentions = Array.from(editable.querySelectorAll("a"))
+    .filter((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement)
+    .filter((link) => autocompleteOptionMatchesLink(option, link.getAttribute("href") ?? ""));
+
+  if (matchingMentions.length === 0) return null;
+  if (!origin) return matchingMentions[0] ?? null;
+
+  const containerRect = editable.getBoundingClientRect();
+  return matchingMentions.sort((a, b) => {
+    const rectA = a.getBoundingClientRect();
+    const rectB = b.getBoundingClientRect();
+    const leftA = rectA.left - containerRect.left;
+    const topA = rectA.top - containerRect.top;
+    const leftB = rectB.left - containerRect.left;
+    const topB = rectB.top - containerRect.top;
+    const distA = Math.hypot(leftA - origin.left, topA - origin.top);
+    const distB = Math.hypot(leftB - origin.left, topB - origin.top);
+    return distA - distB;
+  })[0] ?? null;
+}
+
+export function placeCaretAfterMentionAnchor(target: HTMLAnchorElement): boolean {
+  const selection = window.getSelection();
+  if (!selection) return false;
+
+  const range = document.createRange();
+  const nextSibling = target.nextSibling;
+  if (nextSibling?.nodeType === Node.TEXT_NODE) {
+    const text = nextSibling.textContent ?? "";
+    if (text.startsWith(" ")) {
+      range.setStart(nextSibling, 1);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+    if (text.length > 0) {
+      range.setStart(nextSibling, 0);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+  }
+
+  range.setStartAfter(target);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
+/** Replace the active autocomplete token in the markdown string with the selected token. */
+function applyMention(markdown: string, state: MentionState, option: AutocompleteOption): string {
+  const search = `${state.marker}${state.query}`;
+  const replacement = autocompleteMarkdown(option);
   const idx = markdown.lastIndexOf(search);
   if (idx === -1) return markdown;
   return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
@@ -194,13 +412,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   contentClassName,
   onBlur,
   imageUploadHandler,
+  onDropFile,
   bordered = true,
   mentions,
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
+  const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const latestValueRef = useRef(value);
+  const initialChildOnChangeRef = useRef(true);
+  /**
+   * After imperative `setMarkdown` (prop sync, mentions, image upload), MDXEditor may emit `onChange`
+   * with the same markdown. Skip notifying the parent for that echo so controlled parents that
+   * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
+   */
+  const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -213,7 +442,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
-  const mentionActive = mentionState !== null && mentions && mentions.length > 0;
+  const skillEnterArmedRef = useRef(false);
+  const mentionActive = mentionState !== null && (
+    (mentionState.trigger === "mention" && Boolean(mentions?.length))
+    || (mentionState.trigger === "skill" && slashCommands.length > 0)
+  );
   const mentionOptionByKey = useMemo(() => {
     const map = new Map<string, MentionOption>();
     for (const mention of mentions ?? []) {
@@ -228,11 +461,33 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return map;
   }, [mentions]);
 
-  const filteredMentions = useMemo(() => {
-    if (!mentionState || !mentions) return [];
-    const q = mentionState.query.toLowerCase();
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (!instance) {
+      return;
+    }
+    if (valueRef.current !== latestValueRef.current) {
+      // Re-apply the latest controlled value once MDXEditor exposes its imperative API.
+      echoIgnoreMarkdownRef.current = valueRef.current;
+      instance.setMarkdown(valueRef.current);
+      latestValueRef.current = valueRef.current;
+    }
+  }, []);
+
+  const filteredMentions = useMemo<AutocompleteOption[]>(() => {
+    if (!mentionState) return [];
+    const q = mentionState.query.trim().toLowerCase();
+    if (mentionState.trigger === "skill") {
+      return slashCommands
+        .filter((command) => {
+          if (!q) return true;
+          return command.aliases.some((alias) => alias.toLowerCase().includes(q));
+        })
+        .slice(0, 8);
+    }
+    if (!mentions) return [];
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
-  }, [mentionState?.query, mentions]);
+  }, [mentionState, mentions, slashCommands]);
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
@@ -263,6 +518,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
+                echoIgnoreMarkdownRef.current = updated;
                 ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
@@ -286,6 +542,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       linkPlugin({ validateUrl: isSafeMarkdownLinkUrl }),
       linkDialogPlugin(),
       mentionDeletionPlugin(),
+      pasteNormalizationPlugin(),
       thematicBreakPlugin(),
       codeBlockPlugin({
         defaultCodeBlockLanguage: "txt",
@@ -302,8 +559,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
-      latestValueRef.current = value;
+      if (ref.current) {
+        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
+        echoIgnoreMarkdownRef.current = value;
+        ref.current.setMarkdown(value);
+        latestValueRef.current = value;
+      }
     }
   }, [value]);
 
@@ -328,6 +589,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
+      if (parsed.kind === "skill") {
+        applyMentionChipDecoration(link, parsed);
+        continue;
+      }
+
       const option = mentionOptionByKey.get(`agent:${parsed.agentId}`);
       applyMentionChipDecoration(link, {
         ...parsed,
@@ -338,23 +604,45 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   // Mention detection: listen for selection changes and input events
   const checkMention = useCallback(() => {
-    if (!mentions || mentions.length === 0 || !containerRef.current) {
+    if (!containerRef.current || isSelectionInsideCodeLikeElement(containerRef.current)) {
       mentionStateRef.current = null;
+      skillEnterArmedRef.current = false;
       setMentionState(null);
       return;
     }
     const result = detectMention(containerRef.current);
-    mentionStateRef.current = result;
-    if (result) {
-      setMentionState(result);
-      setMentionIndex(0);
-    } else {
+    if (
+      result
+      && result.trigger === "mention"
+      && (!mentions || mentions.length === 0)
+    ) {
+      mentionStateRef.current = null;
+      skillEnterArmedRef.current = false;
       setMentionState(null);
+      return;
     }
-  }, [mentions]);
+    if (
+      result
+      && result.trigger === "skill"
+      && slashCommands.length === 0
+    ) {
+      mentionStateRef.current = null;
+      skillEnterArmedRef.current = false;
+      setMentionState(null);
+      return;
+    }
+    const previous = mentionStateRef.current;
+    const sameSession = isSameAutocompleteSession(previous, result);
+    mentionStateRef.current = result;
+    if (!sameSession) {
+      skillEnterArmedRef.current = false;
+      setMentionIndex(0);
+    }
+    setMentionState(result);
+  }, [mentions, slashCommands.length]);
 
   useEffect(() => {
-    if (!mentions || mentions.length === 0) return;
+    if ((!mentions || mentions.length === 0) && slashCommands.length === 0) return;
 
     const el = containerRef.current;
     // Listen for input events on the container so mention detection
@@ -367,7 +655,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       document.removeEventListener("selectionchange", checkMention);
       el?.removeEventListener("input", onInput, true);
     };
-  }, [checkMention, mentions]);
+  }, [checkMention, mentions, slashCommands.length]);
+
+  useEffect(() => {
+    if (!mentionActive) return;
+
+    const updatePosition = () => requestAnimationFrame(checkMention);
+    const viewport = window.visualViewport;
+
+    viewport?.addEventListener("resize", updatePosition);
+    viewport?.addEventListener("scroll", updatePosition);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      viewport?.removeEventListener("resize", updatePosition);
+      viewport?.removeEventListener("scroll", updatePosition);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [checkMention, mentionActive]);
 
   useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
@@ -385,75 +692,42 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [decorateProjectMentions, value]);
 
   const selectMention = useCallback(
-    (option: MentionOption) => {
+    (option: AutocompleteOption) => {
       // Read from ref to avoid stale-closure issues (selectionchange can
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
       if (!state) return;
       const current = latestValueRef.current;
-      const next = applyMention(current, state.query, option);
+      const next = applyMention(current, state, option);
       if (next !== current) {
         latestValueRef.current = next;
+        echoIgnoreMarkdownRef.current = next;
         ref.current?.setMarkdown(next);
         onChange(next);
       }
 
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-          if (!(editable instanceof HTMLElement)) return;
-          decorateProjectMentions();
-          editable.focus();
+      const restoreSelection = (attemptsRemaining: number) => {
+        const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+        if (!(editable instanceof HTMLElement)) return;
 
-          const mentionHref = option.kind === "project" && option.projectId
-            ? buildProjectMentionHref(option.projectId, option.projectColor ?? null)
-            : buildAgentMentionHref(
-                option.agentId ?? option.id.replace(/^agent:/, ""),
-                option.agentIcon ?? null,
-              );
-          const matchingMentions = Array.from(editable.querySelectorAll("a"))
-            .filter((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement)
-            .filter((link) => {
-              const href = link.getAttribute("href") ?? "";
-              return href === mentionHref && link.textContent === `@${option.name}`;
-            });
-          const containerRect = containerRef.current?.getBoundingClientRect();
-          const target = matchingMentions.sort((a, b) => {
-            const rectA = a.getBoundingClientRect();
-            const rectB = b.getBoundingClientRect();
-            const leftA = containerRect ? rectA.left - containerRect.left : rectA.left;
-            const topA = containerRect ? rectA.top - containerRect.top : rectA.top;
-            const leftB = containerRect ? rectB.left - containerRect.left : rectB.left;
-            const topB = containerRect ? rectB.top - containerRect.top : rectB.top;
-            const distA = Math.hypot(leftA - state.left, topA - state.top);
-            const distB = Math.hypot(leftB - state.left, topB - state.top);
-            return distA - distB;
-          })[0] ?? null;
-          if (!target) return;
+        decorateProjectMentions();
+        editable.focus();
 
-          const selection = window.getSelection();
-          if (!selection) return;
-          const range = document.createRange();
-          const nextSibling = target.nextSibling;
-          if (nextSibling?.nodeType === Node.TEXT_NODE) {
-            const text = nextSibling.textContent ?? "";
-            if (text.startsWith(" ")) {
-              range.setStart(nextSibling, 1);
-              range.collapse(true);
-              selection.removeAllRanges();
-              selection.addRange(range);
-              return;
-            }
+        const target = findClosestAutocompleteAnchor(editable, option, state);
+        if (!target) {
+          if (attemptsRemaining > 0) {
+            requestAnimationFrame(() => restoreSelection(attemptsRemaining - 1));
           }
+          return;
+        }
 
-          range.setStartAfter(target);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        });
-      });
+        placeCaretAfterMentionAnchor(target);
+      };
+
+      requestAnimationFrame(() => restoreSelection(4));
 
       mentionStateRef.current = null;
+      skillEnterArmedRef.current = false;
       setMentionState(null);
     },
     [decorateProjectMentions, onChange],
@@ -464,6 +738,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const canDropFile = Boolean(imageUploadHandler || onDropFile);
+  const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard || !ref.current) return;
+    const types = new Set(Array.from(clipboard.types));
+    if (types.has("Files") || types.has("text/html")) return;
+    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+
+    const rawText = clipboard.getData("text/plain");
+    if (!looksLikeMarkdownPaste(rawText)) return;
+
+    event.preventDefault();
+    ref.current.insertMarkdown(normalizeMarkdown(rawText));
+  }, []);
+
+  const mentionMenuPosition = mentionState
+    ? computeMentionMenuPosition(
+        mentionState,
+        getMentionMenuViewport(),
+        getMentionMenuSize(filteredMentions.length),
+      )
+    : null;
 
   return (
     <div
@@ -485,9 +781,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
         // Mention keyboard handling
         if (mentionActive) {
-          // Space dismisses the popup (let the character be typed normally)
-          if (e.key === " ") {
+          if (e.key === " " && mentionStateRef.current?.trigger === "skill") {
             mentionStateRef.current = null;
+            skillEnterArmedRef.current = false;
             setMentionState(null);
             return;
           }
@@ -496,6 +792,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             e.preventDefault();
             e.stopPropagation();
             mentionStateRef.current = null;
+            skillEnterArmedRef.current = false;
             setMentionState(null);
             return;
           }
@@ -504,16 +801,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             if (e.key === "ArrowDown") {
               e.preventDefault();
               e.stopPropagation();
+              skillEnterArmedRef.current = mentionStateRef.current?.trigger === "skill";
               setMentionIndex((prev) => Math.min(prev + 1, filteredMentions.length - 1));
               return;
             }
             if (e.key === "ArrowUp") {
               e.preventDefault();
               e.stopPropagation();
+              skillEnterArmedRef.current = mentionStateRef.current?.trigger === "skill";
               setMentionIndex((prev) => Math.max(prev - 1, 0));
               return;
             }
-            if (e.key === "Enter" || e.key === "Tab") {
+            if (
+              shouldAcceptAutocompleteKey(
+                e.key,
+                mentionStateRef.current?.trigger ?? null,
+                skillEnterArmedRef.current,
+              )
+            ) {
               e.preventDefault();
               e.stopPropagation();
               selectMention(filteredMentions[mentionIndex]);
@@ -523,30 +828,67 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
-        if (!canDropImage) return;
+        if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
-      onDrop={() => {
+      onDrop={(evt) => {
         dragDepthRef.current = 0;
         setIsDragOver(false);
+        if (!onDropFile) return;
+        const files = evt.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+        const allFiles = Array.from(files);
+        const nonImageFiles = allFiles.filter(
+          (f) => !f.type.startsWith("image/"),
+        );
+        if (nonImageFiles.length === 0) return;
+        // If all dropped files are non-image, prevent default so MDXEditor
+        // doesn't try to handle them. If mixed, let images flow through to
+        // the image plugin and only handle the non-image files ourselves.
+        if (nonImageFiles.length === allFiles.length) {
+          evt.preventDefault();
+          evt.stopPropagation();
+        }
+        for (const file of nonImageFiles) {
+          void onDropFile(file);
+        }
       }}
+      onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={ref}
+        ref={setEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
+          const echo = echoIgnoreMarkdownRef.current;
+          if (echo !== null && next === echo) {
+            echoIgnoreMarkdownRef.current = null;
+            latestValueRef.current = next;
+            return;
+          }
+          if (echo !== null) {
+            echoIgnoreMarkdownRef.current = null;
+          }
+
+          if (initialChildOnChangeRef.current) {
+            initialChildOnChangeRef.current = false;
+            if (next === "" && value !== "") {
+              echoIgnoreMarkdownRef.current = value;
+              ref.current?.setMarkdown(value);
+              return;
+            }
+          }
           latestValueRef.current = next;
           onChange(next);
         }}
@@ -565,25 +907,30 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         createPortal(
           <div
             className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-            style={{
-              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
-              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
-            }}
+            style={mentionMenuPosition ?? undefined}
           >
             {filteredMentions.map((option, i) => (
               <button
                 key={option.id}
+                type="button"
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
                 )}
-                onMouseDown={(e) => {
+                onPointerDown={(e) => {
                   e.preventDefault(); // prevent blur
                   selectMention(option);
                 }}
-                onMouseEnter={() => setMentionIndex(i)}
+                onMouseEnter={() => {
+                  if (mentionStateRef.current?.trigger === "skill") {
+                    skillEnterArmedRef.current = true;
+                  }
+                  setMentionIndex(i);
+                }}
               >
-                {option.kind === "project" && option.projectId ? (
+                {option.kind === "skill" ? (
+                  <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
                     style={{ backgroundColor: option.projectColor ?? "#64748b" }}
@@ -594,10 +941,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>{option.name}</span>
+                <span>{option.kind === "skill" ? `/${option.slug}` : option.name}</span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project
+                  </span>
+                )}
+                {option.kind === "skill" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Skill
                   </span>
                 )}
               </button>
@@ -606,14 +958,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           document.body,
         )}
 
-      {isDragOver && canDropImage && (
+      {isDragOver && canDropFile && (
         <div
           className={cn(
             "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop image to upload
+          Drop {onDropFile ? "file" : "image"} to upload
         </div>
       )}
       {uploadError && (

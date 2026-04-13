@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared";
+import type {
+  DocumentRevision,
+  FeedbackDataSharingPreference,
+  FeedbackVote,
+  FeedbackVoteValue,
+  Issue,
+  IssueDocument,
+} from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
+import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,7 +30,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, ChevronRight, Copy, Download, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Diff, Download, FilePenLine, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { DocumentDiffModal } from "./DocumentDiffModal";
 
 type DraftState = {
   key: string;
@@ -60,7 +70,7 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
 }
 
 function renderBody(body: string, className?: string) {
-  return <MarkdownBody className={className}>{body}</MarkdownBody>;
+  return <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>;
 }
 
 function isPlanKey(key: string) {
@@ -98,17 +108,48 @@ function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null)
   return draft.body !== doc.body || (doc.title ?? "") !== draft.title;
 }
 
+function toDocumentSummary(document: IssueDocument) {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    issueId: document.issueId,
+    key: document.key,
+    title: document.title,
+    format: document.format,
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 export function IssueDocumentsSection({
   issue,
   canDeleteDocuments,
+  feedbackVotes = [],
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
   mentions,
   imageUploadHandler,
+  onVote,
   extraActions,
 }: {
   issue: Issue;
   canDeleteDocuments: boolean;
+  feedbackVotes?: FeedbackVote[];
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
   mentions?: MentionOption[];
   imageUploadHandler?: (file: File) => Promise<string>;
+  onVote?: (
+    revisionId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
   extraActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -123,6 +164,7 @@ export function IssueDocumentsSection({
   const [highlightDocumentKey, setHighlightDocumentKey] = useState<string | null>(null);
   const [revisionMenuOpenKey, setRevisionMenuOpenKey] = useState<string | null>(null);
   const [selectedRevisionIds, setSelectedRevisionIds] = useState<Record<string, string | null>>({});
+  const [diffViewKey, setDiffViewKey] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedDocumentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledToHashRef = useRef(false);
@@ -161,6 +203,36 @@ export function IssueDocumentsSection({
     });
   }, [issue.id, queryClient]);
 
+  const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    queryClient.setQueryData<IssueDocument[] | undefined>(
+      queryKeys.issues.documents(issue.id),
+      (current) => {
+        if (!current) return [document];
+        const existingIndex = current.findIndex((entry) => entry.key === document.key);
+        if (existingIndex === -1) return [...current, document];
+        return current.map((entry, index) => index === existingIndex ? document : entry);
+      },
+    );
+    queryClient.setQueryData<Issue | undefined>(
+      queryKeys.issues.detail(issue.id),
+      (current) => {
+        if (!current) return current;
+        const nextSummaries = (() => {
+          const summary = toDocumentSummary(document);
+          const existingIndex = (current.documentSummaries ?? []).findIndex((entry) => entry.key === document.key);
+          if (existingIndex === -1) return [...(current.documentSummaries ?? []), summary];
+          return (current.documentSummaries ?? []).map((entry, index) => index === existingIndex ? summary : entry);
+        })();
+        return {
+          ...current,
+          planDocument: document.key === "plan" ? document : current.planDocument ?? null,
+          documentSummaries: nextSummaries,
+          legacyPlanDocument: document.key === "plan" ? null : current.legacyPlanDocument ?? null,
+        };
+      },
+    );
+  }, [issue.id, queryClient]);
+
   const upsertDocument = useMutation({
     mutationFn: async (nextDraft: DraftState) =>
       issuesApi.upsertDocument(issue.id, nextDraft.key, {
@@ -186,7 +258,8 @@ export function IssueDocumentsSection({
   const restoreDocumentRevision = useMutation({
     mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
       issuesApi.restoreDocumentRevision(issue.id, key, revisionId),
-    onSuccess: (_document, variables) => {
+    onSuccess: (document, variables) => {
+      syncDocumentCaches(document);
       setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
       setDraft((current) => current?.key === variables.key ? null : current);
       setDocumentConflict((current) => current?.key === variables.key ? null : current);
@@ -206,6 +279,15 @@ export function IssueDocumentsSection({
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
   }, [documents]);
+
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes) {
+      if (feedbackVote.targetType !== "issue_document_revision") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
@@ -340,6 +422,7 @@ export function IssueDocumentsSection({
           isNew: false,
         };
       });
+      syncDocumentCaches(saved);
       invalidateIssueDocuments();
     };
 
@@ -379,7 +462,7 @@ export function IssueDocumentsSection({
       setError(err instanceof Error ? err.message : "Failed to save document");
       return false;
     }
-  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
+  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -454,10 +537,10 @@ export function IssueDocumentsSection({
   }, []);
 
   const previewRevision = useCallback((doc: IssueDocument, revisionId: string) => {
-    const revisions = getDocumentRevisions(doc.key);
-    const selectedRevision = revisions.find((revision) => revision.id === revisionId);
+    const revisionState = deriveDocumentRevisionState(doc, getDocumentRevisions(doc.key));
+    const selectedRevision = revisionState.revisions.find((revision) => revision.id === revisionId);
     if (!selectedRevision) return;
-    if (selectedRevision.id === doc.latestRevisionId) {
+    if (selectedRevision.id === revisionState.currentRevision.id) {
       returnToLatestRevision(doc.key);
       return;
     }
@@ -601,7 +684,7 @@ export function IssueDocumentsSection({
   return (
     <div className="space-y-3">
       {isEmpty && !draft?.isNew ? (
-        <div className="flex items-center justify-end gap-2 min-w-0">
+        <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -610,9 +693,9 @@ export function IssueDocumentsSection({
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2 min-w-0">
-          <h3 className="text-sm font-medium text-muted-foreground shrink-0">Documents</h3>
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -705,7 +788,10 @@ export function IssueDocumentsSection({
           const activeDraft = draft?.key === doc.key && !draft.isNew ? draft : null;
           const activeConflict = documentConflict?.key === doc.key ? documentConflict : null;
           const isFolded = foldedDocumentKeys.includes(doc.key);
-          const revisionHistory = getDocumentRevisions(doc.key);
+          const rawRevisionHistory = getDocumentRevisions(doc.key);
+          const revisionState = deriveDocumentRevisionState(doc, rawRevisionHistory);
+          const revisionHistory = revisionState.revisions;
+          const currentRevision = revisionState.currentRevision;
           const selectedRevisionId = selectedRevisionIds[doc.key] ?? null;
           const selectedHistoricalRevision = selectedRevisionId
             ? revisionHistory.find((revision) => revision.id === selectedRevisionId) ?? null
@@ -713,11 +799,12 @@ export function IssueDocumentsSection({
           const isHistoricalPreview = Boolean(selectedHistoricalRevision);
           const displayedTitle = selectedHistoricalRevision
             ? selectedHistoricalRevision.title ?? ""
-            : activeDraft?.title ?? doc.title ?? "";
-          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? doc.body;
-          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? doc.latestRevisionNumber;
-          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? doc.updatedAt;
+            : activeDraft?.title ?? currentRevision.title ?? "";
+          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
+          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
+          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
+          const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
 
           return (
             <div
@@ -762,12 +849,12 @@ export function IssueDocumentsSection({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-72">
                         <DropdownMenuLabel>Revision history</DropdownMenuLabel>
-                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && revisionHistory.length === 0 ? (
+                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && rawRevisionHistory.length === 0 ? (
                           <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
                         ) : revisionHistory.length > 0 ? (
-                          <DropdownMenuRadioGroup value={selectedRevisionId ?? doc.latestRevisionId ?? ""}>
+                          <DropdownMenuRadioGroup value={selectedRevisionId ?? currentRevision.id ?? ""}>
                             {revisionHistory.map((revision) => {
-                              const isCurrentRevision = revision.id === doc.latestRevisionId;
+                              const isCurrentRevision = revision.id === currentRevision.id;
                               return (
                                 <DropdownMenuRadioItem
                                   key={revision.id}
@@ -834,13 +921,26 @@ export function IssueDocumentsSection({
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end">
+                      {!isHistoricalPreview ? (
+                        <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
+                          <FilePenLine className="h-3.5 w-3.5" />
+                          Edit document
+                        </DropdownMenuItem>
+                      ) : null}
+                      {!isHistoricalPreview ? <DropdownMenuSeparator /> : null}
                       <DropdownMenuItem
                         onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                       >
                         <Download className="h-3.5 w-3.5" />
                         Download document
                       </DropdownMenuItem>
+                      {doc.latestRevisionNumber > 1 ? (
+                        <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
+                          <Diff className="h-3.5 w-3.5" />
+                          View diff
+                        </DropdownMenuItem>
+                      ) : null}
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
                       {canDeleteDocuments ? (
                         <DropdownMenuItem
@@ -859,13 +959,6 @@ export function IssueDocumentsSection({
               {!isFolded ? (
                 <div
                   className="mt-3 space-y-3"
-                  onFocusCapture={!isHistoricalPreview
-                    ? () => {
-                        if (!activeDraft) {
-                          beginEdit(doc.key);
-                        }
-                      }
-                    : undefined}
                   onBlurCapture={!isHistoricalPreview
                     ? async (event) => {
                         if (activeDraft) {
@@ -996,7 +1089,7 @@ export function IssueDocumentsSection({
                       <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
                         {renderBody(displayedBody, documentBodyContentClassName)}
                       </div>
-                    ) : (
+                    ) : activeDraft ? (
                       <MarkdownEditor
                         value={displayedBody}
                         onChange={(body) => {
@@ -1005,13 +1098,7 @@ export function IssueDocumentsSection({
                             if (current && current.key === doc.key && !current.isNew) {
                               return { ...current, body };
                             }
-                            return {
-                              key: doc.key,
-                              title: doc.title ?? "",
-                              body,
-                              baseRevisionId: doc.latestRevisionId,
-                              isNew: false,
-                            };
+                            return current;
                           });
                         }}
                         placeholder="Markdown body"
@@ -1022,6 +1109,10 @@ export function IssueDocumentsSection({
                         imageUploadHandler={imageUploadHandler}
                         onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
                       />
+                    ) : (
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        {renderBody(displayedBody, documentBodyContentClassName)}
+                      </div>
                     )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
@@ -1053,6 +1144,16 @@ export function IssueDocumentsSection({
                           : ""}
                     </span>
                   </div>
+                  {canVoteOnDocument && doc.latestRevisionId ? (
+                    <OutputFeedbackButtons
+                      activeVote={feedbackVoteByTargetId.get(doc.latestRevisionId) ?? null}
+                      sharingPreference={feedbackDataSharingPreference}
+                      termsUrl={feedbackTermsUrl}
+                      onVote={(vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) =>
+                        onVote?.(doc.latestRevisionId!, vote, options) ?? Promise.resolve()
+                      }
+                    />
+                  ) : null}
                 </div>
               ) : null}
 
@@ -1085,6 +1186,20 @@ export function IssueDocumentsSection({
           );
         })}
       </div>
+
+      {diffViewKey && (() => {
+        const diffDoc = sortedDocuments.find((d) => d.key === diffViewKey);
+        if (!diffDoc) return null;
+        return (
+          <DocumentDiffModal
+            issueId={issue.id}
+            documentKey={diffDoc.key}
+            latestRevisionNumber={diffDoc.latestRevisionNumber}
+            open
+            onOpenChange={(open) => { if (!open) setDiffViewKey(null); }}
+          />
+        );
+      })()}
     </div>
   );
 }
