@@ -724,6 +724,43 @@ class DeerFlowClient:
             raise ValueError(f"Fact '{fact_id}' not found")
         return self.get_memory()
 
+    def create_memory_fact(self, content: str, category: str = "knowledge", confidence: float = 0.9) -> dict:
+        """Create a new memory fact.
+
+        Args:
+            content: Fact content.
+            category: Fact category.
+            confidence: Confidence score.
+
+        Returns:
+            The created fact dict.
+        """
+        from deerflow.agents.memory.updater import create_memory_fact
+
+        return create_memory_fact(content, category, confidence)
+
+    def update_memory_fact(self, fact_id: str, content: str | None = None, category: str | None = None, confidence: float | None = None) -> dict:
+        """Update an existing memory fact.
+
+        Args:
+            fact_id: The fact ID to update.
+            content: New content (optional).
+            category: New category (optional).
+            confidence: New confidence (optional).
+
+        Returns:
+            Updated fact dict.
+
+        Raises:
+            ValueError: If fact not found.
+        """
+        from deerflow.agents.memory.updater import update_memory_fact
+
+        result = update_memory_fact(fact_id, content, category, confidence)
+        if result is None:
+            raise ValueError(f"Fact '{fact_id}' not found")
+        return result
+
     # ------------------------------------------------------------------
     # Public API — file uploads
     # ------------------------------------------------------------------

@@ -72,6 +72,22 @@ class MemoryStatusResponse(BaseModel):
     data: MemoryResponse
 
 
+class CreateFactRequest(BaseModel):
+    """Request body for creating a new memory fact."""
+
+    content: str = Field(..., min_length=1, max_length=500, description="Fact content")
+    category: str = Field(default="knowledge", description="Fact category")
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0, description="Confidence score")
+
+
+class UpdateFactRequest(BaseModel):
+    """Request body for updating a memory fact."""
+
+    content: str | None = Field(default=None, min_length=1, max_length=500, description="New content")
+    category: str | None = Field(default=None, description="New category")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="New confidence")
+
+
 @router.get(
     "/memory",
     response_model=MemoryResponse,
@@ -239,3 +255,37 @@ async def delete_fact(fact_id: str) -> MemoryResponse:
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Fact '{fact_id}' not found")
     return MemoryResponse(**get_memory_data())
+
+
+@router.post(
+    "/memory/facts",
+    response_model=Fact,
+    summary="Create Memory Fact",
+    description="Create a new memory fact with validation.",
+)
+async def create_fact(request: CreateFactRequest) -> Fact:
+    from deerflow.agents.memory.updater import create_memory_fact
+
+    try:
+        fact = create_memory_fact(request.content, request.category, request.confidence)
+        return Fact(**fact)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch(
+    "/memory/facts/{fact_id}",
+    response_model=Fact,
+    summary="Update Memory Fact",
+    description="Update specific fields of a memory fact.",
+)
+async def update_fact(fact_id: str, request: UpdateFactRequest) -> Fact:
+    from deerflow.agents.memory.updater import update_memory_fact
+
+    try:
+        result = update_memory_fact(fact_id, request.content, request.category, request.confidence)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_id}' not found")
+    return Fact(**result)

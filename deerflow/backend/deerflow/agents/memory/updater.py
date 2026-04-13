@@ -335,6 +335,100 @@ def delete_memory_fact(fact_id: str, agent_name: str | None = None) -> bool:
     return True
 
 
+VALID_CATEGORIES = {"preference", "knowledge", "context", "behavior", "goal", "correction"}
+
+
+def create_memory_fact(
+    content: str,
+    category: str = "knowledge",
+    confidence: float = 0.9,
+    agent_name: str | None = None,
+) -> dict[str, Any]:
+    """Create a new memory fact manually.
+
+    Args:
+        content: Fact content (non-empty, max 500 chars).
+        category: One of preference, knowledge, context, behavior, goal, correction.
+        confidence: 0.0-1.0.
+        agent_name: Per-agent or global memory.
+
+    Returns:
+        The created fact dict.
+
+    Raises:
+        ValueError: If validation fails.
+    """
+    if not content or not content.strip():
+        raise ValueError("Fact content must be non-empty")
+    if len(content) > 500:
+        raise ValueError("Fact content must be 500 characters or fewer")
+    if category not in VALID_CATEGORIES:
+        raise ValueError(f"Invalid category '{category}'. Must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"Confidence must be between 0.0 and 1.0, got {confidence}")
+
+    storage = get_memory_storage()
+    data = storage.load(agent_name)
+    now = datetime.utcnow().isoformat() + "Z"
+    fact = {
+        "id": f"fact_{uuid.uuid4().hex[:8]}",
+        "content": content.strip(),
+        "category": category,
+        "confidence": confidence,
+        "createdAt": now,
+        "source": "manual",
+    }
+    data.setdefault("facts", []).append(fact)
+    storage.save(data, agent_name)
+    return fact
+
+
+def update_memory_fact(
+    fact_id: str,
+    content: str | None = None,
+    category: str | None = None,
+    confidence: float | None = None,
+    agent_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Update an existing fact.
+
+    Args:
+        fact_id: ID of the fact to update.
+        content: New content (if provided).
+        category: New category (if provided).
+        confidence: New confidence (if provided).
+        agent_name: Per-agent or global memory.
+
+    Returns:
+        Updated fact dict, or None if not found.
+
+    Raises:
+        ValueError: If provided values fail validation.
+    """
+    if content is not None and not content.strip():
+        raise ValueError("Fact content must be non-empty")
+    if content is not None and len(content) > 500:
+        raise ValueError("Fact content must be 500 characters or fewer")
+    if category is not None and category not in VALID_CATEGORIES:
+        raise ValueError(f"Invalid category '{category}'. Must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+    if confidence is not None and not (0.0 <= confidence <= 1.0):
+        raise ValueError(f"Confidence must be between 0.0 and 1.0, got {confidence}")
+
+    storage = get_memory_storage()
+    data = storage.load(agent_name)
+    for fact in data.get("facts", []):
+        if fact.get("id") == fact_id:
+            if content is not None:
+                fact["content"] = content.strip()
+            if category is not None:
+                fact["category"] = category
+            if confidence is not None:
+                fact["confidence"] = confidence
+            storage.save(data, agent_name)
+            return fact
+    return None
+
+
 def update_memory_from_conversation(messages: list[Any], thread_id: str | None = None, agent_name: str | None = None) -> bool:
     """Convenience function to update memory from a conversation.
 

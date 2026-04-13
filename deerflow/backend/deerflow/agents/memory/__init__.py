@@ -25,11 +25,14 @@ from deerflow.agents.memory.storage import (
     set_memory_storage,
 )
 from deerflow.agents.memory.updater import (
+    VALID_CATEGORIES,
     MemoryUpdater,
     clear_memory_data,
+    create_memory_fact,
     delete_memory_fact,
     get_memory_data,
     reload_memory_data,
+    update_memory_fact,
     update_memory_from_conversation,
 )
 
@@ -50,10 +53,13 @@ __all__ = [
     "get_memory_storage",
     "set_memory_storage",
     # Updater
+    "VALID_CATEGORIES",
     "MemoryUpdater",
     "clear_memory_data",
+    "create_memory_fact",
     "delete_memory_fact",
     "get_memory_data",
     "reload_memory_data",
+    "update_memory_fact",
     "update_memory_from_conversation",
 ]
