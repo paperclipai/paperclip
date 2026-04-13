@@ -64,6 +64,47 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
+## Rekeying the Local Master Key
+
+Use the supported rekey command before replacing a `local_encrypted` master key that already has encrypted secret versions in the database. Directly replacing the key file makes existing versions undecryptable.
+
+1. Stop Paperclip so no heartbeats or operators can create or rotate secrets during the rekey.
+2. Back up the database and the current master key file.
+3. Generate a new master key file in a permission-restricted location:
+
+```sh
+pnpm paperclipai secrets generate-local-master-key \
+  --output ~/.paperclip/instances/default/secrets/master.key.next
+```
+
+4. Run a dry-run preflight. It decrypts existing local-encrypted versions with the old key and reports counts only:
+
+```sh
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next
+```
+
+5. Apply the rekey after confirming backups exist:
+
+```sh
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next \
+  --apply \
+  --confirm-backup \
+  --activate-new-key
+```
+
+`--activate-new-key` backs up the previous active key file with a `.before-rekey-...` suffix, then replaces it with the new key after the database transaction commits. The command does not print secret values or key material.
+
+Failure handling:
+
+- If the dry run fails, keep the old key file and do not apply.
+- If apply fails before activation, the database transaction rolls back and the old key still decrypts existing versions.
+- If activation fails after a successful apply, install the `--new-key-file` contents as the active master key before restarting Paperclip.
+- To roll back after a successful apply, restore both the database backup and the previous master key file backup as a pair.
+
+After restart, run `pnpm paperclipai doctor` and start a heartbeat or resolve a known fake/test secret reference to confirm the instance can read encrypted versions.
+
 ## Secret References in Agent Config
 
 Agent environment variables use secret references:

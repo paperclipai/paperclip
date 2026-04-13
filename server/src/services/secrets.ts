@@ -1,10 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
+import { activityLog, companySecrets, companySecretVersions } from "@paperclipai/db";
 import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import { rekeyLocalEncryptedMaterial } from "../secrets/local-encrypted-provider.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -14,6 +15,19 @@ const REDACTED_SENTINEL = "***REDACTED***";
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
   | { type: "secret_ref"; secretId: string; version: number | "latest" };
+
+export type LocalEncryptedMasterKeyRekeyResult = {
+  dryRun: boolean;
+  provider: "local_encrypted";
+  companyCount: number;
+  secretCount: number;
+  versionCount: number;
+  companies: Array<{
+    companyId: string;
+    secretCount: number;
+    versionCount: number;
+  }>;
+};
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -150,6 +164,56 @@ export function secretService(db: Db) {
     }
     normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
     return normalized;
+  }
+
+  async function loadLocalEncryptedVersionRows(companyId?: string) {
+    const conditions = [eq(companySecrets.provider, "local_encrypted")];
+    if (companyId) conditions.push(eq(companySecrets.companyId, companyId));
+
+    return db
+      .select({
+        versionId: companySecretVersions.id,
+        secretId: companySecretVersions.secretId,
+        companyId: companySecrets.companyId,
+        material: companySecretVersions.material,
+      })
+      .from(companySecretVersions)
+      .innerJoin(companySecrets, eq(companySecretVersions.secretId, companySecrets.id))
+      .where(and(...conditions));
+  }
+
+  function summarizeLocalEncryptedRows(
+    rows: Awaited<ReturnType<typeof loadLocalEncryptedVersionRows>>,
+    dryRun: boolean,
+  ): LocalEncryptedMasterKeyRekeyResult {
+    const companySecretIds = new Map<string, Set<string>>();
+    const companyVersionCounts = new Map<string, number>();
+    const secretIds = new Set<string>();
+
+    for (const row of rows) {
+      secretIds.add(row.secretId);
+      const currentSecretIds = companySecretIds.get(row.companyId) ?? new Set<string>();
+      currentSecretIds.add(row.secretId);
+      companySecretIds.set(row.companyId, currentSecretIds);
+      companyVersionCounts.set(row.companyId, (companyVersionCounts.get(row.companyId) ?? 0) + 1);
+    }
+
+    const companies = Array.from(companySecretIds.entries())
+      .map(([rowCompanyId, rowSecretIds]) => ({
+        companyId: rowCompanyId,
+        secretCount: rowSecretIds.size,
+        versionCount: companyVersionCounts.get(rowCompanyId) ?? 0,
+      }))
+      .sort((left, right) => left.companyId.localeCompare(right.companyId));
+
+    return {
+      dryRun,
+      provider: "local_encrypted",
+      companyCount: companies.length,
+      secretCount: secretIds.size,
+      versionCount: rows.length,
+      companies,
+    };
   }
 
   return {
@@ -289,6 +353,69 @@ export function secretService(db: Db) {
       if (!secret) return null;
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
       return secret;
+    },
+
+    rekeyLocalEncryptedMasterKey: async (input: {
+      oldMasterKey: Buffer;
+      newMasterKey: Buffer;
+      dryRun?: boolean;
+      companyId?: string;
+      actorId?: string;
+    }): Promise<LocalEncryptedMasterKeyRekeyResult> => {
+      if (input.oldMasterKey.equals(input.newMasterKey)) {
+        throw unprocessable("Old and new local secrets master keys must differ");
+      }
+
+      const dryRun = input.dryRun ?? true;
+      const rows = await loadLocalEncryptedVersionRows(input.companyId);
+      const summary = summarizeLocalEncryptedRows(rows, dryRun);
+      const rekeyedRows = rows.map((row) => {
+        try {
+          return {
+            ...row,
+            material: rekeyLocalEncryptedMaterial(
+              row.material,
+              input.oldMasterKey,
+              input.newMasterKey,
+            ),
+          };
+        } catch {
+          throw unprocessable(
+            `Could not decrypt local_encrypted secret version ${row.versionId} with the old master key`,
+          );
+        }
+      });
+
+      if (dryRun || rekeyedRows.length === 0) {
+        return summary;
+      }
+
+      await db.transaction(async (tx) => {
+        for (const row of rekeyedRows) {
+          await tx
+            .update(companySecretVersions)
+            .set({ material: row.material })
+            .where(eq(companySecretVersions.id, row.versionId));
+        }
+
+        for (const companySummary of summary.companies) {
+          await tx.insert(activityLog).values({
+            companyId: companySummary.companyId,
+            actorType: "system",
+            actorId: input.actorId ?? "paperclipai-cli",
+            action: "secret.local_master_key_rekeyed",
+            entityType: "local_encrypted_master_key",
+            entityId: companySummary.companyId,
+            details: {
+              provider: "local_encrypted",
+              secretCount: companySummary.secretCount,
+              versionCount: companySummary.versionCount,
+            },
+          });
+        }
+      });
+
+      return summary;
     },
 
     normalizeAdapterConfigForPersistence: async (
