@@ -15,6 +15,7 @@ import { runCliSpec } from "./runners/cli-runner.js";
 import { runConfigSpec } from "./runners/config-runner.js";
 import { runDataSpec } from "./runners/data-runner.js";
 import { runVitestSpec } from "./runners/vitest-runner.js";
+import { openEscalation, cancelOpenEscalationsForIssue } from "./escalation-sweeper.js";
 import { traceUploader, type TraceUploader } from "./trace-uploader.js";
 
 export type DeliverableType =
@@ -342,6 +343,16 @@ export function createVerificationWorker(
             deployedSha: runResult.deployedSha,
             durationMs: durationMsInt,
           });
+          // Cancel any open escalations for this issue — a passing run resolves the ladder.
+          try {
+            await cancelOpenEscalationsForIssue(db, input.issueId);
+          } catch (err) {
+            console.warn(
+              `[verification-worker] failed to cancel escalations for ${input.issueId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           return {
             status: "passed",
             verificationRunId: finalized.id,
@@ -369,6 +380,20 @@ export function createVerificationWorker(
       }
 
       if (lastFailureRunId && lastFailureSummary) {
+        // Retry budget exhausted with a definitive failure. Open an escalation so the sweeper
+        // can advance the ladder and alert the assignee/manager/CEO/board over time.
+        try {
+          await openEscalation(db, {
+            issueId: input.issueId,
+            verificationRunId: lastFailureRunId,
+          });
+        } catch (err) {
+          console.warn(
+            `[verification-worker] failed to open escalation for ${input.issueId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
         return {
           status: "failed",
           verificationRunId: lastFailureRunId,

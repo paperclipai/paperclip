@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { eq, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, verificationRuns } from "@paperclipai/db";
+import { issues, verificationRuns, verificationOverrides } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard } from "./authz.js";
 import { createVerificationWorker, type DeliverableType } from "../services/verification/verification-worker.js";
+import { resolveEscalation, listOpenEscalations } from "../services/verification/escalation-sweeper.js";
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "../services/index.js";
 
@@ -184,6 +185,103 @@ export function verificationRoutes(db: Db, storage: StorageService) {
       .limit(50);
 
     res.json({ runs });
+  });
+
+  /**
+   * POST /api/issues/:id/verification-override
+   * Board-only. Creates a verification_overrides row with a mandatory ≥20 char justification,
+   * marks the latest failed verification_run as overridden, and resolves any open escalations.
+   *
+   * This is the only way to close an issue that has a failing verification run when gate
+   * enforcement is on. Every override is permanently logged to the activity feed.
+   */
+  router.post("/issues/:id/verification-override", async (req, res) => {
+    assertBoard(req);
+    const issueId = req.params.id as string;
+    const issue = await db
+      .select({ id: issues.id, identifier: issues.identifier, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!issue) throw notFound("issue not found");
+
+    const body = (req.body ?? {}) as { justification?: unknown };
+    if (typeof body.justification !== "string" || body.justification.trim().length < 20) {
+      throw badRequest("justification must be a string of at least 20 characters");
+    }
+    const justification = body.justification.trim();
+
+    // Find the latest failed verification run (if any)
+    const latestFailed = await db
+      .select({ id: verificationRuns.id, status: verificationRuns.status })
+      .from(verificationRuns)
+      .where(eq(verificationRuns.issueId, issueId))
+      .orderBy(desc(verificationRuns.startedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const userId = req.actor.type === "board" ? req.actor.userId ?? "board" : "board";
+
+    const [override] = await db
+      .insert(verificationOverrides)
+      .values({
+        issueId,
+        verificationRunId: latestFailed?.id ?? null,
+        userId,
+        justification,
+      })
+      .returning();
+
+    // Mark the verification_run as overridden so the gate treats it as passed
+    if (latestFailed) {
+      await db
+        .update(verificationRuns)
+        .set({ status: "overridden" })
+        .where(eq(verificationRuns.id, latestFailed.id));
+    }
+
+    // Resolve any open escalations
+    try {
+      await resolveEscalation(db, issueId, "overridden");
+    } catch {
+      // best effort
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "user",
+      actorId: userId,
+      action: "issue.verification_override",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        overrideId: override.id,
+        verificationRunId: latestFailed?.id ?? null,
+        justification,
+        issueIdentifier: issue.identifier,
+      },
+    });
+
+    res.json({
+      overrideId: override.id,
+      issueId,
+      issueIdentifier: issue.identifier,
+      verificationRunId: latestFailed?.id ?? null,
+      createdAt: override.createdAt,
+    });
+  });
+
+  /**
+   * GET /api/companies/:companyId/verification-failures
+   * Board-only. Returns currently-open verification escalations for a company. Powers the
+   * /verification-failures dashboard.
+   */
+  router.get("/companies/:companyId/verification-failures", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const rows = await listOpenEscalations(db, companyId);
+    res.json({ escalations: rows });
   });
 
   return router;

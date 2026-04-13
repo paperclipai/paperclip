@@ -5597,5 +5597,15 @@ export function heartbeatService(db: Db) {
 
       return { degraded, stalled, autoClosed };
     },
+
+    /**
+     * Verification escalation sweeper. Walks open verification_escalations rows whose nextRungAt
+     * has passed and advances them up the ladder. Phase 4 of the verification system. See
+     * services/verification/escalation-sweeper.ts for the ladder definition + implementation.
+     */
+    async sweepVerificationEscalations() {
+      const mod = await import("./verification/escalation-sweeper.js");
+      return mod.runEscalationSweeper(db);
+    },
   };
 }

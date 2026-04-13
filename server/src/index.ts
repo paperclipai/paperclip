@@ -708,6 +708,21 @@ export async function startServer(): Promise<StartedServer> {
           });
       }
 
+      // --- Every 2 ticks (~1m) — verification escalation (needs higher cadence so the ladder
+      //     advances on schedule; normal priority ladder has a 30m first rung)
+      if (sweepTickCount % 2 === 0) {
+        void heartbeat
+          .sweepVerificationEscalations()
+          .then((result) => {
+            if (result.advanced > 0 || result.repeated > 0 || result.errors > 0) {
+              logger.info({ ...result }, "verification escalation sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "verification escalation sweep failed");
+          });
+      }
+
       // --- Every 10 ticks (~5m) — lower urgency ---
       if (sweepTickCount % 10 === 0) {
         void heartbeat

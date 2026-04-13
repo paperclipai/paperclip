@@ -2380,10 +2380,17 @@ export function issueRoutes(
         }
       }
 
-      // Phase 3 log-only verification gates. These evaluate whether the new verification system
-      // WOULD block this transition, but never actually return 422. Used for divergence analysis
-      // before Phase 4 flips to enforcement. Only fires for code issues (executionWorkspaceId set).
-      if (req.body.status) {
+      // Phase 3 log-only verification gates (Phase 4 adds optional enforcement via env flag).
+      //
+      // VERIFICATION_GATE_MODE environment variable:
+      //   - unset / "log_only" (default): emit `issue.verification_gate_log_only` activity entry
+      //     with `wouldBlock: [reasons]` but continue. Used for divergence analysis.
+      //   - "enforce": return 422 with gate `verification_gate_enforced` on any reason.
+      //   - "off": skip evaluation entirely.
+      //
+      // Only fires for agent actors on code issues (executionWorkspaceId set). Board users bypass.
+      const gateMode = process.env.VERIFICATION_GATE_MODE ?? "log_only";
+      if (req.body.status && gateMode !== "off" && req.actor.type === "agent") {
         try {
           const evalIssue = {
             id: existing.id,
@@ -2394,9 +2401,36 @@ export function issueRoutes(
             executionWorkspaceId: existing.executionWorkspaceId,
             status: existing.status,
           };
-          const logOnlyReasons = await evalAllLogOnlyGates(db, evalIssue, req.body.status);
-          if (logOnlyReasons.length > 0) {
+          const reasons = await evalAllLogOnlyGates(db, evalIssue, req.body.status);
+          if (reasons.length > 0) {
             const actor = getActorInfo(req);
+            if (gateMode === "enforce") {
+              await logActivity(db, {
+                companyId: existing.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "issue.verification_gate_enforced",
+                entityType: "issue",
+                entityId: existing.id,
+                details: {
+                  targetStatus: req.body.status,
+                  fromStatus: existing.status,
+                  blockedBy: reasons,
+                  phase: 4,
+                  enforced: true,
+                },
+              });
+              await incrementGateBlockCount(existing.id);
+              res.status(422).json({
+                error: `verification gate blocked: ${reasons.join("; ")}`,
+                gate: "verification_gate_enforced",
+                reasons,
+              });
+              return;
+            }
+            // log_only mode — emit an observability entry but do not block.
             await logActivity(db, {
               companyId: existing.companyId,
               actorType: actor.actorType,
@@ -2409,17 +2443,17 @@ export function issueRoutes(
               details: {
                 targetStatus: req.body.status,
                 fromStatus: existing.status,
-                wouldBlock: logOnlyReasons,
+                wouldBlock: reasons,
                 phase: 3,
                 enforced: false,
               },
             });
           }
         } catch (err) {
-          // Log-only gates MUST NOT break the happy path. If the eval throws, just warn.
+          // Gate evaluation MUST NOT break the happy path. If it throws, warn and continue.
           logger.warn(
             { err, issueId: existing.id },
-            "log-only verification gate evaluation failed; continuing",
+            "verification gate evaluation failed; continuing",
           );
         }
       }
