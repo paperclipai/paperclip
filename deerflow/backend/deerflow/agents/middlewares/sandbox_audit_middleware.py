@@ -84,3 +84,26 @@ def classify_compound_command(command: str) -> RiskLevel:
         if highest == RiskLevel.HIGH:
             break
     return highest
+
+
+_DEFAULT_MAX_COMMAND_LENGTH = 10000
+
+
+class SanitizationError(ValueError):
+    """Raised when a command fails sanitisation checks."""
+    pass
+
+
+def sanitize_command(command: str, max_length: int = _DEFAULT_MAX_COMMAND_LENGTH) -> str:
+    """Validate and sanitize a bash command.
+
+    Returns the stripped command, or raises SanitizationError.
+    """
+    stripped = command.strip()
+    if not stripped:
+        raise SanitizationError("Command is empty")
+    if len(stripped) > max_length:
+        raise SanitizationError(f"Command exceeds maximum length ({len(stripped)} > {max_length})")
+    if "\x00" in stripped:
+        raise SanitizationError("Command contains null byte")
+    return stripped

@@ -7,6 +7,8 @@ from deerflow.agents.middlewares.sandbox_audit_middleware import (
     classify_command,
     split_compound_command,
     classify_compound_command,
+    sanitize_command,
+    SanitizationError,
 )
 
 
@@ -92,3 +94,28 @@ class TestClassifyCompoundCommand:
 
     def test_medium_in_compound(self):
         assert classify_compound_command("ls && pip install foo") == RiskLevel.MEDIUM
+
+
+class TestSanitizeCommand:
+    def test_valid_command_passes(self):
+        assert sanitize_command("ls -la") == "ls -la"
+
+    def test_empty_command_rejected(self):
+        with pytest.raises(SanitizationError, match="empty"):
+            sanitize_command("")
+
+    def test_whitespace_only_rejected(self):
+        with pytest.raises(SanitizationError, match="empty"):
+            sanitize_command("   ")
+
+    def test_oversized_command_rejected(self):
+        with pytest.raises(SanitizationError, match="exceeds"):
+            sanitize_command("x" * 10001)
+
+    def test_null_byte_rejected(self):
+        with pytest.raises(SanitizationError, match="null"):
+            sanitize_command("ls \x00 /tmp")
+
+    def test_custom_max_length(self):
+        with pytest.raises(SanitizationError, match="exceeds"):
+            sanitize_command("x" * 101, max_length=100)
