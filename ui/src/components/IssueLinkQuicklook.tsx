@@ -2,11 +2,16 @@ import * as React from "react";
 import { useMemo, useState } from "react";
 import * as RouterDom from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
-import { useQuery } from "@tanstack/react-query";
-import { issuesApi } from "@/api/issues";
-import { queryKeys } from "@/lib/queryKeys";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { timeAgo } from "@/lib/timeAgo";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
+import {
+  fetchIssueDetail,
+  getCachedIssueDetail,
+  ISSUE_DETAIL_STALE_TIME_MS,
+  prefetchIssueDetail,
+} from "@/lib/issueDetailCache";
+import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusIcon } from "@/components/StatusIcon";
@@ -67,47 +72,92 @@ export function IssueQuicklookCard({
 
 export const IssueLinkQuicklook = React.forwardRef<
   HTMLAnchorElement,
-  React.ComponentProps<typeof RouterDom.Link> & { issuePathId: string }
+  React.ComponentProps<typeof RouterDom.Link> & {
+    issuePathId: string;
+    disableIssueQuicklook?: boolean;
+    issuePrefetch?: Issue | null;
+  }
 >(function IssueLinkQuicklookImpl(
   {
     issuePathId,
     to,
     children,
     className,
+    state,
+    disableIssueQuicklook = false,
+    issuePrefetch = null,
     onClick,
+    onClickCapture,
+    onMouseEnter,
+    onFocus,
+    onTouchStart,
     ...props
   },
   ref,
 ) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const prefetchedState = issuePrefetch ? withIssueDetailHeaderSeed(state, issuePrefetch) : state;
+  const cachedIssue = getCachedIssueDetail(queryClient, issuePathId, issuePrefetch ?? undefined);
   const { data, isLoading } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
-    queryFn: () => issuesApi.get(issuePathId),
+    queryFn: () => fetchIssueDetail(queryClient, issuePathId),
     enabled: open,
-    staleTime: 60_000,
+    initialData: () => cachedIssue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
 
   const detailPath = createIssueDetailPath(issuePathId);
+  const handlePrefetch = React.useCallback(() => {
+    void prefetchIssueDetail(queryClient, issuePathId, { issue: issuePrefetch });
+  }, [issuePathId, issuePrefetch, queryClient]);
+  const link = (
+    <RouterDom.Link
+      ref={ref}
+      to={to}
+      state={prefetchedState}
+      className={className}
+      onMouseEnter={(event) => {
+        handlePrefetch();
+        onMouseEnter?.(event);
+      }}
+      onFocus={(event) => {
+        handlePrefetch();
+        onFocus?.(event);
+      }}
+      onTouchStart={(event) => {
+        handlePrefetch();
+        onTouchStart?.(event);
+      }}
+      onClickCapture={(event) => {
+        handlePrefetch();
+        onClickCapture?.(event);
+      }}
+      onClick={(event) => {
+        setOpen(false);
+        onClick?.(event);
+      }}
+      {...props}
+    >
+      {children}
+    </RouterDom.Link>
+  );
+
+  if (disableIssueQuicklook) {
+    return link;
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         asChild
-        onMouseEnter={() => setOpen(true)}
+        onMouseEnter={() => {
+          handlePrefetch();
+          setOpen(true);
+        }}
         onMouseLeave={() => setOpen(false)}
       >
-        <RouterDom.Link
-          ref={ref}
-          to={to}
-          className={className}
-          onClick={(event) => {
-            setOpen(false);
-            onClick?.(event);
-          }}
-          {...props}
-        >
-          {children}
-        </RouterDom.Link>
+        {link}
       </PopoverTrigger>
       <PopoverContent
         className="w-72 p-3"
@@ -118,7 +168,7 @@ export const IssueLinkQuicklook = React.forwardRef<
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
         {data ? (
-          <IssueQuicklookCard issue={data} linkTo={detailPath} compact />
+          <IssueQuicklookCard issue={data} linkTo={detailPath} linkState={prefetchedState} compact />
         ) : (
           <div className="space-y-2">
             <div className="h-4 w-24 rounded bg-accent/50" />
