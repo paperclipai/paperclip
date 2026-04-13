@@ -49,6 +49,7 @@ const mockCostService = vi.hoisted(() => ({
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
   windowSpend: vi.fn().mockResolvedValue([]),
+  byIssue: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
@@ -162,6 +163,15 @@ describe("cost routes", () => {
   it("returns 400 for an invalid 'to' date string", async () => {
     const { parseCostDateRange } = await loadCostParsers();
     expect(() => parseCostDateRange({ to: "banana" })).toThrow(/invalid 'to' date/i);
+  });
+
+  it("returns cost rows by issue for valid requests", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-issue")
+      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
+    expect(res.status).toBe(200);
+    expect(mockCostService.byIssue).toHaveBeenCalled();
   });
 
   it("returns finance summary rows for valid requests", async () => {
