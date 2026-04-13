@@ -68,8 +68,10 @@ describeEmbeddedPostgres("claimQueuedRun dequeue-time issue-status check", () =>
 
   afterEach(async () => {
     vi.clearAllMocks();
-    // Allow async side-effects from executeRun to settle before cleanup
-    await new Promise((r) => setTimeout(r, 200));
+    // Allow fire-and-forget executeRun() side-effects to settle before cleanup.
+    // 500ms is generous for the mock adapter path; if CI proves flaky, replace
+    // with a polling drain on heartbeatRuns status != 'queued'.
+    await new Promise((r) => setTimeout(r, 500));
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -181,9 +183,10 @@ describeEmbeddedPostgres("claimQueuedRun dequeue-time issue-status check", () =>
     await heartbeat.resumeQueuedRuns();
 
     const run = await heartbeat.getRun(runId);
-    // The run should have been claimed (transitioned to running), not cancelled.
+    // The run should have been claimed (transitioned away from "queued"), not cancelled.
     // It may fail later due to adapter not being available, but the claim itself should succeed.
     expect(run?.status).not.toBe("cancelled");
+    expect(run?.status).not.toBe("queued");
   }, 15_000);
 
   it("does NOT publish a live event when cancelling a run for a done issue", async () => {
