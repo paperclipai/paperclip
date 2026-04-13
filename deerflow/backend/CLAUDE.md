@@ -189,8 +189,19 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 - `bash` - Execute commands with path translation and error handling
 - `ls` - Directory listing (tree format, max 2 levels)
 - `read_file` - Read file contents with optional line range
-- `write_file` - Write/append to files, creates directories
-- `str_replace` - Substring replacement (single or all occurrences)
+- `write_file` - Write/append to files, creates directories (with per-file locking via `file_operation_lock.py`)
+- `str_replace` - Substring replacement (single or all occurrences, with per-file locking)
+
+**Sandbox Audit** (`deerflow/agents/middlewares/sandbox_audit_middleware.py`):
+- 3-tier command classification: HIGH (blocked), MEDIUM (logged), LOW (allowed)
+- `classify_command()` — single command classification via regex patterns
+- `split_compound_command()` — splits `&&`, `||`, `;`, `|` into segments
+- `classify_compound_command()` — classifies each segment, returns highest risk
+- `sanitize_command()` — rejects empty, oversized (>10K), and null-byte commands
+
+**Path Mapping** (`deerflow/sandbox/path_mapping.py`):
+- `PathMapping` frozen dataclass: `container_path`, `local_path`, `read_only`
+- `resolve_path()` / `check_writable()` for path translation with read-only enforcement
 
 ### Subagent System (`deerflow/subagents/`)
 
@@ -198,7 +209,9 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 **Execution**: Dual thread pool - `_scheduler_pool` (3 workers) + `_execution_pool` (3 workers)
 **Concurrency**: `MAX_CONCURRENT_SUBAGENTS = 3` enforced by `SubagentLimitMiddleware` (truncates excess tool calls in `after_model`), 15-minute timeout
 **Flow**: `task()` tool → `SubagentExecutor` → background thread → poll 5s → SSE events → result
-**Events**: `task_started`, `task_running`, `task_completed`/`task_failed`/`task_timed_out`
+**Events**: `task_started`, `task_running`, `task_completed`/`task_failed`/`task_timed_out`/`task_cancelled`
+**Cancellation**: `request_cancel_background_task(task_id)` sets `cancel_event` on `SubagentResult` for cooperative cancellation; `CANCELLED` status added
+**Event Loop Isolation**: Per-thread dedicated event loops via `_execute_in_isolated_loop()` prevent nested loop conflicts
 
 ### Tool System (`deerflow/tools/`)
 
@@ -232,12 +245,14 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 - **Location**: `deer-flow/skills/{public,custom}/`
 - **Format**: Directory with `SKILL.md` (YAML frontmatter: name, description, license, allowed-tools)
 - **Loading**: `load_skills()` recursively scans `skills/{public,custom}` for `SKILL.md`, parses metadata, and reads enabled state from extensions_config.json
+- **Cache**: `get_cached_skills()` provides thread-safe cached access; `invalidate_skills_cache()` marks stale for next refresh
 - **Injection**: Enabled skills listed in agent system prompt with container paths
 - **Installation**: `POST /api/skills/install` extracts .skill ZIP archive to custom/ directory
 
 ### Model Factory (`deerflow/models/factory.py`)
 
-- `create_chat_model(name, thinking_enabled)` instantiates LLM from config via reflection
+- `create_chat_model(name, thinking_enabled, **kwargs)` instantiates LLM from config via reflection
+- Kwargs merge: `{**model_settings_from_config, **kwargs}` — caller overrides config defaults
 - Supports `thinking_enabled` flag with per-model `when_thinking_enabled` overrides
 - Supports `supports_vision` flag for image understanding models
 - Config values starting with `$` resolved as environment variables
