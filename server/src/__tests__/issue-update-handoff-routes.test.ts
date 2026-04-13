@@ -497,6 +497,89 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
   });
 
+  it("wakes the assignee when same-assignee status changes into actionable work", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const todoIssueId = randomUUID();
+    const reviewIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Staff Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Same assignee todo wake",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: reviewIssueId,
+        companyId,
+        title: "Same assignee review wake",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const app = createRouteApp();
+
+    const todoRes = await request(app)
+      .patch(`/api/issues/${todoIssueId}`)
+      .send({ status: "todo" });
+    const reviewRes = await request(app)
+      .patch(`/api/issues/${reviewIssueId}`)
+      .send({ status: "in_review" });
+
+    expect(todoRes.status).toBe(200);
+    expect(reviewRes.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockHeartbeatWakeup).toHaveBeenCalledTimes(2);
+    });
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      reason: "issue_status_changed",
+      payload: expect.objectContaining({
+        issueId: todoIssueId,
+        mutation: "update",
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId: todoIssueId,
+        source: "issue.status_change",
+      }),
+    }));
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      reason: "issue_status_changed",
+      payload: expect.objectContaining({
+        issueId: reviewIssueId,
+        mutation: "update",
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId: reviewIssueId,
+        source: "issue.status_change",
+      }),
+    }));
+  });
+
   it("preserves execution ownership when the local-board run header belongs to a different live agent", async () => {
     const builderAgentId = randomUUID();
     const { issueId, staffAgentId, builderRunId } = await seedHandoffFixture({

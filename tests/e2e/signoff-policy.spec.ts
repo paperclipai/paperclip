@@ -128,6 +128,19 @@ async function agentCheckoutAndPatch(
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
 ) {
+  async function boardCheckoutAndPatch() {
+    const boardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
+      data: { agentId: agent.agentId, expectedStatuses },
+    });
+    if (!boardCheckout.ok()) {
+      throw new Error(`Board checkout failed: ${await boardCheckout.text()}`);
+    }
+    // Board PATCH (executor mark-done triggers signoff regardless of actor)
+    return board.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      data: patchData,
+    });
+  }
+
   let checkoutRunId = await resolveCheckoutRunId(board, agent, issueId);
   // Checkout (sets executionRunId so PATCH is allowed)
   let checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
@@ -156,23 +169,19 @@ async function agentCheckoutAndPatch(
 
     // If no run owns execution anymore, fall back to board checkout then PATCH.
     // Board checkout must not bypass a live execution lock.
-    const boardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
-      data: { agentId: agent.agentId, expectedStatuses },
-    });
-    if (!boardCheckout.ok()) {
-      throw new Error(`Board checkout failed: ${await boardCheckout.text()}`);
-    }
-    // Board PATCH (executor mark-done triggers signoff regardless of actor)
-    const res = await board.patch(`${BASE_URL}/api/issues/${issueId}`, {
-      data: patchData,
-    });
-    return res;
+    return boardCheckoutAndPatch();
   }
   // PATCH with agent identity
   const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
     headers: { "X-Paperclip-Run-Id": checkoutRunId },
     data: patchData,
   });
+  if (res.status() === 409) {
+    const latestIssue = await getIssueForCheckout(board, issueId);
+    if (!latestIssue.executionRunId) {
+      return boardCheckoutAndPatch();
+    }
+  }
   return res;
 }
 

@@ -4022,7 +4022,13 @@ export function heartbeatService(db: Db) {
         );
       } else {
         await tx.execute(
-          sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+          sql`
+            select id
+            from issues
+            where company_id = ${run.companyId}
+              and (execution_run_id = ${run.id} or checkout_run_id = ${run.id})
+            for update
+          `,
         );
       }
 
@@ -4032,13 +4038,16 @@ export function heartbeatService(db: Db) {
           companyId: issues.companyId,
           identifier: issues.identifier,
           status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(
           and(
             eq(issues.companyId, run.companyId),
-            contextIssueId ? eq(issues.id, contextIssueId) : eq(issues.executionRunId, run.id),
+            contextIssueId
+              ? eq(issues.id, contextIssueId)
+              : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
           ),
         )
         .then((rows) => rows[0] ?? null);
@@ -4046,17 +4055,35 @@ export function heartbeatService(db: Db) {
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
+      let checkoutClearable = issue.checkoutRunId === run.id;
+      if (issue.checkoutRunId && issue.checkoutRunId !== run.id) {
+        const checkoutRun = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+        checkoutClearable = !checkoutRun || (checkoutRun.status !== "queued" && checkoutRun.status !== "running");
       }
+
+      const issuePatch: Partial<typeof issues.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+      if (checkoutClearable) {
+        issuePatch.checkoutRunId = null;
+      }
+      if (issue.executionRunId === run.id) {
+        issuePatch.executionRunId = null;
+        issuePatch.executionAgentNameKey = null;
+        issuePatch.executionLockedAt = null;
+      }
+
+      await tx
+        .update(issues)
+        .set(issuePatch)
+        .where(eq(issues.id, issue.id));
+
+      if (issue.checkoutRunId && !checkoutClearable) return null;
+      if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
       while (true) {
         const deferred = await tx
@@ -4352,6 +4379,7 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -4376,13 +4404,16 @@ export function heartbeatService(db: Db) {
           return { kind: "skipped" as const };
         }
 
-        let activeExecutionRun = issue.executionRunId
-          ? await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(eq(heartbeatRuns.id, issue.executionRunId))
-            .then((rows) => rows[0] ?? null)
-          : null;
+        const getActiveIssueRun = (runId: string | null) =>
+          runId
+            ? tx
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, runId))
+              .then((rows) => rows[0] ?? null)
+            : Promise.resolve(null);
+
+        let activeExecutionRun = await getActiveIssueRun(issue.executionRunId);
 
         if (activeExecutionRun && activeExecutionRun.status !== "queued" && activeExecutionRun.status !== "running") {
           activeExecutionRun = null;
@@ -4398,6 +4429,25 @@ export function heartbeatService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(issues.id, issue.id));
+        }
+
+        if (!activeExecutionRun) {
+          let activeCheckoutRun = await getActiveIssueRun(issue.checkoutRunId);
+          if (activeCheckoutRun && activeCheckoutRun.status !== "queued" && activeCheckoutRun.status !== "running") {
+            activeCheckoutRun = null;
+          }
+
+          if (activeCheckoutRun) {
+            activeExecutionRun = activeCheckoutRun;
+          } else if (issue.checkoutRunId) {
+            await tx
+              .update(issues)
+              .set({
+                checkoutRunId: null,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(issues.id, issue.id), eq(issues.checkoutRunId, issue.checkoutRunId)));
+          }
         }
 
         if (!activeExecutionRun) {
