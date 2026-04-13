@@ -61,6 +61,17 @@ export function parseCodexJsonl(stdout: string) {
   };
 }
 
+export function isCodexContextWindowError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /context[_\s]length[_\s]exceeded|maximum context length|exceeds the model.{0,20}context|context window.{0,30}(?:full|exceeded|overflow|limit)|too many tokens|prompt is too long/i.test(
+    haystack,
+  );
+}
+
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

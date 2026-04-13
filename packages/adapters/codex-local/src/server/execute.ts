@@ -22,7 +22,7 @@ import {
   renderAgentRosterNote,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError, isCodexContextWindowExhaustionError } from "./parse.js";
+import { parseCodexJsonl, isCodexUnknownSessionError, isCodexContextWindowError, isCodexContextWindowExhaustionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
@@ -626,6 +626,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const retry = await runAttempt(null);
     return toResult(retry, true);
+  }
+
+  if (
+    sessionId &&
+    !initial.proc.timedOut &&
+    (initial.proc.exitCode ?? 0) !== 0 &&
+    isCodexContextWindowError(initial.proc.stdout, initial.rawStderr)
+  ) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex context window exceeded with session "${sessionId}"; retrying without session context.\n`,
+    );
+    const retry = await runAttempt(null);
+    return toResult(retry, false);
   }
 
   return toResult(initial);
