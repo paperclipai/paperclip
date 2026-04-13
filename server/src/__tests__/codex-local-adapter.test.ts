@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexContextWindowOverflowError, isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import { isCodexContextWindowExhaustionError, isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
@@ -36,7 +36,7 @@ describe("codex_local stale session detection", () => {
     const stderr =
       "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
 
-    expect(isCodexContextWindowOverflowError("", stderr)).toBe(true);
+    expect(isCodexContextWindowExhaustionError("", stderr)).toBe(true);
   });
 });
 

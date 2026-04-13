@@ -1,7 +1,7 @@
 export { execute, ensureCodexSkillsInjected } from "./execute.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
-export { parseCodexJsonl, isCodexContextWindowOverflowError, isCodexUnknownSessionError } from "./parse.js";
+export { parseCodexJsonl, isCodexContextWindowExhaustionError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

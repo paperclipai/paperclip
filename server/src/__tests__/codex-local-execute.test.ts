@@ -28,6 +28,80 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeResumeContextOverflowThenFreshSuccessCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+  codexHome: process.env.CODEX_HOME || null,
+  paperclipEnvKeys: Object.keys(process.env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort(),
+};
+if (capturePath) {
+  const attempts = fs.existsSync(capturePath)
+    ? JSON.parse(fs.readFileSync(capturePath, "utf8"))
+    : [];
+  attempts.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(attempts), "utf8");
+}
+
+const isResumeRun = process.argv.includes("resume");
+if (isResumeRun) {
+  const msg = "The model's context window is full. Start a new conversation or clear past context before retrying.";
+  console.log(JSON.stringify({ type: "turn.failed", error: { message: msg } }));
+  console.error(msg);
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-fresh" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2, cached_input_tokens: 0, output_tokens: 3 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeResumeRanOutOfRoomThenFreshSuccessCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+  codexHome: process.env.CODEX_HOME || null,
+  paperclipEnvKeys: Object.keys(process.env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort(),
+};
+if (capturePath) {
+  const attempts = fs.existsSync(capturePath)
+    ? JSON.parse(fs.readFileSync(capturePath, "utf8"))
+    : [];
+  attempts.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(attempts), "utf8");
+}
+
+const isResumeRun = process.argv.includes("resume");
+if (isResumeRun) {
+  const msg = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+  console.log(JSON.stringify({ type: "turn.failed", error: { message: msg } }));
+  console.error(msg);
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-fresh" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2, cached_input_tokens: 0, output_tokens: 3 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -525,6 +599,143 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when resume fails due to context window exhaustion", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-retry-overflow-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeResumeContextOverflowThenFreshSuccessCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    try {
+      const result = await execute({
+        runId: "run-retry-overflow",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "stale-session",
+          sessionParams: { sessionId: "stale-session", cwd: workspace },
+          sessionDisplayId: "stale-session",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("codex-session-fresh");
+      expect(result.summary).toContain("fresh hello");
+
+      const attempts = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload[];
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]?.argv).toEqual(
+        expect.arrayContaining(["exec", "--json", "resume", "stale-session", "-"]),
+      );
+      expect(attempts[1]?.argv).toEqual(
+        expect.arrayContaining(["exec", "--json", "-"]),
+      );
+      expect(attempts[1]?.argv).not.toContain("resume");
+
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("exceeded the model context window; retrying with a fresh session"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when resume fails with ran-out-of-room context wording", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-retry-ran-out-of-room-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeResumeRanOutOfRoomThenFreshSuccessCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    try {
+      const result = await execute({
+        runId: "run-retry-ran-out",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "stale-session",
+          sessionParams: { sessionId: "stale-session", cwd: workspace },
+          sessionDisplayId: "stale-session",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("codex-session-fresh");
+      expect(result.summary).toContain("fresh hello");
+
+      const attempts = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload[];
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]?.argv).toContain("resume");
+      expect(attempts[1]?.argv).not.toContain("resume");
+
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("exceeded the model context window; retrying with a fresh session"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
