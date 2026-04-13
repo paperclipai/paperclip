@@ -89,6 +89,11 @@ export async function createApp(
 ) {
   const app = express();
 
+  app.use((_req, res, next) => {
+    res.charset = "utf-8";
+    next();
+  });
+
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",

@@ -552,6 +552,12 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  // On Windows, force UTF-8 for all child process I/O so that agents using curl
+  // or Python do not encode non-ASCII characters as CP-1252/latin-1.
+  if (process.platform === "win32") {
+    vars.PYTHONUTF8 = "1";
+    vars.PYTHONIOENCODING = "utf-8";
+  }
   return vars;
 }
 
