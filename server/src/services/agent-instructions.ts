@@ -722,6 +722,33 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  /**
+   * Checks whether the managed instructions directory already contains an
+   * AGENTS.md and, if so, returns an updated `adapterConfig` that registers it
+   * as a managed bundle — without writing any files.
+   *
+   * Returns `null` when no existing AGENTS.md is found, which signals the
+   * caller to fall through to the normal bundle-creation path.
+   *
+   * This is used by the agent create/update flow to avoid overwriting
+   * hand-crafted AGENTS.md files with generated defaults, and to auto-recover
+   * agents whose `adapterConfig` was accidentally cleared.
+   */
+  async function recoverExistingManagedBundleConfig(
+    agent: AgentLike,
+  ): Promise<Record<string, unknown> | null> {
+    const managedRoot = resolveManagedInstructionsRoot(agent);
+    const agentsMdPath = path.join(managedRoot, ENTRY_FILE_DEFAULT);
+    const stat = await statIfExists(agentsMdPath);
+    if (!stat?.isFile()) return null;
+
+    return applyBundleConfig(asRecord(agent.adapterConfig), {
+      mode: "managed",
+      rootPath: managedRoot,
+      entryFile: ENTRY_FILE_DEFAULT,
+    });
+  }
+
   return {
     getBundle,
     readFile,
@@ -731,5 +758,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    recoverExistingManagedBundleConfig,
   };
 }

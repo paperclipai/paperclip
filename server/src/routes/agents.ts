@@ -577,6 +577,17 @@ export function agentRoutes(db: Db) {
       return agent;
     }
 
+    // If the managed instructions directory already has an AGENTS.md (e.g. the
+    // agent was set up manually before this auto-detection existed), recover it
+    // as a managed bundle without overwriting its content with generated defaults.
+    const recovered = await instructions.recoverExistingManagedBundleConfig(agent);
+    if (recovered) {
+      const nextAdapterConfig = { ...recovered };
+      delete nextAdapterConfig.promptTemplate;
+      const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+      return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+    }
+
     const promptTemplate = typeof adapterConfig.promptTemplate === "string"
       ? adapterConfig.promptTemplate
       : "";
@@ -1925,7 +1936,28 @@ export function agentRoutes(db: Db) {
         effectiveAdapterConfig,
         { strictMode: strictSecretsMode },
       );
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      let resolvedAdapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+
+      // If the resulting config still has no instructions bundle (e.g. an adapter-
+      // type switch wiped it, or the agent was created with adapterConfig: {}),
+      // check whether a managed AGENTS.md already exists on disk and recover it.
+      if (
+        DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(requestedAdapterType)
+        && !asNonEmptyString(resolvedAdapterConfig.instructionsBundleMode)
+        && !asNonEmptyString(resolvedAdapterConfig.instructionsRootPath)
+        && !asNonEmptyString(resolvedAdapterConfig.instructionsFilePath)
+        && !asNonEmptyString(resolvedAdapterConfig.agentsMdPath)
+      ) {
+        const recovered = await instructions.recoverExistingManagedBundleConfig({
+          ...existing,
+          adapterConfig: resolvedAdapterConfig,
+        });
+        if (recovered) {
+          resolvedAdapterConfig = recovered;
+        }
+      }
+
+      patchData.adapterConfig = resolvedAdapterConfig;
     }
     if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
