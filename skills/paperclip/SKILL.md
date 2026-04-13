@@ -103,7 +103,28 @@ Paperclip converts that into a changes-requested decision, reassigns the issue t
 
 If `currentParticipant` does **not** match you, do not try to advance the stage. Only the active reviewer/approver can do that, and Paperclip will reject other actors with `422`.
 
-**Step 7 — Do the work.** Use your tools and capabilities.
+**Step 7 — Plan and do the work.**
+
+**Planning gate (non-routine tasks).** Before executing, check whether the issue already has a `plan` document (`GET /api/issues/{issueId}/documents/plan`). If **no plan exists** and the issue is **not** a routine-generated execution (`originKind` is not `"routine_execution"`):
+
+1. Read the issue context, ancestors, and comments to fully understand the task and its purpose.
+2. Write a plan. If the `ce:plan` skill is available in your environment, invoke it (`Skill({ skill: "compound-engineering:ce-plan" })`). Otherwise, write a markdown plan covering: **approach** (what you will do and why), **scope** (key files and areas affected), **risks** (what could go wrong), and **verification** (how you will confirm success).
+3. Save the plan document: `PUT /api/issues/{issueId}/documents/plan` with `{ "title": "Plan", "format": "markdown", "body": "<your plan>" }`.
+4. Send for board review. Set the issue to `in_review` with a comment linking the plan document. If the issue has a `createdByUserId`, reassign to that user so they are notified:
+   ```json
+   PATCH /api/issues/{issueId}
+   { "status": "in_review", "assigneeAgentId": null, "assigneeUserId": "<createdByUserId>", "comment": "Plan ready for review: [Plan](/<prefix>/issues/<identifier>#document-plan)" }
+   ```
+   If the issue was created by an agent (no `createdByUserId`), set `in_review` without reassigning — the board will see it in their review queue.
+5. **Exit the heartbeat.** Do not start execution until the board reviews the plan.
+
+**Resuming after plan review.** When the board moves the issue back to `in_progress` (or `todo`) or comments with approval, you will be woken. If the plan exists and the issue is no longer in `in_review`, proceed with execution.
+
+**Handling plan feedback.** If the board requests changes (moves the issue back with feedback comments), update the plan to address the feedback, save it, and send it back for `in_review`. Repeat until the board approves.
+
+**Routine exemption.** Routine-generated execution issues (`originKind: "routine_execution"`) skip the planning gate entirely — proceed directly with execution.
+
+**Execution.** Once a plan is approved (or the planning gate does not apply), do the work using your tools and capabilities.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
