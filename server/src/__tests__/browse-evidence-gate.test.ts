@@ -108,11 +108,21 @@ const noWorkspaceIssue = {
   executionWorkspaceId: null,
 };
 
-/** Issue in any project with a workspace — gated regardless of project. */
-const otherProjectIssue = {
+/** Issue in CODE_PROJECT_IDS (Agent Reliability) with workspace — gated. */
+const codeProjectIssue = {
   ...codeIssue,
   id: "33333333-3333-4333-8333-333333333333",
   identifier: "PAP-300",
+  title: "Fix agent error handler",
+  projectId: "a2bb9b56-e3f1-4ac9-96bc-9ad033ee9365",
+  executionWorkspaceId: "ws-agent-reliability",
+};
+
+/** Issue in a project outside CODE_PROJECT_IDS — gated by project scoping (bypassed). */
+const otherProjectIssue = {
+  ...codeIssue,
+  id: "44444444-4444-4444-8444-444444444444",
+  identifier: "PAP-400",
   title: "Fix blog formatting",
   projectId: "67118ae5-ada9-4c55-bb88-4ef8226a756e",
   executionWorkspaceId: "ws-other-project",
@@ -259,14 +269,15 @@ describe("engineer browse evidence gate", () => {
     expect(res.status).toBe(200);
   });
 
-  it("agent → in_review, different project with workspace, no evidence → 422 (gated)", async () => {
-    mockIssueService.getById.mockResolvedValue(otherProjectIssue);
+  it("agent → in_review, CODE_PROJECT_IDS with workspace, no evidence → 422 (gated)", async () => {
+    mockIssueService.getById.mockResolvedValue(codeProjectIssue);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([validBranch]);
 
     const app = createAgentApp();
     const res = await request(app)
-      .patch(`/api/issues/${otherProjectIssue.id}`)
+      .patch(`/api/issues/${codeProjectIssue.id}`)
       .send({ status: "in_review", comment: "Ready for review" });
 
     expect(res.status).toBe(422);
@@ -520,8 +531,8 @@ describe("qa browse evidence gate", () => {
     expect(res.status).toBe(200);
   });
 
-  it("agent → done, different project with workspace, QA PASS without evidence → 422 (gated)", async () => {
-    const issue = { ...otherProjectIssue, assigneeAgentId: "agent-1" };
+  it("agent → done, CODE_PROJECT_IDS with workspace, QA PASS without evidence → 422 (gated)", async () => {
+    const issue = { ...codeProjectIssue, assigneeAgentId: "agent-1" };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.listComments.mockResolvedValue([
       {
@@ -532,6 +543,7 @@ describe("qa browse evidence gate", () => {
       },
     ]);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([validPR]);
     mockIssueService.hasReachedStatus.mockResolvedValue(true);
 
     const app = createAgentApp();

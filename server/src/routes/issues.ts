@@ -313,6 +313,18 @@ export function issueRoutes(
   const CODE_DELIVERY_TYPES = new Set(["branch", "commit", "pull_request"]);
   const PR_VALID_STATUSES = new Set(["active", "ready_for_review", "approved", "merged"]);
 
+  /**
+   * Code-project scope for browse evidence and delivery gates.
+   * Only issues in these projects require interactive browser evidence and
+   * code delivery work products. Excludes research/strategy projects where
+   * deliverables are markdown docs, ADRs, and pure research documents.
+   * Extend this set as more code-delivery projects are onboarded.
+   */
+  const CODE_PROJECT_IDS = new Set([
+    "a2bb9b56-e3f1-4ac9-96bc-9ad033ee9365", // Agent Reliability
+    // Add ViraCue project ID here when applicable
+  ]);
+
   // GitHub URL patterns for work product integrity verification
   const GH_PR_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
   const GH_BRANCH_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+$/;
@@ -325,7 +337,7 @@ export function issueRoutes(
     targetStatus: string,
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
-    if (!issue.executionWorkspaceId) return null;
+    if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
     const products = await workProducts.listForIssue(issue.id);
 
@@ -484,7 +496,7 @@ export function issueRoutes(
   ): Promise<{ gate: string; reason: string } | null> {
     if (!req.actor || req.actor.type !== "agent") return null;
     if (targetStatus !== "in_review") return null;
-    if (!issue.executionWorkspaceId) return null;
+    if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
     const actorAgentId = req.actor.agentId ?? null;
 
@@ -552,7 +564,7 @@ export function issueRoutes(
     attachments: Array<{ contentType: string | null; createdByAgentId: string | null; createdByUserId: string | null; createdAt: Date | string }>,
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
-    if (!issue.executionWorkspaceId) return null;
+    if (!issue.projectId || !CODE_PROJECT_IDS.has(issue.projectId)) return null;
 
     // Find the QA PASS comment author (same logic as assertQAGate: non-assignee, authenticated)
     const qaPassComment = comments.find(
