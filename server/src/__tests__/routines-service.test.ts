@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -768,6 +768,144 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(blocker?.originKind).toBe("manual");
     expect(blocker?.description).toContain("queue unavailable");
     expect(blocker?.description).toContain("If this is a visual review routine and browser or vision access is unavailable");
+  });
+
+  it("cleans up automated blocker issues if dispatch failure finalization rolls back", async () => {
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_failed_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_failed_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'failed')
+      EXECUTE FUNCTION routine_run_failed_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z")),
+      ).rejects.toThrow(/routine run finalization exploded/i);
+
+      const companyIssues = await db
+        .select({ id: issues.id, title: issues.title })
+        .from(issues)
+        .where(eq(issues.companyId, companyId));
+      expect(companyIssues).toEqual([]);
+
+      const runs = await db
+        .select({ id: routineRuns.id })
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_failed_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_failed_update_explodes();
+      `));
+    }
+  });
+
+  it("links webhook variable validation failures to a visible blocked issue", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "review {{repo}}",
+        description: "Review {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(variableRoutine.id, {
+      kind: "webhook",
+      signingMode: "none",
+    }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "opened" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toContain("Missing routine variables: repo");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.title).toBe(`Blocked routine: ${variableRoutine.title}`);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBe(agentId);
+    expect(blocker?.description).toContain("Missing routine variables: repo");
+  });
+
+  it("links webhook default-agent validation failures to a visible blocked issue", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({ assigneeAgentId: null })
+      .where(eq(routines.id, routine.id));
+    const routineWithoutAssignee = await svc.get(routine.id);
+    expect(routineWithoutAssignee?.status).toBe("active");
+    expect(routineWithoutAssignee?.assigneeAgentId).toBeNull();
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "none",
+    }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "opened" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toContain("Default agent required");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBeNull();
+    expect(blocker?.description).toContain("No default routine assignee is configured");
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
