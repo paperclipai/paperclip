@@ -62,6 +62,7 @@ const assetSvc = {
 const agentInstructionsSvc = {
   exportFiles: vi.fn(),
   materializeManagedBundle: vi.fn(),
+  recoverExistingManagedBundleConfig: vi.fn(async () => null),
 };
 
 vi.mock("../services/companies.js", () => ({

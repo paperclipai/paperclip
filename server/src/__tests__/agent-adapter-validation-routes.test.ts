@@ -37,6 +37,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   deleteFile: vi.fn(),
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
+  recoverExistingManagedBundleConfig: vi.fn(async () => null),
 }));
 
 const mockBudgetService = vi.hoisted(() => ({

@@ -19,6 +19,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
   materializeManagedBundle: vi.fn(),
+  recoverExistingManagedBundleConfig: vi.fn(async () => null),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
