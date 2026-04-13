@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /paperclip/.agent-hooks/hooks/session_start_telemetry.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /paperclip/.agent-hooks/hooks/pre_tool_use_telemetry.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /paperclip/.agent-hooks/hooks/post_tool_use_telemetry.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /paperclip/.agent-hooks/hooks/session_end_telemetry.py"
+          }
+        ]
+      }
+    ]
+  }
+}

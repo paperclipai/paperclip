@@ -5,6 +5,7 @@ description: >
   scaffolding a plugin package, adding a new example plugin, or updating plugin
   authoring docs. Covers the supported worker/UI surface, route conventions,
   scaffold flow, and verification steps.
+roles: [cto, developer]
 ---
 
 # Create a Paperclip Plugin

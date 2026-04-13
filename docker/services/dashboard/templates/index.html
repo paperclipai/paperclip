@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paperclip Ops</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- HEADER -->
+    <header>
+      <div class="header-logo">
+        <div class="logo-icon">📎</div>
+        <div>
+          <div class="header-title">Paperclip Ops</div>
+          <div class="header-sub">ANGA Personal Stack</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="status-pill">
+          <div class="dot" id="status-dot"></div>
+          <span id="status-text">Connecting…</span>
+        </div>
+        <button class="btn btn-ghost" onclick="window.Dashboard.refresh()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <!-- MAIN GRID — JS populates this -->
+    <main id="main">
+      <div class="card full-width"><div class="empty">Loading…</div></div>
+    </main>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/render.js"></script>
+  <script src="/static/js/scripts.js"></script>
+  <script src="/static/js/main.js"></script>
+</body>
+</html>

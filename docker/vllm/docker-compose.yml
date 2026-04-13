@@ -1,0 +1,66 @@
+# vLLM server for google/gemma-4-26B-A4B-it
+# AMD Radeon RX 7900 XTX (ROCm/RDNA3) — WSL2 on Windows 11
+# Usage: HF_TOKEN=... docker compose up -d
+services:
+  vllm:
+    image: vllm/vllm-openai-rocm:gemma4
+    devices:
+      - /dev/dxg:/dev/dxg                        # WSL2 AMD GPU path (not /dev/kfd)
+      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - video
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - VLLM_USE_TRITON_FLASH_ATTN=0   # Required: Triton FA buggy on RDNA3
+      - PYTORCH_ROCM_ARCH=gfx1100
+      - GPU_MAX_HW_QUEUES=1
+      # WSL2 DXCore GPU passthrough: KFD not available, use DXCore via amdsmi
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+      - HSA_USE_SVM=0
+      - ROCR_VISIBLE_DEVICES=0
+      - VLLM_TARGET_DEVICE=rocm
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      # WSL2: DXCore interface lib (container brings its own ROCm libs)
+      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so
+      # WSL2 patches applied at startup (see patch_vllm.py)
+      - ./patch_vllm.py:/tmp/patch_vllm.py
+    ports:
+      - "8001:8000"
+    ipc: host
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      python /tmp/patch_vllm.py &&
+      python -m vllm.entrypoints.openai.api_server
+      --model google/gemma-4-26B-A4B-it
+      --dtype float16
+      --max-model-len 16384
+      --gpu-memory-utilization 0.85
+      --host 0.0.0.0
+      --port 8000
+      --enable-auto-tool-choice
+      --tool-call-parser gemma4
+      --reasoning-parser gemma4
+      --limit-mm-per-prompt '{"image":0,"audio":0}'
+    restart: unless-stopped
+    networks:
+      - vllm_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+networks:
+  vllm_net:
+    name: vllm_net
+    driver: bridge
+
+volumes:
+  huggingface-cache:

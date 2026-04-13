@@ -57,10 +57,19 @@ WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && chown node:node /paperclip \
+  && chown node:node /app
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+COPY scripts/paperclip-update.sh /usr/local/bin/paperclip-update
+RUN chmod +x /usr/local/bin/paperclip-update
+
+# docker CLI — needed by the hermes sidecar wrapper (/usr/local/bin/hermes-docker)
+RUN DOCKER_VERSION=27.5.1 \
+  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+     | tar xz --strip-components=1 -C /usr/local/bin docker/docker
 
 ENV NODE_ENV=production \
   HOME=/paperclip \

@@ -52,3 +52,11 @@ tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
 cowork-inbox/
+
+# Temporary workspace artifacts
+_tmp/
+TASKS-*.md
+*-sync-*.html
+system-evolution-dashboard.html
+/apply-observability.sh
+scripts/_create_hermes_agent.py

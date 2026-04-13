@@ -1,0 +1,28 @@
+services:
+  server:
+    command: pnpm --filter @paperclipai/server dev:watch
+    ports:
+      - "13100:13100"
+    environment:
+      NODE_ENV: development
+      PAPERCLIP_UI_DEV_MIDDLEWARE: "true"
+    volumes:
+      - ..:/app
+      # Anonymous volumes to preserve container-side node_modules
+      - /app/node_modules
+      - /app/server/node_modules
+      - /app/ui/node_modules
+      - /app/packages/shared/node_modules
+      - /app/packages/db/node_modules
+      - /app/packages/adapter-utils/node_modules
+      - /app/packages/mcp-server/node_modules
+      - /app/packages/plugins/sdk/node_modules
+      - /app/packages/adapters/claude-local/node_modules
+      - /app/packages/adapters/codex-local/node_modules
+      - /app/packages/adapters/cursor-local/node_modules
+      - /app/packages/adapters/gemini-local/node_modules
+      - /app/packages/adapters/openclaw-gateway/node_modules
+      - /app/packages/adapters/opencode-local/node_modules
+      - /app/packages/adapters/pi-local/node_modules
+      - /app/cli/node_modules
+      # Specific mounts for local data if needed (keeping existing ones from base compose)

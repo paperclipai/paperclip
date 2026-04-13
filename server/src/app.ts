@@ -50,6 +50,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { telegramRoutes } from "./routes/telegram.js";
+import { metricsRoutes, httpRequestDuration, httpRequestsTotal } from "./routes/metrics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -97,6 +98,22 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Prometheus /metrics endpoint — mounted before auth so scraping works unauthenticated
+  app.use(metricsRoutes());
+
+  // Request duration/count instrumentation
+  app.use((req, res, next) => {
+    if (req.path === "/metrics") return next();
+    const end = httpRequestDuration.startTimer();
+    res.on("finish", () => {
+      const route = req.route?.path ?? req.path;
+      const labels = { method: req.method, route, status_code: String(res.statusCode) };
+      end(labels);
+      httpRequestsTotal.inc(labels);
+    });
+    next();
+  });
+
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
@@ -280,7 +297,6 @@ export async function createApp(
       server: {
         middlewareMode: true,
         hmr: {
-          host: opts.bindHost,
           port: hmrPort,
           clientPort: hmrPort,
         },

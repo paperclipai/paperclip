@@ -1,0 +1,11 @@
+model:
+  provider: auto
+  base_url: "http://host.docker.internal:8001/v1"
+  default: "google/gemma-4-26B-A4B-it"
+  api_key: "sk-dummy"
+
+# Disable interactive security prompts — this sidecar runs headless inside Docker.
+# The Paperclip heartbeat runner cannot respond to interactive approval prompts,
+# so "off" lets hermes execute commands without waiting for user confirmation.
+approvals:
+  mode: "off"

@@ -2096,8 +2096,11 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      // Allow agents to wake their direct reports (reportsTo relationship)
+      if (agent.reportsTo !== req.actor.agentId) {
+        res.status(403).json({ error: "Agent can only invoke itself or its direct reports" });
+        return;
+      }
     }
 
     const run = await heartbeat.wakeup(id, {

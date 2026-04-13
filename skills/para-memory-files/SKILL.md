@@ -8,11 +8,35 @@ description: >
   handles planning files, memory decay, weekly synthesis, and recall via qmd.
   Trigger on any memory operation: saving facts, writing daily notes, creating
   entities, running weekly synthesis, recalling past context, or managing plans.
+roles: [all]
 ---
 
 # PARA Memory Files
 
 Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
+
+## Telemetry
+
+Emit skill events so memory usage is queryable across agents in the Paperclip dashboard.
+
+**At skill start:**
+```bash
+SKILL_START_MS=$(date +%s%3N)
+SKILL_SESSION="skill-memory-$(date +%s)-$$"
+python3 "${CLAUDE_CONFIG_DIR:-/paperclip/.agent-hooks}/hooks/skill_telemetry.py" \
+  start memory "$SKILL_SESSION" 2>/dev/null &
+```
+
+**At skill end:**
+```bash
+SKILL_DURATION_MS=$(( $(date +%s%3N) - SKILL_START_MS ))
+python3 "${CLAUDE_CONFIG_DIR:-/paperclip/.agent-hooks}/hooks/skill_telemetry.py" \
+  end memory "$SKILL_SESSION" --success true --duration_ms "$SKILL_DURATION_MS" 2>/dev/null &
+```
+
+Fails silently.
+
+---
 
 ## Three Memory Layers
 

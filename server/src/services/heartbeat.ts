@@ -2472,7 +2472,7 @@ export function heartbeatService(db: Db) {
         heartbeatRuns,
         and(
           eq(heartbeatRuns.id, issues.executionRunId),
-          inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
+          inArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES]),
         ),
       )
       .where(isNotNull(issues.executionRunId));

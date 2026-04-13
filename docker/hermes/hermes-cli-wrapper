@@ -1,0 +1,4 @@
+#!/bin/bash
+# Thin wrapper — forwards hermes CLI calls into the hermes sidecar container.
+# Installed as /usr/local/bin/hermes-docker inside the paperclip server container.
+exec docker exec -i paperclip-hermes-1 hermes "$@"

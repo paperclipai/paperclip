@@ -15,6 +15,19 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: paperclip-hermes-1
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "mkdir -p /opt/data/{sessions,logs,memories,skills,plans,workspace,home,hooks,skins,cron} &&
+       sleep infinity"
+    volumes:
+      - hermes-data:/opt/data
+      - ./hermes/config.yaml:/opt/data/config.yaml:ro
+      - ./hermes/hermes.env:/opt/data/.env:ro
+    restart: unless-stopped
+
   server:
     build:
       context: ..
@@ -29,12 +42,97 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_REPO: /app
+      OLLAMA_BASE_URL: "http://192.168.0.146:11434"
+      VLLM_BASE_URL: "http://host.docker.internal:8001/v1"
+      MINIVERSE_URL: "http://host.docker.internal:4321"
     volumes:
       - paperclip-data:/paperclip
+      - C:/Users/User/.codex:/paperclip/.codex
+      - gh-config:/root/.config/gh
+      - C:/Users/User/paperclip/cowork-inbox:/app/cowork-inbox
+      - C:/Users/User/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./hermes/hermes-cli-wrapper:/usr/local/bin/hermes-docker:ro
     depends_on:
       db:
         condition: service_healthy
+      hermes:
+        condition: service_started
+    restart: unless-stopped
+
+  telegram-bot:
+    build: ./services/telegram-bot
+    ports:
+      - "8000:8000"
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      PAPERCLIP_API_URL: "http://server:3100"
+      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      PAPERCLIP_CTO_AGENT_ID: "4e5cbf52-a530-439f-917c-a6cfee78d76d"
+      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
+      CHAT_IDS_FILE: "/data/chat_ids.json"
+      ANGEL_CHAT_ID: "518395647"
+    volumes:
+      - telegram-data:/data
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
+
+  watchdog:
+    build: ./services/watchdog
+    environment:
+      PAPERCLIP_API_URL: "http://server:3100"
+      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
+      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      TELEGRAM_BOT_URL: "http://telegram-bot:8000"
+      ANGEL_CHAT_ID: "518395647"
+      CHECK_INTERVAL_SECONDS: "120"
+      ALERT_COOLDOWN_SECONDS: "900"
+      SERVER_CONTAINER_NAME: "paperclip-server-1"
+      GMAIL_USER: "${GMAIL_USER:-angel.hermon.mail@gmail.com}"
+      GMAIL_APP_PASSWORD: "${GMAIL_APP_PASSWORD:-}"
+      ALERT_EMAIL_TO: "${ALERT_EMAIL_TO:-angel.hermon.mail@gmail.com}"
+    volumes:
+      - C:/Users/User/.claude:/host-claude:ro
+      - "C:/Users/User/AppData/Roaming/GitHub CLI:/host-gh-config:ro"
+      - C:/Users/User/.claude/watchdog:/watchdog-signals
+      - paperclip-data:/paperclip-data
+      - gh-config:/gh-config
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      server:
+        condition: service_started
+      telegram-bot:
+        condition: service_started
+    restart: unless-stopped
+
+  dashboard:
+    build: ./services/dashboard
+    ports:
+      - "3200:3200"
+    environment:
+      PORT: "3200"
+      PAPERCLIP_API_URL: "http://server:3100"
+      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
+      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      DEPLOY_TOKEN: "${DEPLOY_TOKEN:-}"
+    volumes:
+      - C:/Users/User/.claude/watchdog:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../scripts:/scripts:ro
+      - C:/Users/User/paperclip:/project:ro
+    restart: unless-stopped
+
+networks:
+  vllm_net:
+    external: true
+    name: vllm_net
 
 volumes:
   pgdata:
   paperclip-data:
+  telegram-data:
+  gh-config:
+  hermes-data:

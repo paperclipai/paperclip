@@ -1,0 +1,5 @@
+model:
+  provider: auto
+  base_url: "http://host.docker.internal:8001/v1"
+  default: "google/gemma-4-26B-A4B-it"
+  api_key: "dummy"

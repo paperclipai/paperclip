@@ -1,0 +1,72 @@
+---
+title: "Paperclip Dashboard"
+subtitle: "Local services"
+header: true
+footer: false
+
+colors:
+  light:
+    highlight-primary: "#3367d6"
+    highlight-secondary: "#4285f4"
+    highlight-hover: "#5a95f5"
+    background: "#f5f5f5"
+    card-background: "#ffffff"
+    text: "#363636"
+    text-header: "#ffffff"
+    text-title: "#303030"
+    text-subtitle: "#424242"
+    card-shadow: rgba(0, 0, 0, 0.1)
+    link: "#3273dc"
+    link-hover: "#363636"
+  dark:
+    highlight-primary: "#3367d6"
+    highlight-secondary: "#4285f4"
+    highlight-hover: "#5a95f5"
+    background: "#131313"
+    card-background: "#2b2b2b"
+    text: "#eaeaea"
+    text-header: "#ffffff"
+    text-title: "#fafafa"
+    text-subtitle: "#f5f5f5"
+    card-shadow: rgba(0, 0, 0, 0.4)
+    link: "#3273dc"
+    link-hover: "#ffdd57"
+
+services:
+  - name: "Core"
+    icon: "fas fa-server"
+    items:
+      - name: "Paperclip UI"
+        subtitle: "Main application"
+        url: "http://localhost:3100"
+        icon: "fas fa-paperclip"
+        target: "_blank"
+      - name: "Dashboard"
+        subtitle: "Paperclip dashboard"
+        url: "http://localhost:3200"
+        icon: "fas fa-columns"
+        target: "_blank"
+
+  - name: "Observability"
+    icon: "fas fa-chart-line"
+    items:
+      - name: "Grafana"
+        subtitle: "Dashboards & visualization"
+        url: "http://localhost:3001"
+        icon: "fas fa-tachometer-alt"
+        target: "_blank"
+      - name: "Prometheus"
+        subtitle: "Metrics & alerting"
+        url: "http://localhost:9090"
+        icon: "fas fa-fire"
+        target: "_blank"
+      - name: "Loki"
+        subtitle: "Log aggregation"
+        url: "http://localhost:3102"
+        icon: "fas fa-file-alt"
+        target: "_blank"
+      - name: "Tempo"
+        subtitle: "Distributed tracing (OTLP gRPC)"
+        url: "http://localhost:4317"
+        icon: "fas fa-route"
+        target: "_blank"

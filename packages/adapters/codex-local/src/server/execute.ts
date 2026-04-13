@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -142,6 +143,35 @@ function resolveCodexSkillsDir(codexHome: string): string {
   return path.join(codexHome, "skills");
 }
 
+function isPermissionDeniedError(err: unknown): boolean {
+  const code = err instanceof Object && "code" in err ? String((err as { code?: unknown }).code ?? "") : "";
+  const message = err instanceof Error ? err.message : String(err);
+  return code === "EACCES" || code === "EPERM" || /permission denied|operation not permitted|os error 13/i.test(message);
+}
+
+async function seedCodexHomeFromSharedHome(targetHome: string, sourceHome: string): Promise<void> {
+  await fs.mkdir(targetHome, { recursive: true });
+  const filesToCopy = ["auth.json", "config.json", "config.toml", "instructions.md"] as const;
+  for (const name of filesToCopy) {
+    const source = path.join(sourceHome, name);
+    const dest = path.join(targetHome, name);
+    const sourceExists = await pathExists(source);
+    if (!sourceExists) continue;
+    const destExists = await pathExists(dest);
+    if (destExists) continue;
+    await fs.copyFile(source, dest).catch(() => {});
+  }
+}
+
+function resolveWritableFallbackCodexHome(
+  runId: string,
+  companyId: string,
+  cwd: string,
+): string {
+  const fallbackRoot = path.resolve(cwd, ".paperclip", "codex-home-fallback");
+  return path.join(fallbackRoot, companyId, runId);
+}
+
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
@@ -149,20 +179,33 @@ type EnsureCodexSkillsInjectedOptions = {
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
 
+type CodexSkillInjectionStatus = {
+  permissionDenied: boolean;
+  failed: boolean;
+};
+
 export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
-) {
+): Promise<CodexSkillInjectionStatus> {
   const allSkillsEntries = options.skillsEntries ?? await readPaperclipRuntimeSkillEntries({}, __moduleDir);
   const desiredSkillNames =
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
   const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.key));
-  if (skillsEntries.length === 0) return;
+  if (skillsEntries.length === 0) return { permissionDenied: false, failed: false };
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
-  await fs.mkdir(skillsHome, { recursive: true });
+  try {
+    await fs.mkdir(skillsHome, { recursive: true });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip] Failed to prepare Codex skills home "${skillsHome}": ${reason}\n`);
+    return { permissionDenied: isPermissionDeniedError(err), failed: true };
+  }
   const linkSkill = options.linkSkill;
+  let permissionDenied = false;
+  let failed = false;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
@@ -200,6 +243,8 @@ export async function ensureCodexSkillsInjected(
         `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
       );
     } catch (err) {
+      failed = true;
+      permissionDenied ||= isPermissionDeniedError(err);
       await onLog(
         "stderr",
         `[paperclip] Failed to inject Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -207,11 +252,77 @@ export async function ensureCodexSkillsInjected(
     }
   }
 
-  await pruneBrokenUnavailablePaperclipSkillSymlinks(
-    skillsHome,
-    skillsEntries.map((entry) => entry.runtimeName),
-    onLog,
-  );
+  try {
+    await pruneBrokenUnavailablePaperclipSkillSymlinks(
+      skillsHome,
+      skillsEntries.map((entry) => entry.runtimeName),
+      onLog,
+    );
+  } catch (err) {
+    failed = true;
+    permissionDenied ||= isPermissionDeniedError(err);
+    await onLog(
+      "stderr",
+      `[paperclip] Failed to prune stale Codex skills in ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+
+  return { permissionDenied, failed };
+}
+
+async function initializeCodexHome(
+  onLog: AdapterExecutionContext["onLog"],
+  options: {
+    codexHome: string;
+    sharedCodexHome: string;
+    skillsEntries: Array<{ key: string; runtimeName: string; source: string }>;
+    desiredSkillNames: string[];
+  },
+): Promise<{ codexHome: string; permissionDenied: boolean; failed: boolean; reasons: string[] }> {
+  const { codexHome, sharedCodexHome, skillsEntries, desiredSkillNames } = options;
+  let permissionDenied = false;
+  let failed = false;
+  const reasons: string[] = [];
+  try {
+    await fs.mkdir(codexHome, { recursive: true });
+  } catch (err) {
+    permissionDenied ||= isPermissionDeniedError(err);
+    failed = true;
+    reasons.push(`could not prepare Codex home "${codexHome}": ${err instanceof Error ? err.message : String(err)}`);
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: could not prepare Codex home "${codexHome}": ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+
+  try {
+    await seedCodexHomeFromSharedHome(codexHome, sharedCodexHome);
+  } catch (err) {
+    permissionDenied ||= isPermissionDeniedError(err);
+    failed = true;
+    reasons.push(`could not seed Codex home "${codexHome}" from "${sharedCodexHome}": ${err instanceof Error ? err.message : String(err)}`);
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: could not seed Codex home "${codexHome}" from "${sharedCodexHome}": ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+
+  const skillsSetup = await ensureCodexSkillsInjected(onLog, {
+    skillsHome: resolveCodexSkillsDir(codexHome),
+    skillsEntries,
+    desiredSkillNames,
+  });
+  permissionDenied ||= skillsSetup.permissionDenied;
+  failed ||= skillsSetup.failed;
+  if (skillsSetup.failed) {
+    reasons.push(
+      skillsSetup.permissionDenied
+        ? `skill injection into "${resolveCodexSkillsDir(codexHome)}" hit a permission error`
+        : `skill injection into "${resolveCodexSkillsDir(codexHome)}" failed`,
+    );
+  }
+
+  return { codexHome, permissionDenied, failed, reasons };
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -271,22 +382,76 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+  const sharedCodexHome = resolveSharedCodexHomeDir(process.env);
+  let preparedManagedCodexHome: string | null = null;
+  if (!configuredCodexHome) {
+    try {
+      preparedManagedCodexHome = await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not prepare managed Codex home: ${reason}\n`,
+      );
+    }
+  }
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
-  await fs.mkdir(effectiveCodexHome, { recursive: true });
-  // Inject skills into the same CODEX_HOME that Codex will actually run with
-  // (managed home in the default case, or an explicit override from adapter config).
-  const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
-  await ensureCodexSkillsInjected(
-    onLog,
-    {
-      skillsHome: codexSkillsDir,
+  const initialCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  let effectiveCodexHome = initialCodexHome;
+  let codexHomeSetup = await initializeCodexHome(onLog, {
+    codexHome: effectiveCodexHome,
+    sharedCodexHome,
+    skillsEntries: codexSkillEntries,
+    desiredSkillNames,
+  });
+  const initialSetupReason =
+    codexHomeSetup.reasons.length > 0
+      ? codexHomeSetup.reasons.join("; ")
+      : configuredCodexHome
+        ? `configured CODEX_HOME "${configuredCodexHome}" could not be prepared safely`
+        : `managed Codex home "${preparedManagedCodexHome ?? defaultCodexHome}" could not be prepared safely`;
+
+  if ((codexHomeSetup.failed || codexHomeSetup.permissionDenied) && !configuredCodexHome) {
+    const fallbackCodexHome = resolveWritableFallbackCodexHome(runId, agent.companyId, cwd);
+    await onLog(
+      "stdout",
+      `[paperclip] ${initialSetupReason}; switching to writable Codex home "${fallbackCodexHome}".\n`,
+    );
+    effectiveCodexHome = fallbackCodexHome;
+    codexHomeSetup = await initializeCodexHome(onLog, {
+      codexHome: effectiveCodexHome,
+      sharedCodexHome,
       skillsEntries: codexSkillEntries,
       desiredSkillNames,
-    },
-  );
+    });
+  }
+
+  if ((codexHomeSetup.failed || codexHomeSetup.permissionDenied) && configuredCodexHome) {
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: ${initialSetupReason}; switching to a writable fallback home.\n`,
+    );
+    const tempFallback = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+    effectiveCodexHome = tempFallback;
+    await onLog(
+      "stdout",
+      `[paperclip] Using temporary writable Codex home "${tempFallback}" for this run.\n`,
+    );
+    codexHomeSetup = await initializeCodexHome(onLog, {
+      codexHome: effectiveCodexHome,
+      sharedCodexHome,
+      skillsEntries: codexSkillEntries,
+      desiredSkillNames,
+    });
+  }
+
+  if (codexHomeSetup.failed || codexHomeSetup.permissionDenied) {
+    const reason = codexHomeSetup.reasons.length > 0 ? codexHomeSetup.reasons.join("; ") : "unknown home setup failure";
+    throw new Error(
+      `Could not prepare a writable Codex home for run "${runId}" at "${effectiveCodexHome}": ${reason}.`,
+    );
+  }
+
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
