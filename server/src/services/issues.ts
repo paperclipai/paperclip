@@ -1980,6 +1980,11 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          // Release must also clear execution lock fields; otherwise future
+          // checkout attempts can conflict on stale executionRunId.
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
