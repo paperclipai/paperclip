@@ -30,18 +30,30 @@ import {
   Clock,
   History,
   TerminalSquare,
+  Folder,
+  FolderOpen,
+  File,
+  FileCode,
+  FileJson,
+  Image,
+  GitPullRequest,
+  CheckCircle2,
+  XCircle,
+  CircleDot,
+  ExternalLink,
+  Loader2,
 } from "lucide-react";
 import { TerminalPanel } from "./Terminal";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { useCompany } from "../context/CompanyContext";
-import { projectsApi } from "../api/projects";
+import { projectsApi, type FileEntry, type CiCheck } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { activityApi } from "../api/activity";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import type { ActivityEvent } from "@paperclipai/shared";
 
-type PanelTab = "changes" | "runs" | "activity";
+type PanelTab = "changes" | "files" | "review" | "runs" | "activity";
 
 // ═══════════════════════════════════════════════════════════════════
 // WorkspacePanel — main container with tab bar
@@ -71,6 +83,8 @@ export function WorkspacePanel({ onClose }: { onClose: () => void }) {
       {/* Top section: tab content */}
       <div className={cn("overflow-auto min-h-0", terminalOpen ? "flex-1 basis-1/2" : "flex-1")}>
         {activeTab === "changes" && <ChangesTab />}
+        {activeTab === "files" && <FilesTab />}
+        {activeTab === "review" && <ReviewTab />}
         {activeTab === "runs" && <RunsTab />}
         {activeTab === "activity" && <ActivityTab />}
       </div>
@@ -130,6 +144,8 @@ function PanelHeader({ branch, onClose }: { branch: string | null; onClose: () =
 function TabBar({ activeTab, onTabChange }: { activeTab: PanelTab; onTabChange: (tab: PanelTab) => void }) {
   const tabs: { id: PanelTab; label: string; icon: typeof GitBranch }[] = [
     { id: "changes", label: "Changes", icon: GitBranch },
+    { id: "files", label: "Files", icon: Folder },
+    { id: "review", label: "Review", icon: GitPullRequest },
     { id: "runs", label: "Runs", icon: Play },
     { id: "activity", label: "Activity", icon: History },
   ];
@@ -428,6 +444,307 @@ function ActivityItem({ event }: { event: ActivityEvent }) {
           {timeAgo(event.createdAt as string)}
         </span>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Files Tab — workspace file browser
+// ═══════════════════════════════════════════════════════════════════
+
+function FilesTab() {
+  const { selected } = useWorkspace();
+  const workspaceId = selected?.workspace.id ?? "";
+  const [currentPath, setCurrentPath] = useState("");
+
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.files.list(workspaceId, currentPath),
+    queryFn: () => projectsApi.listFiles(workspaceId, currentPath || undefined),
+    enabled: !!workspaceId,
+  });
+
+  const files = data?.files ?? [];
+
+  return (
+    <div className="flex flex-col min-h-0 h-full">
+      {/* Path breadcrumb */}
+      <div className="px-3 py-1.5 border-b border-border shrink-0 flex items-center gap-1 overflow-x-auto scrollbar-none">
+        <button
+          onClick={() => setCurrentPath("")}
+          className={cn(
+            "text-[10px] font-mono shrink-0 transition-colors",
+            currentPath ? "text-blue-500 hover:text-blue-400" : "text-foreground font-medium",
+          )}
+        >
+          root
+        </button>
+        {currentPath && currentPath.split("/").map((segment, i, arr) => {
+          const pathUpTo = arr.slice(0, i + 1).join("/");
+          const isLast = i === arr.length - 1;
+          return (
+            <span key={pathUpTo} className="flex items-center gap-1 shrink-0">
+              <span className="text-[10px] text-muted-foreground/40">/</span>
+              <button
+                onClick={() => setCurrentPath(isLast ? pathUpTo : pathUpTo)}
+                className={cn(
+                  "text-[10px] font-mono transition-colors",
+                  isLast ? "text-foreground font-medium" : "text-blue-500 hover:text-blue-400",
+                )}
+              >
+                {segment}
+              </button>
+            </span>
+          );
+        })}
+      </div>
+
+      {/* File list */}
+      <div className="flex-1 overflow-auto min-h-0">
+        {isLoading ? (
+          <div className="px-3 py-6 text-center text-xs text-muted-foreground">Loading...</div>
+        ) : files.length === 0 ? (
+          <div className="px-3 py-10 text-center">
+            <p className="text-xs text-muted-foreground">Empty directory</p>
+          </div>
+        ) : (
+          <>
+            {currentPath && (
+              <FileRow
+                icon={<ArrowLeft className="h-3.5 w-3.5 text-muted-foreground/50" />}
+                name=".."
+                detail=""
+                onClick={() => {
+                  const parts = currentPath.split("/");
+                  parts.pop();
+                  setCurrentPath(parts.join("/"));
+                }}
+              />
+            )}
+            {files.map((entry) => (
+              <FileRow
+                key={entry.path}
+                icon={fileIcon(entry)}
+                name={entry.name}
+                detail={entry.type === "file" && entry.size != null ? formatFileSize(entry.size) : ""}
+                onClick={entry.type === "directory" ? () => setCurrentPath(entry.path) : undefined}
+                isDir={entry.type === "directory"}
+              />
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileRow({ icon, name, detail, onClick, isDir }: {
+  icon: React.ReactNode;
+  name: string;
+  detail: string;
+  onClick?: () => void;
+  isDir?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 px-3 py-1.5 transition-colors",
+        onClick ? "cursor-pointer hover:bg-accent/50" : "",
+      )}
+      onClick={onClick}
+    >
+      {icon}
+      <span className={cn("text-[12px] flex-1 truncate", isDir ? "font-medium text-foreground" : "text-foreground/80")}>
+        {name}
+      </span>
+      {detail && (
+        <span className="text-[10px] text-muted-foreground/40 shrink-0">{detail}</span>
+      )}
+    </div>
+  );
+}
+
+function fileIcon(entry: FileEntry): React.ReactNode {
+  if (entry.type === "directory") return <FolderOpen className="h-3.5 w-3.5 text-blue-500/70" />;
+  const ext = entry.name.split(".").pop()?.toLowerCase();
+  if (["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "c", "cpp", "h"].includes(ext ?? ""))
+    return <FileCode className="h-3.5 w-3.5 text-green-500/70" />;
+  if (["json", "yaml", "yml", "toml"].includes(ext ?? ""))
+    return <FileJson className="h-3.5 w-3.5 text-yellow-500/70" />;
+  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext ?? ""))
+    return <Image className="h-3.5 w-3.5 text-purple-500/70" />;
+  return <File className="h-3.5 w-3.5 text-muted-foreground/50" />;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Review Tab — PR status + CI checks
+// ═══════════════════════════════════════════════════════════════════
+
+function ReviewTab() {
+  const { selected, branch } = useWorkspace();
+  const workspaceId = selected?.workspace.id ?? "";
+
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.pr.status(workspaceId),
+    queryFn: () => projectsApi.getPrStatus(workspaceId),
+    enabled: !!workspaceId,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="px-3 py-6 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Loading PR status...
+      </div>
+    );
+  }
+
+  if (!data?.pr) {
+    return (
+      <div className="px-3 py-10 text-center">
+        <GitPullRequest className="h-6 w-6 text-muted-foreground/30 mx-auto mb-2" />
+        <p className="text-xs text-muted-foreground">No open PR</p>
+        <p className="text-[10px] text-muted-foreground/40 mt-1">
+          {branch ? `Branch: ${branch}` : "No branch detected"}
+        </p>
+        {data?.error && (
+          <p className="text-[10px] text-muted-foreground/40 mt-1">{data.error}</p>
+        )}
+      </div>
+    );
+  }
+
+  const { pr, checks } = data;
+  const passedChecks = checks.filter((c) => c.conclusion === "SUCCESS" || c.conclusion === "success").length;
+  const failedChecks = checks.filter((c) => c.conclusion === "FAILURE" || c.conclusion === "failure").length;
+  const pendingChecks = checks.filter((c) => !c.conclusion || c.conclusion === "NEUTRAL" || c.status === "IN_PROGRESS" || c.status === "QUEUED").length;
+
+  return (
+    <div className="flex flex-col min-h-0 h-full">
+      {/* PR header */}
+      <div className="px-3 py-3 border-b border-border shrink-0">
+        <div className="flex items-start gap-2">
+          <PrStateIcon state={pr.state} />
+          <div className="flex-1 min-w-0">
+            <a
+              href={pr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[12px] font-medium text-foreground hover:text-blue-500 transition-colors flex items-center gap-1"
+            >
+              <span className="truncate">{pr.title}</span>
+              <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+            </a>
+            <div className="text-[10px] text-muted-foreground/50 mt-0.5">
+              #{pr.number} · {pr.head} → {pr.base}
+            </div>
+          </div>
+        </div>
+
+        {/* Stats row */}
+        <div className="flex items-center gap-3 mt-2">
+          <span className="text-[10px] text-green-500">+{pr.additions}</span>
+          <span className="text-[10px] text-red-500">-{pr.deletions}</span>
+          {pr.reviewDecision && (
+            <ReviewBadge decision={pr.reviewDecision} />
+          )}
+        </div>
+      </div>
+
+      {/* Checks summary */}
+      {checks.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-border shrink-0 flex items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60">
+            Checks
+          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            {passedChecks > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-green-500">
+                <CheckCircle2 className="h-3 w-3" /> {passedChecks}
+              </span>
+            )}
+            {failedChecks > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-red-500">
+                <XCircle className="h-3 w-3" /> {failedChecks}
+              </span>
+            )}
+            {pendingChecks > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-yellow-500">
+                <CircleDot className="h-3 w-3" /> {pendingChecks}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Check list */}
+      <div className="flex-1 overflow-auto min-h-0">
+        {checks.map((check, i) => (
+          <CheckItem key={i} check={check} />
+        ))}
+
+        {/* PR body preview */}
+        {pr.body && (
+          <div className="px-3 py-2 border-t border-border">
+            <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60 block mb-1">
+              Description
+            </span>
+            <div className="text-[11px] text-foreground/70 whitespace-pre-wrap break-words line-clamp-[12]">
+              {pr.body}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PrStateIcon({ state }: { state: string }) {
+  if (state === "MERGED") return <GitPullRequest className="h-4 w-4 text-purple-500 shrink-0 mt-0.5" />;
+  if (state === "CLOSED") return <GitPullRequest className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />;
+  return <GitPullRequest className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />;
+}
+
+function ReviewBadge({ decision }: { decision: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    APPROVED: { label: "Approved", cls: "text-green-500 bg-green-500/10" },
+    CHANGES_REQUESTED: { label: "Changes", cls: "text-orange-500 bg-orange-500/10" },
+    REVIEW_REQUIRED: { label: "Review needed", cls: "text-yellow-500 bg-yellow-500/10" },
+  };
+  const info = map[decision] ?? { label: decision, cls: "text-muted-foreground bg-accent/50" };
+  return (
+    <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded", info.cls)}>
+      {info.label}
+    </span>
+  );
+}
+
+function CheckItem({ check }: { check: CiCheck }) {
+  const isSuccess = check.conclusion === "SUCCESS" || check.conclusion === "success";
+  const isFailed = check.conclusion === "FAILURE" || check.conclusion === "failure";
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 hover:bg-accent/30 transition-colors">
+      {isSuccess ? (
+        <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+      ) : isFailed ? (
+        <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+      ) : (
+        <CircleDot className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
+      )}
+      <span className="text-[11px] text-foreground/80 flex-1 truncate">{check.name}</span>
+      {check.url && (
+        <a href={check.url} target="_blank" rel="noopener noreferrer" className="shrink-0 p-0.5 text-muted-foreground/40 hover:text-foreground">
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
     </div>
   );
 }

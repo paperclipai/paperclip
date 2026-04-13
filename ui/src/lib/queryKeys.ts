@@ -155,4 +155,10 @@ export const queryKeys = {
     status: (workspaceId: string) => ["git", "status", workspaceId] as const,
     diff: (workspaceId: string, path: string, staged: boolean) => ["git", "diff", workspaceId, path, staged] as const,
   },
+  files: {
+    list: (workspaceId: string, path?: string) => ["files", workspaceId, path ?? "."] as const,
+  },
+  pr: {
+    status: (workspaceId: string) => ["pr", "status", workspaceId] as const,
+  },
 };
