@@ -3508,7 +3508,9 @@ export function heartbeatService(db: Db) {
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
             });
           }
-          await pruneStaleTaskSessions(agent.companyId, agent.id);
+          await pruneStaleTaskSessions(agent.companyId, agent.id).catch((pruneErr) => {
+            logger.warn({ err: pruneErr, agentId: agent.id, runId }, "failed to prune stale task sessions");
+          });
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
@@ -3573,7 +3575,9 @@ export function heartbeatService(db: Db) {
             lastRunId: failedRun.id,
             lastError: message,
           });
-          await pruneStaleTaskSessions(agent.companyId, agent.id);
+          await pruneStaleTaskSessions(agent.companyId, agent.id).catch((pruneErr) => {
+            logger.warn({ err: pruneErr, agentId: agent.id, runId }, "failed to prune stale task sessions");
+          });
         }
       }
 
