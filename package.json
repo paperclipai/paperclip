@@ -15,7 +15,10 @@
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "test": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && vitest run",
-    "test:coverage": "pnpm run preflight:workspace-links && vitest run --coverage",
+    "test:coverage": "pnpm run preflight:workspace-links && vitest run --coverage --coverage.reportOnFailure",
+    "test:coverage:report": "pnpm run preflight:workspace-links && vitest run --coverage --coverage.reportOnFailure && echo 'Coverage report: coverage/index.html'",
+    "test:unit": "pnpm run preflight:workspace-links && vitest run --project server --project cli --project ui --project packages/db",
+    "test:integration": "pnpm run preflight:workspace-links && vitest run --project server -- --testPathPattern='integration|e2e'",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
@@ -44,10 +47,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@vitest/coverage-v8": "^3.0.5",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
-    "@vitest/coverage-v8": "^3.0.5",
     "vitest": "^3.0.5"
   },
   "engines": {

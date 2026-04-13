@@ -136,6 +136,24 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
 
+
+      - name: Check coverage thresholds
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const s = require('./coverage/coverage-summary.json').total;
+              const fail = [];
+              if (s.lines.pct < 30) fail.push('lines: ' + s.lines.pct + '% < 30%');
+              if (s.functions.pct < 25) fail.push('functions: ' + s.functions.pct + '% < 25%');
+              if (s.branches.pct < 25) fail.push('branches: ' + s.branches.pct + '% < 25%');
+              if (s.statements.pct < 30) fail.push('statements: ' + s.statements.pct + '% < 30%');
+              if (fail.length) { console.error('Coverage below threshold:\\n' + fail.join('\\n')); process.exit(1); }
+              console.log('Coverage OK — lines:', s.lines.pct + '%, functions:', s.functions.pct + '%, branches:', s.branches.pct + '%, statements:', s.statements.pct + '%');
+            "
+          else
+            echo '::warning::No coverage summary found'
+          fi
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         if: always()
