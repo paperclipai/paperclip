@@ -171,7 +171,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+    return { companyId, agentId, issuePrefix, issueSvc, projectId, routine, svc, wakeups };
   }
 
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
@@ -675,6 +675,99 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("advances a stale company issue counter before scheduled routine issue creation", async () => {
+    const { companyId, issuePrefix, routine, svc } = await seedFixture();
+    await db.insert(issues).values({
+      companyId,
+      projectId: routine.projectId,
+      title: "Existing issue",
+      description: "Created before the counter drifted",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 42,
+      identifier: `${issuePrefix}-42`,
+      originKind: "manual",
+    });
+    await db.update(companies).set({ issueCounter: 1 }).where(eq(companies.id, companyId));
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+    expect(result.triggered).toBe(1);
+
+    const run = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("issue_created");
+    expect(run?.linkedIssueId).toBeTruthy();
+
+    const createdIssue = await db
+      .select({ identifier: issues.identifier, issueNumber: issues.issueNumber })
+      .from(issues)
+      .where(eq(issues.id, run!.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue).toEqual({
+      identifier: `${issuePrefix}-43`,
+      issueNumber: 43,
+    });
+  });
+
+  it("links automated routine dispatch failures to a visible blocked issue", async () => {
+    const { agentId, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+    expect(result.triggered).toBe(1);
+
+    const run = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.failureReason).toContain("queue unavailable");
+    expect(run?.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run!.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.title).toBe(`Blocked routine: ${routine.title}`);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBe(agentId);
+    expect(blocker?.originKind).toBe("manual");
+    expect(blocker?.description).toContain("queue unavailable");
+    expect(blocker?.description).toContain("If this is a visual review routine and browser or vision access is unavailable");
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {

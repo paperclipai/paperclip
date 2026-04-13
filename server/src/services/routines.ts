@@ -137,6 +137,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
+  if (status === "failed" && issueId) return `Execution failed; created blocker issue ${issueId}`;
   if (status === "failed") return "Execution failed";
   return status;
 }
@@ -307,6 +308,40 @@ function mergeRoutineRunPayload(
       ...variables,
     },
   };
+}
+
+function formatRoutineFailureDescription(input: {
+  routine: typeof routines.$inferSelect;
+  trigger: typeof routineTriggers.$inferSelect | null;
+  source: "schedule" | "manual" | "api" | "webhook";
+  runId: string;
+  failureReason: string;
+}) {
+  const triggerLabel = input.trigger?.label?.trim() || input.trigger?.kind || "none";
+  const triggerId = input.trigger?.id ?? "none";
+  return [
+    "## Blocker",
+    "",
+    "Paperclip could not dispatch this automated routine run into a normal execution issue.",
+    "",
+    "## Context",
+    "",
+    `- Routine: ${input.routine.title}`,
+    `- Routine ID: ${input.routine.id}`,
+    `- Routine run ID: ${input.runId}`,
+    `- Source: ${input.source}`,
+    `- Trigger: ${triggerLabel}`,
+    `- Trigger ID: ${triggerId}`,
+    `- Failure: ${input.failureReason}`,
+    "",
+    "## Owner",
+    "",
+    "The routine assignee owns this blocker until they route it to the right maintainer or confirm the next run can create a normal execution issue.",
+    "",
+    "## Next Action",
+    "",
+    "Inspect the routine dispatch failure, fix the underlying issue or reroute to the responsible maintainer, then rerun the routine. If this is a visual review routine and browser or vision access is unavailable, keep this issue blocked and state the missing capability instead of substituting a text-only review.",
+  ].join("\n");
 }
 
 export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
@@ -652,6 +687,27 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ?? null);
   }
 
+  async function createAutomatedFailureIssue(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    source: "schedule" | "manual" | "api" | "webhook";
+    runId: string;
+    failureReason: string;
+  }) {
+    if (input.source !== "schedule" && input.source !== "webhook") return null;
+    return issueSvc.create(input.routine.companyId, {
+      projectId: input.routine.projectId,
+      goalId: input.routine.goalId,
+      parentId: input.routine.parentIssueId,
+      title: `Blocked routine: ${input.routine.title}`,
+      description: formatRoutineFailureDescription(input),
+      status: "blocked",
+      priority: input.routine.priority,
+      assigneeAgentId: input.routine.assigneeAgentId,
+      originKind: "manual",
+    });
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -848,10 +904,34 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         if (createdIssue) {
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }
-        const failureReason = error instanceof Error ? error.message : String(error);
+        let failureReason = error instanceof Error ? error.message : String(error);
+        let failureIssue: Awaited<ReturnType<typeof createAutomatedFailureIssue>> | null = null;
+        try {
+          failureIssue = await createAutomatedFailureIssue({
+            routine: input.routine,
+            trigger: input.trigger,
+            source: input.source,
+            runId: createdRun.id,
+            failureReason,
+          });
+        } catch (failureIssueError) {
+          const failureIssueReason = failureIssueError instanceof Error
+            ? failureIssueError.message
+            : String(failureIssueError);
+          logger.error(
+            {
+              err: failureIssueError,
+              routineId: input.routine.id,
+              runId: createdRun.id,
+            },
+            "failed to create automated routine blocker issue",
+          );
+          failureReason = `${failureReason}; additionally failed to create blocker issue: ${failureIssueReason}`;
+        }
         const failed = await finalizeRun(createdRun.id, {
           status: "failed",
           failureReason,
+          linkedIssueId: failureIssue?.id ?? undefined,
           completedAt: new Date(),
         }, txDb);
         await updateRoutineTouchedState({
@@ -859,6 +939,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           triggerId: input.trigger?.id ?? null,
           triggeredAt,
           status: "failed",
+          issueId: failureIssue?.id ?? null,
           nextRunAt,
         }, txDb);
         return failed ?? createdRun;

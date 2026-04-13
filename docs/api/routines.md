@@ -177,6 +177,13 @@ GET /api/routines/{routineId}/runs?limit=50
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
 
+Automated schedule and webhook runs are fail-safe. If Paperclip cannot dispatch
+the run into a normal execution issue, the run is marked `failed` and linked to
+a visible blocked issue assigned to the routine assignee. The blocker includes
+the routine, run, trigger, failure reason, owner, and next action. Visual review
+routines must keep browser screenshot or vision failures blocked instead of
+substituting a text-only review.
+
 ## Agent Access Rules
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:
