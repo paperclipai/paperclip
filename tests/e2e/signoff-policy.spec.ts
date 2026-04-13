@@ -128,6 +128,20 @@ async function agentCheckoutAndPatch(
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
 ) {
+  async function agentCheckout(runId: string) {
+    return agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
+      headers: { "X-Paperclip-Run-Id": runId },
+      data: { agentId: agent.agentId, expectedStatuses },
+    });
+  }
+
+  async function agentPatchWithRun(runId: string) {
+    return agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": runId },
+      data: patchData,
+    });
+  }
+
   async function boardCheckoutAndPatch() {
     const boardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
       data: { agentId: agent.agentId, expectedStatuses },
@@ -143,10 +157,7 @@ async function agentCheckoutAndPatch(
 
   let checkoutRunId = await resolveCheckoutRunId(board, agent, issueId);
   // Checkout (sets executionRunId so PATCH is allowed)
-  let checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
-    headers: { "X-Paperclip-Run-Id": checkoutRunId },
-    data: { agentId: agent.agentId, expectedStatuses },
-  });
+  let checkoutRes = await agentCheckout(checkoutRunId);
   let checkoutBody = checkoutRes.ok() ? "" : await checkoutRes.text();
   if (!checkoutRes.ok()) {
     const activeRun = await getActiveRunForCheckout(board, issueId);
@@ -154,16 +165,13 @@ async function agentCheckoutAndPatch(
     const activeRunAgentId = readString(activeRun?.agentId);
     if (activeRunId && activeRunAgentId === agent.agentId && activeRunId !== checkoutRunId) {
       checkoutRunId = activeRunId;
-      checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
-        headers: { "X-Paperclip-Run-Id": checkoutRunId },
-        data: { agentId: agent.agentId, expectedStatuses },
-      });
+      checkoutRes = await agentCheckout(checkoutRunId);
       checkoutBody = checkoutRes.ok() ? "" : await checkoutRes.text();
     }
   }
   if (!checkoutRes.ok()) {
-    const latestIssue = await getIssueForCheckout(board, issueId);
-    if (latestIssue.executionRunId) {
+    const activeRun = await getActiveRunForCheckout(board, issueId);
+    if (activeRun) {
       throw new Error(`Agent checkout failed: ${checkoutBody}`);
     }
 
@@ -172,13 +180,18 @@ async function agentCheckoutAndPatch(
     return boardCheckoutAndPatch();
   }
   // PATCH with agent identity
-  const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": checkoutRunId },
-    data: patchData,
-  });
+  let res = await agentPatchWithRun(checkoutRunId);
   if (res.status() === 409) {
-    const latestIssue = await getIssueForCheckout(board, issueId);
-    if (!latestIssue.executionRunId) {
+    const activeRun = await getActiveRunForCheckout(board, issueId);
+    const activeRunId = readString(activeRun?.id);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (activeRunId && activeRunAgentId === agent.agentId) {
+      checkoutRunId = activeRunId;
+      checkoutRes = await agentCheckout(checkoutRunId);
+      if (checkoutRes.ok()) {
+        res = await agentPatchWithRun(checkoutRunId);
+      }
+    } else if (!activeRunId) {
       return boardCheckoutAndPatch();
     }
   }
@@ -414,10 +427,12 @@ test.describe("Signoff execution policy", () => {
     const issueId = issue.id;
 
     // Executor marks done → routes to reviewer
-    await agentCheckoutAndPatch(
+    const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
       { status: "done", comment: "Done." },
     );
+    expect(doneRes.ok()).toBe(true);
+    expect((await doneRes.json()).status).toBe("in_review");
 
     // Reviewer tries to approve without comment → should fail
     const noCommentRes = await agentPatch(
