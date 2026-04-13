@@ -2,12 +2,14 @@ export const type = "copilot_local";
 export const label = "Copilot (local)";
 
 export const models = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { id: "claude-opus-4.6", label: "Claude Opus 4.6" },
+  { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
+  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
   { id: "gpt-5.2", label: "GPT-5.2" },
+  { id: "gpt-5.1", label: "GPT-5.1" },
   { id: "gpt-4.1", label: "GPT-4.1" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
 ];
 
 export const agentConfigurationDoc = `# copilot_local agent configuration
@@ -26,7 +28,7 @@ Don't use when:
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
-- model (string, optional): model id passed via --model (e.g. claude-opus-4-6, gpt-5.2)
+- model (string, optional): model id passed via --model (e.g. claude-opus-4.6, gpt-5.2)
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high|xhigh)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the prompt at runtime
 - promptTemplate (string, optional): run prompt template

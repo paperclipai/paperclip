@@ -74,6 +74,7 @@ import {
   syncCopilotSkills,
   testEnvironment as copilotTestEnvironment,
   sessionCodec as copilotSessionCodec,
+  detectModel as copilotDetectModel,
 } from "@paperclipai/adapter-copilot-local/server";
 import {
   agentConfigurationDoc as copilotAgentConfigurationDoc,
@@ -202,6 +203,7 @@ const copilotLocalAdapter: ServerAdapterModule = {
   syncSkills: syncCopilotSkills,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: copilotAgentConfigurationDoc,
+  detectModel: () => copilotDetectModel(),
 };
 
 const hermesLocalAdapter: ServerAdapterModule = {

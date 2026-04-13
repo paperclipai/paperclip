@@ -1,6 +1,7 @@
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { listCopilotSkills, syncCopilotSkills } from "./skills.js";
+export { detectModel } from "./detect-model.js";
 export {
   parseCopilotStreamJson,
   describeCopilotFailure,
