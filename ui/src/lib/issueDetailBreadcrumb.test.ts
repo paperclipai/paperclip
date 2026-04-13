@@ -65,6 +65,7 @@ describe("issueDetailBreadcrumb", () => {
       executionWorkspaceId: null,
       executionWorkspacePreference: null,
       executionWorkspaceSettings: null,
+      allowOutsideExecutionWindow: false,
       startedAt: null,
       completedAt: null,
       cancelledAt: null,
