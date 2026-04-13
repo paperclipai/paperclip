@@ -209,15 +209,9 @@ importers:
 
   packages/adapters/openrouter-local:
     dependencies:
-      '@openrouter/agent':
-        specifier: ^0.1.0
-        version: 0.1.2
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
@@ -2164,12 +2158,6 @@ packages:
 
   '@open-draft/deferred-promise@2.2.0':
     resolution: {integrity: sha512-CecwLWx3rhxVQF6V4bAgPS5t+So2sTbPgAzafKkVizyi7tlwpcFpdFqq+wqF2OwNBmqFuu6tOyouTuxgpMfzmA==}
-
-  '@openrouter/agent@0.1.2':
-    resolution: {integrity: sha512-nlbatensa2OpQTVJHKAEnzkfcO/aBOIz+ao9YZ/gh6R3cxCXBHejp0sH7ZC3afXMNKtxUikF+gLfxHyrIky2Ng==}
-
-  '@openrouter/sdk@0.12.2':
-    resolution: {integrity: sha512-8BWglu/iJA612RRNFEV9I6v1Q5JzXI74csZucbL0JTlnx+lXTCbtx0CgDv4thhmhCZJ7iwbsgdAX0TK+nVXVlw==}
 
   '@paperclipai/adapter-utils@2026.325.0':
     resolution: {integrity: sha512-YDVSAgjkeJ0PvxXDJVN9MZDX7oYRzidLtGHmGgRGd6gSk/bF2ygAKvND4FI1YxDc/cRLQjqAFCpCYaC/9wqIEA==}
@@ -8071,15 +8059,6 @@ snapshots:
   '@noble/hashes@2.0.1': {}
 
   '@open-draft/deferred-promise@2.2.0': {}
-
-  '@openrouter/agent@0.1.2':
-    dependencies:
-      '@openrouter/sdk': 0.12.2
-      zod: 4.3.6
-
-  '@openrouter/sdk@0.12.2':
-    dependencies:
-      zod: 3.25.76
 
   '@paperclipai/adapter-utils@2026.325.0': {}
 
