@@ -32,6 +32,7 @@ import {
   feedbackService,
   heartbeatService,
   instanceSettingsService,
+  issueService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -640,6 +641,21 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Scheduled-for issue transitions: backlog → todo when scheduledFor <= now
+    const issueSvc = issueService(db as any);
+    setInterval(() => {
+      void issueSvc
+        .tickScheduledIssues(new Date())
+        .then((result) => {
+          if (result.transitioned > 0) {
+            logger.info({ ...result }, "scheduled issues tick transitioned issues");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "scheduled issues tick failed");
+        });
+    }, 5 * 60 * 1000);
   }
   
   if (config.databaseBackupEnabled) {
