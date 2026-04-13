@@ -12,7 +12,6 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
-import { GoogleAuth } from "google-auth-library";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -1052,6 +1051,7 @@ function extractResultText(value: unknown): string | null {
  * Returns the raw JWT string on success, or throws on failure.
  */
 async function fetchGcpIdToken(audience: string): Promise<string> {
+  const { GoogleAuth } = await import("google-auth-library");
   const auth = new GoogleAuth();
   const client = await auth.getIdTokenClient(audience);
   const headers = await client.getRequestHeaders();
@@ -1116,7 +1116,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // GCP service-to-service auth: fetch an OIDC ID token via Application Default Credentials.
   // The audience should be the Cloud Run service URL (https://...).
   const useGcpIdentityToken = parseBoolean(ctx.config.useGcpIdentityToken, false);
-  if (useGcpIdentityToken && !headerMapHasIgnoreCase(headers, "authorization")) {
+  if (useGcpIdentityToken && headerMapHasIgnoreCase(headers, "authorization")) {
+    await ctx.onLog(
+      "stdout",
+      "[openclaw-gateway] warning: useGcpIdentityToken is true but an authorization header is already set; skipping GCP ID token fetch\n",
+    );
+  } else if (useGcpIdentityToken) {
     // Derive the HTTP audience from the WebSocket URL (ws → http, wss → https).
     const rawAudience = nonEmpty(ctx.config.audience);
     const derivedAudience = rawAudience
