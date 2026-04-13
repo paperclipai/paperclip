@@ -260,4 +260,93 @@ describe("slack-sync plugin", () => {
     expect(String(postCalls[0].body.text)).toContain("Fresh details");
     expect(postCalls[1].body).toMatchObject({ channel: CHANNEL_ID, thread_ts: "ts-1", text: "A follow-up comment" });
   });
+
+  it("sends a done notification to the source Slack thread when status changes to done and metadata has source info", async () => {
+    const { harness, calls } = await setupIssueHarness();
+
+    const SOURCE_CHANNEL = "C-SOURCE";
+    const SOURCE_THREAD_TS = "source-ts-1";
+
+    await harness.ctx.state.set({
+      scopeKind: "issue",
+      scopeId: ISSUE_ID,
+      stateKey: "slack-message-ts",
+    }, `${CHANNEL_ID}:ts-1`);
+    await harness.ctx.issues.update(
+      ISSUE_ID,
+      { status: "done", metadata: { sourceChannel: SOURCE_CHANNEL, sourceThreadTs: SOURCE_THREAD_TS } } as Record<string, unknown>,
+      COMPANY_ID,
+    );
+
+    await harness.emit(
+      "issue.updated",
+      { status: "done", _previous: { status: "in_progress" } },
+      { entityId: ISSUE_ID, entityType: "issue", companyId: COMPANY_ID },
+    );
+
+    const postCalls = calls.filter((call) => call.url.endsWith("/chat.postMessage"));
+    const doneNotification = postCalls.find(
+      (call) => call.body.channel === SOURCE_CHANNEL && call.body.thread_ts === SOURCE_THREAD_TS,
+    );
+    expect(doneNotification).toBeDefined();
+    expect(String(doneNotification?.body.text)).toContain("✅");
+    expect(String(doneNotification?.body.text)).toContain("PAP-1379");
+    expect(String(doneNotification?.body.text)).toContain("已完成");
+  });
+
+  it("does NOT send a done notification when status changes to done but metadata lacks source info", async () => {
+    const { harness, calls } = await setupIssueHarness();
+
+    await harness.ctx.state.set({
+      scopeKind: "issue",
+      scopeId: ISSUE_ID,
+      stateKey: "slack-message-ts",
+    }, `${CHANNEL_ID}:ts-1`);
+    await harness.ctx.issues.update(
+      ISSUE_ID,
+      { status: "done" },
+      COMPANY_ID,
+    );
+
+    await harness.emit(
+      "issue.updated",
+      { status: "done", _previous: { status: "in_progress" } },
+      { entityId: ISSUE_ID, entityType: "issue", companyId: COMPANY_ID },
+    );
+
+    const postCalls = calls.filter((call) => call.url.endsWith("/chat.postMessage"));
+    // Should only have the regular thread update, no source-thread notification
+    expect(postCalls).toHaveLength(1);
+    expect(postCalls[0].body.channel).toBe(CHANNEL_ID);
+  });
+
+  it("does NOT send a done notification when issue is already done and gets updated again", async () => {
+    const { harness, calls } = await setupIssueHarness();
+
+    const SOURCE_CHANNEL = "C-SOURCE";
+    const SOURCE_THREAD_TS = "source-ts-1";
+
+    await harness.ctx.state.set({
+      scopeKind: "issue",
+      scopeId: ISSUE_ID,
+      stateKey: "slack-message-ts",
+    }, `${CHANNEL_ID}:ts-1`);
+    await harness.ctx.issues.update(
+      ISSUE_ID,
+      { status: "done", metadata: { sourceChannel: SOURCE_CHANNEL, sourceThreadTs: SOURCE_THREAD_TS } } as Record<string, unknown>,
+      COMPANY_ID,
+    );
+
+    await harness.emit(
+      "issue.updated",
+      { title: "Renamed", _previous: { title: "Old", status: "done" } },
+      { entityId: ISSUE_ID, entityType: "issue", companyId: COMPANY_ID },
+    );
+
+    const postCalls = calls.filter((call) => call.url.endsWith("/chat.postMessage"));
+    const doneNotifications = postCalls.filter(
+      (call) => call.body.channel === SOURCE_CHANNEL,
+    );
+    expect(doneNotifications).toHaveLength(0);
+  });
 });

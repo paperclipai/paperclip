@@ -433,6 +433,31 @@ const plugin = definePlugin({
         channelId,
         titleChanged,
       });
+
+      // Notify the originating Slack thread when issue is marked done
+      const statusChangedToDone =
+        issue.status === "done" && payload._previous &&
+        (payload._previous as Record<string, unknown>).status !== "done";
+      if (statusChangedToDone) {
+        const meta = (issue as unknown as Record<string, unknown>).metadata as
+          | Record<string, unknown>
+          | null
+          | undefined;
+        const sourceChannel = meta?.sourceChannel as string | undefined;
+        const sourceThreadTs = meta?.sourceThreadTs as string | undefined;
+        if (sourceChannel && sourceThreadTs) {
+          await client.postMessage(
+            sourceChannel,
+            `✅ ${(issue as unknown as { identifier: string }).identifier} ${issue.title} 已完成`,
+            { threadTs: sourceThreadTs },
+          );
+          ctx!.logger.info("issue.updated → done notification sent to source thread", {
+            issueId,
+            sourceChannel,
+            sourceThreadTs,
+          });
+        }
+      }
     });
 
     // ----- issue.comment.created -----
