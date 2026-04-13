@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -56,6 +56,25 @@ describeEmbeddedPostgres("issueService.release lock cleanup", () => {
     });
 
     const issueId = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+      },
+      {
+        id: freshRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "queued",
+      },
+    ]);
+
     await db.insert(issues).values({
       id: issueId,
       companyId,
