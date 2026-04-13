@@ -18,7 +18,7 @@ type Actor = {
   isInstanceAdmin?: boolean;
   keyId?: string;
   runId?: string;
-  source?: "local_implicit" | "session" | "agent_key" | "agent_jwt" | "board_key" | "none";
+  source?: "local_implicit" | "session" | "agent_key" | "agent_jwt" | "none";
 };
 
 // Builds a minimal fake Request with only the actor field populated.
@@ -182,13 +182,13 @@ describe("auth validation matrix (#693)", () => {
       expect(() => assertCompanyAccess(req, "company-any")).not.toThrow();
     });
 
-    it("board api key with company access passes assertCompanyAccess", () => {
+    it("board member with single company in membership list passes assertCompanyAccess", () => {
       const req = buildReq({
         type: "board",
         userId: "user-1",
         companyIds: ["company-1"],
         isInstanceAdmin: false,
-        source: "board_key",
+        source: "session",
       });
       expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
     });
