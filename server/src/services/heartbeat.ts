@@ -17,7 +17,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -74,6 +74,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -760,6 +761,36 @@ function describeSessionResetReason(
   return null;
 }
 
+function shouldAutoCheckoutIssueForWake(input: {
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  issueStatus: string | null;
+  issueAssigneeAgentId: string | null;
+  agentId: string;
+}) {
+  if (input.issueAssigneeAgentId !== input.agentId) return false;
+
+  const issueStatus = readNonEmptyString(input.issueStatus);
+  if (
+    issueStatus !== "todo" &&
+    issueStatus !== "backlog" &&
+    issueStatus !== "blocked" &&
+    issueStatus !== "in_progress"
+  ) {
+    return false;
+  }
+
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  if (!wakeReason) return false;
+  if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason.startsWith("execution_")) return false;
+
+  return true;
+}
+
+function isCheckoutConflictError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -1005,6 +1036,7 @@ async function buildPaperclipWakePayload(input: {
           priority: issueSummary.priority,
         }
       : null,
+    checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
@@ -1213,6 +1245,27 @@ export function heartbeatService(db: Db) {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getIssueExecutionContext(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
   }
 
@@ -2644,26 +2697,26 @@ export function heartbeatService(db: Db) {
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
-    const issueContext = issueId
-      ? await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            status: issues.status,
-            priority: issues.priority,
-            projectId: issues.projectId,
-            projectWorkspaceId: issues.projectWorkspaceId,
-            executionWorkspaceId: issues.executionWorkspaceId,
-            executionWorkspacePreference: issues.executionWorkspacePreference,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-            executionWorkspaceSettings: issues.executionWorkspaceSettings,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
+    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (
+      issueId &&
+      issueContext &&
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: context,
+        issueStatus: issueContext.status,
+        issueAssigneeAgentId: issueContext.assigneeAgentId,
+        agentId: agent.id,
+      })
+    ) {
+      try {
+        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+      } catch (error) {
+        if (!isCheckoutConflictError(error)) throw error;
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+      }
+      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+    }
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
