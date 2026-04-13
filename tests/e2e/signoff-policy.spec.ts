@@ -49,6 +49,10 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Create an authenticated APIRequestContext for an agent (token set, no run ID yet). */
 async function createAgentRequest(token: string): Promise<APIRequestContext> {
   return pwRequest.newContext({
@@ -127,6 +131,7 @@ async function agentCheckoutAndPatch(
   issueId: string,
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
+  retryDepth = 0,
 ) {
   async function agentCheckout(runId: string) {
     return agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
@@ -171,6 +176,11 @@ async function agentCheckoutAndPatch(
   }
   if (!checkoutRes.ok()) {
     const activeRun = await getActiveRunForCheckout(board, issueId);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (activeRun && activeRunAgentId !== agent.agentId && retryDepth < 5) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+    }
     if (activeRun) {
       throw new Error(`Agent checkout failed: ${checkoutBody}`);
     }
@@ -191,6 +201,9 @@ async function agentCheckoutAndPatch(
       if (checkoutRes.ok()) {
         res = await agentPatchWithRun(checkoutRunId);
       }
+    } else if (activeRunId && retryDepth < 5) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
     } else if (!activeRunId) {
       return boardCheckoutAndPatch();
     }
