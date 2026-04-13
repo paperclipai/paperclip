@@ -103,6 +103,37 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
   });
 
+  it("replaces a legacy string external_directory value with the object form", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        external_directory: "allow",
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      permission: {
+        external_directory: {
+          "/*": "allow",
+        },
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
