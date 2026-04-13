@@ -83,6 +83,54 @@ def _filter_messages_for_memory(messages: list[Any]) -> list[Any]:
     return filtered
 
 
+# Correction patterns — user is correcting or contradicting prior information
+_CORRECTION_PATTERNS = [
+    re.compile(r"\bactually\b[,.]?\s", re.IGNORECASE),
+    re.compile(r"\bno[,.]?\s+I\s+meant\b", re.IGNORECASE),
+    re.compile(r"\bthat'?s\s+(wrong|incorrect|not\s+right)\b", re.IGNORECASE),
+    re.compile(r"\bnot\s+\w+[,.]?\s+(but|rather)\b", re.IGNORECASE),
+    re.compile(r"\bI\s+(was\s+wrong|made\s+a\s+mistake)\b", re.IGNORECASE),
+    re.compile(r"\bcorrection\b", re.IGNORECASE),
+    re.compile(r"\blet\s+me\s+correct\b", re.IGNORECASE),
+    re.compile(r"\bI\s+should\s+have\s+said\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+I\s+meant\s+(was|is)\b", re.IGNORECASE),
+    re.compile(r"\bsorry[,.]?\s+I\s+meant\b", re.IGNORECASE),
+    re.compile(r"\u4e0d\u5bf9", re.IGNORECASE),  # 不对 (Chinese: "not right")
+    re.compile(r"\u6211\u8bf4\u9519\u4e86", re.IGNORECASE),  # 我说错了 (Chinese: "I misspoke")
+]
+
+# Number of recent human messages to check for correction/reinforcement
+_DETECTION_WINDOW = 3
+
+
+def _extract_message_text(msg: Any) -> str:
+    """Extract text content from a message object."""
+    content = getattr(msg, "content", "")
+    if isinstance(content, list):
+        parts = [p.get("text", "") for p in content if isinstance(p, dict) and "text" in p]
+        return " ".join(parts)
+    return str(content)
+
+
+def detect_correction(messages: list[Any]) -> bool:
+    """Detect if recent human messages contain correction patterns.
+
+    Only checks the last _DETECTION_WINDOW human messages to avoid false
+    positives from old conversation history.
+    """
+    human_texts = [
+        _extract_message_text(m)
+        for m in messages
+        if getattr(m, "type", None) == "human"
+    ]
+    recent = human_texts[-_DETECTION_WINDOW:]
+    for text in recent:
+        for pattern in _CORRECTION_PATTERNS:
+            if pattern.search(text):
+                return True
+    return False
+
+
 class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
     """Middleware that queues conversation for memory update after agent execution.
 
@@ -154,8 +202,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
                 "auth_token": auth_token,
             }
 
-        # Queue the filtered conversation for memory update
+        # Detect correction in recent messages
+        correction_detected = detect_correction(filtered_messages)
+
+        # Queue with correction flag
         queue = get_memory_queue()
-        queue.add(thread_id=thread_id, messages=filtered_messages, agent_name=self._agent_name, paperclip_ctx=paperclip_ctx)
+        queue.add(
+            thread_id=thread_id,
+            messages=filtered_messages,
+            agent_name=self._agent_name,
+            paperclip_ctx=paperclip_ctx,
+            correction_detected=correction_detected,
+        )
 
         return None

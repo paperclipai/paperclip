@@ -18,6 +18,7 @@ class ConversationContext:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     agent_name: str | None = None
     paperclip_ctx: dict[str, str] | None = None
+    correction_detected: bool = False
 
 
 class MemoryUpdateQueue:
@@ -35,7 +36,7 @@ class MemoryUpdateQueue:
         self._timer: threading.Timer | None = None
         self._processing = False
 
-    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None) -> None:
+    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_detected: bool = False) -> None:
         """Add a conversation to the update queue.
 
         Args:
@@ -43,6 +44,7 @@ class MemoryUpdateQueue:
             messages: The conversation messages.
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
             paperclip_ctx: Optional Paperclip API context for syncing facts to shared memory.
+            correction_detected: Whether a correction was detected in recent messages.
         """
         config = get_memory_config()
         if not config.enabled:
@@ -53,11 +55,16 @@ class MemoryUpdateQueue:
             messages=messages,
             agent_name=agent_name,
             paperclip_ctx=paperclip_ctx,
+            correction_detected=correction_detected,
         )
 
         with self._lock:
-            # Check if this thread already has a pending update
-            # If so, replace it with the newer one
+            # OR-merge correction_detected if replacing an existing entry
+            for existing in self._queue:
+                if existing.thread_id == thread_id:
+                    correction_detected = correction_detected or existing.correction_detected
+                    break
+            context.correction_detected = correction_detected
             self._queue = [c for c in self._queue if c.thread_id != thread_id]
             self._queue.append(context)
 
@@ -116,6 +123,7 @@ class MemoryUpdateQueue:
                         thread_id=context.thread_id,
                         agent_name=context.agent_name,
                         paperclip_ctx=context.paperclip_ctx,
+                        correction_hint=context.correction_detected,
                     )
                     if success:
                         print(f"Memory updated successfully for thread {context.thread_id}")

@@ -26,7 +26,7 @@ Respond with ONLY a JSON object (no explanation, no markdown). Use this exact st
 Rules:
 - Set shouldUpdate to true ONLY for sections with new information. Keep summary empty string for sections that should not update.
 - newFacts: array of {{"content":"specific fact","category":"knowledge","confidence":0.9}}
-- Categories: preference, knowledge, context, behavior, goal
+- Categories: preference, knowledge, context, behavior, goal, correction
 - factsToRemove: array of fact IDs to remove (from current memory)
 - Do NOT record file upload events
 - Output ONLY the JSON object, nothing else

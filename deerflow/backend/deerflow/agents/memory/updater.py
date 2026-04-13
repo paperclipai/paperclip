@@ -159,7 +159,7 @@ class MemoryUpdater:
         model_name = self._model_name or config.model_name
         return create_chat_model(name=model_name, thinking_enabled=False)
 
-    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None) -> bool:
+    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_hint: bool = False) -> bool:
         """Update memory based on conversation messages.
 
         Args:
@@ -167,6 +167,7 @@ class MemoryUpdater:
             thread_id: Optional thread ID for tracking source.
             agent_name: If provided, updates per-agent memory. If None, updates global memory.
             paperclip_ctx: Optional Paperclip API context for syncing facts to shared memory.
+            correction_hint: If True, append a correction hint to the LLM prompt.
 
         Returns:
             True if update was successful, False otherwise.
@@ -193,6 +194,9 @@ class MemoryUpdater:
                 current_memory=json.dumps(current_memory, indent=2),
                 conversation=conversation_text,
             )
+
+            if correction_hint:
+                prompt += "\n\nIMPORTANT: The user has corrected or contradicted previous information in this conversation. Pay special attention to identifying which existing facts should be removed (via factsToRemove) and replaced with corrected versions in newFacts."
 
             # Call LLM
             model = self._get_model()
