@@ -49,6 +49,5 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 
 These files are essential. Read them.
 
-- `./HEARTBEAT.md` -- execution and extraction checklist. Run every heartbeat.
+- `./HEARTBEAT.md` -- CEO-specific orchestration: board scan, manager wakeup, planning, fact extraction.
 - `./SOUL.md` -- who you are and how you should act.
-- `./TOOLS.md` -- tools you have access to

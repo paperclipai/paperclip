@@ -1,72 +1,73 @@
-# HEARTBEAT.md -- CEO Heartbeat Checklist
+# HEARTBEAT.md — CEO Orchestration
 
-Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
+Supplement to the Paperclip skill heartbeat procedure. Covers CEO-specific orchestration only — all generic checkout/delegation/approval steps are handled by the skill.
 
-## 1. Identity and Context
+## 1. Board Scan & Orchestration (priority #1 each heartbeat)
 
-- `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
-- Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+Your primary job is keeping the whole company moving, not just your own queue.
+
+### 1a. Fetch active company work
+
+```python
+issues = api('GET', f'/api/companies/{COMPANY_ID}/issues?status=todo,in_progress,blocked,in_review&limit=100')
+agents  = api('GET', f'/api/companies/{COMPANY_ID}/agents')
+agent_by_id = {a['id']: a for a in agents}
+```
+
+### 1b. Map issues to manager domains
+
+Your two direct reports each own a subtree:
+
+- **Engineering Manager** (`e1a9742f-0d04-4cdb-97f7-6eeaa87332c8`) owns: Engineering Manager, Development Agent, QA Agent, Security Agent, DevOps Agent, User Agent.
+- **Research & Strategy Manager** (`fb082e44-c93b-40f3-8606-ce414e735c52`) owns: R&S Manager, Strategic Planning Agent, Communications Agent, Brand Designer, Research Agent.
+
+Build the subtree dynamically from `reportsTo` — don't hardcode worker IDs.
+
+### 1c. Wake idle managers with actionable work
+
+For each manager with `team_issues` containing `todo`, `in_progress`, or `blocked` items:
+
+1. `GET /api/agents/{managerId}` → check `activeRun`.
+2. If `activeRun` is null (idle), wake them:
+
+```python
+actionable = [i for i in team_issues if i['status'] in ('todo', 'in_progress', 'blocked')]
+api('POST', f'/api/agents/{manager_id}/wakeup', {
+    'source': 'on_demand',
+    'reason': f'Your team has {len(actionable)} active issue(s) requiring attention.',
+    'payload': {
+        'issueIds': [i['id'] for i in actionable],
+        'issueSummary': [
+            {'id': i['id'], 'title': i['title'], 'status': i['status'],
+             'assignee': agent_by_id.get(i['assigneeAgentId'], {}).get('name', 'unassigned')}
+            for i in actionable
+        ]
+    }
+})
+```
+
+3. If `activeRun` is not null, skip — already working.
+
+You can only wake your **direct reports** (the two managers). They wake their own workers.
+
+### 1d. Triage unassigned issues
+
+Issues with `assigneeAgentId = null` and status `todo` or `blocked` are adrift. Assign each to the right manager using `PATCH /api/issues/{id}`.
 
 ## 2. Local Planning Check
 
 1. Read today's plan from `./memory/YYYY-MM-DD.md` under "## Today's Plan".
-2. Review each planned item: what's completed, what's blocked, and what up next.
-3. For any blockers, resolve them yourself or escalate to the board.
-4. If you're ahead, start on the next highest priority.
-5. Record progress updates in the daily notes.
+2. Review each planned item: completed, blocked, up next.
+3. Resolve blockers or escalate to the board.
+4. Record progress in daily notes.
 
-## 3. Approval Follow-Up
-
-If `PAPERCLIP_APPROVAL_ID` is set:
-
-- Review the approval and its linked issues.
-- Close resolved issues or comment on what remains open.
-
-## 4. Get Assignments
-
-- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked`
-- Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
-- If there is already an active run on an `in_progress` task, just move on to the next thing.
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
-
-## 5. Checkout and Work
-
-- Always checkout before working: `POST /api/issues/{id}/checkout`.
-- Never retry a 409 -- that task belongs to someone else.
-- Do the work. Update status and comment when done.
-
-## 6. Delegation
-
-- Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- Use `paperclip-create-agent` skill when hiring new agents.
-- Assign work to the right agent for the job.
-
-## 7. Fact Extraction
+## 3. Fact Extraction
 
 1. Check for new conversations since last extraction.
 2. Extract durable facts to the relevant entity in `./life/` (PARA).
 3. Update `./memory/YYYY-MM-DD.md` with timeline entries.
-4. Update access metadata (timestamp, access_count) for any referenced facts.
+4. Update access metadata (timestamp, access_count) for referenced facts.
 
-## 8. Exit
+## 4. Exit
 
-- Comment on any in_progress work before exiting.
-- If no assignments and no valid mention-handoff, exit cleanly.
-
----
-
-## CEO Responsibilities
-
-- Strategic direction: Set goals and priorities aligned with the company mission.
-- Hiring: Spin up new agents when capacity is needed.
-- Unblocking: Escalate or resolve blockers for reports.
-- Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
-- Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
-
-## Rules
-
-- Always use the Paperclip skill for coordination.
-- Always include `X-Paperclip-Run-Id` header on mutating API calls.
-- Comment in concise markdown: status line + bullets + links.
-- Self-assign via checkout only when explicitly @-mentioned.
+Log orchestration results: which managers were woken, issues per team, unassigned issues triaged. The board having active issues is not a reason to stay running — wake managers and exit.
