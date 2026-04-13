@@ -60,8 +60,9 @@ function applyScheduledForAutoBacklog(
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
+  existingStatus?: string,
 ): Partial<typeof issues.$inferInsert> {
-  applyScheduledForAutoBacklog(patch, existing?.status);
+  applyScheduledForAutoBacklog(patch, existingStatus);
   if (!patch.status && !status) return patch;
   const effectiveStatus = patch.status ?? status;
 
@@ -1683,7 +1684,7 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(issueData.status, patch, existing.status);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
@@ -2585,25 +2586,18 @@ export function issueService(db: Db) {
     },
 
     tickScheduledIssues: async (now: Date = new Date()): Promise<{ transitioned: number }> => {
-      const due = await db
-        .select({ id: issues.id, identifier: issues.identifier })
-        .from(issues)
+      const result = await db
+        .update(issues)
+        .set({ status: "todo", updatedAt: now })
         .where(
           and(
             eq(issues.status, "backlog"),
             sql`${issues.scheduledFor} <= ${now}`,
             isNull(issues.hiddenAt),
           ),
-        );
-      let transitioned = 0;
-      for (const row of due) {
-        await db
-          .update(issues)
-          .set({ status: "todo", updatedAt: now })
-          .where(eq(issues.id, row.id));
-        transitioned++;
-      }
-      return { transitioned };
+        )
+        .returning({ id: issues.id });
+      return { transitioned: result.length };
     },
   };
 }

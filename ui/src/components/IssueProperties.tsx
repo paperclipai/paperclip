@@ -949,7 +949,7 @@ export function IssueProperties({
                 const val = e.target.value;
                 onUpdate({ scheduledFor: val || null });
               }}
-              className="text-sm bg-transparent border-none outline-none cursor-pointer min-w-0 flex-1 text-foreground [color-scheme:dark]"
+              className="text-sm bg-transparent border-none outline-none cursor-pointer min-w-0 flex-1 text-foreground [color-scheme:light] dark:[color-scheme:dark]"
             />
             {issue.scheduledFor && (
               <button
