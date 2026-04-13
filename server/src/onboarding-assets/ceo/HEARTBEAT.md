@@ -33,7 +33,28 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 - Always checkout before working: `POST /api/issues/{id}/checkout`.
 - Never retry a 409 -- that task belongs to someone else.
-- Do the work. Update status and comment when done.
+
+### 5a. Spec Check (before any delegation or coding)
+
+For tasks with priority `medium`, `high`, or `critical`, verify the issue contains all three required fields before delegating or approving:
+
+1. **Problem Statement** — what needs to change and why
+2. **Boundaries** — what is explicitly out of scope
+3. **Done Criteria** — testable conditions for completion
+
+If any field is missing, comment on the issue asking the reporter to fill them in, set status to `blocked`, and exit. Do not delegate incomplete specs.
+
+### 5b. Plan-before-code gate (for IC-bound code tasks)
+
+When delegating a code task (priority >= medium) to a report, instruct them to:
+
+1. Write a `plan` document first (`PUT /api/issues/{issueId}/documents/plan`).
+2. Post a comment with the plan link and set status to `blocked` pending review.
+3. Only proceed to implementation after you (or the board) acknowledge the plan.
+
+When a report marks a task `in_review`, verify the work before marking it `done`. Use the Fix Forward pattern (create a child fix subtask) if verification fails — do not reopen the original task.
+
+Do the work. Update status and comment when done.
 
 ## 6. Delegation
 
