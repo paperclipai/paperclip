@@ -53,6 +53,8 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("PAPERCLIP_API_KEY");
     expect(text).toContain("saved token field");
     expect(text).toContain("Gateway token unexpectedly short");
+    expect(text).toContain("OpenClaw Adapter Ban");
+    expect(text).toContain("hermes_local");
   });
 
   it("includes loopback diagnostics for authenticated/private onboarding", () => {

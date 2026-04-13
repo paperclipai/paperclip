@@ -1147,6 +1147,21 @@ export function buildInviteOnboardingTextDocument(
     lines.push(`- companyName: ${manifest.invite.companyName}`);
   }
 
+  appendBlock(`
+    ## ⚠️ Important Notice — OpenClaw Adapter Ban (Effective 2026-04-04)
+
+    Anthropic has banned the use of Claude Pro/Max accounts (free-tier) with OpenClaw
+    as of 2026-04-04. The openclaw_gateway adapter REQUIRES a valid Anthropic API key
+    to function. Free-tier Claude Pro/Max usage will be rejected.
+
+    Recommended alternative: use hermes_local as the adapter for new Paperclip agents.
+    hermes_local does not depend on OpenClaw and supports the full Paperclip feature set.
+    See your Paperclip admin or the Paperclip docs for hermes_local setup instructions.
+
+    If you have a paid Anthropic API key and still want to use openclaw_gateway, continue
+    with the steps below.
+  `);
+
   if (onboarding.inviteMessage) {
     appendBlock(`
       ## Message from inviter
