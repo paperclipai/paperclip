@@ -6,6 +6,8 @@ import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getWakeableParentAfterChildCompletion: vi.fn(),
+  listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -116,6 +118,8 @@ describe("done-status guardrail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
   it("allows creator agent to set status to done", async () => {
