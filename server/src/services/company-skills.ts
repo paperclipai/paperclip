@@ -236,6 +236,36 @@ function buildSkillRuntimeName(key: string, slug: string) {
   return `${slug}--${hashSkillValue(key)}`;
 }
 
+/**
+ * Parse the `roles:` field from a SKILL.md frontmatter block.
+ * Supports inline array (`roles: [ceo, manager]`) and block-list formats.
+ * Returns null when the field is absent or the file cannot be read.
+ */
+async function parseSkillRolesFromFile(skillDir: string): Promise<string[] | null> {
+  const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8").catch(() => null);
+  if (!content) return null;
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  const frontmatter = fmMatch[1]!;
+  // Inline array: roles: [ceo, manager]
+  const inlineMatch = frontmatter.match(/^roles:\s*\[([^\]]*)\]/m);
+  if (inlineMatch) {
+    return inlineMatch[1]!
+      .split(",")
+      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean);
+  }
+  // Block list: roles:\n  - ceo\n  - manager
+  const blockMatch = frontmatter.match(/^roles:\s*\n((?:[ \t]+-[^\n]*\n?)*)/m);
+  if (blockMatch) {
+    return blockMatch[1]!
+      .split("\n")
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
+      .filter(Boolean);
+  }
+  return null;
+}
+
 function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: Record<string, unknown> | null) {
   const direct = normalizeSkillKey(
     asString(frontmatter.key)
@@ -2071,6 +2101,7 @@ export function companySkillService(db: Db) {
       if (!source) continue;
 
       const required = sourceKind === "paperclip_bundled";
+      const roles = await parseSkillRolesFromFile(source);
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -2079,6 +2110,7 @@ export function companySkillService(db: Db) {
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
+        roles,
       });
     }
 

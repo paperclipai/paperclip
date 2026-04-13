@@ -943,6 +943,10 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
     const runtimeName = asString(entry.runtimeName, asString(entry.name, "")).trim();
     const source = asString(entry.source, "").trim();
     if (!key || !runtimeName || !source) continue;
+    const rolesRaw = entry.roles;
+    const roles = Array.isArray(rolesRaw)
+      ? rolesRaw.filter((r): r is string => typeof r === "string" && r.trim().length > 0)
+      : null;
     out.push({
       key,
       runtimeName,
@@ -952,6 +956,7 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
         typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
           ? entry.requiredReason.trim()
           : null,
+      roles: roles && roles.length > 0 ? roles : null,
     });
   }
   return out;
