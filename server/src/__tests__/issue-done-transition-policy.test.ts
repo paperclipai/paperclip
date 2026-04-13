@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDoneEvidenceRequiredErrorResponse,
   buildDoneEvidenceUnreachableErrorResponse,
+  buildDoneEvidenceVerificationUnavailableErrorResponse,
   buildUiDoneEvidenceRequiredErrorResponse,
   containsGitHubCommitOrPrLink,
   containsPassingPlaywrightEvidence,
@@ -58,16 +59,22 @@ describe("resolveDoneTransitionEvidenceComment", () => {
 describe("buildDoneEvidenceRequiredErrorResponse", () => {
   it("documents the closeout fallback for code and non-code work", () => {
     const payload = buildDoneEvidenceRequiredErrorResponse();
-    expect(payload.error).toContain("remove the code label before closing");
+    expect(payload.error).toContain("remove the code label");
     expect(payload.error).toContain("keep the issue open until traceability is available");
     expect(payload.details).toMatchObject({
       requiredLabel: "code",
+      enforcedSignals: {
+        codeLabel: "Issue has the 'code' label.",
+        projectRepoWorkspace: "Issue belongs to a project with a repo-connected workspace (repoUrl set).",
+      },
       acceptedEvidence: {
         githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
         githubPullRequestUrl: "https://github.com/<owner>/<repo>/pull/<number>",
       },
       fallback: {
         nonCode: "Remove the code label before marking done when the task did not require repository changes.",
+        projectBound:
+          "If the issue is in a repo-connected project but did not change files, move it to a non-repo project or remove the project association.",
       },
     });
   });
@@ -180,6 +187,38 @@ describe("issueRequiresDoneEvidence", () => {
         ],
       }),
     ).toBe(false);
+  });
+
+  it("requires evidence when issue is in a repo-connected project workspace", () => {
+    expect(
+      issueRequiresDoneEvidence({
+        currentLabels: [],
+        repoConnectedProjectWorkspace: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not require evidence when repoConnectedProjectWorkspace is false", () => {
+    expect(
+      issueRequiresDoneEvidence({
+        currentLabels: [],
+        repoConnectedProjectWorkspace: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("buildDoneEvidenceVerificationUnavailableErrorResponse", () => {
+  it("includes verification-unavailable details", () => {
+    const payload = buildDoneEvidenceVerificationUnavailableErrorResponse(
+      "GitHub API returned 503",
+    );
+    expect(payload.error).toContain("could not be verified against GitHub");
+    expect(payload.details.remoteVerification).toMatchObject({
+      result: "verification_unavailable",
+      detail: "GitHub API returned 503",
+    });
+    expect(payload.details.requiredLabel).toBe("code");
   });
 });
 

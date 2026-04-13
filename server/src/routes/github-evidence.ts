@@ -644,7 +644,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
   }
 
   const unreachable: GitHubCommitRef[] = [];
-  let allSoftPass = true;
+  const unverifiable: Array<{ ref: GitHubCommitRef; reason: string }> = [];
 
   for (const ref of commitRefs) {
     if (trackedTarget && !sameGitHubRepo(ref, trackedTarget)) {
@@ -658,11 +658,11 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
     }
 
     const result = await verifyCommitRef(ref, headers, repoCache);
-    if (!result.exists && !result.softPass) {
+    if (!result.exists && result.softPass) {
+      unverifiable.push({ ref, reason: result.error ?? "GitHub verification was unavailable" });
+    } else if (!result.exists) {
       unreachable.push(ref);
-      allSoftPass = false;
     } else if (result.exists) {
-      allSoftPass = false;
       if (trackedBaseRef) {
         const landed = await verifyCommitLandedOnBaseRef(ref, trackedBaseRef, headers, repoCache);
         if (!landed.landed && !landed.softPass) {
@@ -707,17 +707,18 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
         error: result.error,
       };
     }
-    if (result.merged) {
-      allSoftPass = false;
-    }
   }
 
-  if (allSoftPass) {
-    logger.warn(
-      { commitRefs, prRefs },
-      "All GitHub evidence verifications soft-passed (could not reach GitHub API)",
-    );
-    return { valid: true, softPass: true };
+  if (unverifiable.length > 0) {
+    const details = unverifiable
+      .map((item) => `\`${item.ref.sha.slice(0, 7)}\` on github.com/${item.ref.owner}/${item.ref.repo} (${item.reason})`)
+      .join(", ");
+    logger.warn({ unverifiable }, "Commit evidence verification was inconclusive due to GitHub/API access issues");
+    return {
+      valid: false,
+      softPass: true,
+      error: `Commit evidence could not be verified against GitHub: ${details}. Retry when GitHub API access is healthy, or configure GITHUB_TOKEN for private repositories.`,
+    };
   }
 
   return { valid: true };

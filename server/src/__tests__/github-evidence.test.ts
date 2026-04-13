@@ -156,7 +156,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
     expect(result.error).toContain("not reachable on the remote");
   });
 
-  it("soft-passes when repo is inaccessible (private) without GITHUB_TOKEN", async () => {
+  it("rejects (soft-pass) when repo is inaccessible (private) without GITHUB_TOKEN", async () => {
     globalThis.fetch = vi
       .fn()
       // commit lookup → 404
@@ -167,37 +167,37 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
     const result = await verifyGitHubEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/private-repo/commit/abc1234",
     );
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.softPass).toBe(true);
   });
 
-  it("soft-passes on rate limiting (403)", async () => {
+  it("rejects (soft-pass) on rate limiting (403)", async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 403 });
 
     const result = await verifyGitHubEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.softPass).toBe(true);
   });
 
-  it("soft-passes on network error", async () => {
+  it("rejects (soft-pass) on network error", async () => {
     globalThis.fetch = vi.fn().mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
     const result = await verifyGitHubEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.softPass).toBe(true);
   });
 
-  it("soft-passes on GitHub 5xx error", async () => {
+  it("rejects (soft-pass) on GitHub 5xx error", async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 502 });
 
     const result = await verifyGitHubEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
     expect(result.softPass).toBe(true);
   });
 
