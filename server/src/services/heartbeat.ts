@@ -2637,7 +2637,27 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      // B2: idle backoff — when no actionable tasks, multiply intervalSec by this factor before firing.
+      // Configurable via runtimeConfig.heartbeat.idleBackoffMultiplier (default 6).
+      idleBackoffMultiplier: Math.max(1, asNumber(heartbeat.idleBackoffMultiplier, 6)),
     };
+  }
+
+  /**
+   * B2: Returns true when the agent has at least one actionable (todo or in_progress) issue.
+   * Used to decide whether to apply the idle backoff multiplier in tickTimers.
+   */
+  async function agentHasActiveIssues(agentId: string): Promise<boolean> {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress"]),
+        ),
+      );
+    return Number(count ?? 0) > 0;
   }
 
   async function countRunningRunsForAgent(agentId: string) {
@@ -5251,6 +5271,7 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let adaptiveSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -5264,6 +5285,19 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // B2: Adaptive interval — if the agent has no actionable (todo/in_progress) issues,
+        // apply idleBackoffMultiplier to avoid waking blocked/idle agents unnecessarily.
+        if (policy.idleBackoffMultiplier > 1) {
+          const idleIntervalMs = policy.intervalSec * 1000 * policy.idleBackoffMultiplier;
+          if (elapsedMs < idleIntervalMs) {
+            const hasActive = await agentHasActiveIssues(agent.id);
+            if (!hasActive) {
+              adaptiveSkipped += 1;
+              continue;
+            }
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -5281,7 +5315,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, adaptiveSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
