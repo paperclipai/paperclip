@@ -256,8 +256,12 @@ class TestBeforeAgent:
 
         assert result is not None
         updated_msg = result["messages"][-1]
-        assert "<uploaded_files>" in updated_msg.content
-        assert "analyse this" in updated_msg.content
+        # Content should remain a list with a prepended files block
+        assert isinstance(updated_msg.content, list)
+        assert len(updated_msg.content) == 2
+        assert updated_msg.content[0]["type"] == "text"
+        assert "<uploaded_files>" in updated_msg.content[0]["text"]
+        assert updated_msg.content[1] == {"type": "text", "text": "analyse this"}
 
     def test_preserves_additional_kwargs_on_updated_message(self, tmp_path):
         mw = _middleware(tmp_path)
