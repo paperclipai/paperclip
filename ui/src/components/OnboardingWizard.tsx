@@ -36,9 +36,11 @@ import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
   buildContextualTaskDescription,
+  buildTeamAwareTaskDescription,
   buildCeoTriageTask,
   buildCtoKickoffTask,
-  selectDefaultCompanyGoalId
+  selectDefaultCompanyGoalId,
+  detectCompanyTeamType,
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
@@ -252,7 +254,10 @@ export function OnboardingWizard() {
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
 
   // Step 5 — Task (was step 3)
-  const contextual = useMemo(() => buildContextualTaskDescription(workspaceScan), [workspaceScan]);
+  const contextual = useMemo(
+    () => buildContextualTaskDescription(workspaceScan),
+    [workspaceScan],
+  );
   const [taskTitle, setTaskTitle] = useState(contextual.title);
   const [taskDescription, setTaskDescription] = useState(contextual.description);
   const [taskTouched, setTaskTouched] = useState(false);
@@ -593,6 +598,68 @@ export function OnboardingWizard() {
   const [onboardingAgents, setOnboardingAgents] = useState<Array<{ id: string; name: string; role: string }>>([]);
   const [additionalTasks, setAdditionalTasks] = useState<Array<{ title: string; description: string }>>([]);
 
+  // Detect team type from imported agents and update task defaults
+  const detectedTeamType = useMemo(
+    () => detectCompanyTeamType(onboardingAgents.map((a) => a.role)),
+    [onboardingAgents],
+  );
+  const [taskGenerating, setTaskGenerating] = useState(false);
+  const taskGenerated = useRef(false);
+
+  useEffect(() => {
+    if (taskTouched || taskGenerated.current) return;
+
+    // Priority 1: company manifest firstTask
+    const manifestTask = importPreview?.manifest?.company?.firstTask;
+    if (manifestTask) {
+      setTaskTitle(manifestTask.title);
+      setTaskDescription(manifestTask.description);
+      taskGenerated.current = true;
+      return;
+    }
+
+    // Priority 2: AI-generated task (once we have agents and we're near launch)
+    if (onboardingAgents.length > 0 && step >= 5) {
+      taskGenerated.current = true;
+      setTaskGenerating(true);
+
+      const companyEntry = importPreview?.manifest?.company;
+      fetch("/api/generate-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyName: companyEntry?.name ?? companyName,
+          companyDescription: companyEntry?.description,
+          goals: importPreview?.manifest?.company ? undefined : (companyGoal ? [companyGoal] : undefined),
+          agents: onboardingAgents.map((a) => ({ name: a.name, role: a.role })),
+          workspaceScan: workspaceScan ? {
+            projectName: workspaceScan.projectName,
+            languages: workspaceScan.languages,
+            frameworks: workspaceScan.frameworks,
+          } : undefined,
+          linearTeamKey: linearTeamKey ?? undefined,
+          linearIssueCount: linearIssueCount ?? undefined,
+        }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.title && data.description && !taskTouched) {
+            setTaskTitle(data.title);
+            setTaskDescription(data.description);
+          }
+        })
+        .catch(() => {
+          // Fallback to team-type heuristic
+          if (!taskTouched) {
+            const ctx = buildTeamAwareTaskDescription(detectedTeamType, workspaceScan);
+            setTaskTitle(ctx.title);
+            setTaskDescription(ctx.description);
+          }
+        })
+        .finally(() => setTaskGenerating(false));
+    }
+  }, [step, onboardingAgents.length, taskTouched, importPreview]);
+
   function handleConnectLinear() {
     if (!createdCompanyId) return;
     const url = `/api/auth/linear/start?companyId=${createdCompanyId}`;
@@ -628,23 +695,23 @@ export function OnboardingWizard() {
   const [linearTeamLoading, setLinearTeamLoading] = useState(false);
   const [linearTeamError, setLinearTeamError] = useState<string | null>(null);
 
-  async function handleConfigureLinearTeam() {
-    if (!createdCompanyId) return;
+  async function handleConfigureLinearTeam(): Promise<boolean> {
+    if (!createdCompanyId) return false;
     setLinearTeamLoading(true);
     setLinearTeamError(null);
     try {
       if (linearTeamMode === "existing" && linearSelectedTeamId) {
+        const team = linearTeams.find((t) => t.id === linearSelectedTeamId);
         const cfgRes = await fetch(`/api/auth/linear/configure?companyId=${createdCompanyId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ teamId: linearSelectedTeamId }),
+          body: JSON.stringify({ teamId: linearSelectedTeamId, prefix: team?.key }),
         });
         if (!cfgRes.ok) {
           const err = await cfgRes.json().catch(() => ({})) as { error?: string };
           setLinearTeamError(err.error ?? `Configure failed (${cfgRes.status})`);
-          return;
+          return false;
         }
-        const team = linearTeams.find((t) => t.id === linearSelectedTeamId);
         if (team) {
           setLinearTeamKey(team.key);
           setLinearIssueCount(team.issueCount);
@@ -653,19 +720,24 @@ export function OnboardingWizard() {
         const key = linearNewTeamKey.trim().toUpperCase();
         if (!key) {
           setLinearTeamError("Team identifier is required");
-          return;
+          return false;
         }
-        const duplicate = linearTeams.find((t) => t.key.toUpperCase() === key);
-        if (duplicate) {
-          setLinearTeamError(`A team with identifier "${key}" already exists (${duplicate.name}). Choose a different identifier or use the existing team.`);
-          return;
+        const duplicateKey = linearTeams.find((t) => t.key.toUpperCase() === key);
+        if (duplicateKey) {
+          setLinearTeamError(`A team with identifier "${key}" already exists (${duplicateKey.name}). Choose a different identifier or use the existing team.`);
+          return false;
+        }
+        const duplicateName = linearTeams.find((t) => t.name.toLowerCase() === linearNewTeamName.trim().toLowerCase());
+        if (duplicateName) {
+          setLinearTeamError(`A team named "${duplicateName.name}" already exists (${duplicateName.key}). Use the existing team instead.`);
+          return false;
         }
 
         const plugins = await fetch("/api/plugins").then((r) => r.json()) as Array<{ id: string; pluginKey: string }>;
         const linearPlugin = plugins.find((p) => p.pluginKey === "paperclip-plugin-linear");
         if (!linearPlugin) {
           setLinearTeamError("Linear plugin not found");
-          return;
+          return false;
         }
 
         const res = await fetch(
@@ -686,30 +758,33 @@ export function OnboardingWizard() {
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as { message?: string; error?: string };
           setLinearTeamError(err.message ?? err.error ?? `Team creation failed (${res.status})`);
-          return;
+          return false;
         }
 
         const data = await res.json() as { data?: { team?: { id: string; key: string; name: string } } };
         const team = data?.data?.team;
         if (!team) {
           setLinearTeamError("Team creation returned no data — check server logs");
-          return;
+          return false;
         }
 
         setLinearTeamKey(team.key);
+        setLinearIssueCount(0); // new team has no issues
         const cfgRes = await fetch(`/api/auth/linear/configure?companyId=${createdCompanyId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ teamId: team.id }),
+          body: JSON.stringify({ teamId: team.id, prefix: team.key }),
         });
         if (!cfgRes.ok) {
           setLinearTeamError("Team created in Linear but failed to bind to this company");
-          return;
+          return false;
         }
       }
       setLinearTeamConfigured(true);
+      return true;
     } catch (err) {
       setLinearTeamError(err instanceof Error ? err.message : "Unexpected error");
+      return false;
     } finally {
       setLinearTeamLoading(false);
     }
@@ -861,14 +936,15 @@ export function OnboardingWizard() {
       setImportedAgents(createdAgents.length > 0);
       // Build agent list with roles from the manifest
       const manifestAgents = importPreview?.manifest.agents ?? [];
-      setImportedAgentList(
-        createdAgents
-          .filter((a) => a.id)
-          .map((a) => {
-            const ma = manifestAgents.find((m) => m.slug === a.slug);
-            return { id: a.id!, slug: a.slug, name: a.name, role: ma?.role ?? "employee", title: ma?.title ?? null };
-          })
-      );
+      const agentListWithRoles = createdAgents
+        .filter((a) => a.id)
+        .map((a) => {
+          const ma = manifestAgents.find((m) => m.slug === a.slug);
+          return { id: a.id!, slug: a.slug, name: a.name, role: ma?.role ?? "employee", title: ma?.title ?? null };
+        });
+      setImportedAgentList(agentListWithRoles);
+      // Set onboarding agents early so team-type detection triggers task defaults
+      setOnboardingAgents(agentListWithRoles.map((a) => ({ id: a.id, name: a.name, role: a.role })));
 
       setStep(2);
     } catch (err) {
@@ -1090,12 +1166,8 @@ export function OnboardingWizard() {
     try {
       const result = await workspaceApi.scan(scanPath);
       setWorkspaceScan(result);
-      // Update task description with workspace context if user hasn't edited it
-      if (!taskTouched) {
-        const ctx = buildContextualTaskDescription(result);
-        setTaskTitle(ctx.title);
-        setTaskDescription(ctx.description);
-      }
+      // Task generation happens via AI when entering the Launch step —
+      // no need to overwrite here. The effect will use workspaceScan context.
     } catch (err) {
       setScanError(err instanceof Error ? err.message : "Failed to scan workspace");
     } finally {
@@ -1193,8 +1265,19 @@ export function OnboardingWizard() {
 
   async function handleStep5Next() {
     if (!createdCompanyId) return;
+
+    // If Linear is connected but team not configured, run team setup first
+    if (linearConnected && !linearTeamConfigured) {
+      const ok = await handleConfigureLinearTeam();
+      if (!ok) return; // team config failed — stay on this step, error is shown
+    }
+
     setLoading(true);
     try {
+      // Import issues if Linear is connected + team configured + not already imported
+      if (linearConnected && !importDone) {
+        await handleImportLinearIssues();
+      }
       await fetchIssuesForLaunch();
       setStep(6);
     } finally {
@@ -2464,7 +2547,10 @@ export function OnboardingWizard() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={handleConfigureLinearTeam}
+                            onClick={async () => {
+                              const ok = await handleConfigureLinearTeam();
+                              if (ok) await handleStep5Next();
+                            }}
                             disabled={
                               linearTeamLoading ||
                               (linearTeamMode === "new"
@@ -2699,13 +2785,21 @@ export function OnboardingWizard() {
                           </p>
                         </div>
                       </div>
+                      {taskGenerating && (
+                        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-4 py-3">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          <span className="text-xs text-muted-foreground">
+                            Generating a tailored first task with Gemini...
+                          </span>
+                        </div>
+                      )}
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
                           Task title
                         </label>
                         <input
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. Review the codebase and create a roadmap"
+                          placeholder={taskGenerating ? "Generating..." : "e.g. Review the codebase and create a roadmap"}
                           value={taskTitle}
                           onChange={(e) => {
                             setTaskTitle(e.target.value);
@@ -2721,7 +2815,7 @@ export function OnboardingWizard() {
                         <textarea
                           ref={textareaRef}
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
-                          placeholder="Add more detail about what the agent should do..."
+                          placeholder={taskGenerating ? "Generating a task tailored to your company..." : "Add more detail about what the agent should do..."}
                           value={taskDescription}
                           onChange={(e) => {
                             setTaskDescription(e.target.value);

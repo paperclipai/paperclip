@@ -3,6 +3,30 @@ import type { WorkspaceScanResult } from "../api/workspace";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 
+export type CompanyTeamType = "trading" | "dev" | "general";
+
+const TRADING_ROLES = new Set([
+  "trading", "trader", "analyst", "macro-analyst", "fundamentals-analyst",
+  "technical-analyst", "sentiment-analyst", "event-analyst", "signal-synthesizer",
+  "quant-strategist", "risk-manager", "execution-trader", "portfolio-manager",
+  "research", "researcher",
+]);
+
+const DEV_ROLES = new Set([
+  "dev", "developer", "engineer", "frontend", "backend", "fullstack",
+  "designer", "qa", "devops", "game-developer", "game-designer",
+]);
+
+/** Detect company team type from agent roles. */
+export function detectCompanyTeamType(agentRoles: string[]): CompanyTeamType {
+  const normalized = agentRoles.map((r) => r.toLowerCase().trim());
+  const tradingCount = normalized.filter((r) => TRADING_ROLES.has(r)).length;
+  const devCount = normalized.filter((r) => DEV_ROLES.has(r)).length;
+  if (tradingCount > devCount && tradingCount > 0) return "trading";
+  if (devCount > tradingCount && devCount > 0) return "dev";
+  return "general";
+}
+
 export const DEFAULT_TASK_TITLE = "Review the backlog and ask the board what to prioritize";
 
 export const DEFAULT_TASK_DESCRIPTION = `You are the CEO — a planning and coordination agent. The board (human users) sets strategy; you organize and execute.
@@ -116,6 +140,67 @@ export function buildContextualTaskDescription(
     : "Review the backlog and ask the board what to prioritize";
 
   return { title, description: lines.join("\n") };
+}
+
+/**
+ * Build team-type-aware first task description.
+ * Falls back to the generic CEO task for "general" companies.
+ */
+export function buildTeamAwareTaskDescription(
+  teamType: CompanyTeamType,
+  scan: WorkspaceScanResult | null,
+): { title: string; description: string } {
+  if (teamType === "trading") return buildTradingFirstTask(scan);
+  if (teamType === "dev") return buildDevFirstTask(scan);
+  return buildContextualTaskDescription(scan);
+}
+
+function buildTradingFirstTask(scan: WorkspaceScanResult | null): { title: string; description: string } {
+  const contextBlock = scan ? `\n\n## Project Context\n${buildProjectContextBlock(scan, 1500)}\n` : "";
+
+  return {
+    title: "Run cross-asset research brief and present the macro view to the board",
+    description: `You are the CEO of a trading desk. Your team runs cross-asset research and systematic trading.${contextBlock}
+
+**Your deliverable: a research brief and initial market assessment for the board.**
+
+1. Pull the latest research brief — run a full cross-asset analysis across equities, rates, macro, and news
+2. Review the current portfolio positioning (if any existing positions) and check for regime changes
+3. Identify the top 2-3 actionable trade ideas across time horizons (intraday, swing, hold)
+4. Create an approval via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\`:
+   - \`payload.plan\`: your macro view, key signals (2s10s spread, fed funds positioning, equity momentum), and specific trade recommendations with entry/target/stop
+   - \`payload.nextStepsIfApproved\`: which trades to execute and how to allocate across the team (analysts, risk manager, execution)
+   - \`payload.nextStepsIfRejected\`: alternative positioning or wait-and-see approach
+   - Link this issue using the \`issueIds\` field
+5. The board will review your brief and approve, reject, or redirect
+6. Wait for board direction before executing any trades or delegating research tasks`,
+  };
+}
+
+function buildDevFirstTask(scan: WorkspaceScanResult | null): { title: string; description: string } {
+  const projectLabel = scan?.projectName ?? "the project";
+  const langLabel = scan?.languages.length ? ` (${scan.languages.join(", ")})` : "";
+  const contextBlock = scan ? `\n\n## Project Context\n${buildProjectContextBlock(scan, 2000)}\n` : "";
+
+  return {
+    title: scan?.projectName
+      ? `Review ${scan.projectName} codebase and present a development plan to the board`
+      : "Review the codebase and present a development plan to the board",
+    description: `You are the CEO of a development team building **${projectLabel}**${langLabel}. Your team builds games, tools, and applications.${contextBlock}
+
+**Your deliverable: a technical assessment and development plan for the board.**
+
+1. Review the codebase — understand the architecture, tech stack, and current state
+2. Read the backlog and any existing issues — categorize by feature, bug, tech debt, and infrastructure
+3. Identify the highest-impact work: what ships value fastest? What's blocking progress?
+4. Create an approval via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\`:
+   - \`payload.plan\`: your assessment of the codebase state, categorized backlog, and recommended priorities. Include: what's ready to build, what needs design first, what's blocked
+   - \`payload.nextStepsIfApproved\`: which features/fixes to tackle first, how to allocate across the team (engineers, designers, QA), estimated sequence
+   - \`payload.nextStepsIfRejected\`: alternative prioritization or areas to investigate further
+   - Link this issue using the \`issueIds\` field
+5. The board will review your plan and give direction
+6. Wait for board approval before assigning work or starting development`,
+  };
 }
 
 function goalCreatedAt(goal: Goal) {

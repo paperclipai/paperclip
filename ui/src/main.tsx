@@ -7,6 +7,7 @@ import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { CompanyProvider } from "./context/CompanyContext";
+import { WorkspaceProvider } from "./context/WorkspaceContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
@@ -44,7 +45,8 @@ createRoot(document.getElementById("root")!).render(
       <ThemeProvider>
         <BrowserRouter>
           <CompanyProvider>
-            <EditorAutocompleteProvider>
+            <WorkspaceProvider>
+              <EditorAutocompleteProvider>
               <ToastProvider>
                 <LiveUpdatesProvider>
                   <TooltipProvider>
@@ -63,6 +65,7 @@ createRoot(document.getElementById("root")!).render(
                 </LiveUpdatesProvider>
               </ToastProvider>
             </EditorAutocompleteProvider>
+            </WorkspaceProvider>
           </CompanyProvider>
         </BrowserRouter>
       </ThemeProvider>

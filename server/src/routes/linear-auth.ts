@@ -379,7 +379,8 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           }
           const teamNodes = data.data?.teams?.nodes ?? [];
           allTeams = teamNodes.map((t) => ({
-            id: t.id, name: t.name, key: t.key, issueCount: t.issueCount,
+            id: t.id, name: t.name, key: t.key,
+            issueCount: t.issues.nodes.length,
           }));
 
           // Use the configured team if one is bound, otherwise fall back to first
@@ -500,21 +501,26 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         return;
       }
 
-      // ── Sync projects from Linear ──
+      // ── Sync projects from Linear (scoped to configured team) ──
       const projectMap = new Map<string, string>(); // Linear project ID → Paperclip project ID
       const linearProjectsRes = await fetch("https://api.linear.app/graphql", {
         method: "POST",
         headers: { Authorization: token, "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: `query { projects { nodes { id name description status { name } startDate targetDate } } }`,
+          query: `query($teamId: String!) {
+            team(id: $teamId) {
+              projects { nodes { id name description status { name } startDate targetDate } }
+            }
+          }`,
+          variables: { teamId },
         }),
       });
       if (linearProjectsRes.ok) {
         const projData = (await linearProjectsRes.json()) as {
-          data?: { projects?: { nodes?: Array<{
+          data?: { team?: { projects?: { nodes?: Array<{
             id: string; name: string; description: string | null;
             status: { name: string }; startDate: string | null; targetDate: string | null;
-          }> } };
+          }> } } };
         };
         const linearStatusMap: Record<string, string> = {
           "Planned": "backlog", "Backlog": "backlog",
@@ -523,7 +529,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           "Canceled": "cancelled", "Cancelled": "cancelled",
           "Paused": "paused",
         };
-        for (const lp of projData.data?.projects?.nodes ?? []) {
+        for (const lp of projData.data?.team?.projects?.nodes ?? []) {
           const [existing] = await db
             .select()
             .from(projects)
@@ -547,7 +553,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             console.log(`[linear-import] created project: ${lp.name}`);
           }
         }
-        console.log(`[linear-import] synced ${projectMap.size} projects from Linear`);
+        console.log(`[linear-import] synced ${projectMap.size} projects from Linear (team ${teamId})`);
       }
 
       // ── Label cache ──
@@ -854,8 +860,13 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       }
       const token = await svc.resolveSecretValue(companyId, secret.id, "latest");
 
-      // Look up Linear plugin for link backfill
+      // Look up Linear plugin for link backfill + team ID
       const [plugin] = await db.select().from(plugins).where(eq(plugins.pluginKey, "paperclip-plugin-linear")).limit(1);
+      let syncTeamId = "";
+      if (plugin) {
+        const [cfg] = await db.select().from(pluginConfig).where(eq(pluginConfig.pluginId, plugin.id)).limit(1);
+        syncTeamId = (cfg?.configJson as Record<string, unknown>)?.teamId as string ?? "";
+      }
 
       // Get all Paperclip issues with Linear identifiers
       const paperclipIssues = await db
@@ -875,21 +886,28 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         return;
       }
 
-      // Import all Linear projects into Paperclip (not just ones with issues)
-      const linearProjectsRes = await fetch("https://api.linear.app/graphql", {
-        method: "POST",
-        headers: { Authorization: token, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: `query { projects { nodes { id name description status { name } startDate targetDate } } }`,
-        }),
-      });
+      // Import team-scoped Linear projects into Paperclip
       const projectMap = new Map<string, string>(); // Linear project ID → Paperclip project ID
-      if (linearProjectsRes.ok) {
+      const linearProjectsRes = syncTeamId
+        ? await fetch("https://api.linear.app/graphql", {
+            method: "POST",
+            headers: { Authorization: token, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: `query($teamId: String!) {
+                team(id: $teamId) {
+                  projects { nodes { id name description status { name } startDate targetDate } }
+                }
+              }`,
+              variables: { teamId: syncTeamId },
+            }),
+          })
+        : null;
+      if (linearProjectsRes?.ok) {
         const projData = (await linearProjectsRes.json()) as {
-          data?: { projects?: { nodes?: Array<{
+          data?: { team?: { projects?: { nodes?: Array<{
             id: string; name: string; description: string | null;
             status: { name: string }; startDate: string | null; targetDate: string | null;
-          }> } };
+          }> } } };
         };
         const linearStatusMap: Record<string, string> = {
           "Planned": "backlog", "Backlog": "backlog",
@@ -898,7 +916,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           "Canceled": "cancelled", "Cancelled": "cancelled",
           "Paused": "paused",
         };
-        for (const lp of projData.data?.projects?.nodes ?? []) {
+        for (const lp of projData.data?.team?.projects?.nodes ?? []) {
           const [existing] = await db
             .select()
             .from(projects)
@@ -923,7 +941,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             console.log(`[linear-sync] created project: ${lp.name}`);
           }
         }
-        console.log(`[linear-sync] synced ${projectMap.size} projects from Linear`);
+        console.log(`[linear-sync] synced ${projectMap.size} projects from Linear (team ${syncTeamId})`);
 
         // Note: project creation/deletion is handled in real-time by webhooks
         // (Linear → Paperclip) and plugin events (Paperclip → Linear).
@@ -1217,6 +1235,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
   // POST /api/auth/linear/configure — update prefix, counter, and optionally
   // rebind the Linear plugin to a different team (used by the team picker).
   router.post("/configure", async (req, res) => {
+    try {
     assertBoard(req);
     const companyId = req.query.companyId as string;
     if (!companyId) {
@@ -1235,7 +1254,13 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
     if (prefix && typeof prefix === "string") {
       const cleanPrefix = prefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (cleanPrefix.length > 0) {
-        updates.issuePrefix = cleanPrefix;
+        // Only update if actually changing — avoids unique constraint conflicts
+        // when the company already has this prefix
+        const [current] = await db.select({ issuePrefix: companies.issuePrefix })
+          .from(companies).where(eq(companies.id, companyId)).limit(1);
+        if (current?.issuePrefix !== cleanPrefix) {
+          updates.issuePrefix = cleanPrefix;
+        }
       }
     }
 
@@ -1243,7 +1268,15 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       updates.issueCounter = startAt;
     }
 
-    await db.update(companies).set(updates).where(eq(companies.id, companyId));
+    try {
+      await db.update(companies).set(updates).where(eq(companies.id, companyId));
+    } catch (err: any) {
+      if (err?.code === "23505" || err?.constraint?.includes("issue_prefix")) {
+        res.status(409).json({ error: `Prefix "${updates.issuePrefix}" is already in use by another company` });
+        return;
+      }
+      throw err;
+    }
 
     // If the caller supplied a teamId, rebind the plugin config to point at
     // the new team and re-register the Linear webhook for it. This is what
@@ -1318,6 +1351,12 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       issueCounter: updated.issueCounter,
       teamId: teamId ?? undefined,
     });
+    } catch (err) {
+      console.error("[linear-auth] configure error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
+      }
+    }
   });
 
   // POST /api/auth/linear/disconnect?companyId=xxx

@@ -39,6 +39,8 @@ export interface CompanyPortabilityCompanyManifestEntry {
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  /** Optional first task defined in COMPANY.md frontmatter. */
+  firstTask: { title: string; description: string } | null;
 }
 
 export interface CompanyPortabilitySidebarOrder {

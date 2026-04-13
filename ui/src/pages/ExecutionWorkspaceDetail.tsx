@@ -14,6 +14,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { IssuesList } from "../components/IssuesList";
+import { TerminalPanel } from "../components/Terminal";
 import { PageTabBar } from "../components/PageTabBar";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -34,7 +35,7 @@ type WorkspaceFormState = {
   workspaceRuntime: string;
 };
 
-type ExecutionWorkspaceTab = "configuration" | "issues";
+type ExecutionWorkspaceTab = "configuration" | "issues" | "terminal";
 
 function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -42,6 +43,7 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
   if (executionWorkspacesIndex === -1 || segments[executionWorkspacesIndex + 1] !== workspaceId) return null;
   const tab = segments[executionWorkspacesIndex + 2];
   if (tab === "issues") return "issues";
+  if (tab === "terminal") return "terminal";
   if (tab === "configuration") return "configuration";
   return null;
 }
@@ -516,6 +518,7 @@ export function ExecutionWorkspaceDetail() {
             items={[
               { value: "configuration", label: "Configuration" },
               { value: "issues", label: "Issues" },
+              { value: "terminal", label: "Terminal" },
             ]}
             align="start"
             value={activeTab ?? "configuration"}
@@ -930,6 +933,10 @@ export function ExecutionWorkspaceDetail() {
                 )}
               </div>
             </div>
+          </div>
+        ) : activeTab === "terminal" ? (
+          <div className="rounded-2xl border border-border bg-card overflow-hidden" style={{ height: "500px" }}>
+            <TerminalPanel cwd={form.cwd || workspace.cwd || "~"} className="h-full" />
           </div>
         ) : (
           <ExecutionWorkspaceIssuesList

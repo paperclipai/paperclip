@@ -36,6 +36,8 @@ import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
+import { TerminalPage } from "./pages/TerminalPage";
+import { WorkspaceLandingPage } from "./pages/WorkspaceLandingPage";
 import { IssueChatUxLab } from "./pages/IssueChatUxLab";
 import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
@@ -121,7 +123,7 @@ function CloudAccessGate() {
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<Navigate to="workspace" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
@@ -160,6 +162,8 @@ function boardRoutes() {
       <Route path="issues/:issueId" element={<IssueDetail />} />
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
+      <Route path="workspace" element={<WorkspaceLandingPage />} />
+      <Route path="terminal" element={<TerminalPage />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
@@ -257,7 +261,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}/workspace`} replace />;
 }
 
 function UnprefixedBoardRedirect() {
@@ -353,6 +357,8 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
+          <Route path="workspace" element={<UnprefixedBoardRedirect />} />
+          <Route path="terminal" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>

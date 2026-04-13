@@ -2434,6 +2434,11 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingConsentByUserId),
       feedbackDataSharingTermsVersion:
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
+      firstTask: isPlainRecord(companyFrontmatter.firstTask)
+        && typeof companyFrontmatter.firstTask.title === "string"
+        && typeof companyFrontmatter.firstTask.description === "string"
+        ? { title: companyFrontmatter.firstTask.title, description: companyFrontmatter.firstTask.description }
+        : null,
     },
     sidebar: paperclipSidebar,
     agents: [],

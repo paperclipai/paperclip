@@ -29,12 +29,14 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { linearAuthRoutes } from "./routes/linear-auth.js";
 import { assetRoutes } from "./routes/assets.js";
+import { generateTaskRoutes } from "./routes/generate-task.js";
 import { accessRoutes } from "./routes/access.js";
 import { workspaceScanRoutes } from "./routes/workspace-scan.js";
 import { githubOAuthRoutes, githubApiRoutes } from "./routes/github-oauth.js";
 import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { createTerminalRouter } from "./routes/terminal.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -198,6 +200,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use("/generate-task", generateTaskRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
   const streamBus = createPluginStreamBus();
@@ -279,6 +282,7 @@ export async function createApp(
   api.use(workspaceScanRoutes());
   api.use(githubApiRoutes());
   api.use(adapterRoutes());
+  api.use("/terminal", createTerminalRouter());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
