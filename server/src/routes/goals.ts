@@ -1,22 +1,15 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createGoalSchema, isUuidLike, updateGoalSchema } from "@paperclipai/shared";
+import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
-import { badRequest } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
   const svc = goalService(db);
-
-  router.param("id", (_req, _res, next, rawId) => {
-    if (!isUuidLike(rawId)) {
-      next(badRequest(`Invalid goal id: ${rawId}`));
-      return;
-    }
-    next();
-  });
 
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -51,6 +44,10 @@ export function goalRoutes(db: Db) {
       entityId: goal.id,
       details: { title: goal.title },
     });
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      trackGoalCreated(telemetryClient, { goalLevel: goal.level });
+    }
     res.status(201).json(goal);
   });
 

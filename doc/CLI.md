@@ -32,10 +32,12 @@ Mode taxonomy and design intent are documented in `doc/DEPLOYMENT-MODES.md`.
 Current CLI behavior:
 
 - `paperclipai onboard` and `paperclipai configure --section server` set deployment mode in config
+- server onboarding/configure ask for reachability intent and write `server.bind`
+- `paperclipai run --bind <loopback|lan|tailnet>` passes a quickstart bind preset into first-run onboarding when config is missing
 - runtime can override mode with `PAPERCLIP_DEPLOYMENT_MODE`
-- `paperclipai run` and `paperclipai doctor` do not yet expose a direct `--mode` flag
+- `paperclipai run` and `paperclipai doctor` still do not expose a direct low-level `--mode` flag
 
-Target behavior (planned) is documented in `doc/DEPLOYMENT-MODES.md` section 5.
+Canonical behavior is documented in `doc/DEPLOYMENT-MODES.md`.
 
 Allow an authenticated/private hostname (for example custom Tailscale DNS):
 

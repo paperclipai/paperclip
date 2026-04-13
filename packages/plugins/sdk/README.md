@@ -312,6 +312,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issue.comments.create` |
 | | `activity.log.write` |
 | | `metrics.write` |
+| | `telemetry.track` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |

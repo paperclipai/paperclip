@@ -2,7 +2,7 @@ import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
-  const messages: string[] = [];
+  let finalMessage: string | null = null;
   let errorMessage: string | null = null;
   const usage = {
     inputTokens: 0,
@@ -33,7 +33,7 @@ export function parseCodexJsonl(stdout: string) {
       const item = parseObject(event.item);
       if (asString(item.type, "") === "agent_message") {
         const text = asString(item.text, "");
-        if (text) messages.push(text);
+        if (text) finalMessage = text;
       }
       continue;
     }
@@ -55,7 +55,7 @@ export function parseCodexJsonl(stdout: string) {
 
   return {
     sessionId,
-    summary: messages.join("\n\n").trim(),
+    summary: finalMessage?.trim() ?? "",
     usage,
     errorMessage,
   };
@@ -67,7 +67,7 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
+  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread id/i.test(
     haystack,
   );
 }

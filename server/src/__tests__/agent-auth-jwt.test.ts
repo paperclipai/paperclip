@@ -89,6 +89,22 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
   });
 
+  it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is absent", () => {
+    delete process.env[secretEnv];
+    process.env[betterAuthSecretEnv] = "fallback-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "claude_local",
+      run_id: "run-1",
+    });
+  });
+
   it("rejects expired tokens", () => {
     process.env[ttlEnv] = "1";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
