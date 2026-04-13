@@ -51,6 +51,7 @@ export const createIssueSchema = z.object({
     "agent_default",
   ]).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 

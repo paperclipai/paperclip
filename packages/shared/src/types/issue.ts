@@ -125,6 +125,7 @@ export interface Issue {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  metadata: Record<string, unknown> | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
