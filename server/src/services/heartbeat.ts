@@ -75,6 +75,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const PROCESS_DETACHED_TIMEOUT_MS = 15 * 60 * 1000;
+const FOLLOWUP_DEDUP_WINDOW_MS = 10_000;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -3685,10 +3686,13 @@ export function heartbeatService(db: Db) {
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
+          const runTooRecentForFollowup =
+            (Date.now() - new Date(activeExecutionRun.createdAt).getTime()) < FOLLOWUP_DEDUP_WINDOW_MS;
           const shouldQueueFollowupForCommentWake =
             Boolean(wakeCommentId) &&
             activeExecutionRun.status === "running" &&
-            isSameExecutionAgent;
+            isSameExecutionAgent &&
+            !runTooRecentForFollowup;
 
           if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
@@ -3872,8 +3876,10 @@ export function heartbeatService(db: Db) {
     const sameScopeRunningRun = activeRuns.find(
       (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
+    const runTooRecentForFollowup = sameScopeRunningRun &&
+      (Date.now() - new Date(sameScopeRunningRun.createdAt).getTime()) < FOLLOWUP_DEDUP_WINDOW_MS;
     const shouldQueueFollowupForCommentWake =
-      Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+      Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun && !runTooRecentForFollowup;
 
     const coalescedTargetRun =
       sameScopeQueuedRun ??
@@ -3992,8 +3998,10 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (crossPathRun) {
+        const crossPathRunTooRecent =
+          (Date.now() - new Date(crossPathRun.createdAt).getTime()) < FOLLOWUP_DEDUP_WINDOW_MS;
         const skipForCommentFollowup =
-          crossPathRun.status === "running" && Boolean(wakeCommentId);
+          crossPathRun.status === "running" && Boolean(wakeCommentId) && !crossPathRunTooRecent;
 
         if (!skipForCommentFollowup) {
           const mergedContextSnapshot = mergeCoalescedContextSnapshot(
