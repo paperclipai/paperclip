@@ -1,5 +1,5 @@
 export {};
-
+ 
 declare global {
   namespace Express {
     interface Request {
@@ -16,4 +16,7 @@ declare global {
       };
     }
   }
+
+  // eslint-disable-next-line no-var
+  var heartbeatTriggerCache: Map<string, number> | undefined;
 }

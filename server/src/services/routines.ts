@@ -46,6 +46,10 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+
+const HEARTBEAT_AUDIT_ENABLED = true;
+const DUPLICATE_TRIGGER_WINDOW_MS = 5000;
+const HEARTBEAT_ACTION_TYPE = "heartbeat_trigger";
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -1385,6 +1389,18 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      if (!global.heartbeatTriggerCache) {
+        global.heartbeatTriggerCache = new Map<string, number>();
+      }
+      const cache = global.heartbeatTriggerCache;
+
+      const nowMs = now.getTime();
+      for (const [key, timestamp] of cache.entries()) {
+        if (nowMs - timestamp > DUPLICATE_TRIGGER_WINDOW_MS) {
+          cache.delete(key);
+        }
+      }
+
       const due = await db
         .select({
           trigger: routineTriggers,
@@ -1444,12 +1460,42 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
         for (let i = 0; i < runCount; i += 1) {
           const timeISO = dispatchTimes[i]?.toISOString() ?? scheduleTimeISO;
+          const idempotencyKey = `${row.routine.id}:${row.trigger.id}:${timeISO}`;
+
+          const cacheKey = `${row.trigger.id}:${timeISO}`;
+          const lastTriggered = cache.get(cacheKey);
+          if (lastTriggered !== undefined && (nowMs - lastTriggered) < DUPLICATE_TRIGGER_WINDOW_MS) {
+            if (HEARTBEAT_AUDIT_ENABLED) {
+              logger.info({
+                routineId: row.routine.id,
+                triggerId: row.trigger.id,
+                idempotencyKey,
+                timestamp: new Date().toISOString(),
+                outcome: "duplicate_suppressed",
+              }, "Heartbeat duplicate trigger suppressed");
+            }
+            continue;
+          }
+
+          cache.set(cacheKey, nowMs);
+
           await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
-            idempotencyKey: `${row.routine.id}:${row.trigger.id}:${timeISO}`,
+            idempotencyKey,
           });
+
+          if (HEARTBEAT_AUDIT_ENABLED) {
+            logger.info({
+              routineId: row.routine.id,
+              triggerId: row.trigger.id,
+              idempotencyKey,
+              timestamp: new Date().toISOString(),
+              outcome: "triggered",
+            }, "Heartbeat trigger executed");
+          }
+
           triggered += 1;
         }
       }
