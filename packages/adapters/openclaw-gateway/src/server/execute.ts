@@ -12,6 +12,7 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import { GoogleAuth } from "google-auth-library";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -1041,6 +1042,27 @@ function extractResultText(value: unknown): string | null {
   return nonEmpty(record.text) ?? nonEmpty(record.summary) ?? null;
 }
 
+/**
+ * Fetch a GCP OIDC ID token for service-to-service authentication.
+ *
+ * Uses Application Default Credentials (ADC). On Cloud Run this resolves via
+ * the metadata server; locally it uses GOOGLE_APPLICATION_CREDENTIALS or
+ * `gcloud auth application-default login`.
+ *
+ * Returns the raw JWT string on success, or throws on failure.
+ */
+async function fetchGcpIdToken(audience: string): Promise<string> {
+  const auth = new GoogleAuth();
+  const client = await auth.getIdTokenClient(audience);
+  const headers = await client.getRequestHeaders();
+  const authHeader = headers["Authorization"] ?? headers["authorization"] ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    throw new Error("GCP ID token fetch succeeded but returned an empty token");
+  }
+  return token;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
@@ -1089,6 +1111,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (authToken && !headerMapHasIgnoreCase(headers, "authorization")) {
     headers.authorization = toAuthorizationHeaderValue(authToken);
+  }
+
+  // GCP service-to-service auth: fetch an OIDC ID token via Application Default Credentials.
+  // The audience should be the Cloud Run service URL (https://...).
+  const useGcpIdentityToken = parseBoolean(ctx.config.useGcpIdentityToken, false);
+  if (useGcpIdentityToken && !headerMapHasIgnoreCase(headers, "authorization")) {
+    // Derive the HTTP audience from the WebSocket URL (ws → http, wss → https).
+    const rawAudience = nonEmpty(ctx.config.audience);
+    const derivedAudience = rawAudience
+      ? rawAudience
+      : parsedUrl.toString().replace(/^wss?:\/\//, (m) => (m === "wss://" ? "https://" : "http://")).split("/").slice(0, 3).join("/");
+    try {
+      await ctx.onLog("stdout", `[openclaw-gateway] fetching GCP ID token audience=${derivedAudience}\n`);
+      const idToken = await fetchGcpIdToken(derivedAudience);
+      headers.authorization = `Bearer ${idToken}`;
+      await ctx.onLog("stdout", "[openclaw-gateway] GCP ID token acquired\n");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.onLog("stderr", `[openclaw-gateway] GCP ID token fetch failed: ${message}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: `GCP ID token fetch failed: ${message}`,
+        errorCode: "openclaw_gateway_gcp_idtoken_failed",
+      };
+    }
   }
 
   const clientId = nonEmpty(ctx.config.clientId) ?? DEFAULT_CLIENT_ID;
