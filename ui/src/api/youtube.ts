@@ -22,6 +22,7 @@ export interface YoutubeExtraction {
   metadata: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
+  alreadyExtracted?: boolean;
 }
 
 export const youtubeApi = {

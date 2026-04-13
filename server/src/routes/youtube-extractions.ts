@@ -39,10 +39,19 @@ export function youtubeExtractionRoutes(db: Db) {
       assertBoard(req);
 
       const userId = (req.actor as { userId: string }).userId;
+      const submittedUrl = req.body.url as string;
+
+      // Dedup: return existing completed/processing extraction for the same video
+      const existing = await svc.findExisting(companyId, submittedUrl);
+      if (existing) {
+        res.status(200).json({ ...existing, alreadyExtracted: true });
+        return;
+      }
+
       const extraction = await svc.create({
         companyId,
         submittedByUserId: userId,
-        url: req.body.url as string,
+        url: submittedUrl,
       });
 
       // Fire-and-forget background processing

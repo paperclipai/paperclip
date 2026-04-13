@@ -122,6 +122,33 @@ When running the daily YouTube monitor pipeline:
 
 This ensures every analyzed video is permanently stored in the vault and searchable via the Obsidian MCP server.
 
+## Deduplication (Required for Scheduled Tasks)
+
+Before running any extraction, check whether the video has already been processed.
+
+**Option A — API (preferred):** Submit via the POST endpoint. It checks automatically and returns the existing row with `alreadyExtracted: true` if a non-failed record exists. No extra work needed.
+
+**Option B — Manual check:**
+```bash
+curl -s "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/youtube-extractions" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+video_id = 'VIDEO_ID_HERE'
+existing = [r for r in rows if r.get('videoId') == video_id and r.get('status') != 'failed']
+print('SKIP' if existing else 'PROCEED')
+"
+```
+
+**Rules:**
+- `completed` → skip, use existing report from DB or vault note
+- `processing` → skip, check back later
+- `failed` → re-extract (failures are always retried)
+- `missing` → proceed with extraction
+
+The vault note at `outputs/youtube-extractions/{date}-{videoId}.md` also serves as a quick file-based confirmation that extraction succeeded.
+
 ## Common Mistakes
 
 | Mistake | Fix |
@@ -131,3 +158,4 @@ This ensures every analyzed video is permanently stored in the vault and searcha
 | Verdict string not found | Ensure report contains one of the 3 exact strings |
 | Vault path missing | `mkdir -p` the directory before writing |
 | `claude` not found | Verify with `which claude`; check PATH |
+| Re-extracting known videos | Always check dedup before submitting (see above) |

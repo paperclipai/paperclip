@@ -194,6 +194,7 @@ export function YouTube() {
 
   const [url, setUrl] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [dedupNotice, setDedupNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "YouTube Extractor" }]);
@@ -210,10 +211,17 @@ export function YouTube() {
 
   const submitMutation = useMutation({
     mutationFn: (videoUrl: string) => youtubeApi.create(selectedCompanyId!, { url: videoUrl }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.youtube.list(selectedCompanyId!) });
       setUrl("");
       setUrlError(null);
+      if (result.alreadyExtracted) {
+        const label = result.title ?? result.url;
+        setDedupNotice(`Already extracted: "${label}" — showing existing result.`);
+        setTimeout(() => setDedupNotice(null), 6000);
+      } else {
+        setDedupNotice(null);
+      }
     },
     onError: (err: Error) => {
       setUrlError(err.message);
@@ -296,6 +304,9 @@ export function YouTube() {
           </button>
         </div>
         {urlError && <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">{urlError}</p>}
+        {dedupNotice && (
+          <p className="mt-1.5 text-xs text-blue-600 dark:text-blue-400">{dedupNotice}</p>
+        )}
         {hasProcessing && (
           <p className="mt-2 flex items-center gap-1.5 text-xs text-yellow-600 dark:text-yellow-400">
             <Loader2 className="h-3 w-3 animate-spin" />

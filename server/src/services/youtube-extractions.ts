@@ -1,8 +1,61 @@
 import type { Db } from "@paperclipai/db";
 import { youtubeExtractions } from "@paperclipai/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
+
+/** Extract the YouTube video ID from any common URL format. Returns null if not parseable. */
+export function extractVideoId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    // youtu.be/<id>
+    if (u.hostname === "youtu.be") return u.pathname.slice(1).split("?")[0] || null;
+    // youtube.com/watch?v=<id>
+    if (u.searchParams.has("v")) return u.searchParams.get("v");
+    // youtube.com/shorts/<id> or youtube.com/embed/<id>
+    const m = u.pathname.match(/\/(shorts|embed|v)\/([^/?]+)/);
+    if (m) return m[2];
+  } catch {
+    // invalid URL
+  }
+  return null;
+}
+
+/** Normalize a YouTube URL to its canonical watch URL (strips timestamps, playlists, etc.). */
+export function normalizeYouTubeUrl(url: string): string {
+  const videoId = extractVideoId(url);
+  if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
+  return url;
+}
 
 export function youtubeExtractionService(db: Db) {
+  /**
+   * Find an existing non-failed extraction for the same video in this company.
+   * Checks by normalized URL and by video_id so we catch both "same URL different params"
+   * and "same video submitted via different URL format" (after the first extraction completes).
+   */
+  async function findExisting(companyId: string, url: string) {
+    const normalized = normalizeYouTubeUrl(url);
+    const videoId = extractVideoId(url);
+
+    const conditions = [eq(youtubeExtractions.url, normalized)];
+    if (videoId) conditions.push(eq(youtubeExtractions.videoId, videoId));
+
+    const [row] = await db
+      .select()
+      .from(youtubeExtractions)
+      .where(
+        and(
+          eq(youtubeExtractions.companyId, companyId),
+          or(...conditions),
+        ),
+      )
+      .orderBy(desc(youtubeExtractions.createdAt))
+      .limit(1);
+
+    // Only deduplicate against completed or in-progress extractions — let failures be retried
+    if (!row || row.status === "failed") return null;
+    return row;
+  }
+
   async function create(input: {
     companyId: string;
     submittedByUserId: string;
@@ -13,7 +66,7 @@ export function youtubeExtractionService(db: Db) {
       .values({
         companyId: input.companyId,
         submittedByUserId: input.submittedByUserId,
-        url: input.url,
+        url: normalizeYouTubeUrl(input.url),
         status: "processing",
       })
       .returning();
@@ -82,5 +135,5 @@ export function youtubeExtractionService(db: Db) {
     return deleted ?? null;
   }
 
-  return { create, list, getById, get, update, remove };
+  return { create, findExisting, list, getById, get, update, remove };
 }
