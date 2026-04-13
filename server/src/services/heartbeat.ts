@@ -691,8 +691,13 @@ function deriveTaskKey(
 
 /**
  * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
+ * for timer/heartbeat wakes. This provides a consistent storage key so
+ * the session written at the end of a timer run is recorded under a stable
+ * identifier in `agentTaskSessions`.
+ *
+ * Note: timer wakes always start with a fresh session (see
+ * `shouldResetTaskSessionForWake`); this key is used for write-back
+ * consistency, not resumption.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
