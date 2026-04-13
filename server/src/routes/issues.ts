@@ -2314,54 +2314,18 @@ export function issueRoutes(
       }
 
       // Fetch comments + attachments once for evidence and QA gates (only on transitions that need them)
-      const needsEvidenceOrQA = req.body.status === "in_review" || req.body.status === "done";
+      // NOTE: after Phase 5, these are only consulted when LEGACY_QA_GATES !== "off". When the
+      // env flag is off, the new verification system is the authoritative source for pass/fail.
+      const LEGACY_QA_GATES_ENABLED = process.env.LEGACY_QA_GATES !== "off";
+      const needsEvidenceOrQA =
+        LEGACY_QA_GATES_ENABLED && (req.body.status === "in_review" || req.body.status === "done");
       const allComments = needsEvidenceOrQA ? await svc.listComments(existing.id, { order: "asc" }) : [];
       const allAttachments = needsEvidenceOrQA ? await svc.listAttachments(existing.id) : [];
 
-      // Engineer evidence gate: browse evidence + screenshot for in_review (code issues)
-      const evidenceResult = await assertEngineerBrowseEvidence(req, existing, req.body.status, allComments, allAttachments);
-      if (evidenceResult) {
-        const actor = getActorInfo(req);
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.evidence_gate_blocked",
-          entityType: "issue",
-          entityId: existing.id,
-          details: { gate: evidenceResult.gate, reason: evidenceResult.reason, targetStatus: req.body.status },
-        });
-        await incrementGateBlockCount(existing.id);
-        res.status(422).json({ error: evidenceResult.reason, gate: evidenceResult.gate });
-        return;
-      }
-
-      // QA gate: agents must have QA approval before marking code issues done
-      const qaGateResult = await assertQAGate(req, existing, req.body.status, allComments);
-      if (qaGateResult) {
-        const actor = getActorInfo(req);
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.qa_gate_blocked",
-          entityType: "issue",
-          entityId: existing.id,
-          details: { gate: qaGateResult.gate, reason: qaGateResult.reason, targetStatus: req.body.status },
-        });
-        await incrementGateBlockCount(existing.id);
-        res.status(422).json({ error: qaGateResult.reason, gate: qaGateResult.gate });
-        return;
-      }
-
-      // QA browse evidence gate: QA reviewer must include testing evidence (code issues, done only)
-      if (req.body.status === "done") {
-        const qaBrowseResult = await assertQABrowseEvidence(req, existing, allComments, allAttachments);
-        if (qaBrowseResult) {
+      if (LEGACY_QA_GATES_ENABLED) {
+        // Engineer evidence gate: browse evidence + screenshot for in_review (code issues)
+        const evidenceResult = await assertEngineerBrowseEvidence(req, existing, req.body.status, allComments, allAttachments);
+        if (evidenceResult) {
           const actor = getActorInfo(req);
           await logActivity(db, {
             companyId: existing.companyId,
@@ -2369,14 +2333,56 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
-            action: "issue.qa_evidence_gate_blocked",
+            action: "issue.evidence_gate_blocked",
             entityType: "issue",
             entityId: existing.id,
-            details: { gate: qaBrowseResult.gate, reason: qaBrowseResult.reason, targetStatus: req.body.status },
+            details: { gate: evidenceResult.gate, reason: evidenceResult.reason, targetStatus: req.body.status },
           });
           await incrementGateBlockCount(existing.id);
-          res.status(422).json({ error: qaBrowseResult.reason, gate: qaBrowseResult.gate });
+          res.status(422).json({ error: evidenceResult.reason, gate: evidenceResult.gate });
           return;
+        }
+
+        // QA gate: agents must have QA approval before marking code issues done
+        const qaGateResult = await assertQAGate(req, existing, req.body.status, allComments);
+        if (qaGateResult) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.qa_gate_blocked",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { gate: qaGateResult.gate, reason: qaGateResult.reason, targetStatus: req.body.status },
+          });
+          await incrementGateBlockCount(existing.id);
+          res.status(422).json({ error: qaGateResult.reason, gate: qaGateResult.gate });
+          return;
+        }
+
+        // QA browse evidence gate: QA reviewer must include testing evidence (code issues, done only)
+        if (req.body.status === "done") {
+          const qaBrowseResult = await assertQABrowseEvidence(req, existing, allComments, allAttachments);
+          if (qaBrowseResult) {
+            const actor = getActorInfo(req);
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.qa_evidence_gate_blocked",
+              entityType: "issue",
+              entityId: existing.id,
+              details: { gate: qaBrowseResult.gate, reason: qaBrowseResult.reason, targetStatus: req.body.status },
+            });
+            await incrementGateBlockCount(existing.id);
+            res.status(422).json({ error: qaBrowseResult.reason, gate: qaBrowseResult.gate });
+            return;
+          }
         }
       }
 

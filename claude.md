@@ -375,7 +375,38 @@ High-risk PRs require extra caution and may require human review.
 
 ---
 
-## Quality gates (delivery gate + QA gate + comment-required gate)
+## Verification system (server-side re-execution) — 2026-04-13 rewrite
+
+**DLD-2793 incident:** A fabricated delivery (tiktok demo on viracue.ai) shipped past all three honor-system QA gates (delivery, QA PASS, screenshot evidence) with zero actual deployment. The system has since been rewritten to replace self-attested evidence with server-side re-execution of acceptance specs.
+
+**Core idea:** Every code issue type (`url`, `api`, `migration`, `cli`, `config`, `data`, `lib_frontend`, `lib_backend`) has a dedicated runner that executes a spec file committed to the Paperclip repo. The worker's result — passed / failed / unavailable — is the authoritative signal, not agent-posted comments or screenshots.
+
+**Rollout phases (all shipped 2026-04-13):**
+- Phase 1: url runner (PR #290, #292, #293) — Playwright on browser-test VPS with deploy-SHA verification
+- Phase 2: api + migration runners (PR #294, #295, #297)
+- Phase 3: cli + config + data + vitest runners + state machine + log-only gates (PR #298)
+- Phase 4: escalation ladder + board override + dashboard query + VERIFICATION_GATE_MODE flag (PR #299)
+- Phase 5: LEGACY_QA_GATES flag to disable old gates (this PR)
+- Phase 6: chaos self-test + QA dashboard + incident hatch (pending)
+
+**Feature flags (board operational controls):**
+
+| Env var | Values | Default | Purpose |
+|---|---|---|---|
+| `VERIFICATION_GATE_MODE` | `off` / `log_only` / `enforce` | `log_only` | How the new verification gate behaves. `log_only` emits observability entries but never blocks. `enforce` returns 422 on any failed verification. Flip to `enforce` after log-only has soaked ≥24h. |
+| `LEGACY_QA_GATES` | `on` / `off` | `on` | Whether the Phase 1-era honor-system gates (screenshot evidence, QA PASS comment) still apply. Flip to `off` once `VERIFICATION_GATE_MODE=enforce` has run cleanly for ≥5 days with zero overrides. |
+
+**Rollout sequence for board:**
+1. Currently: both flags at default. New system is additive — no behavior change yet.
+2. Day 1-2: Set `VERIFICATION_GATE_MODE=log_only` (already default). Watch `issue.verification_gate_log_only` entries in activity feed for divergence.
+3. Day 3: Set `VERIFICATION_GATE_MODE=enforce`. New gate now blocks. Old gates still run as belt-and-suspenders. Watch for board override count per week.
+4. Day 8+: If ≤3 overrides/week and no chaos test failures, set `LEGACY_QA_GATES=off`. Old gates stop running; new system is now authoritative alone.
+
+**Rollback:** at any step, revert by setting the env var back. Zero code change required.
+
+## Legacy quality gates (delivery gate + QA gate + comment-required gate)
+
+**Status:** Still enforced by default. Can be disabled via `LEGACY_QA_GATES=off` env var (see rollout sequence above).
 
 Server-side gates enforce code quality workflows for agent-authored issues. All run inline in the PATCH `/issues/:id` handler and return 422 when requirements aren't met.
 
