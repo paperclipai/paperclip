@@ -66,6 +66,7 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const LIVE_HEARTBEAT_RUN_STATUSES = new Set(["queued", "running"]);
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -405,12 +406,14 @@ export function issueRoutes(
       const run = await heartbeat.getRun(runId);
       if (!run || run.agentId !== req.actor.agentId) return null;
       if (companyId && run.companyId !== companyId) return null;
+      if (!LIVE_HEARTBEAT_RUN_STATUSES.has(run.status)) return null;
       return runId;
     }
     if (req.actor.type === "board" && req.actor.source === "local_implicit") {
-      if (!companyId) return runId;
       const run = await heartbeat.getRun(runId);
-      return run?.companyId === companyId ? runId : null;
+      if (!run || !LIVE_HEARTBEAT_RUN_STATUSES.has(run.status)) return null;
+      if (companyId && run.companyId !== companyId) return null;
+      return runId;
     }
     return null;
   }
@@ -1783,7 +1786,7 @@ export function issueRoutes(
     const statusChangedToWakeableAssignedWork =
       !assigneeChanged &&
       !!issue.assigneeAgentId &&
-      req.body.status !== undefined &&
+      updateFields.status !== undefined &&
       existing.status !== issue.status &&
       issue.status !== "backlog" &&
       (existing.status === "backlog" || issue.status === "todo" || issue.status === "in_review");
@@ -1864,7 +1867,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || (isClosed && !reopened);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {

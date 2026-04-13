@@ -1800,7 +1800,13 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!lockedExisting) return null;
-        if (actor?.requireCheckoutOwnership) {
+        const lockedRequiresCheckoutOwnership =
+          actor?.actorAgentId != null &&
+          lockedExisting.status === "in_progress" &&
+          (lockedExisting.checkoutRunId != null ||
+            lockedExisting.executionRunId != null ||
+            (actor.requireCheckoutOwnership === true && lockedExisting.assigneeAgentId === actor.actorAgentId));
+        if (lockedRequiresCheckoutOwnership) {
           await assertLiveActorRunOwnsIssue(
             tx,
             lockedExisting,

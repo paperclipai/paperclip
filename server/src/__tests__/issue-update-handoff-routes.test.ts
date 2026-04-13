@@ -12,6 +12,7 @@ import {
   documentRevisions,
   heartbeatRuns,
   instanceUserRoles,
+  issueComments,
   issueExecutionDecisions,
   issues,
 } from "@paperclipai/db";
@@ -582,6 +583,75 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
   });
 
+  it("wakes the assignee when a same-assignee comment reopen makes closed work actionable", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Staff Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Same assignee reopen wake",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      completedAt: new Date("2026-04-13T14:20:00.000Z"),
+    });
+
+    const res = await request(createRouteApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        comment: "Please take another pass.",
+        reopen: true,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+    }));
+
+    await vi.waitFor(() => {
+      expect(mockHeartbeatWakeup).toHaveBeenCalledTimes(1);
+    });
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      reason: "issue_reopened_via_comment",
+      payload: expect.objectContaining({
+        issueId,
+        mutation: "comment",
+        reopenedFrom: "done",
+        commentId: expect.any(String),
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId,
+        wakeCommentId: expect.any(String),
+        source: "issue.comment.reopen",
+        wakeReason: "issue_reopened_via_comment",
+        reopenedFrom: "done",
+      }),
+    }));
+  });
+
   it("preserves execution ownership when the local-board run header belongs to a different live agent", async () => {
     const builderAgentId = randomUUID();
     const { issueId, staffAgentId, builderRunId } = await seedHandoffFixture({
@@ -605,6 +675,42 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       executionRunId: builderRunId,
       executionAgentNameKey: "builder",
     }));
+  });
+
+  it("keeps local-board terminal run headers out of update provenance", async () => {
+    const { issueId, staffAgentId, qaRunId } = await seedHandoffFixture();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        finishedAt: new Date("2026-04-13T14:17:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, qaRunId));
+
+    const res = await request(createRouteApp())
+      .patch(`/api/issues/${issueId}`)
+      .set("X-Paperclip-Run-Id", qaRunId)
+      .send({
+        status: "in_review",
+        assigneeAgentId: staffAgentId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      id: issueId,
+      status: "in_review",
+      assigneeAgentId: staffAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    }));
+    expect(mockReportRunActivity).not.toHaveBeenCalled();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activityRows.find((row) => row.action === "issue.updated")?.runId).toBeNull();
   });
 
   it("treats authenticated board run headers as audit context only", async () => {
@@ -1114,6 +1220,124 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     }));
   });
 
+  it("rejects an agent PATCH when an unlocked issue becomes checkout-owned before the locked update", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleActorRunId = randomUUID();
+    const freshRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "todo-precheck-patch-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "test key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleActorRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:12:00.000Z"),
+      },
+      {
+        id: freshRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        triggerDetail: "process_loss",
+        status: "queued",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:13:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unlocked precheck patch should not mutate fresh checkout owner",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    let hookInjected = false;
+    const delayedDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "transaction") {
+          return async (callback: Parameters<typeof db.transaction>[0]) => {
+            if (!hookInjected) {
+              hookInjected = true;
+              await target
+                .update(issues)
+                .set({
+                  status: "in_progress",
+                  checkoutRunId: freshRunId,
+                  executionRunId: freshRunId,
+                  executionLockedAt: new Date("2026-04-13T14:13:00.000Z"),
+                  startedAt: new Date("2026-04-13T14:13:00.000Z"),
+                  updatedAt: new Date("2026-04-13T14:13:00.000Z"),
+                })
+                .where(eq(issues.id, issueId));
+            }
+            return target.transaction(callback);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as typeof db;
+
+    const res = await request(createRouteApp({
+      deploymentMode: "authenticated",
+      dbOverride: delayedDb,
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", staleActorRunId)
+      .send({
+        title: "Stale write attempt",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Issue run ownership conflict",
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      title: "Unlocked precheck patch should not mutate fresh checkout owner",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: freshRunId,
+      executionRunId: freshRunId,
+    }));
+  });
+
   it("keeps forged agent API-key run headers out of execution decision provenance", async () => {
     const companyId = randomUUID();
     const reviewerAgentId = randomUUID();
@@ -1239,6 +1463,87 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       .where(eq(issueExecutionDecisions.issueId, issueId));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]?.createdByRunId).toBeNull();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activityRows.find((row) => row.action === "issue.updated")?.runId).toBeNull();
+    expect(activityRows.find((row) => row.action === "issue.comment_added")?.runId).toBeNull();
+  });
+
+  it("keeps terminal same-agent run headers out of non-checkout PATCH provenance", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "terminal-provenance-agent-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Staff Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "staff key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-13T14:15:00.000Z"),
+      finishedAt: new Date("2026-04-13T14:16:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal provenance should be ignored",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const res = await request(createRouteApp({ deploymentMode: "authenticated" }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", terminalRunId)
+      .send({
+        comment: "Reviewed from a stale run.",
+        priority: "medium",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockReportRunActivity).not.toHaveBeenCalled();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.createdByRunId).toBeNull();
 
     const activityRows = await db
       .select()
