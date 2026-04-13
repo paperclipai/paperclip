@@ -15,7 +15,7 @@ const child = spawn(
   {
     cwd: serverRoot,
     env: process.env,
-    stdio: "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
   },
 );
 

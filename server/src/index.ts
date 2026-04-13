@@ -42,6 +42,8 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { writePersistedDevServerRuntime } from "./dev-server-runtime.js";
+import { installStdinErrorHandler } from "./stdin-error-handler.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
@@ -83,6 +85,7 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  const removeStdinErrorHandler = installStdinErrorHandler(stdin, { label: "server" });
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -571,10 +574,8 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to align COO coordinator startup defaults");
   }
   
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
-    config.port = listenPort;
-  }
+  const requestedPort = config.port;
+  const listenPort = await detectPort(requestedPort);
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
   }
@@ -605,6 +606,9 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  server.once("close", () => {
+    removeStdinErrorHandler();
+  });
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -612,8 +616,8 @@ export async function startServer(): Promise<StartedServer> {
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
@@ -816,6 +820,12 @@ export async function startServer(): Promise<StartedServer> {
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
       logger.info(`Server listening on ${config.host}:${listenPort}`);
+      writePersistedDevServerRuntime({
+        requestedPort,
+        listenPort,
+        apiUrl: process.env.PAPERCLIP_API_URL ?? `http://${runtimeApiHost}:${listenPort}`,
+        startedAt: new Date().toISOString(),
+      });
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
         const url = `http://${openHost}:${listenPort}`;
@@ -833,7 +843,7 @@ export async function startServer(): Promise<StartedServer> {
         deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
-        requestedPort: config.port,
+        requestedPort,
         listenPort,
         uiMode,
         db: startupDbInfo,
@@ -871,6 +881,7 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      removeStdinErrorHandler();
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

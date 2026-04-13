@@ -7,12 +7,15 @@ import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { createManagedChildSpawnOptions, signalChildProcessTree } from "../server/src/dev-runner-process.ts";
+import { installStdinErrorHandler } from "../server/src/stdin-error-handler.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+import { readPersistedDevServerRuntime } from "../server/src/dev-server-runtime.ts";
 import { releaseOrphanedSysvSharedMemory } from "../server/src/lib/sysv-ipc.ts";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
@@ -20,6 +23,8 @@ const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
+const runtimePortPollIntervalMs = 100;
+const runtimePortPollTimeoutMs = 15_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 
@@ -84,6 +89,13 @@ const env: NodeJS.ProcessEnv = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
+const requestedServerPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+const devServerRuntimeFilePath = path.join(
+  repoRoot,
+  ".paperclip",
+  `dev-server-runtime-${mode}-${requestedServerPort}.json`,
+);
+env.PAPERCLIP_DEV_SERVER_RUNTIME_FILE = devServerRuntimeFilePath;
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
@@ -105,19 +117,17 @@ if (tailscaleAuth) {
   console.log("[paperclip] dev mode: local_trusted (default)");
 }
 
-const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
 const devService = createDevServiceIdentity({
   mode,
   forwardedArgs,
   tailscaleAuth,
-  port: serverPort,
+  port: requestedServerPort,
 });
 
 const existingRunner = await findAdoptableLocalService({
   serviceKey: devService.serviceKey,
   cwd: repoRoot,
   envFingerprint: devService.envFingerprint,
-  port: serverPort,
 });
 if (existingRunner) {
   console.log(
@@ -140,6 +150,9 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let currentServerPort: number | null = null;
+let currentServerUrl: string | null = null;
+const removeStdinErrorHandler = installStdinErrorHandler(stdin, { label: "dev-runner" });
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -154,6 +167,7 @@ function toError(error: unknown, context = "Dev runner command failed") {
 }
 
 process.on("uncaughtException", async (error) => {
+  removeStdinErrorHandler();
   await removeLocalServiceRegistryRecord(devService.serviceKey);
   const err = toError(error, "Uncaught exception in dev runner");
   process.stderr.write(`${err.stack ?? err.message}\n`);
@@ -161,6 +175,7 @@ process.on("uncaughtException", async (error) => {
 });
 
 process.on("unhandledRejection", async (reason) => {
+  removeStdinErrorHandler();
   await removeLocalServiceRegistryRecord(devService.serviceKey);
   const err = toError(reason, "Unhandled promise rejection in dev runner");
   process.stderr.write(`${err.stack ?? err.message}\n`);
@@ -277,6 +292,8 @@ function clearDevServerStatus() {
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
+  const activePort = currentServerPort ?? requestedServerPort;
+  const activeUrl = currentServerUrl ?? `http://127.0.0.1:${activePort}`;
   await writeLocalServiceRegistryRecord({
     version: 1,
     serviceKey: devService.serviceKey,
@@ -285,8 +302,8 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
     command: "dev-runner.ts",
     cwd: repoRoot,
     envFingerprint: devService.envFingerprint,
-    port: serverPort,
-    url: `http://127.0.0.1:${serverPort}`,
+    port: activePort,
+    url: activeUrl,
     pid: process.pid,
     processGroupId: null,
     provider: "local_process",
@@ -298,10 +315,17 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
       repoRoot,
       mode,
       childPid: child?.pid ?? null,
-      url: `http://127.0.0.1:${serverPort}`,
+      requestedPort: requestedServerPort,
+      url: activeUrl,
       ...extra,
     },
   });
+}
+
+function clearDevServerRuntimeFile() {
+  rmSync(devServerRuntimeFilePath, { force: true });
+  currentServerPort = null;
+  currentServerUrl = null;
 }
 
 async function runPnpm(args: string[], options: {
@@ -493,11 +517,31 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+  const activePort = currentServerPort ?? requestedServerPort;
+  const response = await fetch(`http://127.0.0.1:${activePort}/api/health`);
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
   return await parseJsonResponseWithLimit<{ devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } }>(response);
+}
+
+async function syncCurrentServerRuntime() {
+  const deadline = Date.now() + runtimePortPollTimeoutMs;
+  while (Date.now() < deadline) {
+    const runtime = readPersistedDevServerRuntime({
+      PAPERCLIP_DEV_SERVER_RUNTIME_FILE: devServerRuntimeFilePath,
+    });
+    if (runtime) {
+      currentServerPort = runtime.listenPort;
+      currentServerUrl = runtime.apiUrl ?? `http://127.0.0.1:${runtime.listenPort}`;
+      await updateDevServiceRecord({ requestedPort: runtime.requestedPort });
+      return;
+    }
+    if (!child) break;
+    await new Promise((resolve) => setTimeout(resolve, runtimePortPollIntervalMs));
+  }
+
+  await updateDevServiceRecord();
 }
 
 async function waitForChildExit() {
@@ -510,10 +554,10 @@ async function waitForChildExit() {
 async function stopChildForRestart() {
   if (!child) return { code: 0, signal: null };
   childExitWasExpected = true;
-  child.kill("SIGTERM");
+  signalChildProcessTree(child, "SIGTERM");
   const killTimer = setTimeout(() => {
     if (child) {
-      child.kill("SIGKILL");
+      signalChildProcessTree(child, "SIGKILL");
     }
   }, gracefulShutdownTimeoutMs);
   try {
@@ -525,12 +569,18 @@ async function stopChildForRestart() {
 
 async function startServerChild() {
   await buildPluginSdk();
+  clearDevServerRuntimeFile();
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    {
+      stdio: ["ignore", "inherit", "inherit"],
+      env,
+      shell: process.platform === "win32",
+      ...createManagedChildSpawnOptions(),
+    },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
@@ -545,7 +595,8 @@ async function startServerChild() {
           repoRoot,
           mode,
           childPid: null,
-          url: `http://127.0.0.1:${serverPort}`,
+          requestedPort: requestedServerPort,
+          url: currentServerUrl ?? `http://127.0.0.1:${currentServerPort ?? requestedServerPort}`,
         },
       });
       resolve({ code: code ?? 0, signal });
@@ -562,6 +613,7 @@ async function startServerChild() {
   });
 
   await markChildAsCurrent();
+  await syncCurrentServerRuntime();
 }
 
 async function maybeAutoRestartChild() {
@@ -629,9 +681,11 @@ function clearDevIntervals() {
 async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
+  removeStdinErrorHandler();
   clearDevIntervals();
   clearDevServerStatus();
   await removeLocalServiceRegistryRecord(devService.serviceKey);
+  clearDevServerRuntimeFile();
 
   if (!child) {
     exitForSignal(signal);
@@ -639,7 +693,7 @@ async function shutdown(signal: NodeJS.Signals) {
   }
 
   childExitWasExpected = true;
-  child.kill(signal);
+  signalChildProcessTree(child, signal);
   const exit = await waitForChildExit();
   if (exit.signal) {
     exitForSignal(exit.signal);

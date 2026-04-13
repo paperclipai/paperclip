@@ -148,6 +148,14 @@ export async function removeLocalServiceRegistryRecord(serviceKey: string) {
   await fs.rm(getRuntimeServiceRegistryPath(serviceKey), { force: true });
 }
 
+async function bestEffortRemoveLocalServiceRegistryRecord(serviceKey: string) {
+  try {
+    await removeLocalServiceRegistryRecord(serviceKey);
+  } catch {
+    // Ignore cleanup failures when pruning stale registry entries.
+  }
+}
+
 export async function readLocalServiceRegistryRecord(serviceKey: string) {
   return await safeReadRegistryRecord(getRuntimeServiceRegistryPath(serviceKey));
 }
@@ -163,8 +171,13 @@ export async function listLocalServiceRegistryRecords(filter?: {
         .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
         .map((entry) => safeReadRegistryRecord(path.resolve(getRuntimeServicesDir(), entry.name))),
     );
+    const reconciled = await Promise.all(
+      records
+        .filter((record): record is LocalServiceRegistryRecord => record !== null)
+        .map((record) => reconcileLocalServiceRegistryRecord(record)),
+    );
 
-    return records
+    return reconciled
       .filter((record): record is LocalServiceRegistryRecord => record !== null)
       .filter((record) => {
         if (filter?.profileKind && record.profileKind !== filter.profileKind) return false;
@@ -185,30 +198,7 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
     input.profileKind ? { profileKind: input.profileKind } : undefined,
   );
   const record = records.find((entry) => entry.runtimeServiceId === input.runtimeServiceId) ?? null;
-  if (!record) return null;
-
-  let candidate = record;
-  if (!isPidAlive(candidate.pid)) {
-    const ownerPid = candidate.port ? await readLocalServicePortOwner(candidate.port) : null;
-    if (!ownerPid) {
-      await removeLocalServiceRegistryRecord(candidate.serviceKey);
-      return null;
-    }
-    candidate = {
-      ...candidate,
-      pid: ownerPid,
-      processGroupId: candidate.processGroupId && isPidAlive(candidate.processGroupId) ? candidate.processGroupId : ownerPid,
-      lastSeenAt: new Date().toISOString(),
-    };
-    await writeLocalServiceRegistryRecord(candidate);
-  }
-
-  if (!(await isLikelyMatchingCommand(candidate))) {
-    await removeLocalServiceRegistryRecord(record.serviceKey);
-    return null;
-  }
-
-  return candidate;
+  return record;
 }
 
 export function isPidAlive(pid: number) {
@@ -246,19 +236,13 @@ export async function findAdoptableLocalService(input: {
   const record = await readLocalServiceRegistryRecord(input.serviceKey);
   if (!record) return null;
 
-  if (!isPidAlive(record.pid)) {
-    await removeLocalServiceRegistryRecord(input.serviceKey);
-    return null;
-  }
-  if (!(await isLikelyMatchingCommand(record))) {
-    await removeLocalServiceRegistryRecord(input.serviceKey);
-    return null;
-  }
-  if (input.command && record.command !== input.command) return null;
-  if (input.cwd && path.resolve(record.cwd) !== path.resolve(input.cwd)) return null;
-  if (input.envFingerprint && record.envFingerprint !== input.envFingerprint) return null;
-  if (input.port !== undefined && input.port !== null && record.port !== input.port) return null;
-  return record;
+  const candidate = await reconcileLocalServiceRegistryRecord(record);
+  if (!candidate) return null;
+  if (input.command && candidate.command !== input.command) return null;
+  if (input.cwd && path.resolve(candidate.cwd) !== path.resolve(input.cwd)) return null;
+  if (input.envFingerprint && candidate.envFingerprint !== input.envFingerprint) return null;
+  if (input.port !== undefined && input.port !== null && candidate.port !== input.port) return null;
+  return candidate;
 }
 
 export async function touchLocalServiceRegistryRecord(
@@ -326,4 +310,33 @@ export async function readLocalServicePortOwner(port: number) {
   } catch {
     return null;
   }
+}
+
+async function reconcileLocalServiceRegistryRecord(record: LocalServiceRegistryRecord) {
+  let candidate = record;
+
+  if (!isPidAlive(candidate.pid)) {
+    const ownerPid = candidate.port ? await readLocalServicePortOwner(candidate.port) : null;
+    if (!ownerPid) {
+      await bestEffortRemoveLocalServiceRegistryRecord(candidate.serviceKey);
+      return null;
+    }
+    candidate = {
+      ...candidate,
+      pid: ownerPid,
+      processGroupId:
+        candidate.processGroupId && isPidAlive(candidate.processGroupId)
+          ? candidate.processGroupId
+          : ownerPid,
+      lastSeenAt: new Date().toISOString(),
+    };
+    await writeLocalServiceRegistryRecord(candidate);
+  }
+
+  if (!(await isLikelyMatchingCommand(candidate))) {
+    await bestEffortRemoveLocalServiceRegistryRecord(record.serviceKey);
+    return null;
+  }
+
+  return candidate;
 }
