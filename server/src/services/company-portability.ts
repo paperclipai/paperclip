@@ -2472,6 +2472,7 @@ function buildManifestFromPackageFiles(
       title,
       icon: asString(extension.icon),
       capabilities: asString(extension.capabilities),
+      managerSlugs: [],
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       adapterType: asString(extensionAdapter?.type) ?? "process",
       adapterConfig,

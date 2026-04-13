@@ -855,7 +855,7 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const rows = await agents.list(companyId);
         return applyWindow(
-          rows.filter((agent) => !params.status || agent.status === params.status) as Agent[],
+          rows.filter((agent) => !params.status || agent.status === params.status) as unknown as Agent[],
           params,
         );
       },
@@ -863,21 +863,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
-        return (inCompany(agent, companyId) ? agent : null) as Agent | null;
+        return (inCompany(agent, companyId) ? agent : null) as unknown as Agent | null;
       },
       async pause(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        return (await agents.pause(params.agentId)) as Agent;
+        return (await agents.pause(params.agentId)) as unknown as Agent;
       },
       async resume(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        return (await agents.resume(params.agentId)) as Agent;
+        return (await agents.resume(params.agentId)) as unknown as Agent;
       },
       async invoke(params) {
         const companyId = ensureCompanyId(params.companyId);
