@@ -3,7 +3,7 @@ import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
-const ENTRY_FILE_DEFAULT = "COMPANY.md";
+const ENTRY_FILE_DEFAULT = "CLIENT.md";
 const IGNORED_INSTRUCTIONS_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "Desktop.ini"]);
 const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   ".git",
@@ -16,25 +16,6 @@ const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   "node_modules",
   "venv",
 ]);
-
-type CompanyInstructionsFileSummary = {
-  path: string;
-  size: number;
-  language: string;
-  markdown: boolean;
-  isEntryFile: boolean;
-};
-
-type CompanyInstructionsFileDetail = CompanyInstructionsFileSummary & {
-  content: string;
-};
-
-type CompanyInstructionsBundle = {
-  companyId: string;
-  rootPath: string;
-  entryFile: string;
-  files: CompanyInstructionsFileSummary[];
-};
 
 function inferLanguage(relativePath: string): string {
   const lower = relativePath.toLowerCase();
@@ -75,8 +56,8 @@ function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
   return absolutePath;
 }
 
-export function resolveCompanyInstructionsRoot(companyId: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId, "instructions");
+export function resolveClientInstructionsRoot(companyId: string, clientId: string): string {
+  return path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId, "clients", clientId, "instructions");
 }
 
 function shouldIgnoreEntry(entry: { name: string; isDirectory(): boolean; isFile(): boolean }) {
@@ -117,7 +98,7 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   return output.sort((left, right) => left.localeCompare(right));
 }
 
-async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<CompanyInstructionsFileSummary> {
+async function readFileSummary(rootPath: string, relativePath: string, entryFile: string) {
   const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
   const stat = await fs.stat(absolutePath);
   return {
@@ -133,24 +114,24 @@ async function statIfExists(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
-export function companyInstructionsService() {
+export function clientInstructionsService() {
   const entryFile = ENTRY_FILE_DEFAULT;
 
-  async function getBundle(companyId: string): Promise<CompanyInstructionsBundle> {
-    const rootPath = resolveCompanyInstructionsRoot(companyId);
+  async function getBundle(companyId: string, clientId: string) {
+    const rootPath = resolveClientInstructionsRoot(companyId, clientId);
     const stat = await statIfExists(rootPath);
     if (!stat?.isDirectory()) {
-      return { companyId, rootPath, entryFile, files: [] };
+      return { companyId, clientId, rootPath, entryFile, files: [] };
     }
     const files = await listFilesRecursive(rootPath);
     const summaries = await Promise.all(
       files.map((relativePath) => readFileSummary(rootPath, relativePath, entryFile)),
     );
-    return { companyId, rootPath, entryFile, files: summaries };
+    return { companyId, clientId, rootPath, entryFile, files: summaries };
   }
 
-  async function readFile(companyId: string, relativePath: string): Promise<CompanyInstructionsFileDetail> {
-    const rootPath = resolveCompanyInstructionsRoot(companyId);
+  async function readFile(companyId: string, clientId: string, relativePath: string) {
+    const rootPath = resolveClientInstructionsRoot(companyId, clientId);
     const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
     const [content, stat] = await Promise.all([
       fs.readFile(absolutePath, "utf8").catch(() => null),
@@ -168,37 +149,29 @@ export function companyInstructionsService() {
     };
   }
 
-  async function writeFile(
-    companyId: string,
-    relativePath: string,
-    content: string,
-  ): Promise<{ bundle: CompanyInstructionsBundle; file: CompanyInstructionsFileDetail }> {
-    const rootPath = resolveCompanyInstructionsRoot(companyId);
+  async function writeFile(companyId: string, clientId: string, relativePath: string, content: string) {
+    const rootPath = resolveClientInstructionsRoot(companyId, clientId);
     await fs.mkdir(rootPath, { recursive: true });
     const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const [bundle, file] = await Promise.all([
-      getBundle(companyId),
-      readFile(companyId, relativePath),
+      getBundle(companyId, clientId),
+      readFile(companyId, clientId, relativePath),
     ]);
     return { bundle, file };
   }
 
-  async function deleteFile(
-    companyId: string,
-    relativePath: string,
-  ): Promise<{ bundle: CompanyInstructionsBundle }> {
-    const rootPath = resolveCompanyInstructionsRoot(companyId);
+  async function deleteFile(companyId: string, clientId: string, relativePath: string) {
+    const rootPath = resolveClientInstructionsRoot(companyId, clientId);
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
     await fs.rm(absolutePath, { force: true });
-    const bundle = await getBundle(companyId);
-    return { bundle };
+    return { bundle: await getBundle(companyId, clientId) };
   }
 
-  async function resolveEntryContent(companyId: string): Promise<string | null> {
-    const rootPath = resolveCompanyInstructionsRoot(companyId);
+  async function resolveEntryContent(companyId: string, clientId: string): Promise<string | null> {
+    const rootPath = resolveClientInstructionsRoot(companyId, clientId);
     const entryPath = path.resolve(rootPath, entryFile);
     try {
       const content = await fs.readFile(entryPath, "utf8");
