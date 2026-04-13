@@ -1,8 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
+
+const { execFileSyncMock } = vi.hoisted(() => ({
+  execFileSyncMock: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFileSync: execFileSyncMock,
+}));
+
 import { buildPresetServerConfig } from "../config/server-bind.js";
 
 describe("network bind helpers", () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset();
+  });
+
+  afterEach(() => {
+    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+  });
+
   it("rejects non-loopback bind modes in local_trusted", () => {
     expect(
       validateConfiguredBindMode({
@@ -45,11 +62,13 @@ describe("network bind helpers", () => {
 
     expect(preset.server.host).toBe("100.64.0.8");
 
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
   it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("tailscale unavailable");
+    });
 
     const preset = buildPresetServerConfig("tailnet", {
       port: 3100,

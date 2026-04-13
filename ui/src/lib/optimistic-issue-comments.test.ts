@@ -412,6 +412,7 @@ describe("optimistic issue comments", () => {
           pauseReason: null,
           pausedAt: null,
           executionWorkspacePolicy: null,
+          clients: [],
           codebase: {
             workspaceId: null,
             repoUrl: null,

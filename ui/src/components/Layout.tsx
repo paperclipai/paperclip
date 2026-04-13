@@ -9,6 +9,7 @@ import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
 import { NewIssueDialog } from "./NewIssueDialog";
+import { CreateClientDialog } from "./CreateClientDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
@@ -484,6 +485,7 @@ export function Layout() {
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
       <NewIssueDialog />
+      <CreateClientDialog />
       <NewProjectDialog />
       <NewGoalDialog />
       <NewAgentDialog />

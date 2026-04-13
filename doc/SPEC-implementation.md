@@ -60,6 +60,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 
 - Company lifecycle (create/list/get/update/archive)
 - Goal hierarchy linked to company mission
+- Company-scoped external relationship records ("clients") linked to projects and board context
 - Agent lifecycle with org structure and adapter configuration
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
@@ -75,6 +76,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 
 - Plugin framework and third-party extension SDK
 - Revenue/expense accounting beyond model/token costs
+- CRM-style pipeline management and commercial contract tracking beyond lightweight relationship metadata
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
 - Multi-board governance or role-based human permission granularity

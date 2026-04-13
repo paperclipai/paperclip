@@ -31,6 +31,12 @@ export function Projects() {
     () => (allProjects ?? []).filter((p) => !p.archivedAt),
     [allProjects],
   );
+  const clientSummary = (project: (typeof projects)[number]) => {
+    if (project.clients.length === 0) return null;
+    const names = project.clients.slice(0, 2).map((client) => client.name);
+    const hiddenCount = Math.max(project.clients.length - names.length, 0);
+    return hiddenCount > 0 ? `${names.join(", ")} +${hiddenCount}` : names.join(", ");
+  };
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
@@ -66,7 +72,15 @@ export function Projects() {
             <EntityRow
               key={project.id}
               title={project.name}
-              subtitle={project.description ?? undefined}
+              subtitle={
+                project.description
+                  ? clientSummary(project)
+                    ? `${project.description} • Clients: ${clientSummary(project)}`
+                    : project.description
+                  : clientSummary(project)
+                    ? `Clients: ${clientSummary(project)}`
+                    : undefined
+              }
               to={projectUrl(project)}
               trailing={
                 <div className="flex items-center gap-3">

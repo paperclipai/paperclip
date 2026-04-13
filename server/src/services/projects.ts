@@ -8,6 +8,7 @@ import {
   isUuidLike,
   normalizeProjectUrlKey,
   type ProjectCodebase,
+  type ProjectClientRef,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
   type ProjectWorkspaceRuntimeConfig,
@@ -18,6 +19,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { listActiveProjectClientLinks } from "./project-clients.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -48,6 +50,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   codebase: ProjectCodebase;
+  clients: ProjectClientRef[];
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
 }
@@ -268,6 +271,37 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
   });
 }
 
+async function attachClients(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+  if (rows.length === 0) return [];
+
+  const linksByProjectId = new Map<string, ProjectClientRef[]>();
+  await Promise.all(rows.map(async (row) => {
+    const links = await listActiveProjectClientLinks(db, row.companyId, row.id);
+    linksByProjectId.set(
+      row.id,
+      links.map((link) => ({
+        linkId: link.linkId,
+        clientId: link.clientId,
+        name: link.clientName,
+        email: link.clientEmail,
+        phone: link.clientPhone,
+        contactName: link.clientContactName,
+        notes: link.clientNotes,
+        status: link.clientStatus as ProjectClientRef["status"],
+        metadata: (link.clientMetadata as ProjectClientRef["metadata"]) ?? null,
+        relationshipDescription: link.relationshipDescription,
+        relationshipTags: link.relationshipTags ?? [],
+        linkedAt: link.linkedAt,
+      })),
+    );
+  }));
+
+  return rows.map((row) => ({
+    ...row,
+    clients: linksByProjectId.get(row.id) ?? [],
+  }));
+}
+
 /** Sync the project_goals join table for a single project. */
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
@@ -402,7 +436,8 @@ export function projectService(db: Db) {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
       const withGoals = await attachGoals(db, rows);
-      return attachWorkspaces(db, withGoals);
+      const withWorkspaces = await attachWorkspaces(db, withGoals);
+      return attachClients(db, withWorkspaces);
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
@@ -414,7 +449,8 @@ export function projectService(db: Db) {
         .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
-      const byId = new Map(withWorkspaces.map((project) => [project.id, project]));
+      const withClients = await attachClients(db, withWorkspaces);
+      const byId = new Map(withClients.map((project) => [project.id, project]));
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
@@ -428,7 +464,8 @@ export function projectService(db: Db) {
       const [withGoals] = await attachGoals(db, [row]);
       if (!withGoals) return null;
       const [enriched] = await attachWorkspaces(db, [withGoals]);
-      return enriched ?? null;
+      const [withClients] = enriched ? await attachClients(db, [enriched]) : [];
+      return withClients ?? null;
     },
 
     create: async (
@@ -467,7 +504,8 @@ export function projectService(db: Db) {
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-      return enriched!;
+      const [withClients] = enriched ? await attachClients(db, [enriched]) : [];
+      return withClients!;
     },
 
     update: async (
@@ -520,7 +558,8 @@ export function projectService(db: Db) {
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-      return enriched ?? null;
+      const [withClients] = enriched ? await attachClients(db, [enriched]) : [];
+      return withClients ?? null;
     },
 
     remove: (id: string) =>

@@ -1,7 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { execFileSyncMock } = vi.hoisted(() => ({
+  execFileSyncMock: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFileSync: execFileSyncMock,
+}));
+
 import { onboard } from "../commands/onboard.js";
 import type { PaperclipConfig } from "../config/schema.js";
 
@@ -85,6 +94,10 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    execFileSyncMock.mockReset();
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error("tailscale unavailable");
+    });
   });
 
   afterEach(() => {
@@ -136,6 +149,7 @@ describe("onboard", () => {
     expect(raw.server.exposure).toBe("private");
     expect(raw.server.bind).toBe("tailnet");
     expect(raw.server.host).toBe("100.64.0.8");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
@@ -149,6 +163,7 @@ describe("onboard", () => {
     expect(raw.server.exposure).toBe("private");
     expect(raw.server.bind).toBe("tailnet");
     expect(raw.server.host).toBe("127.0.0.1");
+    expect(execFileSyncMock).toHaveBeenCalled();
   });
 
   it("ignores deployment env overrides during --yes quickstart", async () => {

@@ -21,6 +21,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
+import { ProjectClientList } from "./ProjectClientList";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -600,6 +601,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </PopoverContent>
             </Popover>
           )}
+        </PropertyRow>
+        <PropertyRow label="Clients" alignStart valueClassName="space-y-2">
+          <ProjectClientList
+            clients={project.clients}
+            projectStatus={project.status}
+            emptyMessage="No active clients linked to this project."
+          />
         </PropertyRow>
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}

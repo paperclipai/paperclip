@@ -52,6 +52,7 @@ function makeProject(id: string, name: string): Project {
     archivedAt: null,
     goalIds: [],
     goals: [],
+    clients: [],
     primaryWorkspace: null,
     workspaces: [],
     codebase: {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace, type ProjectClientRef } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -24,6 +24,7 @@ import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceC
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
+import { ProjectClientList } from "../components/ProjectClientList";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
@@ -64,7 +65,7 @@ function OverviewContent({
   onUpdate,
   imageUploadHandler,
 }: {
-  project: { description: string | null; status: string; targetDate: string | null };
+  project: { description: string | null; status: string; targetDate: string | null; clients: ProjectClientRef[] };
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
@@ -94,6 +95,15 @@ function OverviewContent({
             <p>{project.targetDate}</p>
           </div>
         )}
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Linked Clients</h3>
+        <ProjectClientList
+          clients={project.clients}
+          projectStatus={project.status}
+          emptyMessage="No active clients linked to this project."
+        />
       </div>
     </div>
   );

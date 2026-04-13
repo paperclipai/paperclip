@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
+import { clientsApi } from "../api/clients";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
@@ -60,6 +61,13 @@ export function Activity() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: clientResponse } = useQuery({
+    queryKey: [...queryKeys.clients.list(selectedCompanyId!), "activity-index"],
+    queryFn: () => clientsApi.list(selectedCompanyId!, { limit: 500 }),
+    enabled: !!selectedCompanyId,
+  });
+  const clients = clientResponse?.data ?? [];
+
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
     for (const a of agents ?? []) map.set(a.id, a);
@@ -70,10 +78,11 @@ export function Activity() {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
+    for (const c of clients) map.set(`client:${c.id}`, c.name);
     for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
     for (const g of goals ?? []) map.set(`goal:${g.id}`, g.title);
     return map;
-  }, [issues, agents, projects, goals]);
+  }, [issues, agents, clients, projects, goals]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();

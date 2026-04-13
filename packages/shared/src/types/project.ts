@@ -1,4 +1,5 @@
-import type { PauseReason, ProjectStatus } from "../constants.js";
+import type { ClientMetadata } from "./client.js";
+import type { ClientStatus, PauseReason, ProjectStatus } from "../constants.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type {
   ProjectExecutionWorkspacePolicy,
@@ -52,6 +53,21 @@ export interface ProjectCodebase {
   origin: ProjectCodebaseOrigin;
 }
 
+export interface ProjectClientRef {
+  linkId: string;
+  clientId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  contactName: string | null;
+  notes: string | null;
+  status: ClientStatus;
+  metadata: ClientMetadata | null;
+  relationshipDescription: string | null;
+  relationshipTags: string[];
+  linkedAt: Date;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -71,6 +87,7 @@ export interface Project {
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   codebase: ProjectCodebase;
+  clients: ProjectClientRef[];
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   archivedAt: Date | null;

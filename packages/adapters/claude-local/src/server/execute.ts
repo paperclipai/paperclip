@@ -309,6 +309,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const companyInstructionsFilePath = asString(config.companyInstructionsFilePath, "").trim();
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
@@ -337,24 +338,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
-  // When instructionsFilePath is configured, build a stable content-addressed
-  // file that includes both the file content and the path directive, so we only
-  // need --append-system-prompt-file (Claude CLI forbids using both flags together).
+  const clientContextMarkdown = asString(config.clientContextMarkdown, "").trim();
+  // When instructions are configured, build combined contents that include
+  // company-wide instructions, client context, and agent-specific instructions.
+  // This keeps everything in a single --append-system-prompt-file (Claude CLI
+  // forbids using both --system-prompt and --append-system-prompt-file together).
   let combinedInstructionsContents: string | null = null;
-  if (instructionsFilePath) {
+  if (instructionsFilePath || companyInstructionsFilePath || clientContextMarkdown) {
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      const pathDirective =
-        `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
-      combinedInstructionsContents = instructionsContent + pathDirective;
+      const parts: string[] = [];
+
+      // Load company-wide instructions (shared across all agents in this company)
+      if (companyInstructionsFilePath) {
+        try {
+          const companyContent = await fs.readFile(companyInstructionsFilePath, "utf-8");
+          if (companyContent.trim().length > 0) {
+            parts.push(`<!-- Company-wide instructions -->\n${companyContent}`);
+          }
+        } catch {
+          // No company instructions file — skip silently.
+        }
+      }
+
+      // Inject client context for this project (if linked)
+      if (clientContextMarkdown) {
+        parts.push(`<!-- Client context for this project -->\n${clientContextMarkdown}`);
+      }
+
+      // Load agent-specific instructions
+      if (instructionsFilePath) {
+        const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+        parts.push(`<!-- Agent-specific instructions -->\n${instructionsContent}`);
+
+        const pathDirective =
+          `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsFileDir}. ` +
+          `This base directory is authoritative for sibling instruction files such as ` +
+          `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
+        parts.push(pathDirective);
+      }
+
+      if (parts.length > 0) {
+        combinedInstructionsContents = parts.join("\n\n---\n\n");
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read instructions file: ${reason}\n`,
       );
     }
   }

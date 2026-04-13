@@ -6,6 +6,7 @@ import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { clientsApi } from "../api/clients";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -20,6 +21,7 @@ import {
 import {
   CircleDot,
   Bot,
+  Users,
   Hexagon,
   Target,
   LayoutDashboard,
@@ -30,14 +32,14 @@ import {
   Plus,
 } from "lucide-react";
 import { Identity } from "./Identity";
-import { agentUrl, projectUrl } from "../lib/utils";
+import { agentUrl, clientUrl, projectUrl } from "../lib/utils";
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewIssue, openNewAgent, openNewClient } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
@@ -75,6 +77,12 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open,
   });
 
+  const { data: clientResponse } = useQuery({
+    queryKey: [...queryKeys.clients.list(selectedCompanyId!), "palette"],
+    queryFn: () => clientsApi.list(selectedCompanyId!, { limit: 100 }),
+    enabled: !!selectedCompanyId && open,
+  });
+
   const { data: allProjects = [] } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -83,6 +91,19 @@ export function CommandPalette() {
   const projects = useMemo(
     () => allProjects.filter((p) => !p.archivedAt),
     [allProjects],
+  );
+  const clients = useMemo(
+    () =>
+      (clientResponse?.data ?? []).filter((client) => {
+        if (!searchQuery) return true;
+        const q = searchQuery.toLowerCase();
+        return (
+          client.name.toLowerCase().includes(q) ||
+          client.email?.toLowerCase().includes(q) ||
+          client.contactName?.toLowerCase().includes(q)
+        );
+      }),
+    [clientResponse?.data, searchQuery],
   );
 
   function go(path: string) {
@@ -106,7 +127,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder="Search issues, agents, clients, projects..."
         value={query}
         onValueChange={setQuery}
       />
@@ -137,6 +158,15 @@ export function CommandPalette() {
             <Plus className="mr-2 h-4 w-4" />
             Create new project
           </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewClient();
+            }}
+          >
+            <Users className="mr-2 h-4 w-4" />
+            Create new client
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
@@ -165,6 +195,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
+          </CommandItem>
+          <CommandItem onSelect={() => go("/clients")}>
+            <Users className="mr-2 h-4 w-4" />
+            Clients
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
@@ -214,6 +248,23 @@ export function CommandPalette() {
                   <Bot className="mr-2 h-4 w-4" />
                   {agent.name}
                   <span className="text-xs text-muted-foreground ml-2">{agent.role}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
+        {clients.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Clients">
+              {clients.slice(0, 10).map((client) => (
+                <CommandItem key={client.id} onSelect={() => go(clientUrl(client))}>
+                  <Users className="mr-2 h-4 w-4" />
+                  <span className="flex-1 truncate">{client.name}</span>
+                  {client.contactName ? (
+                    <span className="text-xs text-muted-foreground ml-2">{client.contactName}</span>
+                  ) : null}
                 </CommandItem>
               ))}
             </CommandGroup>

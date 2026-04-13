@@ -9,6 +9,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  upsertCompanyInstructionsFileSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ import {
   accessService,
   agentService,
   budgetService,
+  companyInstructionsService,
   companyPortabilityService,
   companyService,
   feedbackService,
@@ -34,6 +36,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const companyInstructions = companyInstructionsService();
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -407,6 +410,75 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  // ── Company Instructions ──────────────────────────────────────────────
+
+  router.get("/:companyId/instructions-bundle", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    res.json(await companyInstructions.getBundle(companyId));
+  });
+
+  router.get("/:companyId/instructions-bundle/file", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relativePath.trim()) {
+      res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    res.json(await companyInstructions.readFile(companyId, relativePath));
+  });
+
+  router.put("/:companyId/instructions-bundle/file", validate(upsertCompanyInstructionsFileSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const result = await companyInstructions.writeFile(companyId, req.body.path, req.body.content);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.instructions_file_updated",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        path: result.file.path,
+        size: result.file.size,
+      },
+    });
+    res.json(result.file);
+  });
+
+  router.delete("/:companyId/instructions-bundle/file", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relativePath.trim()) {
+      res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const result = await companyInstructions.deleteFile(companyId, relativePath);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.instructions_file_deleted",
+      entityType: "company",
+      entityId: companyId,
+      details: { path: relativePath },
+    });
+    res.json(result.bundle);
   });
 
   return router;

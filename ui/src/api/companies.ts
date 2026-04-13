@@ -1,5 +1,7 @@
 import type {
   Company,
+  CompanyInstructionsBundle,
+  CompanyInstructionsFileDetail,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -62,4 +64,18 @@ export const companiesApi = {
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+
+  // Company Instructions
+  instructionsBundle: (companyId: string) =>
+    api.get<CompanyInstructionsBundle>(`/companies/${companyId}/instructions-bundle`),
+  instructionsFile: (companyId: string, relativePath: string) =>
+    api.get<CompanyInstructionsFileDetail>(
+      `/companies/${companyId}/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`,
+    ),
+  saveInstructionsFile: (companyId: string, data: { path: string; content: string }) =>
+    api.put<CompanyInstructionsFileDetail>(`/companies/${companyId}/instructions-bundle/file`, data),
+  deleteInstructionsFile: (companyId: string, relativePath: string) =>
+    api.delete<CompanyInstructionsBundle>(
+      `/companies/${companyId}/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`,
+    ),
 };

@@ -60,7 +60,14 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
+export type {
+  Project,
+  ProjectClientRef,
+  ProjectCodebase,
+  ProjectCodebaseOrigin,
+  ProjectGoalRef,
+  ProjectWorkspace,
+} from "./project.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
@@ -117,6 +124,17 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export type { Client, ClientProject } from "./client.js";
+export type {
+  ClientInstructionsFileSummary,
+  ClientInstructionsFileDetail,
+  ClientInstructionsBundle,
+} from "./client-instructions.js";
+export type {
+  CompanyInstructionsFileSummary,
+  CompanyInstructionsFileDetail,
+  CompanyInstructionsBundle,
+} from "./company-instructions.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {

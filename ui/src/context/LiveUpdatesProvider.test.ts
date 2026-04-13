@@ -64,6 +64,114 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes client surfaces for client activity events", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "client",
+        entityId: "client-1",
+        action: "client.updated",
+        details: null,
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.detail("client-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.projects("client-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.instructionsBundle("client-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["clients", "instructions-file", "client-1"],
+    });
+  });
+
+  it("refreshes client relationship queries for client project activity events", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "client_project",
+        entityId: "client-project-1",
+        action: "client_project.updated",
+        details: { clientId: "client-1", projectId: "project-1" },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.detail("client-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.clients.projects("client-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.projects.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.projects.detail("project-1"),
+    });
+  });
+
+  it("refreshes linked client project queries when a project changes", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "project",
+        entityId: "project-1",
+        action: "project.updated",
+        details: null,
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.projects.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.projects.detail("project-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["clients", "projects"],
+    });
+  });
+
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

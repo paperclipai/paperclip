@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -29,6 +30,9 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { resolveCompanyInstructionsRoot } from "./company-instructions.js";
+import { resolveClientInstructionsRoot } from "./client-instructions.js";
+import { listActiveProjectClientLinks } from "./project-clients.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -96,6 +100,109 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
+
+type RuntimeClientLink = {
+  clientId: string;
+  clientInstructionsFilePath: string;
+  clientName: string;
+  clientEmail: string | null;
+  clientPhone: string | null;
+  clientContactName: string | null;
+  clientNotes: string | null;
+  clientMetadata: unknown;
+  projectDescription: string | null;
+  tags: string[] | null;
+  projectNameOverride: string | null;
+  projectMetadata: unknown;
+};
+
+function readMetadataString(value: unknown, key: string): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return typeof (value as Record<string, unknown>)[key] === "string"
+    ? ((value as Record<string, unknown>)[key] as string)
+    : null;
+}
+
+export function buildClientContextMarkdown(link: RuntimeClientLink) {
+  const clientCnpj = readMetadataString(link.clientMetadata, "cnpj");
+  const legacyProjectType = readMetadataString(link.projectMetadata, "legacyProjectType");
+  const parts: string[] = [`## Client Context: ${link.clientName}`];
+  if (link.clientEmail) parts.push(`- **Email:** ${link.clientEmail}`);
+  if (link.clientPhone) parts.push(`- **Phone:** ${link.clientPhone}`);
+  if (link.clientContactName) parts.push(`- **Contact:** ${link.clientContactName}`);
+  if (clientCnpj) parts.push(`- **CNPJ:** ${clientCnpj}`);
+  if (legacyProjectType) parts.push(`- **Relationship Type:** ${legacyProjectType}`);
+  if (link.projectNameOverride) parts.push(`- **Project Name:** ${link.projectNameOverride}`);
+  if (link.projectDescription) parts.push(`- **Description:** ${link.projectDescription}`);
+  if (link.clientNotes) parts.push(`- **Relationship Notes:** ${link.clientNotes}`);
+  if (link.tags && link.tags.length > 0) parts.push(`- **Tech Stack:** ${link.tags.join(", ")}`);
+  return parts.join("\n");
+}
+
+async function readFileIfNotEmpty(filePath: string | null | undefined) {
+  if (!filePath) return null;
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    return content.trim().length > 0 ? content : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildInstructionsLayer(label: string, content: string, filePath?: string | null) {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  const parts = [`<!-- ${label} -->`, trimmed];
+  if (filePath) {
+    parts.push(
+      `Resolve any relative file references from ${path.dirname(filePath)}. This layer was loaded from ${filePath}.`,
+    );
+  }
+  return parts.join("\n");
+}
+
+export async function composeRuntimeInstructionsFile(input: {
+  runId: string;
+  companyInstructionsFilePath?: string | null;
+  agentInstructionsFilePath?: string | null;
+  clientLinks?: RuntimeClientLink[];
+}) {
+  const layers: string[] = [];
+
+  const companyInstructions = await readFileIfNotEmpty(input.companyInstructionsFilePath);
+  if (companyInstructions) {
+    const layer = buildInstructionsLayer("Company Instructions", companyInstructions, input.companyInstructionsFilePath);
+    if (layer) layers.push(layer);
+  }
+
+  for (const link of input.clientLinks ?? []) {
+    const clientInstructions = await readFileIfNotEmpty(link.clientInstructionsFilePath);
+    if (clientInstructions) {
+      const layer = buildInstructionsLayer(
+        `Client Instructions: ${link.clientName}`,
+        clientInstructions,
+        link.clientInstructionsFilePath,
+      );
+      if (layer) layers.push(layer);
+    }
+    const contextLayer = buildInstructionsLayer(`Client Context: ${link.clientName}`, buildClientContextMarkdown(link));
+    if (contextLayer) layers.push(contextLayer);
+  }
+
+  const agentInstructions = await readFileIfNotEmpty(input.agentInstructionsFilePath);
+  if (agentInstructions) {
+    const layer = buildInstructionsLayer("Agent Instructions", agentInstructions, input.agentInstructionsFilePath);
+    if (layer) layers.push(layer);
+  }
+
+  if (layers.length === 0) return null;
+
+  const runtimeDir = path.join(os.tmpdir(), "paperclip-runtime-instructions");
+  await fs.mkdir(runtimeDir, { recursive: true });
+  const instructionsFilePath = path.join(runtimeDir, `${input.runId}.md`);
+  await fs.writeFile(instructionsFilePath, `${layers.join("\n\n---\n\n")}\n`, "utf8");
+  return instructionsFilePath;
+}
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -2846,6 +2953,8 @@ export function heartbeatService(db: Db) {
       secretsSvc,
     });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const companyInstructionsRoot = resolveCompanyInstructionsRoot(agent.companyId);
+    const companyInstructionsEntryPath = path.resolve(companyInstructionsRoot, "COMPANY.md");
     const runtimeConfig = {
       ...resolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
@@ -2882,6 +2991,45 @@ export function heartbeatService(db: Db) {
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+
+    // Compose company, client, and agent instructions into a single runtime file for all adapters.
+    try {
+      const runtimeClientLinks: RuntimeClientLink[] = resolvedProjectId
+        ? (await listActiveProjectClientLinks(db, agent.companyId, resolvedProjectId)).map((row) => ({
+            clientId: row.clientId,
+            clientInstructionsFilePath: path.join(
+              resolveClientInstructionsRoot(agent.companyId, row.clientId),
+              "CLIENT.md",
+            ),
+            clientName: row.clientName,
+            clientEmail: row.clientEmail,
+            clientPhone: row.clientPhone,
+            clientContactName: row.clientContactName,
+            clientNotes: row.clientNotes,
+            clientMetadata: row.clientMetadata,
+            projectDescription: row.relationshipDescription,
+            tags: row.relationshipTags,
+            projectNameOverride: row.projectNameOverride,
+            projectMetadata: row.projectMetadata,
+          }))
+        : [];
+
+      const composedInstructionsFilePath = await composeRuntimeInstructionsFile({
+        runId: run.id,
+        companyInstructionsFilePath: companyInstructionsEntryPath,
+        agentInstructionsFilePath:
+          typeof resolvedConfig.instructionsFilePath === "string" ? resolvedConfig.instructionsFilePath : null,
+        clientLinks: runtimeClientLinks,
+      });
+      if (composedInstructionsFilePath) {
+        resolvedConfig.instructionsFilePath = composedInstructionsFilePath;
+      }
+      delete (resolvedConfig as Record<string, unknown>).companyInstructionsFilePath;
+      delete (resolvedConfig as Record<string, unknown>).clientContextMarkdown;
+    } catch {
+      // Non-critical: if instruction composition fails, agent still runs with its base instructions config.
+    }
+
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadataBase = {
       ...(existingExecutionWorkspace?.metadata ?? {}),

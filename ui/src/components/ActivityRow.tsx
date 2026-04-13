@@ -1,7 +1,7 @@
 import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn } from "../lib/utils";
+import { clientUrl, cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 
@@ -9,6 +9,7 @@ function entityLink(entityType: string, entityId: string, name?: string | null):
   switch (entityType) {
     case "issue": return `/issues/${name ?? entityId}`;
     case "agent": return `/agents/${entityId}`;
+    case "client": return clientUrl({ id: entityId });
     case "project": return `/projects/${deriveProjectUrlKey(name, entityId)}`;
     case "goal": return `/goals/${entityId}`;
     case "approval": return `/approvals/${entityId}`;

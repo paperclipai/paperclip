@@ -155,6 +155,26 @@ export function issueUrl(issue: { id: string; identifier?: string | null }): str
   return `/issues/${issue.identifier ?? issue.id}`;
 }
 
+export function clientUrl(client: { id: string }): string {
+  return `/clients/${client.id}`;
+}
+
+export function readMetadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export function readMetadataNumber(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): number | null {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 /** Build an agent route URL using the short URL key when available. */
 export function agentRouteRef(agent: { id: string; urlKey?: string | null; name?: string | null }): string {
   return agent.urlKey ?? deriveAgentUrlKey(agent.name, agent.id);
