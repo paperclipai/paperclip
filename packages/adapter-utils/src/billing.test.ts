@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferOpenAiCompatibleBiller } from "./billing.js";
+import { applyOpenRouterOpenAiEnvMapping, inferOpenAiCompatibleBiller } from "./billing.js";
 
 describe("inferOpenAiCompatibleBiller", () => {
   it("returns openrouter when OPENROUTER_API_KEY is present", () => {
@@ -24,5 +24,34 @@ describe("inferOpenAiCompatibleBiller", () => {
         "openai",
       ),
     ).toBe("openai");
+  });
+});
+
+describe("applyOpenRouterOpenAiEnvMapping", () => {
+  it("sets OPENAI_* from OPENROUTER_API_KEY", () => {
+    const env: Record<string, string> = { OPENROUTER_API_KEY: "sk-or-123" };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_API_KEY).toBe("sk-or-123");
+    expect(env.OPENAI_BASE_URL).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("does not override explicit OPENAI_API_KEY", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENAI_API_KEY: "sk-openai",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_API_KEY).toBe("sk-openai");
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+  });
+
+  it("respects existing base URL keys", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENAI_API_BASE: "https://example.com/v1",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_API_KEY).toBe("sk-or-1");
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
   });
 });

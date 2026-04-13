@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  applyOpenRouterOpenAiEnvMapping,
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -382,14 +387,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
-  // If OPENROUTER_API_KEY is set in agent config but OPENAI_API_KEY is not, auto-map so that
-  // OpenAI-compatible CLI tools (e.g. Codex) route to OpenRouter without extra configuration.
-  if (env.OPENROUTER_API_KEY && !env.OPENAI_API_KEY) {
-    env.OPENAI_API_KEY = env.OPENROUTER_API_KEY;
-    if (!env.OPENAI_BASE_URL && !env.OPENAI_API_BASE && !env.OPENAI_API_BASE_URL) {
-      env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
-    }
-  }
+  applyOpenRouterOpenAiEnvMapping(env);
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }

@@ -18,3 +18,16 @@ export function inferOpenAiCompatibleBiller(
 
   return fallback;
 }
+
+/**
+ * When `OPENROUTER_API_KEY` is set but `OPENAI_API_KEY` is not, copy the key and
+ * default `OPENAI_BASE_URL` so OpenAI-compatible CLIs route to OpenRouter.
+ * Mutates `env` in place (same pattern as Codex/Cursor adapters).
+ */
+export function applyOpenRouterOpenAiEnvMapping(env: Record<string, string>): void {
+  if (!env.OPENROUTER_API_KEY || env.OPENAI_API_KEY) return;
+  env.OPENAI_API_KEY = env.OPENROUTER_API_KEY;
+  if (!env.OPENAI_BASE_URL && !env.OPENAI_API_BASE && !env.OPENAI_API_BASE_URL) {
+    env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
+  }
+}

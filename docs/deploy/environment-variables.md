@@ -48,7 +48,7 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local / Cursor adapters) |
-| `OPENROUTER_API_KEY` | OpenRouter API key — auto-maps to `OPENAI_API_KEY` + `OPENAI_BASE_URL` for OpenAI-compatible adapters |
+| `OPENROUTER_API_KEY` | OpenRouter API key — auto-maps to `OPENAI_API_KEY` + `OPENAI_BASE_URL` for OpenAI-compatible adapters (Codex, Cursor, Pi, OpenCode) |
 | `OPENAI_BASE_URL` | Override the OpenAI-compatible base URL (e.g. `https://openrouter.ai/api/v1`) |
 
 ## Using OpenRouter
