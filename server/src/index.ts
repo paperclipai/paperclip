@@ -86,8 +86,8 @@ function formatPendingMigrationSummary(migrations: string[]): string {
 }
 
 async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-  if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
   if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
+  if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
   if (!stdin.isTTY || !stdout.isTTY) return true;
 
   const prompt = createInterface({ input: stdin, output: stdout });

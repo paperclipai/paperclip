@@ -558,8 +558,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     let issue;
     try {
       issue = await svc.update(id, updateFields);
-    } catch (err) {
-      if (err instanceof HttpError && err.status === 422) {
+    } catch (err: any) {
+      // If new columns don't exist yet (migration pending), retry without them
+      if (err?.code === "42703" || String(err?.message).includes("column")) {
+        const { assignerPolicyTier: _apt, dueDate: _dd, ...safeFields } = updateFields;
+        issue = await svc.update(id, safeFields);
+      } else if (err instanceof HttpError && err.status === 422) {
         logger.warn(
           {
             issueId: id,
@@ -579,8 +583,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
           },
           "issue update rejected with 422",
         );
+        throw err;
+      } else {
+        throw err;
       }
-      throw err;
     }
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
