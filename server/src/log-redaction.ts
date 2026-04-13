@@ -1,6 +1,7 @@
 import os from "node:os";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
+export const RUN_LOG_CREDENTIAL_REDACTION_TOKEN = "[REDACTED]";
 
 export interface CurrentUserRedactionOptions {
   enabled?: boolean;
@@ -14,6 +15,22 @@ type CurrentUserCandidates = {
   homeDirs: string[];
   replacement: string;
 };
+
+const RUN_LOG_KEY_PATTERN = String.raw`[A-Za-z_][A-Za-z0-9_-]*`;
+const SENSITIVE_RUN_LOG_ASSIGNMENT_RE = new RegExp(
+  String.raw`\b((?:(?:export|declare\s+-x)\s+)?(${RUN_LOG_KEY_PATTERN})\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s#;]+)`,
+  "gi",
+);
+const SENSITIVE_RUN_LOG_PROPERTY_RE = new RegExp(
+  String.raw`(["'])(${RUN_LOG_KEY_PATTERN})\1\s*:\s*(["'])([^"'\\\r\n]*)\3`,
+  "gi",
+);
+const AUTHORIZATION_BEARER_RE = /\b(Authorization\s*[:=]\s*["']?Bearer\s+)([^\s"'`,;\\]+)/gi;
+const JWT_LIKE_SEGMENT_PATTERN = String.raw`[A-Za-z0-9_-]{8,}`;
+const JWT_LIKE_VALUE_RE = new RegExp(
+  String.raw`(?<![A-Za-z0-9_-])${JWT_LIKE_SEGMENT_PATTERN}\.${JWT_LIKE_SEGMENT_PATTERN}\.${JWT_LIKE_SEGMENT_PATTERN}(?:\.${JWT_LIKE_SEGMENT_PATTERN})?(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])`,
+  "g",
+);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -141,6 +158,55 @@ export function redactCurrentUserValue<T>(value: T, opts?: CurrentUserRedactionO
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     redacted[key] = redactCurrentUserValue(entry, opts);
+  }
+  return redacted as T;
+}
+
+function redactedValueForMatchedText(rawValue: string) {
+  const quote = rawValue[0] === "\"" || rawValue[0] === "'" ? rawValue[0] : "";
+  return quote ? `${quote}${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}${quote}` : RUN_LOG_CREDENTIAL_REDACTION_TOKEN;
+}
+
+function isSensitiveRunLogKey(key: string) {
+  const normalized = key.replace(/-/g, "_").toUpperCase();
+  return /(^|_)(API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTHORIZATION|COOKIE)($|_)/.test(
+    normalized,
+  );
+}
+
+export function redactRunLogCredentialsText(input: string) {
+  if (!input) return input;
+  return input
+    .replace(AUTHORIZATION_BEARER_RE, (_match, prefix: string) => `${prefix}${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}`)
+    .replace(SENSITIVE_RUN_LOG_ASSIGNMENT_RE, (match: string, prefix: string, key: string) => {
+      if (!isSensitiveRunLogKey(key)) return match;
+      const rawValue = match.slice(prefix.length);
+      return `${prefix}${redactedValueForMatchedText(rawValue)}`;
+    })
+    .replace(
+      SENSITIVE_RUN_LOG_PROPERTY_RE,
+      (_match, keyQuote: string, key: string, valueQuote: string) =>
+        isSensitiveRunLogKey(key)
+          ? `${keyQuote}${key}${keyQuote}: ${valueQuote}${RUN_LOG_CREDENTIAL_REDACTION_TOKEN}${valueQuote}`
+          : _match,
+    )
+    .replace(JWT_LIKE_VALUE_RE, RUN_LOG_CREDENTIAL_REDACTION_TOKEN);
+}
+
+export function redactRunLogCredentialsValue<T>(value: T): T {
+  if (typeof value === "string") {
+    return redactRunLogCredentialsText(value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactRunLogCredentialsValue(entry)) as T;
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    redacted[key] = redactRunLogCredentialsValue(entry);
   }
   return redacted as T;
 }
