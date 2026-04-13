@@ -32,3 +32,4 @@ export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServic
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { splitTestingService } from "./split-testing.js";
 export { chatService } from "./chats.js";
+export { calendarService } from "./calendar.js";

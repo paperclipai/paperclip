@@ -1,6 +1,11 @@
 /**
  * PluginJobScheduler — tick-based scheduler for plugin scheduled jobs.
  *
+ * CALENDAR ENFORCEMENT: Any new plugin-scheduled action MUST be registered as
+ * a `plugin_jobs` row (via the manifest `jobs` array). Do NOT use ad-hoc
+ * `setInterval`, `cron`, or other timers outside this scheduler — they will
+ * be invisible in the Calendar page (`GET /api/companies/:id/calendar`).
+ *
  * The scheduler is the central coordinator for all plugin cron jobs. It
  * periodically ticks (default every 30 seconds), queries the `plugin_jobs`
  * table for jobs whose `nextRunAt` has passed, dispatches `runJob` RPC calls

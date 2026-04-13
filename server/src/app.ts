@@ -30,6 +30,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { voiceCommandRoutes } from "./routes/voice-commands.js";
 import { youtubeExtractionRoutes } from "./routes/youtube-extractions.js";
+import { calendarRoutes } from "./routes/calendar.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -159,6 +160,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(voiceCommandRoutes(db));
   api.use(youtubeExtractionRoutes(db));
+  api.use(calendarRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
