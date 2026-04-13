@@ -1993,13 +1993,18 @@ describe("resolveShell (shell fallback)", () => {
   });
 
   it("returns process.env.SHELL when set", () => {
-    process.env.SHELL = "/usr/bin/zsh";
-    expect(resolveShell()).toBe("/usr/bin/zsh");
+    process.env.SHELL = process.execPath;
+    expect(resolveShell()).toBe(process.execPath);
   });
 
   it("trims whitespace from SHELL env var", () => {
-    process.env.SHELL = "  /usr/bin/fish  ";
-    expect(resolveShell()).toBe("/usr/bin/fish");
+    process.env.SHELL = `  ${process.execPath}  `;
+    expect(resolveShell()).toBe(process.execPath);
+  });
+
+  it("preserves non-absolute shell names so PATH lookup still works", () => {
+    process.env.SHELL = "zsh";
+    expect(resolveShell()).toBe("zsh");
   });
 
   it("falls back to /bin/sh on non-Windows when SHELL is unset", () => {
@@ -2030,6 +2035,12 @@ describe("resolveShell (shell fallback)", () => {
     process.env.SHELL = "   ";
     Object.defineProperty(process, "platform", { value: "win32" });
     expect(resolveShell()).toBe("sh");
+  });
+
+  it("falls back when SHELL points to a missing absolute path", () => {
+    process.env.SHELL = "/definitely/missing/zsh";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
   });
 });
 

@@ -80,7 +80,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -88,12 +88,16 @@ interface IssueChatMessageContext {
   feedbackTermsUrl: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  activeRunIds: ReadonlySet<string>;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
+  onStopRun?: (runId: string) => Promise<void>;
+  stoppingRunId?: string | null;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
 }
@@ -102,6 +106,7 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackVoteByTargetId: new Map(),
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  activeRunIds: new Set<string>(),
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -123,6 +128,17 @@ export function resolveAssistantMessageFoldedState(args: {
   if (!isFoldable) return false;
   if (!previousIsFoldable) return true;
   return currentFolded;
+}
+
+export function canStopIssueChatRun(args: {
+  runId: string | null;
+  runStatus: string | null;
+  activeRunIds: ReadonlySet<string>;
+}) {
+  const { runId, runStatus, activeRunIds } = args;
+  if (!runId) return false;
+  if (activeRunIds.has(runId)) return true;
+  return runStatus === "queued" || runStatus === "running";
 }
 
 function findCoTSegmentIndex(
@@ -162,6 +178,7 @@ interface CommentReassignment {
 
 export interface IssueChatComposerHandle {
   focus: () => void;
+  restoreDraft: (submittedBody: string) => void;
 }
 
 interface IssueChatComposerProps {
@@ -199,6 +216,7 @@ interface IssueChatThreadProps {
   ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
+  onStopRun?: (runId: string) => Promise<void>;
   imageUploadHandler?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<void>;
   draftKey?: string;
@@ -217,7 +235,9 @@ interface IssueChatThreadProps {
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
+  onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
+  stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
@@ -873,10 +893,11 @@ function IssueChatToolPart({
 }
 
 function IssueChatUserMessage() {
-  const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
+  const { onInterruptQueued, onCancelQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
@@ -909,6 +930,16 @@ function IssueChatUserMessage() {
                     onClick={() => void onInterruptQueued(queueTargetRunId)}
                   >
                     {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                  </Button>
+                ) : null}
+                {onCancelQueued ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                    onClick={() => onCancelQueued(commentId)}
+                  >
+                    Cancel
                   </Button>
                 ) : null}
               </div>
@@ -976,6 +1007,9 @@ function IssueChatAssistantMessage() {
     feedbackTermsUrl,
     onVote,
     agentMap,
+    activeRunIds,
+    onStopRun,
+    stoppingRunId,
   } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
@@ -988,6 +1022,7 @@ function IssueChatAssistantMessage() {
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
@@ -997,6 +1032,7 @@ function IssueChatAssistantMessage() {
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
+  const canStopRun = canStopIssueChatRun({ runId, runStatus, activeRunIds });
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
@@ -1162,6 +1198,18 @@ function IssueChatAssistantMessage() {
                       <Copy className="mr-2 h-3.5 w-3.5" />
                       Copy message
                     </DropdownMenuItem>
+                    {canStopRun && onStopRun && runId ? (
+                      <DropdownMenuItem
+                        disabled={stoppingRunId === runId}
+                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        onSelect={() => {
+                          void onStopRun(runId);
+                        }}
+                      >
+                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        {stoppingRunId === runId ? "Stopping…" : "Stop run"}
+                      </DropdownMenuItem>
+                    ) : null}
                     {runHref ? (
                       <DropdownMenuItem asChild>
                         <Link to={runHref} target="_blank" rel="noreferrer noopener">
@@ -1567,6 +1615,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  function focusComposer() {
+    if (typeof composerContainerRef.current?.scrollIntoView === "function") {
+      composerContainerRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    requestAnimationFrame(() => {
+      window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
+      editorRef.current?.focus();
+    });
+  }
+
   useEffect(() => {
     if (!draftKey) return;
     setBody(loadDraft(draftKey));
@@ -1591,12 +1649,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }, [effectiveSuggestedAssigneeValue]);
 
   useImperativeHandle(forwardedRef, () => ({
-    focus: () => {
-      composerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      requestAnimationFrame(() => {
-        window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
-        editorRef.current?.focus();
-      });
+    focus: focusComposer,
+    restoreDraft: (submittedBody: string) => {
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      focusComposer();
     },
   }), []);
 
@@ -1781,6 +1842,7 @@ export function IssueChatThread({
   onVote,
   onAdd,
   onCancelRun,
+  onStopRun,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -1799,7 +1861,9 @@ export function IssueChatThread({
   hasOutputForRun: hasOutputForRunOverride,
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
+  onCancelQueued,
   interruptingQueuedRunId = null,
+  stoppingRunId = null,
   onImageClick,
   composerRef,
 }: IssueChatThreadProps) {
@@ -1834,6 +1898,15 @@ export function IssueChatThread({
       activeRun,
     });
   }, [activeRun, displayLiveRuns, linkedRuns]);
+  const activeRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of displayLiveRuns) {
+      if (run.status === "queued" || run.status === "running") {
+        ids.add(run.id);
+      }
+    }
+    return ids;
+  }, [displayLiveRuns]);
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -1912,8 +1985,12 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      activeRunIds,
       onVote,
+      onStopRun,
+      stoppingRunId,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
     }),
@@ -1923,8 +2000,12 @@ export function IssueChatThread({
       feedbackTermsUrl,
       agentMap,
       currentUserId,
+      activeRunIds,
       onVote,
+      onStopRun,
+      stoppingRunId,
       onInterruptQueued,
+      onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
     ],

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -340,7 +340,7 @@ describe("IssueChatThread", () => {
 
   it("exposes a composer focus handle that forwards to the editor", () => {
     const root = createRoot(container);
-    const composerRef = createRef<{ focus: () => void }>();
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
@@ -387,6 +387,51 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("restores a cancelled queued draft into the composer handle", () => {
+    const root = createRoot(container);
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
+    const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const requestAnimationFrameMock = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            composerRef={composerRef}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor).not.toBeNull();
+
+    act(() => {
+      composerRef.current?.restoreDraft("Queued message");
+    });
+
+    expect(editor?.value).toBe("Queued message");
+    expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
+    expect(scrollByMock).toHaveBeenCalledWith({ top: 96, behavior: "smooth" });
+
+    scrollByMock.mockRestore();
+    requestAnimationFrameMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("folds chain-of-thought when the same message transitions from running to complete", () => {
     expect(resolveAssistantMessageFoldedState({
       messageId: "message-1",
@@ -404,6 +449,22 @@ describe("IssueChatThread", () => {
       isFoldable: true,
       previousMessageId: "message-1",
       previousIsFoldable: true,
+    })).toBe(false);
+  });
+
+  it("shows the stop-run action for active run-linked messages even without embedded run status", () => {
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: null,
+      activeRunIds: new Set(["run-1"]),
+    })).toBe(true);
+  });
+
+  it("hides the stop-run action for completed historical runs", () => {
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: "cancelled",
+      activeRunIds: new Set<string>(),
     })).toBe(false);
   });
 });

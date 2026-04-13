@@ -26,7 +26,11 @@ import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
 export function resolveShell(): string {
-  return process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
+  const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
+  const shell = process.env.SHELL?.trim();
+  if (!shell) return fallback;
+  if (path.isAbsolute(shell) && !existsSync(shell)) return fallback;
+  return shell;
 }
 
 export interface ExecutionWorkspaceInput {
@@ -1735,6 +1739,11 @@ async function startLocalRuntimeService(input: {
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const spawnErrorPromise = new Promise<never>((_, reject) => {
+    child.once("error", (err) => {
+      reject(err);
+    });
+  });
   let stderrExcerpt = "";
   let stdoutExcerpt = "";
   child.stdout?.on("data", async (chunk) => {
@@ -1749,7 +1758,10 @@ async function startLocalRuntimeService(input: {
   });
 
   try {
-    await waitForReadiness({ service: input.service, url });
+    await Promise.race([
+      waitForReadiness({ service: input.service, url }),
+      spawnErrorPromise,
+    ]);
   } catch (err) {
     terminateChildProcess(child);
     throw new Error(
