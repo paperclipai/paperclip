@@ -54,6 +54,14 @@ export const createIssueSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  scheduledFor: z
+    .string()
+    .refine(
+      (val) => !Number.isNaN(Date.parse(val)),
+      { message: "scheduledFor must be a valid date string" },
+    )
+    .optional()
+    .nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 

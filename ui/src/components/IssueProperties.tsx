@@ -19,7 +19,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Copy, Check } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Copy, Check, Calendar, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, displayValue, icon: Icon }: { value: string; displayValue?: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -553,6 +553,31 @@ export function IssueProperties({
             onChange={(priority) => onUpdate({ priority })}
             showLabel
           />
+        </PropertyRow>
+
+        <PropertyRow label="Scheduled">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <input
+              type="date"
+              value={issue.scheduledFor ? new Date(issue.scheduledFor).toISOString().slice(0, 10) : ""}
+              onChange={(e) => {
+                const val = e.target.value;
+                onUpdate({ scheduledFor: val || null });
+              }}
+              className="text-sm bg-transparent border-none outline-none cursor-pointer min-w-0 flex-1 text-foreground [color-scheme:dark]"
+            />
+            {issue.scheduledFor && (
+              <button
+                type="button"
+                className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                onClick={() => onUpdate({ scheduledFor: null })}
+                title="Clear scheduled date"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
         </PropertyRow>
 
         <PropertyPicker

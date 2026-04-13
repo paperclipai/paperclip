@@ -201,6 +201,7 @@ function createIssue(): Issue {
     executionRunId: null,
     executionAgentNameKey: null,
     executionLockedAt: null,
+    scheduledFor: null,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,

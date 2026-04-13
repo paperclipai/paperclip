@@ -44,14 +44,27 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+function applyScheduledForAutoBacklog(
+  patch: Partial<typeof issues.$inferInsert>,
+  existingStatus?: string,
+): void {
+  const effectiveStatus = patch.status ?? existingStatus;
+  const scheduledFor = patch.scheduledFor;
+  if (scheduledFor && effectiveStatus === "todo" && scheduledFor > new Date()) {
+    patch.status = "backlog";
+  }
+}
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
   existing?: typeof issues.$inferSelect,
 ): Partial<typeof issues.$inferInsert> {
-  if (!status) return patch;
+  applyScheduledForAutoBacklog(patch, existing?.status);
+  if (!patch.status && !status) return patch;
+  const effectiveStatus = patch.status ?? status;
 
-  if (status === "in_progress" && !patch.startedAt) {
+  if (effectiveStatus === "in_progress" && !patch.startedAt) {
     patch.startedAt = new Date();
   }
   if (status === "done") {
@@ -1225,6 +1238,7 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        applyScheduledForAutoBacklog(values);
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -2120,6 +2134,28 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    tickScheduledIssues: async (now: Date = new Date()): Promise<{ transitioned: number }> => {
+      const due = await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.status, "backlog"),
+            sql`${issues.scheduledFor} <= ${now}`,
+            isNull(issues.hiddenAt),
+          ),
+        );
+      let transitioned = 0;
+      for (const row of due) {
+        await db
+          .update(issues)
+          .set({ status: "todo", updatedAt: now })
+          .where(eq(issues.id, row.id));
+        transitioned++;
+      }
+      return { transitioned };
     },
   };
 }
