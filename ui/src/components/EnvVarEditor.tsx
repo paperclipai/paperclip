@@ -141,8 +141,14 @@ export function EnvVarEditor({
     const row = rows[index];
     if (!row) return;
     const key = row.key.trim();
-    const plain = row.plainValue;
-    if (!key || plain.length === 0) return;
+    if (!key) return;
+
+    let plain = row.plainValue;
+    if (plain.length === 0) {
+      const entered = window.prompt("Secret value");
+      if (!entered) return;
+      plain = entered;
+    }
 
     const suggested = defaultSecretName(key) || "secret";
     const name = window.prompt("Secret name", suggested)?.trim();
@@ -204,8 +210,8 @@ export function EnvVarEditor({
                   type="button"
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
-                  disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  disabled={!row.key.trim()}
+                  title="Create a new secret"
                 >
                   New
                 </button>
