@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
 import { execFile } from "node:child_process";
+import { readdir, stat } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import {
@@ -359,6 +361,132 @@ export function projectRoutes(db: Db) {
       res.json({ ok: true, summary });
     } catch (err: any) {
       res.status(500).json({ error: err.message ?? "git commit failed" });
+    }
+  });
+
+  // ── File browser for workspaces ────────────────────────────────────
+  // GET /workspaces/:id/files?path=<subdir> — list directory contents
+
+  router.get("/workspaces/:workspaceId/files", async (req, res) => {
+    let cwd: string;
+    try { cwd = await resolveWorkspaceCwd(req, req.params.workspaceId as string); }
+    catch (err: any) { res.status(err.status ?? 500).json({ error: err.message }); return; }
+
+    const subPath = (req.query.path as string) || "";
+    const targetDir = subPath ? join(cwd, subPath) : cwd;
+
+    // Prevent path traversal
+    const resolved = join(targetDir);
+    if (!resolved.startsWith(cwd)) {
+      res.status(400).json({ error: "Path traversal not allowed" });
+      return;
+    }
+
+    try {
+      const entries = await readdir(targetDir, { withFileTypes: true });
+      const files: Array<{ name: string; path: string; type: "file" | "directory"; size?: number }> = [];
+
+      for (const entry of entries) {
+        if (entry.name.startsWith(".") && entry.name !== ".env.example") continue; // skip hidden files
+        if (entry.name === "node_modules" || entry.name === ".git") continue;
+
+        const entryPath = subPath ? `${subPath}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          files.push({ name: entry.name, path: entryPath, type: "directory" });
+        } else if (entry.isFile()) {
+          try {
+            const s = await stat(join(targetDir, entry.name));
+            files.push({ name: entry.name, path: entryPath, type: "file", size: s.size });
+          } catch {
+            files.push({ name: entry.name, path: entryPath, type: "file" });
+          }
+        }
+      }
+
+      // Sort: directories first, then alphabetical
+      files.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      res.json({ path: subPath || ".", files });
+    } catch (err: any) {
+      if (err.code === "ENOENT") {
+        res.status(404).json({ error: "Directory not found" });
+      } else {
+        res.status(500).json({ error: err.message ?? "Failed to list files" });
+      }
+    }
+  });
+
+  // ── PR status for workspaces ──────────────────────────────────────
+  // GET /workspaces/:id/pr-status — get open PR + CI checks from GitHub
+
+  router.get("/workspaces/:workspaceId/pr-status", async (req, res) => {
+    let cwd: string;
+    try { cwd = await resolveWorkspaceCwd(req, req.params.workspaceId as string); }
+    catch (err: any) { res.status(err.status ?? 500).json({ error: err.message }); return; }
+
+    try {
+      // Get current branch
+      const { stdout: branchOut } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+      const branch = branchOut.trim();
+
+      // Get remote URL to determine owner/repo
+      let remoteUrl = "";
+      try {
+        const { stdout: remoteOut } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd, timeout: 5000 });
+        remoteUrl = remoteOut.trim();
+      } catch {
+        res.json({ branch, pr: null, checks: [], error: "No remote configured" });
+        return;
+      }
+
+      // Parse owner/repo from remote URL
+      const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+      if (!match) {
+        res.json({ branch, pr: null, checks: [], error: "Not a GitHub remote" });
+        return;
+      }
+      const [, owner, repo] = match;
+
+      // Use gh CLI to get PR info for current branch
+      try {
+        const { stdout: prJson } = await execFileAsync("gh", [
+          "pr", "view", "--json",
+          "number,title,state,url,headRefName,baseRefName,additions,deletions,reviewDecision,statusCheckRollup,body",
+        ], { cwd, timeout: 15000 });
+
+        const pr = JSON.parse(prJson);
+        const checks = (pr.statusCheckRollup ?? []).map((check: any) => ({
+          name: check.name ?? check.context ?? "Unknown",
+          status: check.status ?? check.state ?? "unknown",
+          conclusion: check.conclusion ?? null,
+          url: check.detailsUrl ?? check.targetUrl ?? null,
+        }));
+
+        res.json({
+          branch,
+          pr: {
+            number: pr.number,
+            title: pr.title,
+            state: pr.state,
+            url: pr.url,
+            head: pr.headRefName,
+            base: pr.baseRefName,
+            additions: pr.additions,
+            deletions: pr.deletions,
+            reviewDecision: pr.reviewDecision,
+            body: (pr.body ?? "").slice(0, 2000),
+          },
+          checks,
+        });
+      } catch {
+        // No PR for this branch
+        res.json({ branch, pr: null, checks: [] });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message ?? "Failed to get PR status" });
     }
   });
 

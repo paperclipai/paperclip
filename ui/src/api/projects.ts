@@ -54,6 +54,55 @@ export const projectsApi = {
     api.post<{ ok: boolean }>(`/workspaces/${encodeURIComponent(workspaceId)}/git-unstage`, { paths }),
   commitChanges: (workspaceId: string, message: string) =>
     api.post<{ ok: boolean; summary: string }>(`/workspaces/${encodeURIComponent(workspaceId)}/git-commit`, { message }),
+
+  // ── File browser ──────────────────────────────────────────────────
+  listFiles: (workspaceId: string, path?: string) =>
+    api.get<FileListResponse>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/files${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
+
+  // ── PR status ─────────────────────────────────────────────────────
+  getPrStatus: (workspaceId: string) =>
+    api.get<PrStatusResponse>(`/workspaces/${encodeURIComponent(workspaceId)}/pr-status`),
 };
 
 interface GitStatusFile { path: string; status: string }
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+}
+
+export interface FileListResponse {
+  path: string;
+  files: FileEntry[];
+}
+
+export interface PrInfo {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  head: string;
+  base: string;
+  additions: number;
+  deletions: number;
+  reviewDecision: string | null;
+  body: string;
+}
+
+export interface CiCheck {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string | null;
+}
+
+export interface PrStatusResponse {
+  branch: string;
+  pr: PrInfo | null;
+  checks: CiCheck[];
+  error?: string;
+}

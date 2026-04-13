@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } 
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
+import { AgentBar } from "./AgentBar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
@@ -458,6 +459,7 @@ export function Layout() {
             )}
           >
             <BreadcrumbBar />
+            <AgentBar />
           </div>
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main
