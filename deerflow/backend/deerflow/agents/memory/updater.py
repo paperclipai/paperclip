@@ -142,6 +142,16 @@ def _sync_facts_to_paperclip(
             print(f"Memory sync to Paperclip failed for fact: {e}")
 
 
+def _fact_content_key(content: str) -> str:
+    """Normalize fact content for case-insensitive deduplication.
+
+    Uses casefold(), strips whitespace, and collapses multiple spaces.
+    """
+    key = content.casefold().strip()
+    key = re.sub(r"\s+", " ", key)
+    return key
+
+
 class MemoryUpdater:
     """Updates memory using LLM based on conversation context."""
 
@@ -159,7 +169,7 @@ class MemoryUpdater:
         model_name = self._model_name or config.model_name
         return create_chat_model(name=model_name, thinking_enabled=False)
 
-    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_hint: bool = False) -> bool:
+    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_hint: bool = False, reinforcement_detected: bool = False) -> bool:
         """Update memory based on conversation messages.
 
         Args:
@@ -168,6 +178,7 @@ class MemoryUpdater:
             agent_name: If provided, updates per-agent memory. If None, updates global memory.
             paperclip_ctx: Optional Paperclip API context for syncing facts to shared memory.
             correction_hint: If True, append a correction hint to the LLM prompt.
+            reinforcement_detected: If True, duplicate facts get a confidence boost.
 
         Returns:
             True if update was successful, False otherwise.
@@ -221,7 +232,7 @@ class MemoryUpdater:
             update_data = _extract_json(response_text)
 
             # Apply updates
-            updated_memory = self._apply_updates(current_memory, update_data, thread_id)
+            updated_memory = self._apply_updates(current_memory, update_data, thread_id, reinforcement_detected=reinforcement_detected)
 
             # Strip file-upload mentions from all summaries before saving.
             # Uploaded files are session-scoped and won't exist in future sessions,
@@ -253,6 +264,7 @@ class MemoryUpdater:
         current_memory: dict[str, Any],
         update_data: dict[str, Any],
         thread_id: str | None = None,
+        reinforcement_detected: bool = False,
     ) -> dict[str, Any]:
         """Apply LLM-generated updates to memory.
 
@@ -260,6 +272,7 @@ class MemoryUpdater:
             current_memory: Current memory data.
             update_data: Updates from LLM.
             thread_id: Optional thread ID for tracking.
+            reinforcement_detected: If True, duplicate facts get a confidence boost.
 
         Returns:
             Updated memory data.
@@ -292,20 +305,44 @@ class MemoryUpdater:
         if facts_to_remove:
             current_memory["facts"] = [f for f in current_memory.get("facts", []) if f.get("id") not in facts_to_remove]
 
-        # Add new facts
+        # Build content key index of existing facts for dedup
+        existing_keys: dict[str, int] = {}
+        for i, fact in enumerate(current_memory.get("facts", [])):
+            key = _fact_content_key(fact.get("content", ""))
+            existing_keys[key] = i
+
+        # Add new facts with case-insensitive dedup
         new_facts = update_data.get("newFacts", [])
         for fact in new_facts:
             confidence = fact.get("confidence", 0.5)
-            if confidence >= config.fact_confidence_threshold:
-                fact_entry = {
-                    "id": f"fact_{uuid.uuid4().hex[:8]}",
-                    "content": fact.get("content", ""),
-                    "category": fact.get("category", "context"),
-                    "confidence": confidence,
-                    "createdAt": now,
-                    "source": thread_id or "unknown",
-                }
-                current_memory["facts"].append(fact_entry)
+            if confidence < config.fact_confidence_threshold:
+                continue
+
+            content = fact.get("content", "")
+            key = _fact_content_key(content)
+
+            if key in existing_keys:
+                # Duplicate found
+                idx = existing_keys[key]
+                existing_fact = current_memory["facts"][idx]
+                if reinforcement_detected:
+                    # Reinforcement: boost confidence by 0.1, cap at 1.0
+                    existing_fact["confidence"] = min(existing_fact.get("confidence", 0) + 0.1, 1.0)
+                elif confidence > existing_fact.get("confidence", 0):
+                    # Higher confidence: update
+                    existing_fact["confidence"] = confidence
+                continue  # Don't add duplicate
+
+            fact_entry = {
+                "id": f"fact_{uuid.uuid4().hex[:8]}",
+                "content": content,
+                "category": fact.get("category", "context"),
+                "confidence": confidence,
+                "createdAt": now,
+                "source": thread_id or "unknown",
+            }
+            current_memory["facts"].append(fact_entry)
+            existing_keys[key] = len(current_memory["facts"]) - 1
 
         # Enforce max facts limit
         if len(current_memory["facts"]) > config.max_facts:

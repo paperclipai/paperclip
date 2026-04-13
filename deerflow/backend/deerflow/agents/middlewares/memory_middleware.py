@@ -131,6 +131,41 @@ def detect_correction(messages: list[Any]) -> bool:
     return False
 
 
+_REINFORCEMENT_PATTERNS = [
+    re.compile(r"\bas\s+I\s+mentioned\b", re.IGNORECASE),
+    re.compile(r"\blike\s+I\s+said\b", re.IGNORECASE),
+    re.compile(r"\bremember\s+that\b", re.IGNORECASE),
+    re.compile(r"\bI\s+always\b", re.IGNORECASE),
+    re.compile(r"\bas\s+I\s+told\s+you\b", re.IGNORECASE),
+    re.compile(r"\bI'?ve\s+(?:always|already)\s+said\b", re.IGNORECASE),
+    re.compile(r"\bI\s+keep\s+(?:saying|telling)\b", re.IGNORECASE),
+    re.compile(r"\bagain[,.]?\s", re.IGNORECASE),
+    re.compile(r"\bonce\s+more\b", re.IGNORECASE),
+    re.compile(r"\bI\s+(?:still|continue\s+to)\b", re.IGNORECASE),
+    re.compile(r"\bmy\s+preference\s+(?:is|remains)\b", re.IGNORECASE),
+    re.compile(r"\u6211\u8bf4\u8fc7", re.IGNORECASE),  # 我说过 (Chinese: "I've said")
+    re.compile(r"\u6211\u4e00\u76f4", re.IGNORECASE),  # 我一直 (Chinese: "I always")
+]
+
+
+def detect_reinforcement(messages: list[Any]) -> bool:
+    """Detect if recent human messages contain reinforcement patterns.
+
+    Only checks the last _DETECTION_WINDOW human messages.
+    """
+    human_texts = [
+        _extract_message_text(m)
+        for m in messages
+        if getattr(m, "type", None) == "human"
+    ]
+    recent = human_texts[-_DETECTION_WINDOW:]
+    for text in recent:
+        for pattern in _REINFORCEMENT_PATTERNS:
+            if pattern.search(text):
+                return True
+    return False
+
+
 class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
     """Middleware that queues conversation for memory update after agent execution.
 
@@ -202,10 +237,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
                 "auth_token": auth_token,
             }
 
-        # Detect correction in recent messages
+        # Detect correction and reinforcement in recent messages
         correction_detected = detect_correction(filtered_messages)
+        reinforcement_detected = detect_reinforcement(filtered_messages)
+        # Mutual exclusion: correction takes priority
+        if correction_detected:
+            reinforcement_detected = False
 
-        # Queue with correction flag
+        # Queue with correction and reinforcement flags
         queue = get_memory_queue()
         queue.add(
             thread_id=thread_id,
@@ -213,6 +252,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
             agent_name=self._agent_name,
             paperclip_ctx=paperclip_ctx,
             correction_detected=correction_detected,
+            reinforcement_detected=reinforcement_detected,
         )
 
         return None

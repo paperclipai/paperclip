@@ -19,6 +19,7 @@ class ConversationContext:
     agent_name: str | None = None
     paperclip_ctx: dict[str, str] | None = None
     correction_detected: bool = False
+    reinforcement_detected: bool = False
 
 
 class MemoryUpdateQueue:
@@ -36,7 +37,7 @@ class MemoryUpdateQueue:
         self._timer: threading.Timer | None = None
         self._processing = False
 
-    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_detected: bool = False) -> None:
+    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, paperclip_ctx: dict[str, str] | None = None, correction_detected: bool = False, reinforcement_detected: bool = False) -> None:
         """Add a conversation to the update queue.
 
         Args:
@@ -45,6 +46,7 @@ class MemoryUpdateQueue:
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
             paperclip_ctx: Optional Paperclip API context for syncing facts to shared memory.
             correction_detected: Whether a correction was detected in recent messages.
+            reinforcement_detected: Whether a reinforcement was detected in recent messages.
         """
         config = get_memory_config()
         if not config.enabled:
@@ -56,15 +58,18 @@ class MemoryUpdateQueue:
             agent_name=agent_name,
             paperclip_ctx=paperclip_ctx,
             correction_detected=correction_detected,
+            reinforcement_detected=reinforcement_detected,
         )
 
         with self._lock:
-            # OR-merge correction_detected if replacing an existing entry
+            # OR-merge correction_detected and reinforcement_detected if replacing an existing entry
             for existing in self._queue:
                 if existing.thread_id == thread_id:
                     correction_detected = correction_detected or existing.correction_detected
+                    reinforcement_detected = reinforcement_detected or existing.reinforcement_detected
                     break
             context.correction_detected = correction_detected
+            context.reinforcement_detected = reinforcement_detected
             self._queue = [c for c in self._queue if c.thread_id != thread_id]
             self._queue.append(context)
 
@@ -124,6 +129,7 @@ class MemoryUpdateQueue:
                         agent_name=context.agent_name,
                         paperclip_ctx=context.paperclip_ctx,
                         correction_hint=context.correction_detected,
+                        reinforcement_detected=context.reinforcement_detected,
                     )
                     if success:
                         print(f"Memory updated successfully for thread {context.thread_id}")
