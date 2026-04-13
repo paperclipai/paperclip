@@ -72,6 +72,8 @@ export interface PaperclipSkillEntry {
   source: string;
   required?: boolean;
   requiredReason?: string | null;
+  /** Agent role keys that should receive this skill by default. `["all"]` means every agent. Empty/absent means no automatic scoping (must be explicitly desired). */
+  roles?: string[] | null;
 }
 
 export interface InstalledSkillTarget {
@@ -752,6 +754,40 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+/**
+ * Parse the `roles:` field from a SKILL.md frontmatter block.
+ * Accepts both inline (`roles: [ceo, manager]`) and block-list formats.
+ * Returns null when the field is absent, empty array when present but empty.
+ */
+function parseSkillFrontmatterRoles(content: string): string[] | null {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  const frontmatter = fmMatch[1]!;
+
+  // Inline array: roles: [ceo, manager]
+  const inlineMatch = frontmatter.match(/^roles:\s*\[([^\]]*)\]/m);
+  if (inlineMatch) {
+    return inlineMatch[1]!
+      .split(",")
+      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean);
+  }
+
+  // Block list:
+  // roles:
+  //   - ceo
+  //   - manager
+  const blockMatch = frontmatter.match(/^roles:\s*\n((?:[ \t]+-[^\n]*\n?)*)/m);
+  if (blockMatch) {
+    return blockMatch[1]!
+      .split("\n")
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
+      .filter(Boolean);
+  }
+
+  return null;
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -760,16 +796,26 @@ export async function listPaperclipSkillEntries(
   if (!root) return [];
 
   try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+    const dirs = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+    const results: PaperclipSkillEntry[] = [];
+    for (const dir of dirs) {
+      const skillMdPath = path.join(root, dir.name, "SKILL.md");
+      const skillMdContent = await fs.readFile(skillMdPath, "utf8").catch(() => null);
+      const roles = skillMdContent !== null ? parseSkillFrontmatterRoles(skillMdContent) : null;
+      // Only the core `paperclip` skill is unconditionally required — it provides the
+      // heartbeat procedure every Paperclip agent depends on.  All other skills are
+      // opt-in via role scoping or explicit `desiredSkills` configuration.
+      const isCoreSkill = dir.name === "paperclip";
+      results.push({
+        key: `paperclipai/paperclip/${dir.name}`,
+        runtimeName: dir.name,
+        source: path.join(root, dir.name),
+        required: isCoreSkill,
+        requiredReason: isCoreSkill ? "Core Paperclip skill required by all agents." : null,
+        roles,
+      });
+    }
+    return results;
   } catch {
     return [];
   }
@@ -984,16 +1030,40 @@ function canonicalizeDesiredPaperclipSkillReference(
   return normalizedReference;
 }
 
+/**
+ * Determine whether a skill's `roles` declaration includes the given agent URL key.
+ * - `roles: ["all"]` → matches every agent
+ * - `roles: ["ceo", "manager"]` → matches only those roles
+ * - `roles: []` or `roles: null` (absent from SKILL.md) → matches no agent by default
+ *   (the skill must be explicitly listed in `desiredSkills` to be loaded)
+ */
+function skillMatchesAgentRole(
+  roles: string[] | null | undefined,
+  agentUrlKey: string | null | undefined,
+): boolean {
+  if (!roles || roles.length === 0) return false;
+  const normalizedRoles = roles.map((r) => r.trim().toLowerCase());
+  if (normalizedRoles.includes("all")) return true;
+  if (!agentUrlKey) return false;
+  return normalizedRoles.includes(agentUrlKey.trim().toLowerCase());
+}
+
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean; roles?: string[] | null }>,
+  agentUrlKey?: string | null,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
   const requiredSkills = availableEntries
     .filter((entry) => entry.required)
     .map((entry) => entry.key);
   if (!preference.explicit) {
-    return Array.from(new Set(requiredSkills));
+    // When no explicit skill config is set, auto-resolve by role scoping:
+    // include required skills + all skills whose declared `roles` match this agent.
+    const roleMatchedSkills = availableEntries
+      .filter((entry) => !entry.required && skillMatchesAgentRole(entry.roles, agentUrlKey))
+      .map((entry) => entry.key);
+    return Array.from(new Set([...requiredSkills, ...roleMatchedSkills]));
   }
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))

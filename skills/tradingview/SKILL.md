@@ -4,6 +4,7 @@ description: >
   Fetch market data through the verified stockanalysis.com workflow when asked
   for TradingView-style price, volume, range, analyst, earnings, and news
   checks. TradingView itself is egress-blocked in this environment.
+roles: [analyst, trader]
 ---
 
 # Market Data Browser Skill

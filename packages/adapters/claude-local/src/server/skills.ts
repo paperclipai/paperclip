@@ -28,10 +28,10 @@ function resolveClaudeSkillsHome(config: Record<string, unknown>) {
   return path.join(home, ".claude", "skills");
 }
 
-async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
+async function buildClaudeSkillSnapshot(config: Record<string, unknown>, agentUrlKey?: string | null): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
-  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries, agentUrlKey);
   const desiredSet = new Set(desiredSkills);
   const skillsHome = resolveClaudeSkillsHome(config);
   const installed = await readInstalledSkillTargets(skillsHome);
@@ -103,19 +103,20 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
 }
 
 export async function listClaudeSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
-  return buildClaudeSkillSnapshot(ctx.config);
+  return buildClaudeSkillSnapshot(ctx.config, ctx.agentUrlKey);
 }
 
 export async function syncClaudeSkills(
   ctx: AdapterSkillContext,
   _desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
-  return buildClaudeSkillSnapshot(ctx.config);
+  return buildClaudeSkillSnapshot(ctx.config, ctx.agentUrlKey);
 }
 
 export function resolveClaudeDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; required?: boolean }>,
+  availableEntries: Array<{ key: string; required?: boolean; roles?: string[] | null }>,
+  agentUrlKey?: string | null,
 ) {
-  return resolvePaperclipDesiredSkillNames(config, availableEntries);
+  return resolvePaperclipDesiredSkillNames(config, availableEntries, agentUrlKey);
 }

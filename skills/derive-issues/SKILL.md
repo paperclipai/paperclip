@@ -6,6 +6,7 @@ description: >
   CI failures, refactoring opportunities, missing docs, or post-implementation review.
   Creates issues directly in Paperclip under a specified parent and goal.
 argument-hint: "[--parent ISSUE-ID] [--dry-run] [focus: tests|docs|ci|refactor|all]"
+roles: [cto, developer]
 ---
 
 # Derive Issues Skill

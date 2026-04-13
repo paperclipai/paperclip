@@ -292,6 +292,8 @@ export interface AdapterSkillContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /** Normalized agent URL key (e.g. "cto", "ceo") used for role-based skill scoping. */
+  agentUrlKey?: string | null;
 }
 
 export interface AdapterEnvironmentTestContext {
