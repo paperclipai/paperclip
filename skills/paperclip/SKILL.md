@@ -137,9 +137,30 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
-**Step 7 — Do the work.** Use your tools and capabilities.
+**Step 7 — Plan before coding (required for priority >= medium).** If the task priority is `medium`, `high`, or `critical` AND the work involves writing or modifying code:
 
-**Step 8 — Update status and communicate.** Always include the run ID header.
+1. Check whether a `plan` document already exists:
+   ```
+   GET /api/issues/{issueId}/documents/plan
+   ```
+2. If no plan exists, create one:
+   ```
+   PUT /api/issues/{issueId}/documents/plan
+   { "title": "Plan", "format": "markdown", "body": "# Plan\n\n[your plan here]", "baseRevisionId": null }
+   ```
+3. Post a comment pointing to the plan: `/<prefix>/issues/<identifier>#document-plan`
+4. Set status to `blocked` (blocked on plan review) and **exit the heartbeat — do not write code yet.**
+5. On the next heartbeat, check comments for a user/manager approval of the plan. Once approved, proceed to implementation.
+
+**Skip this step if:**
+
+- Priority is `low` (no gate required)
+- A `plan` document already exists AND comments show it has been acknowledged or approved
+- The task involves no code changes (e.g., purely administrative work, comment-only updates)
+
+**Step 8 — Do the work.** Use your tools and capabilities.
+
+**Step 9 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
@@ -156,7 +177,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 10 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -170,6 +191,65 @@ Workspace rules:
 - Provide at least one of `cwd` (local folder) or `repoUrl` (remote repo).
 - For repo-only setup, omit `cwd` and provide `repoUrl`.
 - Include both `cwd` + `repoUrl` when local and remote references should both be tracked.
+
+## Verifier Workflow (Manager / QA Agent)
+
+`in_review` is the quality gate. When an IC marks a task `in_review`, the assigning manager (or a designated QA agent) must verify the work before it can become `done`.
+
+### IC responsibilities
+
+When you finish implementation:
+
+- Set status to `in_review` (NOT `done`).
+- Leave a comment summarizing what was done and how to verify it.
+- @-mention your assigning manager or a designated QA agent if appropriate.
+
+### Verifier responsibilities
+
+1. **Read the task.** Check the issue description, plan document, done criteria, and latest comments.
+2. **Run verification.** Execute tests, linters, or manual checks appropriate to the task type.
+3. **Pass → mark done.**
+
+```
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "done", "comment": "Verified: tests pass, linter clean." }
+```
+
+4. **Fail → Fix Forward.** Do NOT reopen or reassign the original task. Create a child fix task instead.
+
+```
+POST /api/companies/{companyId}/issues
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "title": "Fix: <describe the failure>",
+  "description": "Verification of [PARENT-ID](/PREFIX/issues/PARENT-ID) failed.\n\n**Failures:**\n- <list each failure>\n\n**Done criteria:** <what passing looks like>",
+  "status": "todo",
+  "priority": "high",
+  "assigneeAgentId": "<original-implementer-agent-id>",
+  "parentId": "<original-issue-id>",
+  "goalId": "<same-goal-id>"
+}
+```
+
+Then comment on the original task:
+
+```
+POST /api/issues/{issueId}/comments
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "body": "Verification failed. Fix-forward subtask created: [CHILD-ID](/PREFIX/issues/CHILD-ID). Keeping in `in_review` until the fix is done." }
+```
+
+5. **After the fix subtask is done**, re-verify and mark the original `done` if it now passes.
+
+### Key rules
+
+- **Never mark `done` without verifying.** Tasks entering `in_review` require explicit verification.
+- **Fix Forward only.** Preserve the original task in `in_review`. Create a child fix task; do not reassign the original.
+- **One fix subtask at a time.** If the fix itself fails, create another child of the _original_ task (not of the fix subtask).
+- **Verifier is the assigning manager by default** unless a QA agent is explicitly designated.
+
+For a complete worked example, see `skills/paperclip/references/verifier-workflow.md`.
 
 ## OpenClaw Invite Workflow (CEO)
 
