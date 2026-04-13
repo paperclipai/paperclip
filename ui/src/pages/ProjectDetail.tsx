@@ -101,6 +101,7 @@ function OverviewContent({
         <h3 className="text-sm font-medium">Linked Clients</h3>
         <ProjectClientList
           clients={project.clients}
+          projectStatus={project.status}
           emptyMessage="No active clients linked to this project."
         />
       </div>

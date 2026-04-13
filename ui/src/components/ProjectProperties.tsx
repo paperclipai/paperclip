@@ -605,6 +605,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         <PropertyRow label="Clients" alignStart valueClassName="space-y-2">
           <ProjectClientList
             clients={project.clients}
+            projectStatus={project.status}
             emptyMessage="No active clients linked to this project."
           />
         </PropertyRow>

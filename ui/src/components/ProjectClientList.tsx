@@ -1,9 +1,11 @@
 import type { ProjectClientRef } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { clientUrl, cn, readMetadataString } from "../lib/utils";
+import { StatusBadge } from "./StatusBadge";
 
 interface ProjectClientListProps {
   clients: ProjectClientRef[];
+  projectStatus?: string;
   emptyMessage?: string;
   compact?: boolean;
   maxVisible?: number;
@@ -11,6 +13,7 @@ interface ProjectClientListProps {
 
 export function ProjectClientList({
   clients,
+  projectStatus,
   emptyMessage = "No linked clients.",
   compact = false,
   maxVisible,
@@ -34,18 +37,21 @@ export function ProjectClientList({
               compact && "border-none bg-transparent px-0 py-0",
             )}
           >
-            <div className="flex items-center gap-2 min-w-0">
-              <Link
-                to={clientUrl({ id: client.clientId })}
-                className="truncate text-sm font-medium hover:underline"
-              >
-                {client.name}
-              </Link>
-              {client.relationshipTags.length > 0 ? (
-                <span className="truncate text-xs text-muted-foreground">
-                  {client.relationshipTags.join(", ")}
-                </span>
-              ) : null}
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Link
+                  to={clientUrl({ id: client.clientId })}
+                  className="truncate text-sm font-medium hover:underline"
+                >
+                  {client.name}
+                </Link>
+                {client.relationshipTags.length > 0 ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {client.relationshipTags.join(", ")}
+                  </span>
+                ) : null}
+              </div>
+              {projectStatus ? <StatusBadge status={projectStatus} /> : null}
             </div>
             {!compact && (
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
