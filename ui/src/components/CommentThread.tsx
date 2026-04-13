@@ -210,21 +210,71 @@ function runStatusClass(status: string) {
   }
 }
 
+async function copyTextWithFallback(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyMarkdownButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
+
   return (
     <button
       type="button"
-      className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      className={cn(
+        "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+        status === "copied"
+          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+          : status === "failed"
+            ? "bg-destructive/10 text-destructive"
+            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+      title={label}
+      aria-label="Copy comment as markdown"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        });
+        void copyTextWithFallback(text)
+          .then(() => setStatus("copied"))
+          .catch(() => setStatus("failed"));
+
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+        }
+        timeoutRef.current = setTimeout(() => {
+          setStatus("idle");
+          timeoutRef.current = null;
+        }, 1500);
       }}
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {status === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      <span className="sm:hidden">{label}</span>
+      <span className="sr-only" aria-live="polite">
+        {label}
+      </span>
     </button>
   );
 }
@@ -319,7 +369,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet

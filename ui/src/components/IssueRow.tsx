@@ -2,7 +2,11 @@ import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
-import { createIssueDetailPath, rememberIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import {
+  createIssueDetailPath,
+  rememberIssueDetailLocationState,
+  withIssueDetailHeaderSeed,
+} from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
 
@@ -48,13 +52,16 @@ export function IssueRow({
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
+  const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
 
   return (
     <Link
       to={createIssueDetailPath(issuePathId)}
-      state={issueLinkState}
+      state={detailState}
+      disableIssueQuicklook
+      issuePrefetch={issue}
       data-inbox-issue-link
-      onClickCapture={() => rememberIssueDetailLocationState(issuePathId, issueLinkState)}
+      onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
       className={cn(
         "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",

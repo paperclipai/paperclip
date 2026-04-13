@@ -39,12 +39,12 @@ export interface RoutineVariable {
 export interface Routine {
   id: string;
   companyId: string;
-  projectId: string;
+  projectId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
   title: string;
   description: string | null;
-  assigneeAgentId: string;
+  assigneeAgentId: string | null;
   priority: string;
   status: string;
   concurrencyPolicy: string;

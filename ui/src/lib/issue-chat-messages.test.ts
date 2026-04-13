@@ -130,6 +130,43 @@ describe("buildAssistantPartsFromTranscript", () => {
     ]);
   });
 
+  it("treats a completed tool-only segment as resolved once a tool_result arrives", () => {
+    const result = buildAssistantPartsFromTranscript([
+      { kind: "thinking", ts: "2026-04-06T12:00:00.000Z", text: "Checking the task." },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T12:00:01.000Z",
+        name: "search",
+        toolUseId: "tool-1",
+        input: { query: "paperclip" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T12:00:02.000Z",
+        toolUseId: "tool-1",
+        content: "search completed",
+        isError: false,
+      },
+      { kind: "assistant", ts: "2026-04-06T12:00:03.000Z", text: "Found the relevant code." },
+    ]);
+
+    expect(result.parts).toMatchObject([
+      { type: "reasoning", text: "Checking the task." },
+      {
+        type: "tool-call",
+        toolCallId: "tool-1",
+        toolName: "search",
+        result: "search completed",
+        isError: false,
+      },
+      { type: "text", text: "Found the relevant code." },
+    ]);
+    expect(result.segments).toEqual([{
+      startMs: new Date("2026-04-06T12:00:00.000Z").getTime(),
+      endMs: new Date("2026-04-06T12:00:02.000Z").getTime(),
+    }]);
+  });
+
   it("keeps run errors while suppressing init and system transcript noise", () => {
     const result = buildAssistantPartsFromTranscript([
       {
@@ -270,7 +307,7 @@ describe("buildIssueChatMessages", () => {
       "system:activity:event-1",
       "user:comment-1",
       "assistant:comment-2",
-      "assistant:live-run:run-live-1",
+      "assistant:run-assistant:run-live-1",
     ]);
 
     const liveRunMessage = messages.at(-1);
@@ -316,7 +353,7 @@ describe("buildIssueChatMessages", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
-      id: "historical-run:run-history-1",
+      id: "run-assistant:run-history-1",
       role: "assistant",
       status: { type: "complete", reason: "stop" },
       metadata: {
@@ -331,6 +368,128 @@ describe("buildIssueChatMessages", () => {
       { type: "reasoning", text: "Checking the current issue thread." },
       { type: "text", text: "Updated the thread renderer." },
     ]);
+  });
+
+  it("compacts long run transcripts in issue chat while preserving matching tool context", () => {
+    const isoAt = (baseMs: number, offsetSeconds: number) =>
+      new Date(baseMs + offsetSeconds * 1000).toISOString();
+    const baseMs = Date.parse("2026-04-06T12:00:00.000Z");
+    const transcript = [
+      ...Array.from({ length: 9 }, (_, index) => ({
+        kind: "assistant" as const,
+        ts: isoAt(baseMs, index),
+        text: `Older update ${index + 1}`,
+      })),
+      {
+        kind: "tool_call" as const,
+        ts: isoAt(baseMs, 9),
+        name: "search",
+        toolUseId: "tool-keep",
+        input: { query: "issue chat virtualization" },
+      },
+      ...Array.from({ length: 79 }, (_, index) => ({
+        kind: "assistant" as const,
+        ts: isoAt(baseMs, 10 + index),
+        text: `Recent update ${index + 1}`,
+      })),
+      {
+        kind: "tool_result" as const,
+        ts: isoAt(baseMs, 89),
+        toolUseId: "tool-keep",
+        content: "search completed",
+        isError: false,
+      },
+    ];
+
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-history-3",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:00:00.000Z"),
+          startedAt: new Date("2026-04-06T12:00:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([["run-history-3", transcript]]),
+      hasOutputForRun: (runId) => runId === "run-history-3",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    const textParts = messages[0]?.content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text) ?? [];
+    expect(textParts.join("\n")).not.toContain("Older update 1");
+    expect(messages[0]?.content).toContainEqual(expect.objectContaining({
+      type: "tool-call",
+      toolCallId: "tool-keep",
+      toolName: "search",
+      result: "search completed",
+    }));
+  });
+
+  it("keeps the same assistant message id when a live run becomes a cancelled historical run", () => {
+    const liveMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [
+        {
+          id: "run-1",
+          status: "running",
+          invocationSource: "manual",
+          triggerDetail: null,
+          startedAt: "2026-04-06T12:01:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-04-06T12:01:00.000Z",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          adapterType: "codex_local",
+        },
+      ],
+      transcriptsByRunId: new Map([
+        ["run-1", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-1",
+      currentUserId: "user-1",
+    });
+
+    const cancelledMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-1",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:01:08.000Z"),
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-1", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-1",
+      currentUserId: "user-1",
+    });
+
+    expect(liveMessages).toHaveLength(1);
+    expect(cancelledMessages).toHaveLength(1);
+    expect(liveMessages[0]).toMatchObject({ id: "run-assistant:run-1", status: { type: "running" } });
+    expect(cancelledMessages[0]).toMatchObject({
+      id: "run-assistant:run-1",
+      status: { type: "complete", reason: "stop" },
+      metadata: { custom: { runStatus: "cancelled" } },
+    });
   });
 
   it("can keep succeeded runs without transcript output for embedded run feeds", () => {

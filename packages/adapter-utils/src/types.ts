@@ -120,7 +120,7 @@ export interface AdapterExecutionContext {
   context: Record<string, unknown>;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
-  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
@@ -372,6 +372,7 @@ export interface CreateConfigValues {
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
+  fastMode: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

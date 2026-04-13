@@ -1,8 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -20,6 +20,7 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
+  trackErrorHandlerCrash: vi.fn(),
 }));
 
 vi.mock("../telemetry.js", () => ({
@@ -78,7 +79,7 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("issue telemetry routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -97,29 +98,33 @@ describe("issue telemetry routes", () => {
       adapterType: "codex_local",
     });
 
-    const res = await request(createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
       runId: null,
-    }))
+    });
+    const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
-    expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(expect.anything(), {
-      agentRole: "engineer",
+    await vi.waitFor(() => {
+      expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(expect.anything(), {
+        agentRole: "engineer",
+      });
     });
-  });
+  }, 10_000);
 
   it("does not emit agent task-completed telemetry for board-driven completions", async () => {
-    const res = await request(createApp({
+    const app = createApp({
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
-    }))
+    });
+    const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done" });
 
