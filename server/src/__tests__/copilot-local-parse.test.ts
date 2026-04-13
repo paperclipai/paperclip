@@ -46,6 +46,35 @@ describe("parseCopilotJsonl", () => {
     expect(parsed.errorMessage).toBe("tool failed");
   });
 
+  it("captures session errors such as Copilot rate limits", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "session.mcp_server_status_changed",
+        data: { serverName: "github-mcp-server", status: "connected" },
+      }),
+      JSON.stringify({
+        type: "session.error",
+        data: {
+          errorType: "rate_limit",
+          message: "Sorry, you've hit a rate limit. Please try again in 1 minute.",
+          statusCode: 429,
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        sessionId: "sess_rate_limit",
+        exitCode: 1,
+      }),
+    ].join("\n");
+
+    const parsed = parseCopilotJsonl(stdout);
+    expect(parsed.sessionId).toBe("sess_rate_limit");
+    expect(parsed.errorType).toBe("rate_limit");
+    expect(parsed.statusCode).toBe(429);
+    expect(parsed.isRateLimit).toBe(true);
+    expect(parsed.errorMessage).toBe("Sorry, you've hit a rate limit. Please try again in 1 minute.");
+  });
+
   it("turns dangerous shell command refusals into approval-needed handoffs when Copilot asks for approval", () => {
     const stdout = [
       JSON.stringify({

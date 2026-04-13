@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
@@ -43,6 +44,7 @@ const COPILOT_SHELL_APPROVAL_NOTE = [
   "Approval needed: <brief reason>",
   "Reply approve to allow it, or deny to block it.",
 ].join("\n");
+const COPILOT_RATE_LIMIT_RETRY_MS = 65_000;
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -362,30 +364,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const parsed = parseCopilotJsonl(proc.stdout);
   const exitCode = proc.exitCode ?? 0;
 
-  if (sessionId && !proc.timedOut && exitCode !== 0 && isCopilotUnknownSessionError(proc.stdout, proc.stderr)) {
-    const retry = await runAttempt(null);
-    const retryParsed = parseCopilotJsonl(retry.stdout);
-    const retryExitCode = retry.exitCode ?? 0;
+  const buildResult = (
+    run: typeof proc,
+    runParsed: ReturnType<typeof parseCopilotJsonl>,
+    options?: { clearSession?: boolean },
+  ): AdapterExecutionResult => {
+    const runExitCode = run.exitCode ?? 0;
     return {
-      exitCode: retry.exitCode,
-      signal: retry.signal,
-      timedOut: retry.timedOut,
+      exitCode: run.exitCode,
+      signal: run.signal,
+      timedOut: run.timedOut,
       errorMessage:
-        retryParsed.errorMessage ??
-        firstNonEmptyLine(retry.stderr) ??
-        firstNonEmptyLine(retry.stdout) ??
-        null,
-      usage: retryParsed.outputTokens > 0
+        runParsed.errorMessage ??
+        (runExitCode !== 0 || run.timedOut
+          ? firstNonEmptyLine(run.stderr) || firstNonEmptyLine(run.stdout) || "Copilot run failed"
+          : null),
+      usage: runParsed.outputTokens > 0
         ? {
             inputTokens: 0,
-            outputTokens: retryParsed.outputTokens,
+            outputTokens: runParsed.outputTokens,
             cachedInputTokens: 0,
           }
         : undefined,
-      sessionId: retryParsed.sessionId,
-      sessionParams: retryParsed.sessionId
+      sessionId: runParsed.sessionId,
+      sessionParams: runParsed.sessionId
         ? {
-            sessionId: retryParsed.sessionId,
+            sessionId: runParsed.sessionId,
             cwd,
             promptBundleKey,
             ...(workspaceId ? { workspaceId } : {}),
@@ -393,58 +397,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
           }
         : null,
-      sessionDisplayId: retryParsed.sessionId,
+      sessionDisplayId: runParsed.sessionId,
       provider: "github",
       biller: "copilot",
-      model: retryParsed.model ?? model ?? null,
+      model: runParsed.model ?? model ?? null,
       billingType: "subscription",
       costUsd: null,
-      resultJson: retryParsed.finalResult,
-      summary: retryParsed.summary || null,
-      clearSession: true,
-      ...(retryExitCode !== 0 && !retry.timedOut && !retryParsed.errorMessage
-        ? {
-            errorMessage:
-              firstNonEmptyLine(retry.stderr) || firstNonEmptyLine(retry.stdout) || "Copilot run failed",
-          }
-        : {}),
+      resultJson: runParsed.finalResult,
+      summary: runParsed.summary || null,
+      ...(options?.clearSession ? { clearSession: true } : {}),
     };
+  };
+
+  if (sessionId && !proc.timedOut && exitCode !== 0 && isCopilotUnknownSessionError(proc.stdout, proc.stderr)) {
+    const retry = await runAttempt(null);
+    const retryParsed = parseCopilotJsonl(retry.stdout);
+    return buildResult(retry, retryParsed, { clearSession: true });
   }
 
-  return {
-    exitCode: proc.exitCode,
-    signal: proc.signal,
-    timedOut: proc.timedOut,
-    errorMessage:
-      parsed.errorMessage ??
-      (exitCode !== 0 || proc.timedOut
-        ? firstNonEmptyLine(proc.stderr) || firstNonEmptyLine(proc.stdout) || "Copilot run failed"
-        : null),
-    usage: parsed.outputTokens > 0
-      ? {
-          inputTokens: 0,
-          outputTokens: parsed.outputTokens,
-          cachedInputTokens: 0,
-        }
-      : undefined,
-    sessionId: parsed.sessionId,
-    sessionParams: parsed.sessionId
-      ? {
-          sessionId: parsed.sessionId,
-          cwd,
-          promptBundleKey,
-          ...(workspaceId ? { workspaceId } : {}),
-          ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-          ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-        }
-      : null,
-    sessionDisplayId: parsed.sessionId,
-    provider: "github",
-    biller: "copilot",
-    model: parsed.model ?? model ?? null,
-    billingType: "subscription",
-    costUsd: null,
-    resultJson: parsed.finalResult,
-    summary: parsed.summary || null,
-  };
+  if (!proc.timedOut && exitCode !== 0 && parsed.isRateLimit) {
+    await onLog(
+      "stderr",
+      `[paperclip] Copilot rate limit encountered; retrying once in ${Math.ceil(COPILOT_RATE_LIMIT_RETRY_MS / 1000)}s\n`,
+    );
+    await delay(COPILOT_RATE_LIMIT_RETRY_MS);
+    const retry = await runAttempt(parsed.sessionId ?? sessionId);
+    const retryParsed = parseCopilotJsonl(retry.stdout);
+    return buildResult(retry, retryParsed);
+  }
+
+  return buildResult(proc, parsed);
 }

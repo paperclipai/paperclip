@@ -4,6 +4,7 @@ const COPILOT_DANGEROUS_SHELL_BLOCK_RE =
   /command blocked: contains dangerous shell expansion patterns|dangerous shell expansion patterns|parameter transformation|indirect expansion|nested command substitution|arbitrary code execution/i;
 const COPILOT_APPROVAL_NEEDED_RE =
   /(^|\n)\*?\*?approval needed:|\breply\s+\*?\*?approve\*?\*?\b|\bor\s+\*?\*?deny\*?\*?\b/i;
+const COPILOT_RATE_LIMIT_RE = /\brate[_ -]?limit\b|too many requests|status\s*code\s*[:=]?\s*429|\b429\b/i;
 
 function readText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -26,6 +27,8 @@ export function parseCopilotJsonl(stdout: string) {
   let sessionId: string | null = null;
   let model: string | null = null;
   let errorMessage: string | null = null;
+  let errorType: string | null = null;
+  let statusCode: number | null = null;
   let blockedDangerousShellCommand: string | null = null;
   let premiumRequests: number | null = null;
   let outputTokens = 0;
@@ -84,8 +87,12 @@ export function parseCopilotJsonl(stdout: string) {
       continue;
     }
 
-    if (type === "error") {
+    if (type === "error" || type === "session.error") {
       const text = readText(data.error ?? data.message ?? data.detail).trim();
+      const nextErrorType = asString(data.errorType, "").trim();
+      const nextStatusCode = asNumber(data.statusCode, NaN);
+      if (nextErrorType) errorType = nextErrorType;
+      if (Number.isFinite(nextStatusCode)) statusCode = nextStatusCode;
       if (text) errorMessage = text;
     }
   }
@@ -103,6 +110,12 @@ export function parseCopilotJsonl(stdout: string) {
     sessionId,
     summary,
     errorMessage,
+    errorType,
+    statusCode,
+    isRateLimit:
+      errorType === "rate_limit" ||
+      statusCode === 429 ||
+      (errorMessage ? COPILOT_RATE_LIMIT_RE.test(errorMessage) : false),
     model,
     outputTokens,
     premiumRequests,
