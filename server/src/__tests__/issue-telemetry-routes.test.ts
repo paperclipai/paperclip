@@ -28,6 +28,7 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   accessService: () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),

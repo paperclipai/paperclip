@@ -14,6 +14,8 @@ export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
+export { agentPolicies } from "./agent_policies.js";
+export { agentPolicyRevisions } from "./agent_policy_revisions.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";

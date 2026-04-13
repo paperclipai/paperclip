@@ -28,6 +28,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => mockDocumentsService,

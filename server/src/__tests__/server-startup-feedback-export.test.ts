@@ -115,6 +115,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),

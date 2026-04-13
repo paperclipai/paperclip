@@ -72,6 +72,7 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   budgetService: () => mockBudgetService,
   costService: () => mockCostService,
   financeService: () => mockFinanceService,

@@ -48,6 +48,7 @@ function registerServiceMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    agentPoliciesService: vi.fn(() => ({})),
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),

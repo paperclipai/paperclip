@@ -12,6 +12,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));

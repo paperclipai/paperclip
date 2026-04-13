@@ -25,6 +25,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   accessService: () => ({
     canUser: vi.fn(async () => false),
     hasPermission: vi.fn(async () => false),

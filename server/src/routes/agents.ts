@@ -31,6 +31,7 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentPoliciesService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -2571,6 +2572,182 @@ export function agentRoutes(db: Db) {
       agentName: agent.name,
       adapterType: agent.adapterType,
     });
+  });
+
+  // ── Agent Policies ───────────────────────────────────────────────────────
+
+  const policiesSvc = agentPoliciesService(db);
+
+  router.get("/agents/:id/policies", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const active = req.query.active !== undefined
+      ? req.query.active === "true"
+      : undefined;
+    const scope = typeof req.query.scope === "string" ? req.query.scope : undefined;
+
+    const policies = await policiesSvc.listPolicies(id, { active, scope });
+    res.json(policies);
+  });
+
+  router.get("/agents/:id/policies/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const key = req.params.key as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const policy = await policiesSvc.getPolicy(id, key);
+    if (!policy) {
+      res.status(404).json({ error: "Policy not found" });
+      return;
+    }
+    res.json(policy);
+  });
+
+  router.put("/agents/:id/policies/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const key = req.params.key as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const actor = getActorInfo(req);
+    const { title, format, body, changeSummary, baseRevisionId, scope, scopeId } = req.body as {
+      title: string;
+      format?: string;
+      body: string;
+      changeSummary?: string | null;
+      baseRevisionId?: string | null;
+      scope?: string;
+      scopeId?: string | null;
+    };
+
+    if (!title || typeof title !== "string") {
+      res.status(400).json({ error: "title is required" });
+      return;
+    }
+    if (!body || typeof body !== "string") {
+      res.status(400).json({ error: "body is required" });
+      return;
+    }
+
+    const result = await policiesSvc.upsertPolicy(id, key, {
+      title,
+      format,
+      body,
+      changeSummary: changeSummary ?? null,
+      baseRevisionId: baseRevisionId ?? null,
+      scope,
+      scopeId: scopeId ?? null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.created ? "agent.policy_created" : "agent.policy_updated",
+      entityType: "agent",
+      entityId: id,
+      details: { key },
+    });
+
+    res.status(result.created ? 201 : 200).json(result.policy);
+  });
+
+  router.delete("/agents/:id/policies/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const key = req.params.key as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const actor = getActorInfo(req);
+    const policy = await policiesSvc.deactivatePolicy(id, key);
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.policy_deactivated",
+      entityType: "agent",
+      entityId: id,
+      details: { key },
+    });
+
+    res.json(policy);
+  });
+
+  router.get("/agents/:id/policies/:key/revisions", async (req, res) => {
+    const id = req.params.id as string;
+    const key = req.params.key as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const revisions = await policiesSvc.listRevisions(id, key);
+    res.json(revisions);
+  });
+
+  router.post("/agents/:id/policies/:key/rollback", async (req, res) => {
+    const id = req.params.id as string;
+    const key = req.params.key as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const { targetRevisionId } = req.body as { targetRevisionId: string };
+    if (!targetRevisionId || typeof targetRevisionId !== "string") {
+      res.status(400).json({ error: "targetRevisionId is required" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const policy = await policiesSvc.rollbackPolicy(id, key, targetRevisionId, {
+      agentId: actor.agentId ?? null,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.policy_rolled_back",
+      entityType: "agent",
+      entityId: id,
+      details: { key, targetRevisionId },
+    });
+
+    res.json(policy);
   });
 
   return router;

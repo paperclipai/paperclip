@@ -12,6 +12,7 @@ const { createAssetMock, getAssetByIdMock, logActivityMock } = vi.hoisted(() => 
 
 function registerServiceMocks() {
   vi.doMock("../services/index.js", () => ({
+    agentPoliciesService: vi.fn(() => ({})),
     assetService: vi.fn(() => ({
       create: createAssetMock,
       getById: getAssetByIdMock,

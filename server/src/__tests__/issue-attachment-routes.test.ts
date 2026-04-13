@@ -24,6 +24,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    agentPoliciesService: vi.fn(() => ({})),
     accessService: () => ({
       canUser: vi.fn(),
       hasPermission: vi.fn(),

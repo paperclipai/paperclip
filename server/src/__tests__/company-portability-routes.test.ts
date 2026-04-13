@@ -41,6 +41,7 @@ const mockFeedbackService = vi.hoisted(() => ({
 
 function registerServiceMocks() {
   vi.doMock("../services/index.js", () => ({
+    agentPoliciesService: vi.fn(() => ({})),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     budgetService: () => mockBudgetService,

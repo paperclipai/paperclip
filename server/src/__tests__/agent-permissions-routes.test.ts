@@ -101,6 +101,7 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentPoliciesService: vi.fn(() => ({})),
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
