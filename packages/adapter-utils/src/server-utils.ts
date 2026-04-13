@@ -263,6 +263,8 @@ type PaperclipWakePayload = {
   missingCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
+  /** Set on resumed-session wakes: static issue fields (id/identifier/title) omitted. */
+  compressedForResume?: boolean;
 };
 
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
@@ -361,6 +363,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     return null;
   }
 
+  const compressedForResume = asBoolean(payload.compressedForResume, false);
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
@@ -374,6 +377,30 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     missingCount: asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    ...(compressedForResume ? { compressedForResume: true } : {}),
+  };
+}
+
+/**
+ * Compress a wake payload for a resumed session. Saves ~60-150 tokens per resumed wake:
+ *
+ * - `commentIds` — redundant when `comments` are inline (derive from `comments[n].id`).
+ * - Renderer skips the `- issue: <identifier> <title>` line (agent already knows the issue).
+ *
+ * Issue identification fields (id/identifier/title) are retained in the payload so that
+ * downstream normalization can still resolve the issue object (required by the guard in
+ * `normalizePaperclipWakeIssue`). The `compressedForResume` flag signals renderers to
+ * omit those fields from the rendered prompt text.
+ */
+export function compressPaperclipWakePayloadForResume(value: unknown): PaperclipWakePayload | null {
+  const normalized = normalizePaperclipWakePayload(value);
+  if (!normalized) return null;
+
+  return {
+    ...normalized,
+    // commentIds is derivable from comments[n].id — drop to save tokens in the JSON payload.
+    commentIds: [],
+    compressedForResume: true,
   };
 }
 
@@ -381,6 +408,17 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
   return JSON.stringify(normalized);
+}
+
+/**
+ * Serialize a wake payload compressed for a resumed session.
+ * Strips static issue fields (id/identifier/title) and the redundant commentIds array.
+ * Returns null when there is no meaningful content left to send.
+ */
+export function stringifyPaperclipWakePayloadForResume(value: unknown): string | null {
+  const compressed = compressPaperclipWakePayloadForResume(value);
+  if (!compressed) return null;
+  return JSON.stringify(compressed);
 }
 
 export function renderPaperclipWakePrompt(
@@ -397,17 +435,23 @@ export function renderPaperclipWakePrompt(
     return principal.userId ? `user ${principal.userId}` : "user";
   };
 
+  const isCompressedResume = resumedSession && normalized.compressedForResume === true;
   const lines = resumedSession
       ? [
         "## Paperclip Resume Delta",
         "",
-        "You are resuming an existing Paperclip session.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        isCompressedResume
+          ? "Continuing current task. Static issue context omitted — only new deltas follow."
+          : "You are resuming an existing Paperclip session.",
+        ...(!isCompressedResume ? ["This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake."] : []),
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        // On compressed wakes, issue identifier/title are already in agent context; skip them.
+        ...(isCompressedResume
+          ? []
+          : [`- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`]),
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,

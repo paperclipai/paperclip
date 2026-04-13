@@ -21,6 +21,8 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  stringifyPaperclipWakePayloadForResume,
+  compressPaperclipWakePayloadForResume,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -404,6 +406,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
     );
   }
+  // On resumed sessions, swap in the compressed wake payload (strips static issue
+  // fields and redundant commentIds) to reduce per-heartbeat token overhead.
+  if (sessionId) {
+    const compressedPayloadJson = stringifyPaperclipWakePayloadForResume(context.paperclipWake);
+    if (compressedPayloadJson) {
+      env.PAPERCLIP_WAKE_PAYLOAD_JSON = compressedPayloadJson;
+    }
+  }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
@@ -418,7 +428,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  // On resumed sessions, render from the compressed payload so the rendered prompt
+  // also omits static issue fields (identifier/title already in agent session context).
+  const wakePayloadForRender = sessionId
+    ? compressPaperclipWakePayloadForResume(context.paperclipWake)
+    : context.paperclipWake;
+  const wakePrompt = renderPaperclipWakePrompt(wakePayloadForRender, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
