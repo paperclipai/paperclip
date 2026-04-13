@@ -110,7 +110,7 @@ const biller = inferOpenAiCompatibleBiller({ ...process.env, ...env }, "openai")
 // Use `biller` when emitting usage metadata (e.g. provider / billing channel).
 ```
 
-Document the **Using OpenRouter** pattern in your adapter’s Mintlify page and link to the [environment variables](/deploy/environment-variables) reference for `OPENAI_API_BASE` / `OPENAI_API_BASE_URL` detection.
+Document the **Using OpenRouter** pattern in your adapter’s Mintlify page and link to the [environment variables](/deploy/environment-variables) reference for alternate base-URL keys (`OPENAI_API_BASE`, `OPENAI_API_BASE_URL`, `OPENROUTER_API_BASE`).
 
 ### AdapterExecutionContext
 

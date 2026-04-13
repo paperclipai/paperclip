@@ -52,6 +52,7 @@ These are set automatically by the server when invoking agents:
 | `OPENAI_BASE_URL` | Override the OpenAI-compatible base URL (e.g. `https://openrouter.ai/api/v1`) |
 | `OPENAI_API_BASE` | Alternate base-URL env used by some tools; Paperclip reads it for OpenRouter billing detection when set |
 | `OPENAI_API_BASE_URL` | Same as `OPENAI_API_BASE` — alternate spelling; included in OpenRouter billing detection |
+| `OPENROUTER_API_BASE` | Optional OpenRouter-native base URL (some stacks use this instead of `OPENAI_*`); included in OpenRouter billing detection and in `OPENROUTER_API_KEY` → `OPENAI_*` mapping |
 
 ## Using OpenRouter
 
@@ -65,12 +66,12 @@ OPENROUTER_API_KEY=sk-or-v1-…
 
 Paperclip automatically:
 - Maps `OPENROUTER_API_KEY` → `OPENAI_API_KEY` for the child process
-- Sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the child process (unless you already set a base URL via `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or `OPENAI_API_BASE_URL`)
+- Sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the child process (unless you already set a base URL via `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_BASE_URL`, or `OPENROUTER_API_BASE`)
 - Tags all usage in the billing ledger as `openrouter`
 
-Billing inference also treats a base URL as OpenRouter when **any** of `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or `OPENAI_API_BASE_URL` points at `openrouter.ai` (for example some CLIs only export `OPENAI_API_BASE`).
+Billing inference also treats a base URL as OpenRouter when **any** of `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_BASE_URL`, or `OPENROUTER_API_BASE` points at `openrouter.ai` (for example some CLIs only export `OPENAI_API_BASE`).
 
-If `OPENAI_BASE_URL` is unset or whitespace-only but `OPENAI_API_BASE` or `OPENAI_API_BASE_URL` is set, Paperclip copies that value into `OPENAI_BASE_URL` for child processes that read only that variable.
+If `OPENAI_BASE_URL` is unset or whitespace-only but `OPENAI_API_BASE`, `OPENAI_API_BASE_URL`, or `OPENROUTER_API_BASE` is set, Paperclip copies that value into `OPENAI_BASE_URL` for child processes that read only that variable.
 
 Alternatively you can set the variables explicitly, which takes precedence:
 

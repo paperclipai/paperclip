@@ -35,6 +35,15 @@ describe("inferOpenAiCompatibleBiller", () => {
     ).toBe("openrouter");
   });
 
+  it("returns openrouter when OPENROUTER_API_BASE points at OpenRouter", () => {
+    expect(
+      inferOpenAiCompatibleBiller(
+        { OPENROUTER_API_BASE: "https://openrouter.ai/api/v1" } as NodeJS.ProcessEnv,
+        "openai",
+      ),
+    ).toBe("openrouter");
+  });
+
   it("returns fallback when no OpenRouter markers are present", () => {
     expect(
       inferOpenAiCompatibleBiller(
@@ -93,6 +102,32 @@ describe("inferOpenAiCompatibleBiller", () => {
         {
           OPENAI_API_BASE: "https://openrouter.ai/api/v1",
           OPENAI_API_BASE_URL: "https://api.openai.com/v1",
+        } as NodeJS.ProcessEnv,
+        "openai",
+      ),
+    ).toBe("openrouter");
+  });
+
+  it("prefers OPENAI_API_BASE_URL over OPENROUTER_API_BASE when both are set", () => {
+    expect(
+      inferOpenAiCompatibleBiller(
+        {
+          OPENAI_API_BASE_URL: "https://api.openai.com/v1",
+          OPENROUTER_API_BASE: "https://openrouter.ai/api/v1",
+        } as NodeJS.ProcessEnv,
+        "openai",
+      ),
+    ).toBe("openai");
+  });
+
+  it("falls through past whitespace OPENAI_* vars to OPENROUTER_API_BASE at OpenRouter", () => {
+    expect(
+      inferOpenAiCompatibleBiller(
+        {
+          OPENAI_BASE_URL: " ",
+          OPENAI_API_BASE: "\t",
+          OPENAI_API_BASE_URL: "  ",
+          OPENROUTER_API_BASE: "https://openrouter.ai/api/v1",
         } as NodeJS.ProcessEnv,
         "openai",
       ),
@@ -201,6 +236,38 @@ describe("applyOpenRouterOpenAiEnvMapping", () => {
       OPENROUTER_API_KEY: "sk-or-1",
       OPENAI_API_BASE: "https://openrouter.ai/api/v1",
       OPENAI_API_BASE_URL: "https://api.openai.com/v1",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_BASE_URL).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("promotes OPENROUTER_API_BASE to OPENAI_BASE_URL when OPENAI_* base vars are unset", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENROUTER_API_BASE: "https://openrouter.ai/api/v1",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_API_KEY).toBe("sk-or-1");
+    expect(env.OPENAI_BASE_URL).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("prefers OPENAI_API_BASE_URL over OPENROUTER_API_BASE when promoting to OPENAI_BASE_URL", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENAI_API_BASE_URL: "https://api.openai.com/v1",
+      OPENROUTER_API_BASE: "https://openrouter.ai/api/v1",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_BASE_URL).toBe("https://api.openai.com/v1");
+  });
+
+  it("promotes whitespace-skipped chain to OPENROUTER_API_BASE for CLI compatibility", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENAI_BASE_URL: " ",
+      OPENAI_API_BASE: "\t",
+      OPENAI_API_BASE_URL: "  ",
+      OPENROUTER_API_BASE: "https://openrouter.ai/api/v1",
     };
     applyOpenRouterOpenAiEnvMapping(env);
     expect(env.OPENAI_BASE_URL).toBe("https://openrouter.ai/api/v1");
