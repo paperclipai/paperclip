@@ -1,27 +1,16 @@
 export const type = "openrouter_local";
 export const label = "OpenRouter";
-export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+export const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.1-flash-lite-preview";
 export const OPENROUTER_API_BASE = "https://openrouter.ai/api/v1";
 
 export const models = [
-  { id: "openai/gpt-4o", label: "GPT-4o" },
-  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
-  { id: "openai/gpt-4.1", label: "GPT-4.1" },
-  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini" },
-  { id: "openai/o3", label: "o3" },
-  { id: "openai/o4-mini", label: "o4 Mini" },
-  { id: "anthropic/claude-opus-4-5", label: "Claude Opus 4.5" },
-  { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
-  { id: "anthropic/claude-haiku-3-5", label: "Claude Haiku 3.5" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { id: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash" },
-  { id: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
-  { id: "meta-llama/llama-4-scout", label: "Llama 4 Scout" },
-  { id: "deepseek/deepseek-r1", label: "DeepSeek R1" },
-  { id: "deepseek/deepseek-chat-v3-0324", label: "DeepSeek V3" },
-  { id: "mistralai/mistral-large-2411", label: "Mistral Large" },
-  { id: "qwen/qwen-2.5-72b-instruct", label: "Qwen 2.5 72B" },
+  { id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B — $0.08/$0.35" },
+  { id: "google/gemma-4-31b-it", label: "Gemma 4 31B — $0.13/$0.38" },
+  { id: "minimax/minimax-m2.7", label: "MiniMax M2.7 — $0.30/$1.20" },
+  { id: "z-ai/glm-5.1", label: "GLM-5.1 — $0.95/$3.15" },
+  { id: "google/gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite — $0.25/$1.50" },
+  { id: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6 — $3/$15 ★ owner only" },
+  { id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro — $2/$12 ★ owner only" },
 ];
 
 export const agentConfigurationDoc = `# openrouter_local agent configuration
@@ -29,16 +18,35 @@ export const agentConfigurationDoc = `# openrouter_local agent configuration
 Adapter: openrouter_local
 
 Use when:
-- You want access to hundreds of AI models (OpenAI, Anthropic, Google, Meta, etc.) via a single API key
+- You want access to multiple AI models via a single API key
 - You want to switch models without redeploying
-- You do not want to manage separate API keys for each provider
+- You do not need local tool use or file system access
 
 Don't use when:
-- You need a local CLI-based agent with tool use and file access (use gemini_local, claude_local, codex_local)
+- You need a local CLI-based agent with tool use and file access (use gemini_local, claude_local)
 - You need session resumption across heartbeats
 
+## Model selection guide
+
+CHEAP — use for routine tasks, summaries, status updates, simple Q&A:
+- google/gemma-4-26b-a4b-it   $0.08 in / $0.35 out per 1M tokens  (DEFAULT)
+- google/gemma-4-31b-it        $0.13 in / $0.38 out per 1M tokens
+- minimax/minimax-m2.7         $0.30 in / $1.20 out per 1M tokens
+
+MID — use for moderately complex reasoning, code review, planning:
+- z-ai/glm-5.1                       $0.95 in / $3.15 out per 1M tokens
+- google/gemini-3.1-flash-lite-preview  $0.25 in / $1.50 out per 1M tokens
+
+PREMIUM — use only for complex multi-step tasks, architecture decisions, critical reviews:
+- anthropic/claude-sonnet-4.6        $3.00 in / $15.00 out per 1M tokens
+- google/gemini-3.1-pro-preview      $2.00 in / $12.00 out per 1M tokens
+
+Default model: google/gemini-3.1-flash-lite-preview. Only upgrade when the task clearly requires it.
+Most team members (junior devs, QA, support) should stay on CHEAP or MID tier.
+PREMIUM models (marked ★) must NEVER be selected by agents — they are reserved for manual configuration by the owner only.
+
 Core fields:
-- model (string, required): OpenRouter model ID in provider/model format (e.g. openai/gpt-4o-mini)
+- model (string, required): OpenRouter model ID (see list above)
 - apiKey (string, optional): OPENROUTER_API_KEY override; falls back to server environment variable
 - promptTemplate (string, optional): run prompt template
 - systemPrompt (string, optional): system message prepended to every request
