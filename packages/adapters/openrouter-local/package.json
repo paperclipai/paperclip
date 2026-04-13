@@ -33,7 +33,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*"
+    "@paperclipai/adapter-utils": "workspace:*",
+    "@openrouter/agent": "^0.1.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
