@@ -134,6 +134,7 @@ type IssueRelationSummaryMap = {
 type IssueUpdateActor = {
   actorAgentId?: string | null;
   actorRunId?: string | null;
+  requireCheckoutOwnership?: boolean;
 };
 type IssueReleaseActor = {
   actorAgentId?: string | null;
@@ -935,6 +936,45 @@ export function issueService(db: Db) {
       canClearRun(existing.executionRunId),
     ]);
     return checkoutClearable && executionClearable;
+  }
+
+  async function assertLiveActorRunOwnsIssue(
+    reader: HeartbeatRunReader,
+    current: Pick<
+      typeof issues.$inferSelect,
+      "id" | "status" | "assigneeAgentId" | "checkoutRunId" | "executionRunId"
+    >,
+    actorAgentId: string | null | undefined,
+    actorRunId: string | null | undefined,
+  ) {
+    const actorRunState = actorRunId ? await getRunLockState(reader, actorRunId, actorAgentId) : null;
+    const actorRunIsLiveOwner = Boolean(actorRunState?.liveBelongsToActor);
+    const actorStillAssigned =
+      current.status === "in_progress" &&
+      actorAgentId != null &&
+      current.assigneeAgentId === actorAgentId;
+    const actorOwnsCheckout = actorRunIsLiveOwner && current.checkoutRunId === actorRunId;
+    const actorOwnsExecution = actorRunIsLiveOwner && current.executionRunId === actorRunId;
+    const executionRun =
+      current.executionRunId && !actorOwnsExecution ? await getHeartbeatRun(reader, current.executionRunId) : null;
+    const foreignExecutionClearable =
+      current.executionRunId && !actorOwnsExecution
+        ? !executionRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
+        : true;
+
+    if (actorStillAssigned && (actorOwnsCheckout || actorOwnsExecution) && foreignExecutionClearable) {
+      return;
+    }
+
+    throw conflict("Issue run ownership conflict", {
+      issueId: current.id,
+      status: current.status,
+      assigneeAgentId: current.assigneeAgentId,
+      checkoutRunId: current.checkoutRunId,
+      executionRunId: current.executionRunId,
+      actorAgentId,
+      actorRunId,
+    });
   }
 
   async function getReleaseLockClearance(
@@ -1760,6 +1800,14 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!lockedExisting) return null;
+        if (actor?.requireCheckoutOwnership) {
+          await assertLiveActorRunOwnsIssue(
+            tx,
+            lockedExisting,
+            actor.actorAgentId ?? null,
+            actor.actorRunId ?? null,
+          );
+        }
         const lockedAssigneeChanged =
           (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== lockedExisting.assigneeAgentId) ||
           (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== lockedExisting.assigneeUserId);
@@ -2055,11 +2103,12 @@ export function issueService(db: Db) {
       if (!current) throw notFound("Issue not found");
 
       const actorStillAssigned = current.status === "in_progress" && current.assigneeAgentId === actorAgentId;
-      const executionRun = current.executionRunId ? await getHeartbeatRun(db, current.executionRunId) : null;
-      const actorOwnsExecution =
-        actorRunId != null &&
-        current.executionRunId === actorRunId &&
-        executionRun?.agentId === actorAgentId;
+      const actorRunState = actorRunId ? await getRunLockState(db, actorRunId, actorAgentId) : null;
+      const actorRunIsLiveOwner = Boolean(actorRunState?.liveBelongsToActor);
+      const actorOwnsCheckout = actorRunIsLiveOwner && current.checkoutRunId === actorRunId;
+      const actorOwnsExecution = actorRunIsLiveOwner && current.executionRunId === actorRunId;
+      const executionRun =
+        current.executionRunId && !actorOwnsExecution ? await getHeartbeatRun(db, current.executionRunId) : null;
       const foreignExecutionClearable =
         current.executionRunId && !actorOwnsExecution
           ? !executionRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
@@ -2067,7 +2116,7 @@ export function issueService(db: Db) {
 
       if (
         actorStillAssigned &&
-        (actorOwnsExecution || sameRunLock(current.checkoutRunId, actorRunId)) &&
+        (actorOwnsExecution || actorOwnsCheckout) &&
         foreignExecutionClearable
       ) {
         return { ...current, adoptedFromRunId: null as string | null };

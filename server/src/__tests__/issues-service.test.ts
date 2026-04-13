@@ -2232,6 +2232,75 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
     );
   });
 
+  it("rejects terminal same-agent run ids that already match checkout ownership", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-13T14:00:00.000Z"),
+      finishedAt: new Date("2026-04-13T14:05:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run must not satisfy current checkout ownership",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminalRunId,
+      executionRunId: null,
+      startedAt: new Date("2026-04-13T14:00:00.000Z"),
+    });
+
+    await expect(
+      svc.assertCheckoutOwner(issueId, agentId, terminalRunId),
+    ).rejects.toThrow("Issue run ownership conflict");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_progress",
+        checkoutRunId: terminalRunId,
+        executionRunId: null,
+      }),
+    );
+  });
+
   it("promotes deferred wakeups after clearing terminal checkout ownership", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();
@@ -2641,6 +2710,124 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(issue?.executionRunId).toBe(freshRunId);
+  });
+
+  it("rejects an agent update when checkout ownership changes before the locked write", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const originalRunId = randomUUID();
+    const freshRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: originalRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:10:00.000Z"),
+      },
+      {
+        id: freshRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        triggerDetail: "process_loss",
+        status: "queued",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:11:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale actor update should not mutate fresh checkout owner",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: originalRunId,
+      executionRunId: originalRunId,
+      executionAgentNameKey: "builder",
+      executionLockedAt: new Date("2026-04-13T14:10:00.000Z"),
+      startedAt: new Date("2026-04-13T14:10:00.000Z"),
+    });
+
+    let hookInjected = false;
+    const delayedDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "transaction") {
+          return async (callback: Parameters<typeof db.transaction>[0]) => {
+            if (!hookInjected) {
+              hookInjected = true;
+              await target
+                .update(issues)
+                .set({
+                  checkoutRunId: freshRunId,
+                  executionRunId: freshRunId,
+                  executionLockedAt: new Date("2026-04-13T14:11:00.000Z"),
+                  updatedAt: new Date("2026-04-13T14:11:00.000Z"),
+                })
+                .where(eq(issues.id, issueId));
+            }
+            return target.transaction(callback);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as typeof db;
+    const delayedSvc = issueService(delayedDb);
+
+    await expect(
+      delayedSvc.update(
+        issueId,
+        { status: "done" },
+        {
+          actorAgentId: agentId,
+          actorRunId: originalRunId,
+          requireCheckoutOwnership: true,
+        },
+      ),
+    ).rejects.toThrow("Issue run ownership conflict");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: freshRunId,
+        executionRunId: freshRunId,
+      }),
+    );
   });
 
   it("clears execution ownership on release so another run can pick the issue up", async () => {

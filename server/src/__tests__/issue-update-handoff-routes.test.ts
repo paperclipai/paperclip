@@ -94,15 +94,17 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
   function createRouteApp(opts?: {
     deploymentMode?: "local_trusted" | "authenticated";
     resolveSession?: Parameters<typeof actorMiddleware>[1]["resolveSession"];
+    dbOverride?: typeof db;
   }) {
+    const routeDb = opts?.dbOverride ?? db;
     const app = express();
     app.use(express.json());
-    app.use(actorMiddleware(db, {
+    app.use(actorMiddleware(routeDb, {
       deploymentMode: opts?.deploymentMode ?? "local_trusted",
       resolveSession: opts?.resolveSession,
     }));
     app.use(boardMutationGuard());
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(routeDb, {} as any));
     app.use(errorHandler);
     return app;
   }
@@ -911,6 +913,204 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
       assigneeAgentId: agentId,
       checkoutRunId: staleRunId,
       executionRunId: null,
+    }));
+  });
+
+  it("rejects an agent PATCH when a terminal run header already matches checkout ownership", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "terminal-same-run-patch-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "test key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-13T14:00:00.000Z"),
+      finishedAt: new Date("2026-04-13T14:05:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal run patch should not satisfy checkout ownership",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminalRunId,
+      executionRunId: null,
+      startedAt: new Date("2026-04-13T14:00:00.000Z"),
+    });
+
+    const res = await request(createRouteApp({ deploymentMode: "authenticated" }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", terminalRunId)
+      .send({
+        status: "done",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Issue run ownership conflict",
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminalRunId,
+      executionRunId: null,
+    }));
+  });
+
+  it("rejects an agent PATCH when checkout ownership changes before the locked update", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const originalRunId = randomUUID();
+    const freshRunId = randomUUID();
+    const issueId = randomUUID();
+    const agentToken = "stale-precheck-patch-token";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentApiKeys).values({
+      agentId,
+      companyId,
+      name: "test key",
+      keyHash: hashToken(agentToken),
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: originalRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:10:00.000Z"),
+      },
+      {
+        id: freshRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        triggerDetail: "process_loss",
+        status: "queued",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-13T14:11:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale precheck patch should not mutate fresh checkout owner",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: originalRunId,
+      executionRunId: originalRunId,
+      executionAgentNameKey: "builder",
+      executionLockedAt: new Date("2026-04-13T14:10:00.000Z"),
+      startedAt: new Date("2026-04-13T14:10:00.000Z"),
+    });
+
+    let hookInjected = false;
+    const delayedDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "transaction") {
+          return async (callback: Parameters<typeof db.transaction>[0]) => {
+            if (!hookInjected) {
+              hookInjected = true;
+              await target
+                .update(issues)
+                .set({
+                  checkoutRunId: freshRunId,
+                  executionRunId: freshRunId,
+                  executionLockedAt: new Date("2026-04-13T14:11:00.000Z"),
+                  updatedAt: new Date("2026-04-13T14:11:00.000Z"),
+                })
+                .where(eq(issues.id, issueId));
+            }
+            return target.transaction(callback);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as typeof db;
+
+    const res = await request(createRouteApp({
+      deploymentMode: "authenticated",
+      dbOverride: delayedDb,
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .set("Authorization", `Bearer ${agentToken}`)
+      .set("X-Paperclip-Run-Id", originalRunId)
+      .send({
+        status: "done",
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Issue run ownership conflict",
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: freshRunId,
+      executionRunId: freshRunId,
     }));
   });
 

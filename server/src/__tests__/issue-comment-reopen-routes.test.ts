@@ -630,10 +630,11 @@ describe("issue comment reopen routes", () => {
           }),
         }),
       }),
-      {
+      expect.objectContaining({
         actorAgentId: "22222222-2222-4222-8222-222222222222",
         actorRunId: "run-1",
-      },
+        requireCheckoutOwnership: true,
+      }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333",

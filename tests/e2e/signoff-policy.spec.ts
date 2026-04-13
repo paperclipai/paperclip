@@ -49,6 +49,18 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function readConflictLockIds(body: string) {
+  try {
+    const parsed = JSON.parse(body) as { details?: Record<string, unknown> };
+    return {
+      checkoutRunId: readString(parsed.details?.checkoutRunId),
+      executionRunId: readString(parsed.details?.executionRunId),
+    };
+  } catch {
+    return { checkoutRunId: null, executionRunId: null };
+  }
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -152,7 +164,13 @@ async function agentCheckoutAndPatch(
       data: { agentId: agent.agentId, expectedStatuses },
     });
     if (!boardCheckout.ok()) {
-      throw new Error(`Board checkout failed: ${await boardCheckout.text()}`);
+      const body = await boardCheckout.text();
+      const lockIds = readConflictLockIds(body);
+      if ((lockIds.checkoutRunId || lockIds.executionRunId) && retryDepth < 10) {
+        await sleep(150);
+        return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+      }
+      throw new Error(`Board checkout failed: ${body}`);
     }
     // Board PATCH (executor mark-done triggers signoff regardless of actor)
     return board.patch(`${BASE_URL}/api/issues/${issueId}`, {
@@ -178,6 +196,11 @@ async function agentCheckoutAndPatch(
     const activeRun = await getActiveRunForCheckout(board, issueId);
     const activeRunAgentId = readString(activeRun?.agentId);
     if (activeRun && activeRunAgentId !== agent.agentId && retryDepth < 5) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+    }
+    const lockIds = readConflictLockIds(checkoutBody);
+    if ((lockIds.checkoutRunId || lockIds.executionRunId) && retryDepth < 10) {
       await sleep(150);
       return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
     }
