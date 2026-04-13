@@ -32,6 +32,16 @@ export {
 } from "./langfuse-exporter.js";
 export { runHook } from "./hook-runner.js";
 export {
+  GuardrailPolicy,
+  validatePayload,
+  resetTurnViolations,
+  DEFAULT_GUARDRAIL_CONFIG,
+  type GuardrailPolicyConfig,
+  type GuardrailResult,
+  type GuardrailViolation,
+  type GuardrailViolationType,
+} from "./guardrail-policy.js";
+export {
   DEFAULT_CONFIG,
   resolveConfig,
   type ToolMiddlewareConfig,

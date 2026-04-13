@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclipai.dev/schemas/tool-result.schema.json",
+  "title": "ToolResult",
+  "description": "Schema-constrained summary of a tool execution result. All tool outputs entering model context must conform to this schema.",
+  "type": "object",
+  "required": ["tool", "status", "exit_code", "duration_ms", "stdout_ref", "stderr_ref", "preview", "original_bytes", "original_lines"],
+  "additionalProperties": false,
+  "properties": {
+    "tool": {
+      "type": "string",
+      "description": "Name of the tool that was executed."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "error"],
+      "description": "Execution outcome."
+    },
+    "exit_code": {
+      "type": "integer",
+      "description": "Process exit code (0 = success)."
+    },
+    "duration_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Execution duration in milliseconds."
+    },
+    "stdout_ref": {
+      "type": "string",
+      "pattern": "^artifact://[0-9a-f]{64}$",
+      "description": "Artifact reference for full stdout."
+    },
+    "stderr_ref": {
+      "type": "string",
+      "pattern": "^artifact://[0-9a-f]{64}$",
+      "description": "Artifact reference for full stderr."
+    },
+    "preview": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Short preview of the output (max 200 chars normally, 500 after fallback truncation)."
+    },
+    "parsed": {
+      "oneOf": [
+        { "type": "object" },
+        { "type": "null" }
+      ],
+      "description": "Tool-specific extracted fields from jq-equivalent filter, or null."
+    },
+    "truncation_flag": {
+      "type": "boolean",
+      "description": "True when output was truncated to fit within the token ceiling."
+    },
+    "original_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Original output byte count before truncation."
+    },
+    "original_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Original output line count before truncation."
+    },
+    "cache_hit": {
+      "type": "boolean",
+      "description": "True when result was served from the dedup cache."
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclipai.dev/schemas/checkpoint-state.schema.json",
+  "title": "CheckpointState",
+  "description": "Agent checkpoint state emitted before context limit is reached.",
+  "type": "object",
+  "required": ["agentId", "sessionId", "checkpointedAt", "reason", "summary"],
+  "additionalProperties": true,
+  "properties": {
+    "agentId": {
+      "type": "string",
+      "description": "ID of the agent that triggered the checkpoint."
+    },
+    "sessionId": {
+      "type": "string",
+      "description": "Active session ID at checkpoint time."
+    },
+    "checkpointedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the checkpoint."
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["context_limit", "guardrail_violation", "manual"],
+      "description": "Why the checkpoint was triggered."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief summary of work done before checkpoint."
+    },
+    "pendingWork": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of pending tasks to resume after checkpoint."
+    }
+  }
+}

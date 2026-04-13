@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclipai.dev/schemas/wait-state.schema.json",
+  "title": "WaitState",
+  "description": "State serialized when an agent suspends to wait for an external event.",
+  "type": "object",
+  "required": ["agentId", "waitReason", "waitSince"],
+  "additionalProperties": true,
+  "properties": {
+    "agentId": {
+      "type": "string",
+      "description": "ID of the waiting agent."
+    },
+    "waitReason": {
+      "type": "string",
+      "description": "Human-readable reason for suspension."
+    },
+    "waitSince": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the wait began."
+    },
+    "resumeCondition": {
+      "type": "string",
+      "description": "Description of what event will resume the agent."
+    },
+    "context": {
+      "type": "object",
+      "description": "Minimal context needed to resume work."
+    }
+  }
+}
