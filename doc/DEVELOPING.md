@@ -407,6 +407,25 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
+Supported local master-key rekey workflow:
+
+```sh
+# Stop Paperclip and back up the DB + current key file first.
+pnpm paperclipai secrets generate-local-master-key \
+  --output ~/.paperclip/instances/default/secrets/master.key.next
+
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next
+
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next \
+  --apply \
+  --confirm-backup \
+  --activate-new-key
+```
+
+The rekey command reports counts only. It never prints secret values or key material. See `docs/deploy/secrets.md` for the full operator runbook and failure handling.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:
