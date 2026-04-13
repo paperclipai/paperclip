@@ -7,7 +7,7 @@ export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
-export type InboxTab = "mine" | "recent" | "unread" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "all" | "assigned";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
 export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "labels", "updated"] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
@@ -154,7 +154,7 @@ export function resolveIssueWorkspaceName(
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
-    if (raw === "all" || raw === "unread" || raw === "recent" || raw === "mine") return raw;
+    if (raw === "all" || raw === "unread" || raw === "recent" || raw === "mine" || raw === "assigned") return raw;
     if (raw === "new") return "mine";
     return "mine";
   } catch {
@@ -249,7 +249,7 @@ export function getApprovalsForTab(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
-  if (tab === "mine" || tab === "recent") return sortedApprovals;
+  if (tab === "mine" || tab === "recent" || tab === "assigned") return sortedApprovals;
   if (tab === "unread") {
     return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
   }
@@ -331,6 +331,7 @@ export function shouldShowInboxSection({
 }): boolean {
   if (!hasItems) return false;
   if (tab === "mine") return showOnMine;
+  if (tab === "assigned") return showOnMine;
   if (tab === "recent") return showOnRecent;
   if (tab === "unread") return showOnUnread;
   return showOnAll;
