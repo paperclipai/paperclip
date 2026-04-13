@@ -61,7 +61,12 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import {
+  redactCurrentUserText,
+  redactCurrentUserValue,
+  redactRunLogCredentialsText,
+  redactRunLogCredentialsValue,
+} from "../log-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -1892,10 +1897,10 @@ export function heartbeatService(db: Db) {
   ) {
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
+      ? redactRunLogCredentialsText(redactCurrentUserText(event.message, currentUserRedactionOptions))
       : event.message;
     const sanitizedPayload = event.payload
-      ? redactCurrentUserValue(event.payload, currentUserRedactionOptions)
+      ? redactRunLogCredentialsValue(redactCurrentUserValue(event.payload, currentUserRedactionOptions))
       : event.payload;
 
     await db.insert(heartbeatRunEvents).values({
@@ -3182,7 +3187,10 @@ export function heartbeatService(db: Db) {
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
+        // Primary run-log boundary: sanitize before excerpts, persistent logs, and live events share the chunk.
+        const sanitizedChunk = redactRunLogCredentialsText(
+          redactCurrentUserText(chunk, currentUserRedactionOptions),
+        );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -3432,20 +3440,25 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
-        adapterResult.resultJson ?? null,
-        adapterResult.summary ?? null,
+      const persistedResultJson = redactRunLogCredentialsValue(
+        mergeHeartbeatRunResultJson(
+          adapterResult.resultJson ?? null,
+          adapterResult.summary ?? null,
+        ),
       );
-
-      await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : redactCurrentUserText(
+      const persistedError =
+        outcome === "succeeded"
+          ? null
+          : redactRunLogCredentialsText(
+              redactCurrentUserText(
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
+            );
+
+      await setRunStatus(run.id, status, {
+        finishedAt: new Date(),
+        error: persistedError,
         errorCode:
           outcome === "timed_out"
             ? "timeout"
@@ -3468,7 +3481,7 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        error: persistedError,
       });
 
       const finalizedRun = await getRun(run.id);
@@ -3501,9 +3514,15 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        await updateRuntimeState(
+          agent,
+          finalizedRun,
+          adapterResult,
+          {
+            legacySessionId: nextSessionState.legacySessionId,
+          },
+          normalizedUsage,
+        );
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
@@ -3519,16 +3538,18 @@ export function heartbeatService(db: Db) {
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: outcome === "succeeded" ? null : (persistedError ?? "run_failed"),
             });
           }
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
-        await getCurrentUserRedactionOptions(),
+      const message = redactRunLogCredentialsText(
+        redactCurrentUserText(
+          err instanceof Error ? err.message : "Unknown adapter failure",
+          await getCurrentUserRedactionOptions(),
+        ),
       );
       logger.error({ err, runId }, "heartbeat execution failed");
 
@@ -4597,7 +4618,9 @@ export function heartbeatService(db: Db) {
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        content: redactCurrentUserText(result.content, await getCurrentUserRedactionOptions()),
+        content: redactRunLogCredentialsText(
+          redactCurrentUserText(result.content, await getCurrentUserRedactionOptions()),
+        ),
       };
     },
 

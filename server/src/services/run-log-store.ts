@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { redactRunLogCredentialsText } from "../log-redaction.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -50,7 +51,7 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileRunLogStore(basePath: string): RunLogStore {
+export function createLocalFileRunLogStore(basePath: string): RunLogStore {
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -112,7 +113,8 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        // Defense in depth for callers that append without going through heartbeat's primary log boundary.
+        chunk: redactRunLogCredentialsText(event.chunk),
       });
       await fs.appendFile(absPath, `${line}\n`, "utf8");
     },
@@ -153,4 +155,3 @@ export function getRunLogStore() {
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }
-
