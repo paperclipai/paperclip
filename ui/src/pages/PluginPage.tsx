@@ -26,7 +26,7 @@ export function PluginPage() {
     pluginRoutePath?: string;
   }>();
   const { companies, selectedCompanyId } = useCompany();
-  const { selected: selectedWorkspace, cwd: workspaceCwd } = useWorkspace();
+  const { selected: selectedWorkspace, cwd: workspaceCwd, branch: workspaceBranch } = useWorkspace();
   const { setBreadcrumbs } = useBreadcrumbs();
   const routeCompany = useMemo(() => {
     if (!routeCompanyPrefix) return null;
@@ -93,8 +93,9 @@ export function PluginPage() {
       companyPrefix,
       workspaceCwd: workspaceCwd ?? null,
       workspaceLabel,
+      workspaceBranch: workspaceBranch ?? null,
     }),
-    [resolvedCompanyId, companyPrefix, workspaceCwd, workspaceLabel],
+    [resolvedCompanyId, companyPrefix, workspaceCwd, workspaceLabel, workspaceBranch],
   );
 
   useEffect(() => {

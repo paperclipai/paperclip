@@ -40,4 +40,6 @@ export const projectsApi = {
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
+  getWorkspaceGitInfo: (workspaceId: string) =>
+    api.get<{ branch: string | null; dirty: boolean }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/git-info`),
 };

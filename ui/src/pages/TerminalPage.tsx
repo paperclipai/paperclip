@@ -10,7 +10,7 @@ import { TerminalPanel } from "../components/Terminal";
 import { useWorkspace } from "../context/WorkspaceContext";
 
 export function TerminalPage() {
-  const { cwd, selected } = useWorkspace();
+  const { cwd, selected, branch } = useWorkspace();
 
   if (!cwd) {
     return (
@@ -40,7 +40,10 @@ export function TerminalPage() {
           {selected && (
             <span className="font-medium text-foreground">{selected.workspace.name}</span>
           )}
-          <span className="font-mono text-muted-foreground">{cwd}</span>
+          {branch && (
+            <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-accent text-muted-foreground">{branch}</span>
+          )}
+          <span className="font-mono text-muted-foreground text-xs">{cwd}</span>
         </div>
       </div>
       <TerminalPanel cwd={cwd} className="flex-1 min-h-0" />
