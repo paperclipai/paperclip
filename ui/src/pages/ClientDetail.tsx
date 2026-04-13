@@ -186,7 +186,6 @@ export function ClientDetail() {
           <p className="text-sm text-muted-foreground">Client relationship record</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <StatusBadge status={currentClient.status} />
           {!editing && (
             <Button size="sm" variant="ghost" onClick={startEditing}>
               <Pencil className="h-3.5 w-3.5 mr-1" />
