@@ -78,6 +78,7 @@ import {
   skillInvocationDurationSeconds,
   isMetricsEnabled,
 } from "../observability/metrics.js";
+import { agentPoliciesService } from "./agent-policies.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 // Terminal statuses for heartbeatRuns (matches HeartbeatRunStatus from @paperclipai/shared).
@@ -3685,6 +3686,24 @@ export function heartbeatService(db: Db) {
         });
         activeRunExecutions.delete(run.id);
         return;
+      }
+      // Inject active agent policies into execution context so adapters can
+      // consume learned runtime behavior without touching adapterConfig.
+      try {
+        const activePolicies = await agentPoliciesService(db).getActivePoliciesForAgent(agent.id);
+        if (activePolicies.length > 0) {
+          context.paperclipAgentPolicies = activePolicies.map((p) => ({
+            key: p.key,
+            title: p.title,
+            format: p.format,
+            body: p.latestBody,
+          }));
+        }
+      } catch (err) {
+        logger.warn(
+          { agentId: agent.id, runId: run.id, err },
+          "failed to load agent policies; continuing without them",
+        );
       }
       let executedAdapterType = agent.adapterType;
 

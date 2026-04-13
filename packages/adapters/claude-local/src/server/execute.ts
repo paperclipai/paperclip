@@ -350,9 +350,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
+
+  // Inject active agent policies from execution context into the instructions content.
+  const rawPolicies = Array.isArray(context.paperclipAgentPolicies)
+    ? (context.paperclipAgentPolicies as Array<{ key?: unknown; title?: unknown; body?: unknown }>)
+    : [];
+  const policySection =
+    rawPolicies.length > 0
+      ? "\n\n# Agent Policies\n\n" +
+        rawPolicies
+          .map((p) => {
+            const title = typeof p.title === "string" ? p.title : String(p.key ?? "");
+            const body = typeof p.body === "string" ? p.body : "";
+            return `## ${title}\n\n${body}`;
+          })
+          .join("\n\n")
+      : "";
+
   // When instructionsFilePath is configured, build a stable content-addressed
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
+  // Also appends any active agent policies from the execution context.
   let combinedInstructionsContents: string | null = null;
   if (instructionsFilePath) {
     try {
@@ -362,7 +380,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Resolve any relative file references from ${instructionsFileDir}. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
-      combinedInstructionsContents = instructionsContent + pathDirective;
+      combinedInstructionsContents = instructionsContent + pathDirective + policySection;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -370,6 +388,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
     }
+  } else if (policySection) {
+    // No instructions file but we have policies — use policy content as instructions.
+    combinedInstructionsContents = policySection.trimStart();
   }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
