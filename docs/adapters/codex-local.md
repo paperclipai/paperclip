@@ -45,10 +45,10 @@ You can also set the variables explicitly (this takes precedence over the auto-m
 
 ```json
 {
+  "model": "anthropic/claude-3-5-sonnet",
   "env": {
     "OPENAI_API_KEY": "sk-or-v1-…",
-    "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
-    "model": "anthropic/claude-3-5-sonnet"
+    "OPENAI_BASE_URL": "https://openrouter.ai/api/v1"
   }
 }
 ```
