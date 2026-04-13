@@ -6,7 +6,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
-import { applyPendingMigrations, companies, createDb, ensurePostgresDatabase } from "@paperclipai/db";
+import { applyPendingMigrations, companies, createDb, ensurePostgresDatabase, projects, projectWorkspaces } from "@paperclipai/db";
 import { createApp } from "../app.js";
 import { issueService } from "../services/issues.js";
 import { projectService } from "../services/projects.js";
@@ -128,6 +128,36 @@ describe("issue done transition route", () => {
     });
   }
 
+  async function createRepoConnectedProject() {
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Repo project ${projectId.slice(0, 8)}`,
+      status: "backlog",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "Primary repo workspace",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/acme/paperclip",
+      isPrimary: true,
+    });
+    return projectId;
+  }
+
+  async function createRepoConnectedIssueWithoutCodeLabel() {
+    const projectId = await createRepoConnectedProject();
+    return issueService(db).create(companyId, {
+      title: `Repo-connected issue ${randomUUID()}`,
+      status: "todo",
+      priority: "high",
+      projectId,
+    });
+  }
+
   async function attachImage(issueId: string) {
     return issueService(db).createAttachment({
       issueId,
@@ -168,6 +198,35 @@ describe("issue done transition route", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
     expect(res.body.labelIds).toEqual([]);
+  });
+
+  it("rejects done transitions for repo-connected project issues without code label", async () => {
+    const issue = await createRepoConnectedIssueWithoutCodeLabel();
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", comment: "Validation-only update." });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("repo-connected workspace");
+    expect(res.body.details).toMatchObject({
+      requiredLabel: "code",
+      enforcedSignals: {
+        projectRepoWorkspace: "Issue belongs to a project with a repo-connected workspace (repoUrl set).",
+      },
+    });
+  });
+
+  it("allows done when the same patch detaches issue from repo-connected project", async () => {
+    const issue = await createRepoConnectedIssueWithoutCodeLabel();
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", projectId: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+    expect(res.body.projectId).toBeNull();
   });
 
   it("rejects done when commit evidence is local-only (not on remote)", async () => {
