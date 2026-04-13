@@ -72,4 +72,14 @@ describe("applyOpenRouterOpenAiEnvMapping", () => {
     expect(env.OPENAI_API_KEY).toBe("sk-or-1");
     expect(env.OPENAI_BASE_URL).toBeUndefined();
   });
+
+  it("respects OPENAI_API_BASE_URL when set", () => {
+    const env: Record<string, string> = {
+      OPENROUTER_API_KEY: "sk-or-1",
+      OPENAI_API_BASE_URL: "https://example.com/v1",
+    };
+    applyOpenRouterOpenAiEnvMapping(env);
+    expect(env.OPENAI_API_KEY).toBe("sk-or-1");
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+  });
 });
