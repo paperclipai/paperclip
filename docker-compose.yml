@@ -1,5 +1,5 @@
 services:
-  db:
+  paperclip-db:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: paperclip
@@ -16,14 +16,14 @@ services:
     entrypoint:
       - sh
       - -c
-      - printf 'local all all trust\nhost all all 0.0.0.0/0 trust\nhost all all ::0/0 trust\n' > /tmp/pg_hba.conf && exec docker-entrypoint.sh postgres -c hba_file=/tmp/pg_hba.conf
+      - "printf 'local all all trust\nhost all all 0.0.0.0/0 trust\nhost all all ::0/0 trust\n' > /tmp/pg_hba.conf && exec docker-entrypoint.sh postgres -c hba_file=/tmp/pg_hba.conf"
 
   server:
     build: .
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: "postgres://paperclip:paperclip@db:5432/paperclip"
+      DATABASE_URL: "postgres://paperclip:paperclip@paperclip-db:5432/paperclip"
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
@@ -39,7 +39,7 @@ services:
     volumes:
       - paperclip-data:/paperclip
     depends_on:
-      db:
+      paperclip-db:
         condition: service_healthy
 
 volumes:
