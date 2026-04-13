@@ -39,6 +39,8 @@ Set only `OPENROUTER_API_KEY` in the agent's `env` config:
 
 Paperclip automatically maps `OPENROUTER_API_KEY` → `OPENAI_API_KEY` and sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the Codex child process. Usage is tagged as `openrouter` in the billing ledger.
 
+Billing inference also treats the upstream as OpenRouter when **any** of `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or `OPENAI_API_BASE_URL` points at `openrouter.ai` (some CLIs only export the alternate keys). See the [deploy environment variables reference](../deploy/environment-variables.md) for the full table.
+
 You can also set the variables explicitly (this takes precedence over the auto-mapping):
 
 ```json
@@ -47,6 +49,17 @@ You can also set the variables explicitly (this takes precedence over the auto-m
     "OPENAI_API_KEY": "sk-or-v1-…",
     "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
     "model": "anthropic/claude-3-5-sonnet"
+  }
+}
+```
+
+If your environment only provides an alternate base-URL key, use `OPENAI_API_BASE` or `OPENAI_API_BASE_URL` instead of `OPENAI_BASE_URL`:
+
+```json
+{
+  "env": {
+    "OPENAI_API_KEY": "sk-or-v1-…",
+    "OPENAI_API_BASE": "https://openrouter.ai/api/v1"
   }
 }
 ```
