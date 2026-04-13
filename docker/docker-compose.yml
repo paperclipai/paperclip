@@ -91,6 +91,7 @@ services:
       CHECK_INTERVAL_SECONDS: "120"
       ALERT_COOLDOWN_SECONDS: "900"
       SERVER_CONTAINER_NAME: "paperclip-server-1"
+      DASHBOARD_URL: "http://dashboard:3200"
       GMAIL_USER: "${GMAIL_USER:-angel.hermon.mail@gmail.com}"
       GMAIL_APP_PASSWORD: "${GMAIL_APP_PASSWORD:-}"
       ALERT_EMAIL_TO: "${ALERT_EMAIL_TO:-angel.hermon.mail@gmail.com}"
@@ -122,7 +123,8 @@ services:
       - C:/Users/User/.claude/watchdog:/data
       - /var/run/docker.sock:/var/run/docker.sock
       - ../scripts:/scripts:ro
-      - C:/Users/User/paperclip:/project:ro
+      - C:/Users/User/paperclip:/project:rw
+      - paperclip-data:/paperclip-data
     restart: unless-stopped
 
 networks:

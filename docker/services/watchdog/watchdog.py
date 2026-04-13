@@ -370,6 +370,92 @@ async def check_approvals() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Crash-loop detection via Docker events
+# ---------------------------------------------------------------------------
+async def watch_container_events() -> None:
+    """
+    Stream Docker events for paperclip-server-1 die events.
+    If CRASH_THRESHOLD exits with non-zero code occur within CRASH_WINDOW seconds,
+    trigger automatic rollback via the dashboard /api/rollback endpoint.
+    """
+    global _rollback_triggered, _server_exit_timestamps
+
+    logger.info(
+        "Crash-loop detector started — threshold=%d crashes in %ds",
+        CRASH_THRESHOLD, CRASH_WINDOW,
+    )
+
+    while True:
+        try:
+            dc = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+            # Stream events filtered to the server container
+            for event in dc.events(decode=True, filters={"container": SERVER_CONTAINER, "event": "die"}):
+                if _rollback_triggered:
+                    logger.info("Rollback already triggered — ignoring die event")
+                    continue
+
+                # Extract exit code from event attributes
+                exit_code_str = event.get("Actor", {}).get("Attributes", {}).get("exitCode", "0")
+                try:
+                    exit_code = int(exit_code_str)
+                except ValueError:
+                    exit_code = 1
+
+                if exit_code == 0:
+                    # Clean shutdown — not a crash
+                    logger.debug("Server container exited cleanly (exit 0) — not a crash")
+                    continue
+
+                now = time.time()
+                _server_exit_timestamps.append(now)
+
+                # Trim timestamps outside the window
+                _server_exit_timestamps = [
+                    ts for ts in _server_exit_timestamps if now - ts <= CRASH_WINDOW
+                ]
+
+                count = len(_server_exit_timestamps)
+                logger.warning(
+                    "Server crash detected (exit %d) — %d crash(es) in last %ds",
+                    exit_code, count, CRASH_WINDOW,
+                )
+                _log_event("server_crash", {"exit_code": exit_code, "crash_count": count, "window": CRASH_WINDOW})
+
+                if count >= CRASH_THRESHOLD:
+                    _rollback_triggered = True
+                    logger.error(
+                        "CRASH LOOP DETECTED (%d crashes in %ds) — triggering rollback",
+                        count, CRASH_WINDOW,
+                    )
+                    _log_event("crash_loop_detected", {"count": count, "window": CRASH_WINDOW})
+
+                    await send_telegram(
+                        f"🔄 *Crash loop detected on paperclip-server*\n"
+                        f"{count} crashes in {CRASH_WINDOW}s\n"
+                        f"Triggering automatic rollback via dashboard…"
+                    )
+
+                    try:
+                        async with httpx.AsyncClient(timeout=15) as client:
+                            resp = await client.post(f"{DASHBOARD_URL}/api/rollback")
+                            if resp.status_code in (200, 202):
+                                logger.info("Rollback triggered via dashboard: %s", resp.text[:200])
+                                _log_event("rollback_triggered", {"via": "dashboard", "status": resp.status_code})
+                            else:
+                                logger.error("Dashboard /api/rollback returned %d: %s", resp.status_code, resp.text[:200])
+                    except Exception as e:
+                        logger.error("Failed to trigger rollback via dashboard: %s", e)
+                        await send_telegram(
+                            f"⚠️ Could not reach dashboard to trigger rollback: {e}\n"
+                            "Manual intervention required."
+                        )
+
+        except Exception as e:
+            logger.error("watch_container_events error (will retry in 10s): %s", e)
+            await asyncio.sleep(10)
+
+
+# ---------------------------------------------------------------------------
 # Server health + recovery
 # ---------------------------------------------------------------------------
 async def check_health() -> bool:
@@ -487,6 +573,10 @@ async def run_checks() -> None:
         _clear_alert("server_down")
         return
 
+    if _rollback_triggered:
+        logger.info("Rollback in progress — skipping restart attempt")
+        return
+
     logger.warning("Server unhealthy, attempting restart…")
     restarted = restart_server()
     _log_event("server_restarted", {"success": restarted})
@@ -510,7 +600,8 @@ async def run_checks() -> None:
     )
 
 
-async def main() -> None:
+async def _check_loop() -> None:
+    """Periodic check loop (credentials, approvals, health)."""
     logger.info(
         "Watchdog started — interval=%ds  server=%s  approvals=%s",
         CHECK_INTERVAL,
@@ -527,6 +618,13 @@ async def main() -> None:
         except Exception as e:
             logger.error("Unexpected error in run_checks: %s", e)
         await asyncio.sleep(CHECK_INTERVAL)
+
+
+async def main() -> None:
+    await asyncio.gather(
+        watch_container_events(),
+        _check_loop(),
+    )
 
 
 if __name__ == "__main__":

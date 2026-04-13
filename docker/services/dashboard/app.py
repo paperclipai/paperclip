@@ -38,11 +38,12 @@ CONTAINER_NAMES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Deploy state
+# Deploy / rollback state
 # ---------------------------------------------------------------------------
 DEPLOY_TOKEN = os.getenv("DEPLOY_TOKEN", os.getenv("PAPERCLIP_API_KEY", ""))
 
 _deploy_job_id: "str | None" = None
+_rollback_job_id: "str | None" = None
 
 # ---------------------------------------------------------------------------
 # In-memory job store
@@ -247,10 +248,12 @@ def _run_script_bg(job_id: str, script_path: Path):
             status=status, exit_code=rc,
             finished=datetime.now(tz=timezone.utc).isoformat(),
         )
-        # Release deploy lock if this was the active deploy job
-        global _deploy_job_id
+        # Release deploy / rollback lock if this was the active job
+        global _deploy_job_id, _rollback_job_id
         if _deploy_job_id == job_id:
             _deploy_job_id = None
+        if _rollback_job_id == job_id:
+            _rollback_job_id = None
     _broadcast(job_id, json.dumps({"done": True, "status": status, "exit_code": rc}))
 
 # ---------------------------------------------------------------------------
@@ -445,6 +448,67 @@ def api_deploy_status():
         if not _deploy_job_id:
             return jsonify({"status": "idle"}), 200
         job = _script_jobs.get(_deploy_job_id)
+    if not job:
+        return jsonify({"status": "idle"}), 200
+    r = dict(job)
+    r["output"] = "\n".join(r.pop("output_lines", []))
+    return jsonify(r)
+
+
+@app.route("/api/rollback", methods=["POST"])
+def api_rollback():
+    """Trigger a rollback to the last known stable image/commit.
+    Prevents concurrent deploys or rollbacks. No auth required (internal use by watchdog)."""
+    global _rollback_job_id, _job_counter
+
+    script_path = SCRIPTS_DIR / "rollback.sh"
+    if not script_path.is_file():
+        return jsonify({"error": "rollback.sh not found in /scripts — check volume mount"}), 500
+
+    with _script_lock:
+        # Prevent concurrent deploys or rollbacks
+        if _deploy_job_id:
+            existing = _script_jobs.get(_deploy_job_id)
+            if existing and existing.get("status") == "running":
+                return jsonify({
+                    "error": "Deploy already in progress — cannot rollback",
+                    "job_id": _deploy_job_id,
+                }), 409
+        if _rollback_job_id:
+            existing = _script_jobs.get(_rollback_job_id)
+            if existing and existing.get("status") == "running":
+                return jsonify({
+                    "error": "Rollback already in progress",
+                    "job_id": _rollback_job_id,
+                }), 409
+
+        _job_counter += 1
+        job_id = f"rollback-{_job_counter}"
+        _rollback_job_id = job_id
+        _script_jobs[job_id] = {
+            "id":           job_id,
+            "file":         "rollback.sh",
+            "status":       "running",
+            "output_lines": [],
+            "exit_code":    None,
+            "started":      datetime.now(tz=timezone.utc).isoformat(),
+            "finished":     None,
+        }
+
+    with _stream_lock:
+        _stream_queues[job_id] = []
+
+    threading.Thread(target=_run_script_bg, args=(job_id, script_path), daemon=True).start()
+    return jsonify({"job_id": job_id, "message": "Rollback started"}), 202
+
+
+@app.route("/api/rollback/status")
+def api_rollback_status():
+    """Status of the most recent rollback job."""
+    with _script_lock:
+        if not _rollback_job_id:
+            return jsonify({"status": "idle"}), 200
+        job = _script_jobs.get(_rollback_job_id)
     if not job:
         return jsonify({"status": "idle"}), 200
     r = dict(job)
