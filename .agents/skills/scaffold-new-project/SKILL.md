@@ -52,6 +52,37 @@ Abort and comment on the issue if any check fails. Describe what is missing so t
 
 ## Step 2 — Create GitHub Repo
 
+**Preferred: use a Darwin template repo (if available for the stack).**
+
+Check the Darwin template registry first:
+
+```bash
+cat /home/r1kon/repos/registry.json | python3 -c "import sys,json; [print(r['name'], r.get('githubUrl','')) for r in json.load(sys.stdin) if r.get('isTemplate')]"
+```
+
+| STACK value | Template repo (use when available) |
+|---|---|
+| `laravel-saas` | `KEatonDarwin/laravel-saas` |
+| `laravel-api` | `KEatonDarwin/laravel-api` |
+| `nextjs-saas` | `KEatonDarwin/nextjs-saas` |
+| others | no template yet — scaffold from scratch (Step 3) |
+
+**If a matching template exists:**
+
+```bash
+cd /home/r1kon/repos/
+gh repo create KEatonDarwin/$PROJECT_NAME \
+  --template KEatonDarwin/$STACK \
+  --private \
+  --clone \
+  --description "Darwin Agency — $PROJECT_NAME"
+cd $PROJECT_NAME
+# Skip Step 3 — template already includes full boilerplate, CI/CD, and Railway config
+# Proceed directly to Step 5 (Railway provisioning)
+```
+
+**If no matching template exists (scaffold from scratch):**
+
 ```bash
 cd /home/r1kon/repos/
 gh repo create KEatonDarwin/$PROJECT_NAME \
@@ -63,7 +94,7 @@ cd $PROJECT_NAME
 
 > **Note:** If Kevin has created the `DarwinAgencyTech` GitHub org, use `DarwinAgencyTech/$PROJECT_NAME` instead.
 
-## Step 3 — Apply Stack Template
+## Step 3 — Apply Stack Template (scratch only — skip if using Darwin template)
 
 Choose the command matching `STACK`:
 
@@ -102,7 +133,7 @@ git commit -m "chore: scaffold $PROJECT_NAME ($STACK)
 Co-Authored-By: Paperclip <noreply@paperclip.ing>"
 ```
 
-## Step 4 — Wire CI/CD
+## Step 4 — Wire CI/CD (scratch only — skip if using Darwin template)
 
 Copy the reference deploy workflow from the Darwin Agency runbook:
 
@@ -225,15 +256,21 @@ Next steps:
 
 ## Stack Quick-Reference
 
-| Kevin's intent | STACK value |
-|---|---|
-| dashboard, admin, internal tool | `nextjs-shadcn` |
-| landing page, marketing site | `nextjs` |
-| full app, SaaS, web product | `nextjs` |
-| API, backend, webhook, service | `express` |
-| PHP / Laravel / Darwin stack | `laravel` |
-| Vue-first | `nuxt` |
-| Unclear / general | `nextjs` |
+| Kevin's intent | STACK value | Darwin template? |
+|---|---|---|
+| SaaS app with teams, auth, multi-tenant (PHP/Vue) | `laravel-saas` | Yes — `KEatonDarwin/laravel-saas` |
+| SaaS app with teams, auth, multi-tenant (PHP/React) | `laravel-saas-react` | Yes — `KEatonDarwin/laravel-saas-react` |
+| Headless API, webhooks, backend service (PHP) | `laravel-api` | Yes — `KEatonDarwin/laravel-api` |
+| Background jobs, queues, webhooks, pipelines (PHP) | `laravel-jobs-worker` | Yes — `KEatonDarwin/laravel-jobs-worker` |
+| Server-rendered dashboard / back-office (PHP/Blade) | `laravel-blade-mvc` | Yes — `KEatonDarwin/laravel-blade-mvc` |
+| Reactive PHP panel with live data, kiosk option | `laravel-livewire-panel` | Yes — `KEatonDarwin/laravel-livewire-panel` |
+| SaaS app with teams, auth, multi-tenant (Next.js) | `nextjs-saas` | Yes — `KEatonDarwin/nextjs-saas` |
+| Kiosk / wall display, polling data, no auth | `nextjs-kiosk` | Yes — `KEatonDarwin/nextjs-kiosk` |
+| SaaS app with teams, auth, multi-tenant (Nuxt/Vue) | `nuxt-saas` | Yes — `KEatonDarwin/nuxt-saas` |
+| Landing page, marketing site, blog, docs | `astro-marketing` | Yes — `KEatonDarwin/astro-marketing` |
+| Dashboard, admin, internal tool (Next.js + shadcn) | `nextjs-shadcn` | No — scaffold from scratch |
+| API, backend, webhook, service (Node) | `express` | No — scaffold from scratch |
+| Unclear / general | `nextjs-saas` | Yes — use Darwin template |
 
 ## Troubleshooting
 
