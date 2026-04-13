@@ -4,7 +4,7 @@ FROM python:3.12-slim
 # Install system dependencies
 # git is needed for DeerFlow pre-flight research to read repo history and
 # explore codebases mounted from the host via /workspace or /paperclip/Projects.
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     git \
@@ -28,6 +28,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Expose ports (gateway: 8001, langgraph: 2024)
 EXPOSE 8001 2024
+
+# Run as non-root user
+RUN groupadd -r deerflow && useradd -r -g deerflow -d /app deerflow \
+    && chown -R deerflow:deerflow /app
+USER deerflow
 
 # Default command (can be overridden in docker-compose)
 CMD ["sh", "-c", "uv run uvicorn deerflow.gateway.app:app --host 0.0.0.0 --port 8001"]
