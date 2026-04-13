@@ -8,6 +8,7 @@ export default defineConfig({
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "packages/shared",
+      "packages/tool-middleware",
       "server",
       "ui",
       "cli",
