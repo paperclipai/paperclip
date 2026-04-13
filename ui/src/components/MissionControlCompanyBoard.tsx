@@ -125,6 +125,7 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
   const companyHealthIssues = issues.filter((issue) => issue.title.startsWith("Company Health Monitor"));
   const openHealthIssues = companyHealthIssues.filter((issue) => issue.status !== "done" && issue.status !== "cancelled");
   const inProgressProjects = projects.filter((project) => project.status === "in_progress");
+  const completedProjects = projects.filter((project) => project.status === "completed").length;
   const activeRoutines = routines.filter((routine) => routine.status === "active");
   const routinesWithLastRun = routines.filter((routine) => routine.lastRun);
   const latestSignals = activity.slice(0, 8);
@@ -144,6 +145,8 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
 
   const healthyAgents = agents.filter((agent) => agent.status !== "error" && heartbeatState(agent.lastHeartbeatAt).tone === "good").length;
   const agentsNeedingAttention = agents.filter((agent) => agent.status === "error" || heartbeatState(agent.lastHeartbeatAt).tone !== "good").length;
+  const achievedGoals = goals.filter((goal) => goal.status === "achieved").length;
+  const plannedGoals = goals.filter((goal) => goal.status === "planned").length;
 
   const recoveredAgents = agents.filter((agent) => {
     const agentRuns = heartbeats.filter((run) => run.agentId === agent.id);
@@ -180,6 +183,7 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
     .map(([code, count]) => ({ code, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 4);
+  const topErrorCode = errorCodeBreakdown[0] ? `${errorCodeBreakdown[0].code} · ${errorCodeBreakdown[0].count}` : "none";
 
   return (
     <div className="space-y-4">
@@ -199,16 +203,32 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <ShieldAlert className="h-4 w-4" /> Company / Agent Health
+              <ShieldAlert className="h-4 w-4" /> 회사와 에이전트 상태
             </CardTitle>
-            <CardDescription>누가 살아 있고 어디가 멈췄는지 먼저 본다.</CardDescription>
+            <CardDescription>에이전트 생존, 최신 허트비트, 이상 징후를 먼저 본다.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
             <Stat label="healthy agents" value={healthyAgents} tone={healthyAgents > 0 ? "good" : "warn"} />
             <Stat label="stale / error agents" value={agentsNeedingAttention} tone={agentsNeedingAttention > 0 ? "warn" : "good"} />
             <Stat label="latest heartbeat" value={latestHeartbeatStat.value} tone={latestHeartbeatStat.tone} />
-            <div className="flex items-center justify-between pt-1">
+            <div className="pt-1">
               <Link to="/agents" className="text-xs text-primary underline underline-offset-2">Agents 열기</Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ClipboardList className="h-4 w-4" /> 관제 큐
+            </CardTitle>
+            <CardDescription>지금 허브가 직접 처리할 열린 카드와 막힘을 요약한다.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2">
+            <Stat label="open control cards" value={openIssues.length} tone={openIssues.length > 0 ? "warn" : "good"} />
+            <Stat label="blocked cards" value={blockedIssues.length} tone={blockedIssues.length > 0 ? "bad" : "good"} />
+            <Stat label="active projects" value={inProgressProjects.length} tone={inProgressProjects.length > 0 ? "good" : "warn"} />
+            <div className="pt-1">
               <Link to="/issues" className="text-xs text-primary underline underline-offset-2">Issues 열기</Link>
             </div>
           </CardContent>
@@ -217,34 +237,15 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <ClipboardList className="h-4 w-4" /> Control Queue
+              <RefreshCcw className="h-4 w-4" /> 복구와 신뢰성
             </CardTitle>
-            <CardDescription>허브가 직접 처리할 열린 카드와 막힘을 요약한다.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-2">
-            <Stat label="open control cards" value={openIssues.length} tone={openIssues.length > 0 ? "warn" : "good"} />
-            <Stat label="blocked cards" value={blockedIssues.length} tone={blockedIssues.length > 0 ? "bad" : "good"} />
-            <Stat label="active projects" value={inProgressProjects.length} tone={inProgressProjects.length > 0 ? "good" : "warn"} />
-            <div className="flex items-center justify-between pt-1">
-              <Link to="/issues" className="text-xs text-primary underline underline-offset-2">Issues 전체 보기</Link>
-              <Link to="/projects" className="text-xs text-primary underline underline-offset-2">Projects 열기</Link>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <RefreshCcw className="h-4 w-4" /> Recovery / Reliability
-            </CardTitle>
-            <CardDescription>실패 누적과 복구 상태를 분리해서 본다.</CardDescription>
+            <CardDescription>실패 누적, 복구 여부, 최근 실패 시점을 함께 본다.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
             <Stat label="historical failed heartbeat" value={failedRuns.length} tone={failedRuns.length > 0 ? "bad" : "good"} />
             <Stat label="recovered agents" value={recoveredAgents} tone={recoveredAgents > 0 ? "good" : "default"} />
             <Stat label="latest failure" value={latestFailureRecency.value} tone={latestFailureRecency.tone} />
-            <div className="flex items-center justify-between pt-1">
-              <Link to="/activity" className="text-xs text-primary underline underline-offset-2">Activity 열기</Link>
+            <div className="pt-1">
               <Link to="/routines" className="text-xs text-primary underline underline-offset-2">Routines 열기</Link>
             </div>
           </CardContent>
@@ -253,17 +254,16 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <RadioTower className="h-4 w-4" /> Live Signals
+              <RadioTower className="h-4 w-4" /> 실시간 신호
             </CardTitle>
-            <CardDescription>루틴과 활동 신호가 최근에도 살아 있는지 본다.</CardDescription>
+            <CardDescription>최근 활동, 활성 루틴, 최신 신호 시점을 요약한다.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
             <Stat label="recent signals" value={latestSignals.length} tone={latestSignals.length > 0 ? "warn" : "good"} />
             <Stat label="active routines" value={activeRoutines.length} tone={activeRoutines.length > 0 ? "good" : "warn"} />
             <Stat label="recent signal" value={latestSignalStat.value} tone={latestSignalStat.tone} />
-            <div className="flex items-center justify-between pt-1">
+            <div className="pt-1">
               <Link to="/activity" className="text-xs text-primary underline underline-offset-2">Activity 열기</Link>
-              <Link to="/routines" className="text-xs text-primary underline underline-offset-2">Routines 열기</Link>
             </div>
           </CardContent>
         </Card>
@@ -272,74 +272,45 @@ export function MissionControlCompanyBoard({ companyId }: { companyId: string })
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base"><FolderKanban className="h-4 w-4" /> Projects</CardTitle>
-            <CardDescription>관제 허브가 추적하는 실행 묶음</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-base"><FolderKanban className="h-4 w-4" /> 프로젝트 구조</CardTitle>
+            <CardDescription>관제 허브가 추적하는 실행 묶음을 숫자로 먼저 본다.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {projects.slice(0, 6).map((project) => (
-              <div key={project.id} className="flex items-center justify-between rounded-md border px-3 py-2">
-                <span>{project.name}</span>
-                <Badge variant="outline">{project.status}</Badge>
-              </div>
-            ))}
-            <Link to="/projects" className="text-xs text-primary underline underline-offset-2">Projects 전체 보기</Link>
+          <CardContent className="grid gap-2">
+            <Stat label="전체 프로젝트" value={projects.length} />
+            <Stat label="진행 중 프로젝트" value={inProgressProjects.length} tone={inProgressProjects.length > 0 ? "good" : "warn"} />
+            <Stat label="완료 프로젝트" value={completedProjects} tone={completedProjects > 0 ? "good" : "default"} />
+            <div className="pt-1">
+              <Link to="/projects" className="text-xs text-primary underline underline-offset-2">Projects 열기</Link>
+            </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base"><Goal className="h-4 w-4" /> Goal Map</CardTitle>
-            <CardDescription>경영 목표와 운영 목표의 현재 상태</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-base"><Goal className="h-4 w-4" /> 목표 구조</CardTitle>
+            <CardDescription>경영 목표와 운영 목표의 현재 상태를 한 번에 본다.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {goals.slice(0, 6).map((goal) => (
-              <div key={goal.id} className="flex items-center justify-between rounded-md border px-3 py-2">
-                <span>{goal.title}</span>
-                <Badge variant="outline">{goal.status}</Badge>
-              </div>
-            ))}
-            <Link to="/goals" className="text-xs text-primary underline underline-offset-2">Goals 열기</Link>
+          <CardContent className="grid gap-2">
+            <Stat label="전체 목표" value={goals.length} />
+            <Stat label="달성 목표" value={achievedGoals} tone={achievedGoals > 0 ? "good" : "default"} />
+            <Stat label="계획 목표" value={plannedGoals} tone={plannedGoals > 0 ? "warn" : "default"} />
+            <div className="pt-1">
+              <Link to="/goals" className="text-xs text-primary underline underline-offset-2">Goals 열기</Link>
+            </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base"><AlertTriangle className="h-4 w-4" /> Failure Breakdown</CardTitle>
-            <CardDescription>343개 실패 허트비트의 축을 에이전트와 오류 코드로 나눠 본다.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-base"><AlertTriangle className="h-4 w-4" /> 실패 분해</CardTitle>
+            <CardDescription>실패 허트비트를 에이전트 축과 오류 축으로 요약한다.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="grid gap-2">
-              <Stat label="open health cards" value={openHealthIssues.length} tone={openHealthIssues.length > 0 ? "warn" : "good"} />
-              <Stat label="company health monitors" value={companyHealthIssues.length} tone={companyHealthIssues.length > 0 ? "default" : "warn"} />
-              <Stat label="routine runs with history" value={routinesWithLastRun.length} tone={routinesWithLastRun.length > 0 ? "good" : "warn"} />
-            </div>
-
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top failing agents</div>
-              {failureBreakdown.length === 0 ? (
-                <div className="rounded-md border px-3 py-2 text-muted-foreground">실패 허트비트 없음</div>
-              ) : (
-                failureBreakdown.map((item) => (
-                  <div key={item.agentId} className="flex items-center justify-between rounded-md border px-3 py-2">
-                    <span>{item.agentName}</span>
-                    <Badge variant="outline">{item.count}</Badge>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Error codes</div>
-              {errorCodeBreakdown.length === 0 ? (
-                <div className="rounded-md border px-3 py-2 text-muted-foreground">오류 코드 없음</div>
-              ) : (
-                errorCodeBreakdown.map((item) => (
-                  <div key={item.code} className="flex items-center justify-between rounded-md border px-3 py-2">
-                    <span>{item.code}</span>
-                    <Badge variant="outline">{item.count}</Badge>
-                  </div>
-                ))
-              )}
+          <CardContent className="grid gap-2">
+            <Stat label="누적 실패 허트비트" value={failedRuns.length} tone={failedRuns.length > 0 ? "bad" : "good"} />
+            <Stat label="복구된 에이전트" value={recoveredAgents} tone={recoveredAgents > 0 ? "good" : "default"} />
+            <Stat label="주요 오류 코드" value={topErrorCode} tone={failedRuns.length > 0 ? "warn" : "default"} />
+            <div className="pt-1">
+              <Link to="/activity" className="text-xs text-primary underline underline-offset-2">Activity 열기</Link>
             </div>
           </CardContent>
         </Card>
