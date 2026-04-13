@@ -20,6 +20,7 @@ class LocalSandbox(Sandbox):
         """
         super().__init__(id)
         self.path_mappings = path_mappings or {}
+        self._agent_written_paths: set[str] = set()
 
     def _resolve_path(self, path: str) -> str:
         """
@@ -134,6 +135,29 @@ class LocalSandbox(Sandbox):
 
         return pattern.sub(replace_match, command)
 
+    def _resolve_paths_in_content(self, content: str) -> str:
+        """Resolve container paths to local paths in file content.
+
+        Unlike _resolve_paths_in_command which uses shell-aware boundaries,
+        this treats content as plain text. Resolved paths normalized to
+        forward slashes to avoid backslash-escape issues on Windows.
+        """
+        import re
+
+        sorted_mappings = sorted(self.path_mappings.items(), key=lambda x: len(x[0]), reverse=True)
+        if not sorted_mappings:
+            return content
+
+        patterns = [re.escape(container_path) + r"(?=/|$|[^\w./-])(?:/[^\s\"';&|<>()]*)?" for container_path, _ in sorted_mappings]
+        pattern = re.compile("|".join(f"({p})" for p in patterns))
+
+        def replace_match(match: re.Match) -> str:
+            matched_path = match.group(0)
+            resolved = self._resolve_path(matched_path)
+            return resolved.replace("\\", "/")
+
+        return pattern.sub(replace_match, content)
+
     @staticmethod
     def _get_shell() -> str:
         """Detect available shell executable with fallback.
@@ -182,13 +206,19 @@ class LocalSandbox(Sandbox):
         resolved_path = self._resolve_path(path)
         try:
             with open(resolved_path) as f:
-                return f.read()
+                content = f.read()
+            if resolved_path in self._agent_written_paths:
+                content = self._reverse_resolve_paths_in_output(content)
+            return content
         except OSError as e:
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths
             raise type(e)(e.errno, e.strerror, path) from None
 
     def write_file(self, path: str, content: str, append: bool = False) -> None:
         resolved_path = self._resolve_path(path)
+        # Resolve virtual paths in content for local sandbox
+        if self.path_mappings:
+            content = self._resolve_paths_in_content(content)
         try:
             dir_path = os.path.dirname(resolved_path)
             if dir_path:
@@ -196,6 +226,7 @@ class LocalSandbox(Sandbox):
             mode = "a" if append else "w"
             with open(resolved_path, mode) as f:
                 f.write(content)
+            self._agent_written_paths.add(resolved_path)
         except OSError as e:
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths
             raise type(e)(e.errno, e.strerror, path) from None
