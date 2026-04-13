@@ -9,6 +9,8 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -20,7 +22,7 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
@@ -70,6 +72,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           next();
           return;
         }
+      }
+      // In local_trusted mode, reject mutating requests without auth to prevent
+      // silent misattribution to local-board (see AIU-307).
+      if (opts.deploymentMode === "local_trusted" && !SAFE_METHODS.has(req.method.toUpperCase())) {
+        res.status(401).json({ error: "Authentication required for mutating requests" });
+        return;
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
