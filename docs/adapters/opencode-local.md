@@ -46,7 +46,7 @@ OpenCode's permission system blocks access to directories outside the project ro
 
 This temporary config is isolated from the user's real `~/.config/opencode/opencode.json` and is cleaned up after each run.
 
-> **Note:** The string form `"allow"` for `external_directory` is not supported in OpenCode 1.x — only the object form `{ "path": "allow" }` is recognized. Paperclip handles this automatically.
+> **Note:** The string form `"allow"` for `external_directory` is not supported in OpenCode 1.x — only the object form `{ "<path-glob>": "allow" }` (e.g. `{ "/*": "allow" }`) is recognized. Paperclip handles this automatically.
 
 ## Skills Injection
 
