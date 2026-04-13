@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "organization_mode" text DEFAULT 'company' NOT NULL;

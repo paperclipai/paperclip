@@ -31,6 +31,7 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { prefetchIssueDetail } from "../lib/issueDetailCache";
+import { getOrganizationTerms } from "../lib/organization-mode";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
@@ -630,7 +631,8 @@ function JoinRequestInboxRow({
 }
 
 export function Inbox() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompany, selectedCompanyId } = useCompany();
+  const terms = getOrganizationTerms(selectedCompany);
   const { setBreadcrumbs } = useBreadcrumbs();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
@@ -1615,7 +1617,12 @@ export function Inbox() {
   }, [selectedIndex]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return (
+      <EmptyState
+        icon={InboxIcon}
+        message={`Select a ${terms.singular} to view inbox.`}
+      />
+    );
   }
 
   const hasRunFailures = failedRuns.length > 0;
