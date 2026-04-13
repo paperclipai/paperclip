@@ -138,6 +138,12 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
   return parsed > 1e12 ? parsed : parsed * 1000;
 }
 
+/**
+ * CALENDAR ENFORCEMENT: All recurring routine schedules MUST be backed by a
+ * `routine_trigger` row with a `cronExpression`. Do NOT schedule recurring
+ * routines via ad-hoc timers or external cron — they will be invisible to
+ * users in the Calendar page (`GET /api/companies/:id/calendar`).
+ */
 export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
