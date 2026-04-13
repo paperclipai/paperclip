@@ -29,5 +29,6 @@ _executor_mock.SubagentResult = MagicMock
 _executor_mock.SubagentStatus = MagicMock
 _executor_mock.MAX_CONCURRENT_SUBAGENTS = 3
 _executor_mock.get_background_task_result = MagicMock()
+_executor_mock.request_cancel_background_task = MagicMock()
 
 sys.modules["deerflow.subagents.executor"] = _executor_mock

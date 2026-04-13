@@ -6,7 +6,7 @@ import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -31,6 +31,7 @@ class SubagentStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -56,6 +57,7 @@ class SubagentResult:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     ai_messages: list[dict[str, Any]] | None = None
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -479,6 +481,7 @@ def cleanup_background_task(task_id: str) -> None:
             SubagentStatus.COMPLETED,
             SubagentStatus.FAILED,
             SubagentStatus.TIMED_OUT,
+            SubagentStatus.CANCELLED,
         }
         if is_terminal_status or result.completed_at is not None:
             del _background_tasks[task_id]
@@ -489,3 +492,11 @@ def cleanup_background_task(task_id: str) -> None:
                 task_id,
                 result.status.value if hasattr(result.status, "value") else result.status,
             )
+
+
+def request_cancel_background_task(task_id: str) -> None:
+    """Request cooperative cancellation of a background task."""
+    result = _background_tasks.get(task_id)
+    if result is not None:
+        result.cancel_event.set()
+        logger.info(f"Cancellation requested for task {task_id}")
