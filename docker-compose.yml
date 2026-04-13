@@ -13,6 +13,10 @@ services:
       retries: 30
     volumes:
       - pgdata:/var/lib/postgresql/data
+    entrypoint:
+      - sh
+      - -c
+      - printf 'local all all trust\nhost all all 0.0.0.0/0 trust\nhost all all ::0/0 trust\n' > /tmp/pg_hba.conf && exec docker-entrypoint.sh postgres -c hba_file=/tmp/pg_hba.conf
 
   server:
     build: .
