@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Calendar, dateFnsLocalizer, type View } from "react-big-calendar";
 import "react-big-calendar/lib/css/react-big-calendar.css";
-import { format, parse, startOfWeek, getDay, addMonths, startOfMonth, endOfMonth } from "date-fns";
+import { format, parse, startOfWeek, endOfWeek, getDay, addWeeks, addMonths, startOfMonth, endOfMonth } from "date-fns";
 import { enUS } from "date-fns/locale";
 import { CalendarIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import { useNavigate } from "@/lib/router";
@@ -95,6 +95,32 @@ const calendarStyles = `
   text-align: center;
   color: var(--muted-foreground);
   font-size: 0.875rem;
+}
+.rbc-time-content {
+  border-color: var(--border);
+}
+.rbc-time-header {
+  border-color: var(--border);
+}
+.rbc-time-header-content {
+  border-color: var(--border);
+}
+.rbc-timeslot-group {
+  border-color: var(--border);
+  min-height: 40px;
+}
+.rbc-time-slot {
+  border-color: color-mix(in srgb, var(--border) 40%, transparent);
+}
+.rbc-label {
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+  padding: 0 6px;
+}
+.rbc-current-time-indicator {
+  background-color: var(--primary);
+  height: 2px;
+  opacity: 0.8;
 }
 `;
 
@@ -226,7 +252,7 @@ export function CalendarPage() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
-  const [view, setView] = useState<View>("month");
+  const [view, setView] = useState<View>("week");
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
 
@@ -282,7 +308,8 @@ export function CalendarPage() {
   function navigate_(direction: "prev" | "next" | "today") {
     setCurrentDate((d) => {
       if (direction === "today") return new Date();
-      return direction === "next" ? addMonths(d, 1) : addMonths(d, -1);
+      const delta = direction === "next" ? 1 : -1;
+      return view === "week" ? addWeeks(d, delta) : addMonths(d, delta);
     });
   }
 
@@ -302,7 +329,9 @@ export function CalendarPage() {
     );
   }
 
-  const monthLabel = format(currentDate, "MMMM yyyy");
+  const dateLabel = view === "week"
+    ? `${format(startOfWeek(currentDate), "MMM d")} – ${format(endOfWeek(currentDate), "MMM d, yyyy")}`
+    : format(currentDate, "MMMM yyyy");
 
   return (
     <>
@@ -332,9 +361,9 @@ export function CalendarPage() {
                 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
-            <span className="text-sm font-medium text-foreground min-w-[120px] text-center">{monthLabel}</span>
+            <span className="text-sm font-medium text-foreground min-w-[140px] text-center">{dateLabel}</span>
             <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
-              {(["month", "agenda"] as View[]).map((v) => (
+              {(["week", "month", "agenda"] as View[]).map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -373,6 +402,7 @@ export function CalendarPage() {
             localizer={localizer}
             events={bigCalEvents}
             view={view}
+            views={["week", "month", "agenda"]}
             date={currentDate}
             onView={setView}
             onNavigate={setCurrentDate}
@@ -381,6 +411,8 @@ export function CalendarPage() {
             startAccessor="start"
             endAccessor="end"
             titleAccessor="title"
+            min={new Date(0, 0, 0, 6, 0, 0)}
+            max={new Date(0, 0, 0, 22, 0, 0)}
             popup
             style={{ height: "100%", minHeight: 500 }}
           />
