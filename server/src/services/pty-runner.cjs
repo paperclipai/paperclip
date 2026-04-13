@@ -65,7 +65,31 @@ if (childEnv.PATH && !childEnv.PATH.split(":").includes(scriptDir)) {
   childEnv.PATH = `${scriptDir}:${childEnv.PATH}`;
 }
 
-const child = pty.spawn(script, args, {
+// Log what we're about to spawn BEFORE attempting, so errors are diagnosable.
+const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
+
+console.error(`[pty-runner] binary: ${script}`);
+console.error(`[pty-runner] args: ${JSON.stringify(args)}`);
+console.error(`[pty-runner] cwd: ${process.cwd()}`);
+console.error(`[pty-runner] PATH: ${childEnv.PATH ?? "(none)"}`);
+
+// Verify binary exists before spawning — posix_spawnp gives no detail.
+let resolvedScript = script;
+try {
+  fs.accessSync(script, fs.constants.X_OK);
+} catch {
+  console.error(`[pty-runner] binary not found at ${script}, trying which...`);
+  try {
+    resolvedScript = execFileSync("which", [script], { encoding: "utf8" }).trim();
+    console.error(`[pty-runner] which resolved to: ${resolvedScript}`);
+  } catch {
+    console.error(`[pty-runner] FATAL: cannot find executable '${script}' anywhere`);
+    process.exit(127);
+  }
+}
+
+const child = pty.spawn(resolvedScript, args, {
   name: "xterm-256color",
   cols: 120,
   rows: 40,

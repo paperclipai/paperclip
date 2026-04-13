@@ -32,12 +32,20 @@ BBrightCode의 AI 에이전트 회사 운영 시스템. COS v1(Slack 기반)의 
 - issues.status에 slug 저장
 - rename 시 기존 이슈 안 깨짐 (Codex #10 반영)
 
-### 4. DB는 Embedded PostgreSQL 그대로
+### 4. Node.js 버전: 20~24 (25 이상 금지)
+
+- node-pty@1.1.0이 Node 25+ ABI를 지원하지 않음
+- `brew upgrade`로 Node 25가 설치되면 리더 CLI 전체가 `posix_spawnp failed`로 죽음
+- `.nvmrc`에 `24` 고정, `package.json` engines에 `>=20 <25` 명시
+- mac-studio `.zshrc`에 `export PATH="/opt/homebrew/opt/node@24/bin:$PATH"` 설정됨
+- PM2 데몬 재시작 시 반드시 Node 24 PATH가 활성화된 쉘에서 실행할 것
+
+### 5. DB는 Embedded PostgreSQL 그대로
 
 - Neon 불필요 (나중에 전환 가능, DATABASE_URL만 설정하면 됨)
 - 백업 자동 (60분마다, 30일 보관)
 
-### 5. 실행 모델: 상시 실행 + 유휴 리셋
+### 6. 실행 모델: 상시 실행 + 유휴 리셋
 
 - Paperclip 기본은 1회 실행(heartbeat). COS v2는 상시 실행
 - CLI 상시 대기 → 룸 메시지 수신 → 즉시 반응
@@ -46,14 +54,14 @@ BBrightCode의 AI 에이전트 회사 운영 시스템. COS v1(Slack 기반)의 
 - 재시작 후 저장된 md 참조 가능
 - PM2 + Paperclip 어댑터 혼합 (Phase 3에서 구현)
 
-### 6. 에이전트 계층: 리더 + 서브에이전트
+### 7. 에이전트 계층: 리더 + 서브에이전트
 
 - **리더 에이전트**: CLI 보유, adapterType=claude_local, 미션 룸 참여, 팀 lead
 - **서브 에이전트**: CLI 없음, adapterType=none, 리더가 Agent tool로 spawn
 - 서브에이전트 스킬은 DB에 등록, 리더 instructions에 자동 주입
 - superpowers:subagent-driven-development 패턴과 동일 구조
 
-### 7. 프로젝트 단위 리더 CLI (project-scoped leader processes)
+### 8. 프로젝트 단위 리더 CLI (project-scoped leader processes)
 
 - 리더 에이전트의 CLI 프로세스는 **프로젝트 단위**로 생성됨
 - 에이전트 1명이 프로젝트 N개에 `project_members`로 배정 → 프로젝트마다 별도 CLI 프로세스
@@ -62,16 +70,16 @@ BBrightCode의 AI 에이전트 회사 운영 시스템. COS v1(Slack 기반)의 
 - `project_id` nullable — NULL이면 레거시/비코딩 에이전트 (기존 동작 유지)
 - PM2 name = `cos-{instance}-{agentId[0:16]}-{projectId[0:8]}` (프로젝트 스코프)
 
-### 8. 프로젝트는 멀티팀 (project_teams N:M)
+### 9. 프로젝트는 멀티팀 (project_teams N:M)
 
 - projects.team_id 단일 FK 아님
 - project_teams 조인 테이블로 N:M
 
-### 9. Slack 범위 제외, Triage 범위 제외, Board 뷰 생략
+### 10. Slack 범위 제외, Triage 범위 제외, Board 뷰 생략
 
-### 10. 라이선스: MIT (fork/수정/상업적 사용 자유)
+### 11. 라이선스: MIT (fork/수정/상업적 사용 자유)
 
-### 11. company-os(v1)는 현행 유지, company-os-v2는 별도 repo
+### 12. company-os(v1)는 현행 유지, company-os-v2는 별도 repo
 
 ## Codex 리뷰 핵심 이슈 (미해결 주의사항)
 
