@@ -35,6 +35,10 @@ interface WorkspaceContextValue {
   selected: WorkspaceEntry | null;
   /** The cwd of the selected workspace (convenience shortcut). */
   cwd: string | null;
+  /** Live git branch name at the workspace cwd (read from disk, not database). */
+  branch: string | null;
+  /** Whether the workspace has uncommitted changes. */
+  dirty: boolean;
   /** Whether projects/workspaces are still loading. */
   loading: boolean;
   /** Select a workspace by its ID. */
@@ -125,6 +129,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const cwd = selected?.cwd ?? customCwd ?? null;
 
+  // Fetch live git info (branch + dirty) for the selected workspace
+  const gitInfoQuery = useQuery({
+    queryKey: ["workspace-git-info", selected?.workspace.id],
+    queryFn: () => projectsApi.getWorkspaceGitInfo(selected!.workspace.id),
+    enabled: !!selected,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  });
+  const branch = gitInfoQuery.data?.branch ?? null;
+  const dirty = gitInfoQuery.data?.dirty ?? false;
+
   const selectWorkspace = useCallback((workspaceId: string) => {
     setSelectedId(workspaceId);
     setCustomCwd(null);
@@ -153,12 +168,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       workspaces,
       selected,
       cwd,
+      branch,
+      dirty,
       loading,
       selectWorkspace,
       selectCustomCwd,
       clearWorkspace,
     }),
-    [workspaces, selected, cwd, loading, selectWorkspace, selectCustomCwd, clearWorkspace],
+    [workspaces, selected, cwd, branch, dirty, loading, selectWorkspace, selectCustomCwd, clearWorkspace],
   );
 
   return (

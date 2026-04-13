@@ -80,6 +80,8 @@ export interface PluginHostContext {
   workspaceCwd?: string | null;
   /** Human-readable label for the selected workspace (Lucitra addition). */
   workspaceLabel?: string | null;
+  /** Live git branch at workspace cwd (Lucitra addition). */
+  workspaceBranch?: string | null;
 }
 
 export interface PluginModalBoundsRequest {

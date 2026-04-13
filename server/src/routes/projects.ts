@@ -1,4 +1,6 @@
 import { Router, type Request } from "express";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
@@ -181,6 +183,42 @@ export function projectRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
+  });
+
+  // Live git branch for a workspace — reads from disk, not the database.
+  const execFileAsync = promisify(execFile);
+  router.get("/workspaces/:workspaceId/git-info", async (req, res) => {
+    const workspaceId = req.params.workspaceId as string;
+    const workspace = await svc.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      res.status(404).json({ error: "Workspace not found" });
+      return;
+    }
+    const project = await svc.getById(workspace.projectId);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const cwd = workspace.cwd;
+    if (!cwd) {
+      res.json({ branch: null, dirty: false });
+      return;
+    }
+
+    try {
+      const [branchResult, statusResult] = await Promise.all([
+        execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
+        execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd, timeout: 5000 }),
+      ]);
+      res.json({
+        branch: branchResult.stdout.trim() || null,
+        dirty: statusResult.stdout.trim().length > 0,
+      });
+    } catch {
+      res.json({ branch: null, dirty: false });
+    }
   });
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {

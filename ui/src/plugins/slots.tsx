@@ -58,6 +58,8 @@ export type PluginSlotContext = {
   workspaceCwd?: string | null;
   /** Human-readable label for the selected workspace (Lucitra addition). */
   workspaceLabel?: string | null;
+  /** Live git branch at workspace cwd (Lucitra addition). */
+  workspaceBranch?: string | null;
 };
 
 export type ResolvedPluginSlot = PluginUiSlotDeclaration & {
@@ -708,6 +710,7 @@ function slotContextToHostContext(
     renderEnvironment: null,
     workspaceCwd: pluginSlotContext.workspaceCwd ?? null,
     workspaceLabel: pluginSlotContext.workspaceLabel ?? null,
+    workspaceBranch: pluginSlotContext.workspaceBranch ?? null,
   };
 }
 

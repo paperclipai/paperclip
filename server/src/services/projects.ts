@@ -534,6 +534,15 @@ export function projectService(db: Db) {
           return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
         }),
 
+    getWorkspaceById: async (workspaceId: string): Promise<ProjectWorkspaceRow | null> => {
+      const rows = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.id, workspaceId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
         .select()
