@@ -1693,7 +1693,13 @@ export function issueRoutes(
       if (tc && actor.agentId) {
         const actorAgent = await agentsSvc.getById(actor.agentId);
         if (actorAgent) {
-          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+          const model = typeof actorAgent.adapterConfig?.model === "string" ? actorAgent.adapterConfig.model : undefined;
+          trackAgentTaskCompleted(tc, {
+            agentRole: actorAgent.role,
+            agentId: actorAgent.id,
+            adapterType: actorAgent.adapterType,
+            model,
+          });
         }
       }
     }
