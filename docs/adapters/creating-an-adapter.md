@@ -93,10 +93,11 @@ Key responsibilities:
 | `asNumber(v)` | `@paperclipai/adapter-utils` | Safe number extraction |
 | `applyOpenRouterOpenAiEnvMapping(env)` | `@paperclipai/adapter-utils` | If `OPENROUTER_API_KEY` is set and `OPENAI_API_KEY` is not, copy the key and default `OPENAI_BASE_URL` to OpenRouter (mutates `env`) |
 | `inferOpenAiCompatibleBiller(env, fallback)` | `@paperclipai/adapter-utils` | Returns `openrouter` when the key or base URL indicates OpenRouter; otherwise `fallback` |
+| `DEFAULT_OPENROUTER_OPENAI_BASE_URL` | `@paperclipai/adapter-utils` | Constant `https://openrouter.ai/api/v1` — default base when mapping applies and no explicit OpenAI-compatible base URL is set |
 
 ### OpenRouter (OpenAI-compatible runtimes)
 
-If your CLI accepts `OPENAI_API_KEY` and an OpenAI-style base URL, call `applyOpenRouterOpenAiEnvMapping` on the **adapter `env` object** after merging `config.env` and before you merge with `process.env` for the child (same order as the Codex, Cursor, OpenCode, and Pi adapters). Pair it with `inferOpenAiCompatibleBiller` when you report usage so the ledger tags OpenRouter correctly.
+If your CLI accepts `OPENAI_API_KEY` and an OpenAI-style base URL, call `applyOpenRouterOpenAiEnvMapping` on the **adapter `env` object** after merging `config.env` and before you merge with `process.env` for the child (same order as the Codex, Cursor, OpenCode, and Pi adapters, and the built-in `process` adapter). Pair it with `inferOpenAiCompatibleBiller` when you report usage so the ledger tags OpenRouter correctly.
 
 ```ts
 import {
