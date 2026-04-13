@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { readdirSync, statSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Db } from "@paperclipai/db";
 import { count, sql } from "drizzle-orm";
 import { instanceUserRoles } from "@paperclipai/db";
@@ -46,6 +48,29 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
     });
+  });
+
+  // Temporary: list backup files for data recovery
+  router.get("/backups", (_req, res) => {
+    const candidates = [
+      "/paperclip/instances/default/data/backups",
+      "/paperclip/data/backups",
+      "/paperclip/backups",
+    ];
+    for (const dir of candidates) {
+      if (existsSync(dir)) {
+        const files = readdirSync(dir)
+          .filter((f) => f.endsWith(".sql"))
+          .map((f) => {
+            const stat = statSync(resolve(dir, f));
+            return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
+          })
+          .sort((a, b) => b.modified.localeCompare(a.modified));
+        res.json({ backupDir: dir, files });
+        return;
+      }
+    }
+    res.json({ backupDir: null, files: [], searched: candidates });
   });
 
   return router;
