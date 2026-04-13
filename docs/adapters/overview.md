@@ -20,7 +20,7 @@ When a heartbeat fires, Paperclip:
 |---------|----------|-------------|
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
-| [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Google's Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
 | [OpenCode Local](/adapters/opencode-local) | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | [Cursor Local](/adapters/cursor-local) | `cursor` | Runs Cursor Agent CLI locally (`agent`) |
 | [Pi Local](/adapters/pi-local) | `pi_local` | Runs an embedded Pi agent locally |
@@ -82,6 +82,21 @@ my-adapter/
 - **Need to run a script or command?** Use `process`
 - **Need to call an external service?** Use `http`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter) or [build an external adapter plugin](/adapters/external-adapters)
+
+## OpenRouter (OpenAI-compatible CLIs)
+
+[OpenRouter](https://openrouter.ai) exposes many models behind a single OpenAI-compatible HTTPS API. Paperclip can map `OPENROUTER_API_KEY` into `OPENAI_API_KEY` + `OPENAI_BASE_URL` for runtimes that speak the OpenAI client protocol, and tag billing as `openrouter` when that mapping (or an explicit OpenRouter base URL) is in effect.
+
+Built-in adapters with this behavior (each page has a **Using OpenRouter** section):
+
+- [Codex Local](/adapters/codex-local)
+- [Cursor Local](/adapters/cursor-local)
+- [OpenCode Local](/adapters/opencode-local)
+- [Pi Local](/adapters/pi-local)
+
+`claude_local` uses the Anthropic Claude Code CLI and native Anthropic auth — it does **not** use the OpenRouter OpenAI mapping. `gemini_local` uses the Gemini CLI and Google/Gemini credentials — use `GEMINI_API_KEY` / `GOOGLE_API_KEY` or OAuth as documented on [Gemini Local](/adapters/gemini-local).
+
+For deploy-time env tables and edge cases (alternate base-URL keys), see [Environment variables](/deploy/environment-variables). For implementing the same pattern in a custom or external adapter, see [Creating an Adapter](/adapters/creating-an-adapter) and [External Adapters](/adapters/external-adapters).
 
 ## UI Parser Contract
 

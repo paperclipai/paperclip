@@ -99,6 +99,7 @@
               "adapters/opencode-local",
               "adapters/pi-local",
               "adapters/cursor-local",
+              "adapters/gemini-local",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
