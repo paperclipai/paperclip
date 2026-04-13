@@ -312,6 +312,22 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: "workspace-1",
         goalId: null,
         parentId: null,
+        ancestors: [
+          {
+            id: "issue-9",
+            identifier: "PAP-9",
+            title: "Old parent",
+            description: null,
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            goalId: null,
+            project: null,
+            goal: null,
+          },
+        ],
         title: "Fix property pane",
         description: null,
         status: "todo",
@@ -449,6 +465,7 @@ describe("optimistic issue comments", () => {
         assigneeUserId: "board-2",
         labelIds: ["label-2"],
         blockedByIssueIds: ["issue-3"],
+        parentId: "issue-4",
         projectId: "project-2",
         executionWorkspaceId: "exec-2",
       },
@@ -460,6 +477,8 @@ describe("optimistic issue comments", () => {
     expect(next?.labelIds).toEqual(["label-2"]);
     expect(next?.labels?.map((label) => label.id)).toEqual(["label-2"]);
     expect(next?.blockedBy?.map((relation) => relation.id)).toEqual(["issue-3"]);
+    expect(next?.parentId).toBe("issue-4");
+    expect(next?.ancestors).toBeUndefined();
     expect(next?.projectId).toBe("project-2");
     expect(next?.project).toBeNull();
     expect(next?.executionWorkspaceId).toBe("exec-2");

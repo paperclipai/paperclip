@@ -154,12 +154,21 @@ export function Layout() {
   ]);
 
   const togglePanel = togglePanelVisible;
+  const openSearch = useCallback(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "k",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+  }, []);
 
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
     enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
+    onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),

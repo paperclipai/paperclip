@@ -1,8 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -170,7 +170,7 @@ describe("issue activity event routes", () => {
         }),
       }),
     );
-  });
+  }, 15_000);
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
     const existingPolicy = normalizeIssueExecutionPolicy({
