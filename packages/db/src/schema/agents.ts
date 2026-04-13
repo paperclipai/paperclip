@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   pgTable,
   uuid,
   text,
@@ -19,6 +20,7 @@ export const agents = pgTable(
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),
+    reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
@@ -35,5 +37,6 @@ export const agents = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
+    companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
   }),
 );
