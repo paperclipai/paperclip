@@ -116,6 +116,14 @@ function setVersion(version) {
     writeFileSync(pkg.pkgPath, `${JSON.stringify(nextPkg, null, 2)}\n`);
   }
 
+  // The CLI package is private (not in discoverPublicPackages) but its
+  // version.ts reads ../package.json, so we must update it explicitly so
+  // that cliVersion resolves to the target version in generate-npm-package-json.mjs.
+  const cliPkgPath = join(repoRoot, "cli/package.json");
+  const cliPkg = readJson(cliPkgPath);
+  const nextCliPkg = { ...cliPkg, version };
+  writeFileSync(cliPkgPath, `${JSON.stringify(nextCliPkg, null, 2)}\n`);
+
   const cliEntryPath = join(repoRoot, "cli/src/index.ts");
   const cliEntry = readFileSync(cliEntryPath, "utf8");
   const nextCliEntry = cliEntry.replace(
