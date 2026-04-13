@@ -69,7 +69,7 @@ export function Layout() {
     setSelectedCompanyId,
   } = useCompany();
   const { theme, toggleTheme } = useTheme();
-  const { gitPanelOpen, toggleGitPanel } = useWorkspace();
+  const { selected, gitPanelOpen, toggleGitPanel } = useWorkspace();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -479,7 +479,7 @@ export function Layout() {
               )}
             </main>
             <PropertiesPanel />
-            {gitPanelOpen && <WorkspacePanel onClose={toggleGitPanel} />}
+            {gitPanelOpen && selected && <WorkspacePanel onClose={toggleGitPanel} />}
           </div>
         </div>
       </div>

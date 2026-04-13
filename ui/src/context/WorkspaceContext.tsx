@@ -158,18 +158,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(CUSTOM_CWD_KEY, path);
   }, []);
 
+  // Workspace panel toggle (Changes/Runs/Activity right panel)
+  const [gitPanelOpen, setGitPanelOpen] = useState(false);
+  const toggleGitPanel = useCallback(() => setGitPanelOpen((prev) => !prev), []);
+
   const clearWorkspace = useCallback(() => {
     setSelectedId(null);
     setCustomCwd(null);
+    setGitPanelOpen(false);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(CUSTOM_CWD_KEY);
   }, []);
 
   const loading = projectsQuery.isLoading || workspacesQuery.isLoading;
-
-  // Git changes panel toggle
-  const [gitPanelOpen, setGitPanelOpen] = useState(false);
-  const toggleGitPanel = useCallback(() => setGitPanelOpen((prev) => !prev), []);
 
   const value = useMemo(
     () => ({
