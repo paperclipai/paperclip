@@ -5,6 +5,7 @@ import { joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
 import { dashboardService } from "../services/dashboard.js";
+import { issueService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 
 export function sidebarBadgeRoutes(db: Db) {
@@ -34,8 +35,14 @@ export function sidebarBadgeRoutes(db: Db) {
         .then((rows) => Number(rows[0]?.count ?? 0))
       : 0;
 
+    let unreadTouchedIssues = 0;
+    if (req.actor.type === "board" && req.actor.userId) {
+      unreadTouchedIssues = await issueService(db).countUnreadTouchedByUser(companyId, req.actor.userId);
+    }
+
     const badges = await svc.get(companyId, {
       joinRequests: joinRequestCount,
+      unreadTouchedIssues,
     });
     const summary = await dashboard.summary(companyId);
     const hasFailedRuns = badges.failedRuns > 0;
