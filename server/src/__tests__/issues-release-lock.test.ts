@@ -23,6 +23,7 @@ describeEmbeddedPostgres("issueService.release lock cleanup", () => {
 
   afterEach(async () => {
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
