@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { assembleHeartbeatInvocation } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -12,7 +13,6 @@ import {
   parseJson,
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
-  joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -436,20 +436,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePrompt = renderPaperclipWakePrompt(wakePayloadForRender, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    renderedBootstrapPrompt,
-    wakePrompt,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
+  const instructionsLayer =
+    instructionsFilePath && effectiveInstructionsFilePath
+      ? {
+          key: "adapter_extras",
+          title: "Adapter-specific extras",
+          summary: "Agent instructions injected via --append-system-prompt-file",
+          memoryClass: "procedural" as const,
+          metadata: {
+            instructionsFilePath,
+            injection: "append-system-prompt-file",
+          },
+        }
+      : null;
+  const assembled = assembleHeartbeatInvocation({
+    context,
+    promptFragments: [
+      {
+        key: "bootstrap_prompt",
+        title: "Bootstrap prompt",
+        text: renderedBootstrapPrompt,
+        metricKey: "bootstrapPromptChars",
+        memoryClass: "procedural",
+      },
+      {
+        key: "wake_prompt",
+        title: "Wake prompt",
+        text: wakePrompt,
+        metricKey: "wakePromptChars",
+        memoryClass: "transient",
+      },
+      {
+        key: "session_handoff",
+        title: "Session handoff",
+        text: asString(context.paperclipSessionHandoffMarkdown, "").trim(),
+        metricKey: "sessionHandoffChars",
+        memoryClass: "episodic",
+      },
+      {
+        key: "heartbeat_prompt",
+        title: "Heartbeat prompt",
+        text: renderedPrompt,
+        metricKey: "heartbeatPromptChars",
+        memoryClass: "transient",
+      },
+    ],
+    adapterLayers: instructionsLayer ? [instructionsLayer] : [],
+  });
+  const { prompt, promptMetrics, heartbeatLayers } = assembled;
 
   const buildClaudeArgs = (
     resumeSessionId: string | null,
@@ -516,6 +550,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: loggedEnv,
         prompt,
         promptMetrics,
+        heartbeatLayers,
         context,
       });
     }

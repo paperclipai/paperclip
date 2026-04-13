@@ -162,6 +162,40 @@ export interface AdapterSessionCodec {
   getDisplayId?: (params: Record<string, unknown> | null) => string | null;
 }
 
+/**
+ * Cognitive role of a heartbeat context fragment.
+ *
+ * | Class       | What it contains                                       | Source of truth                          | Retention              |
+ * |-------------|--------------------------------------------------------|------------------------------------------|------------------------|
+ * | episodic    | Time-ordered events: run summaries, comment history,   | heartbeat_runs.resultJson,               | Rolling window;        |
+ * |             | status changes                                         | issue_comments, heartbeat_run_events     | oldest drops first     |
+ * | semantic    | Meaning about entities: issue descriptions, project    | issues.description, projects,            | Stable until entity    |
+ * |             | goals, agent capabilities                              | agents.capabilities                      | changes                |
+ * | procedural  | How to do things: skills, agent instructions,          | company_skills,                          | Stable; changes with   |
+ * |             | workflow patterns                                      | adapterConfig.instructionsFilePath       | config updates         |
+ * | transient   | Only valid for the current run: wake context,          | contextSnapshot, agentTaskSessions,      | Discarded after run;   |
+ * |             | session handoff note, workspace state                  | paperclipSessionHandoffMarkdown          | never persisted        |
+ */
+export type HeartbeatMemoryClass = "episodic" | "semantic" | "procedural" | "transient";
+
+/**
+ * A single layer of context assembled during a heartbeat invocation.
+ * Layers are recorded in AdapterInvocationMeta for observability and
+ * can be annotated with a {@link HeartbeatMemoryClass} to support
+ * class-aware context selection.
+ */
+export interface AdapterInvocationLayer {
+  key: string;
+  title: string;
+  kind: "context" | "prompt" | "adapter";
+  summary?: string | null;
+  chars?: number;
+  includedInPrompt?: boolean;
+  metadata?: Record<string, unknown> | null;
+  /** Cognitive role of this layer. Used to filter/prioritise context inputs. */
+  memoryClass?: HeartbeatMemoryClass;
+}
+
 export interface AdapterInvocationMeta {
   adapterType: string;
   command: string;
@@ -171,6 +205,7 @@ export interface AdapterInvocationMeta {
   env?: Record<string, string>;
   prompt?: string;
   promptMetrics?: Record<string, number>;
+  heartbeatLayers?: AdapterInvocationLayer[];
   context?: Record<string, unknown>;
 }
 

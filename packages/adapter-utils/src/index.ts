@@ -6,6 +6,7 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
   SkillInvocationReport,
+  AdapterInvocationLayer,
   AdapterInvocationMeta,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
@@ -36,7 +37,14 @@ export type {
   AdapterFallbackChainEntryConfig,
   AdapterFailureCategory,
   AdapterFallbackEntry,
+  HeartbeatMemoryClass,
 } from "./types.js";
+export type {
+  HeartbeatPromptFragment,
+  AssembleHeartbeatInvocationInput,
+  AssembleHeartbeatInvocationResult,
+} from "./heartbeat-context.js";
+export { assembleHeartbeatInvocation } from "./heartbeat-context.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,
