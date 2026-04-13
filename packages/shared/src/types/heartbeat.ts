@@ -112,6 +112,36 @@ export interface AgentWakeupRequest {
   updatedAt: Date;
 }
 
+export type SplitTestRunStatus = "queued" | "running" | "done" | "failed";
+
+export interface SplitTestRun {
+  id: string;
+  companyId: string;
+  primaryRunId: string;
+  agentId: string;
+  model: string;
+  adapterType: string;
+  status: SplitTestRunStatus;
+  prompt: string | null;
+  summary: string | null;
+  usageJson: Record<string, unknown> | null;
+  costUsd: string | null;
+  logContent: string | null;
+  error: string | null;
+  judgeAnalysis: string | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SplitTestConfig {
+  enabled: boolean;
+  shadowModels: string[];
+  judgeModel?: string;
+  autoAnalyze?: boolean;
+}
+
 export interface InstanceSchedulerHeartbeatAgent {
   id: string;
   companyId: string;
