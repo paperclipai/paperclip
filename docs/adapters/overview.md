@@ -95,6 +95,8 @@ Built-in adapters with this behavior (each page has a **Using OpenRouter** secti
 - [Pi Local](/adapters/pi-local)
 - [Process](/adapters/process) (custom commands — same env mapping before spawn)
 
+Adapter **environment tests** (the automatic “hello” / model probes in the Board UI) apply the same `OPENROUTER_API_KEY` → OpenAI-compatible mapping before spawning those child processes, matching real runs.
+
 `claude_local` uses the Anthropic Claude Code CLI and native Anthropic auth — it does **not** use the OpenRouter OpenAI mapping. `gemini_local` uses the Gemini CLI and Google/Gemini credentials — use `GEMINI_API_KEY` / `GOOGLE_API_KEY` or OAuth as documented on [Gemini Local](/adapters/gemini-local).
 
 For deploy-time env tables and edge cases (alternate base-URL keys), see [Environment variables](/deploy/environment-variables). For implementing the same pattern in a custom or external adapter, see [Creating an Adapter](/adapters/creating-an-adapter) and [External Adapters](/adapters/external-adapters).
