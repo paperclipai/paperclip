@@ -166,3 +166,18 @@ Inline secret migration command:
 ```sh
 pnpm secrets:migrate-inline-env --apply
 ```
+
+Local master-key rekey command:
+
+```sh
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next
+
+pnpm paperclipai secrets rekey-local-master-key \
+  --new-key-file ~/.paperclip/instances/default/secrets/master.key.next \
+  --apply \
+  --confirm-backup \
+  --activate-new-key
+```
+
+Run the dry-run form first. Stop Paperclip and back up both the database and current key file before applying. The rekey updates existing `local_encrypted` version material transactionally and reports counts only, without printing secret values or key material.

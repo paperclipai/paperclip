@@ -4,7 +4,7 @@ import path from "node:path";
 import type { SecretProviderModule, StoredSecretVersionMaterial } from "./types.js";
 import { badRequest } from "../errors.js";
 
-interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
+export interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   scheme: "local_encrypted_v1";
   iv: string;
   tag: string;
@@ -17,7 +17,13 @@ function resolveMasterKeyFilePath() {
   return path.resolve(process.cwd(), "data/secrets/master.key");
 }
 
-function decodeMasterKey(raw: string): Buffer | null {
+function assertMasterKeyLength(masterKey: Buffer) {
+  if (masterKey.length !== 32) {
+    throw badRequest("Invalid local encrypted secrets master key");
+  }
+}
+
+export function decodeLocalEncryptedMasterKey(raw: string): Buffer | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
@@ -38,10 +44,28 @@ function decodeMasterKey(raw: string): Buffer | null {
   return null;
 }
 
+export function generateLocalEncryptedMasterKey(): Buffer {
+  return randomBytes(32);
+}
+
+export function formatLocalEncryptedMasterKey(masterKey: Buffer): string {
+  assertMasterKeyLength(masterKey);
+  return masterKey.toString("base64");
+}
+
+export function readLocalEncryptedMasterKeyFile(keyPath: string): Buffer {
+  const raw = readFileSync(keyPath, "utf8");
+  const decoded = decodeLocalEncryptedMasterKey(raw);
+  if (!decoded) {
+    throw badRequest(`Invalid secrets master key at ${keyPath}`);
+  }
+  return decoded;
+}
+
 function loadOrCreateMasterKey(): Buffer {
   const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
-    const fromEnv = decodeMasterKey(envKeyRaw);
+    const fromEnv = decodeLocalEncryptedMasterKey(envKeyRaw);
     if (!fromEnv) {
       throw badRequest(
         "Invalid PAPERCLIP_SECRETS_MASTER_KEY (expected 32-byte base64, 64-char hex, or raw 32-char string)",
@@ -52,18 +76,13 @@ function loadOrCreateMasterKey(): Buffer {
 
   const keyPath = resolveMasterKeyFilePath();
   if (existsSync(keyPath)) {
-    const raw = readFileSync(keyPath, "utf8");
-    const decoded = decodeMasterKey(raw);
-    if (!decoded) {
-      throw badRequest(`Invalid secrets master key at ${keyPath}`);
-    }
-    return decoded;
+    return readLocalEncryptedMasterKeyFile(keyPath);
   }
 
   const dir = path.dirname(keyPath);
   mkdirSync(dir, { recursive: true });
-  const generated = randomBytes(32);
-  writeFileSync(keyPath, generated.toString("base64"), { encoding: "utf8", mode: 0o600 });
+  const generated = generateLocalEncryptedMasterKey();
+  writeFileSync(keyPath, formatLocalEncryptedMasterKey(generated), { encoding: "utf8", mode: 0o600 });
   try {
     chmodSync(keyPath, 0o600);
   } catch {
@@ -76,7 +95,11 @@ function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function encryptValue(masterKey: Buffer, value: string): LocalEncryptedMaterial {
+export function encryptLocalEncryptedValueWithKey(
+  masterKey: Buffer,
+  value: string,
+): LocalEncryptedMaterial {
+  assertMasterKeyLength(masterKey);
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", masterKey, iv);
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
@@ -89,7 +112,11 @@ function encryptValue(masterKey: Buffer, value: string): LocalEncryptedMaterial 
   };
 }
 
-function decryptValue(masterKey: Buffer, material: LocalEncryptedMaterial): string {
+export function decryptLocalEncryptedValueWithKey(
+  masterKey: Buffer,
+  material: LocalEncryptedMaterial,
+): string {
+  assertMasterKeyLength(masterKey);
   const iv = Buffer.from(material.iv, "base64");
   const tag = Buffer.from(material.tag, "base64");
   const ciphertext = Buffer.from(material.ciphertext, "base64");
@@ -99,7 +126,7 @@ function decryptValue(masterKey: Buffer, material: LocalEncryptedMaterial): stri
   return plain.toString("utf8");
 }
 
-function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncryptedMaterial {
+export function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncryptedMaterial {
   if (
     value &&
     typeof value === "object" &&
@@ -113,6 +140,18 @@ function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncr
   throw badRequest("Invalid local_encrypted secret material");
 }
 
+export function rekeyLocalEncryptedMaterial(
+  material: StoredSecretVersionMaterial,
+  oldMasterKey: Buffer,
+  newMasterKey: Buffer,
+): LocalEncryptedMaterial {
+  const plain = decryptLocalEncryptedValueWithKey(
+    oldMasterKey,
+    asLocalEncryptedMaterial(material),
+  );
+  return encryptLocalEncryptedValueWithKey(newMasterKey, plain);
+}
+
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
   descriptor: {
@@ -123,13 +162,13 @@ export const localEncryptedProvider: SecretProviderModule = {
   async createVersion(input) {
     const masterKey = loadOrCreateMasterKey();
     return {
-      material: encryptValue(masterKey, input.value),
+      material: encryptLocalEncryptedValueWithKey(masterKey, input.value),
       valueSha256: sha256Hex(input.value),
       externalRef: null,
     };
   },
   async resolveVersion(input) {
     const masterKey = loadOrCreateMasterKey();
-    return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
+    return decryptLocalEncryptedValueWithKey(masterKey, asLocalEncryptedMaterial(input.material));
   },
 };
