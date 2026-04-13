@@ -613,6 +613,25 @@ describe("fetchClaudeQuota", () => {
       },
     ]);
   });
+
+  it("formats extra usage credits from cents to dollars", async () => {
+    mockFetch({
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 14000,
+        used_credits: 6793,
+        utilization: 48.52,
+      },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      label: "Extra usage",
+      usedPercent: 49,
+      valueLabel: "$67.93 / $140.00",
+      detail: "Monthly extra usage pool",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

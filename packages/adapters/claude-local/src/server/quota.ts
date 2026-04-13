@@ -187,7 +187,8 @@ function formatExtraUsageLabel(extraUsage: AnthropicExtraUsage): string | null {
   ) {
     return null;
   }
-  return `${formatCurrencyAmount(usedCredits, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit, extraUsage.currency)}`;
+  // API returns values in cents — convert to dollars for display
+  return `${formatCurrencyAmount(usedCredits / 100, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit / 100, extraUsage.currency)}`;
 }
 
 /** Convert a utilization value to a 0-100 integer percent. Returns null for null/undefined input.
