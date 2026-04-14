@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
+import { I18nProvider } from "../context/I18nContext";
 
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children, className }: { children: ReactNode; className?: string }) => (
@@ -117,21 +118,23 @@ describe("CommentThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <CommentThread
-            comments={[]}
-            linkedRuns={[{
-              runId: "run-12345678abcd",
-              status: "succeeded",
-              agentId: "agent-1",
-              createdAt: "2026-03-11T07:00:00.000Z",
-              startedAt: "2026-03-11T08:00:00.000Z",
-              finishedAt: "2026-03-11T10:00:00.000Z",
-            }]}
-            agentMap={new Map([["agent-1", agent]])}
-            onAdd={async () => {}}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <CommentThread
+              comments={[]}
+              linkedRuns={[{
+                runId: "run-12345678abcd",
+                status: "succeeded",
+                agentId: "agent-1",
+                createdAt: "2026-03-11T07:00:00.000Z",
+                startedAt: "2026-03-11T08:00:00.000Z",
+                finishedAt: "2026-03-11T10:00:00.000Z",
+              }]}
+              agentMap={new Map([["agent-1", agent]])}
+              onAdd={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -142,8 +145,8 @@ describe("CommentThread", () => {
     expect(runRow?.className).not.toContain("border");
     expect(container.textContent).toContain("CodexCoder");
     expect(container.textContent).toContain("succeeded");
-    expect(container.textContent).toContain("2h ago");
-    expect(container.textContent).not.toContain("4h ago");
+    expect(container.textContent).toContain("2 hr. ago");
+    expect(container.textContent).not.toContain("4 hr. ago");
     const runLink = container.querySelector('a[href="/agents/agent-1/runs/run-12345678abcd"]') as HTMLAnchorElement | null;
     expect(runLink?.textContent).toContain("run-1234");
     expect(runLink?.className).toContain("rounded-md");
@@ -159,13 +162,15 @@ describe("CommentThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <CommentThread
-            comments={[]}
-            composerDisabledReason="Workspace is closed."
-            onAdd={async () => {}}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <CommentThread
+              comments={[]}
+              composerDisabledReason="Workspace is closed."
+              onAdd={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -224,16 +229,18 @@ describe("CommentThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <CommentThread
-            comments={[]}
-            linkedApprovals={[approval]}
-            agentMap={new Map([["agent-1", agent]])}
-            onAdd={async () => {}}
-            onApproveApproval={async () => {}}
-            onRejectApproval={async () => {}}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <CommentThread
+              comments={[]}
+              linkedApprovals={[approval]}
+              agentMap={new Map([["agent-1", agent]])}
+              onAdd={async () => {}}
+              onApproveApproval={async () => {}}
+              onRejectApproval={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -254,21 +261,23 @@ describe("CommentThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <CommentThread
-            comments={[{
-              id: "comment-1",
-              companyId: "company-1",
-              issueId: "issue-1",
-              authorAgentId: null,
-              authorUserId: "user-1",
-              body: "Hello from the comment body",
-              createdAt: new Date("2026-03-11T11:00:00.000Z"),
-              updatedAt: new Date("2026-03-11T11:00:00.000Z"),
-            }]}
-            onAdd={async () => {}}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <CommentThread
+              comments={[{
+                id: "comment-1",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-1",
+                body: "Hello from the comment body",
+                createdAt: new Date("2026-03-11T11:00:00.000Z"),
+                updatedAt: new Date("2026-03-11T11:00:00.000Z"),
+              }]}
+              onAdd={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 

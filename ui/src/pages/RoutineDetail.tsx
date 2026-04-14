@@ -25,7 +25,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
-import { timeAgo } from "../lib/timeAgo";
+import { useI18n } from "../context/I18nContext";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -150,6 +150,7 @@ function TriggerEditor({
   onRotate: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState({
     label: trigger.label ?? "",
     cronExpression: trigger.cronExpression ?? "",
@@ -177,7 +178,7 @@ function TriggerEditor({
           {trigger.kind === "schedule" && trigger.nextRunAt
             ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
             : trigger.kind === "webhook"
-              ? "Webhook"
+              ? t("routine_detail.webhook")
               : "API"}
         </span>
       </div>
@@ -263,6 +264,7 @@ function TriggerEditor({
 
 export function RoutineDetail() {
   const { routineId } = useParams<{ routineId: string }>();
+  const { t, formatRelativeTime } = useI18n();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -486,7 +488,7 @@ export function RoutineDetail() {
     onSuccess: async (_data, status) => {
       pushToast({
         title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
+        body: status === "paused" ? t("routine_detail.automation_paused") : t("routine_detail.automation_enabled"),
         tone: "success",
       });
       await Promise.all([
@@ -670,12 +672,12 @@ export function RoutineDetail() {
   const selectedProject = routine.projectId ? (projects?.find((project) => project.id === routine.projectId) ?? null) : null;
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
   const automationLabel = routine.status === "archived"
-    ? "Archived"
+    ? t("routine_detail.archived")
     : !routine.assigneeAgentId
-      ? "Draft"
+      ? t("routine_detail.draft")
       : automationEnabled
-        ? "Active"
-        : "Paused";
+        ? t("routine_detail.active")
+        : t("status.paused");
   const automationLabelClassName = routine.status === "archived"
     ? "text-muted-foreground"
     : automationEnabled
@@ -1027,7 +1029,7 @@ export function RoutineDetail() {
             </div>
             <div className="flex items-center justify-end">
               <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
-                {createTrigger.isPending ? "Adding..." : "Add trigger"}
+                {createTrigger.isPending ? t("routine_detail.adding") : t("routine_detail.add_trigger")}
               </Button>
             </div>
           </div>
@@ -1074,7 +1076,7 @@ export function RoutineDetail() {
                       </Link>
                     )}
                   </div>
-                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
+                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{formatRelativeTime(run.triggeredAt)}</span>
                 </div>
               ))}
             </div>
@@ -1102,7 +1104,7 @@ export function RoutineDetail() {
                       </span>
                     )}
                   </div>
-                  <span className="text-muted-foreground/60 shrink-0">{timeAgo(event.createdAt)}</span>
+                  <span className="text-muted-foreground/60 shrink-0">{formatRelativeTime(event.createdAt)}</span>
                 </div>
               ))}
             </div>

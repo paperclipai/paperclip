@@ -8,6 +8,7 @@ import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { I18nProvider } from "../context/I18nContext";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -82,6 +83,35 @@ vi.mock("./KanbanBoard", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof window.localStorage?.getItem === "function"
+    && typeof window.localStorage?.setItem === "function"
+    && typeof window.localStorage?.removeItem === "function"
+    && typeof window.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -161,11 +191,13 @@ function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
 
   act(() => {
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          {node}
-        </TooltipProvider>
-      </QueryClientProvider>,
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            {node}
+          </TooltipProvider>
+        </QueryClientProvider>
+      </I18nProvider>,
     );
   });
 
@@ -189,6 +221,7 @@ describe("IssuesList", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    ensureLocalStorageMock();
     localStorage.clear();
   });
 

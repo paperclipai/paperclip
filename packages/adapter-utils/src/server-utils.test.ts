@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "./server-utils.js";
+import { renderUiLocalePrompt, runChildProcess } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -84,5 +84,20 @@ describe("runChildProcess", () => {
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+  });
+});
+
+describe("renderUiLocalePrompt", () => {
+  it("renders a Chinese reply-language instruction for zh-CN", () => {
+    expect(renderUiLocalePrompt("zh-CN")).toContain("Respond in Chinese (Simplified)");
+  });
+
+  it("renders an English reply-language instruction for en", () => {
+    expect(renderUiLocalePrompt("en")).toContain("Respond in English");
+  });
+
+  it("returns an empty string when locale is missing", () => {
+    expect(renderUiLocalePrompt("")).toBe("");
+    expect(renderUiLocalePrompt(null)).toBe("");
   });
 });

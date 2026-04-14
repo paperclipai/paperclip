@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { I18nProvider } from "../context/I18nContext";
 import { ThemeProvider } from "../context/ThemeContext";
 import { RunInvocationCard } from "../pages/AgentDetail";
 
@@ -9,19 +10,21 @@ describe("RunInvocationCard", () => {
   it("keeps verbose invocation details collapsed by default", () => {
     const html = renderToStaticMarkup(
       <ThemeProvider>
-        <RunInvocationCard
-          payload={{
-            adapterType: "claude_local",
-            cwd: "/tmp/workspace",
-            command: "claude",
-            commandArgs: ["--dangerously-skip-permissions"],
-            commandNotes: ["Prompt is piped to claude via stdin."],
-            prompt: "very long prompt body",
-            context: { triggeredBy: "board" },
-            env: { ANTHROPIC_API_KEY: "***REDACTED***" },
-          }}
-          censorUsernameInLogs={false}
-        />
+        <I18nProvider>
+          <RunInvocationCard
+            payload={{
+              adapterType: "claude_local",
+              cwd: "/tmp/workspace",
+              command: "claude",
+              commandArgs: ["--dangerously-skip-permissions"],
+              commandNotes: ["Prompt is piped to claude via stdin."],
+              prompt: "very long prompt body",
+              context: { triggeredBy: "board" },
+              env: { ANTHROPIC_API_KEY: "***REDACTED***" },
+            }}
+            censorUsernameInLogs={false}
+          />
+        </I18nProvider>
       </ThemeProvider>,
     );
 

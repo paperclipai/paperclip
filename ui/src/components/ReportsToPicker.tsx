@@ -9,6 +9,7 @@ import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
 import { AgentIcon } from "./AgentIconPicker";
+import { useI18n } from "../context/I18nContext";
 
 export function ReportsToPicker({
   agents,
@@ -16,8 +17,8 @@ export function ReportsToPicker({
   onChange,
   disabled = false,
   excludeAgentIds = [],
-  disabledEmptyLabel = "Reports to: N/A (CEO)",
-  chooseLabel = "Reports to...",
+  disabledEmptyLabel,
+  chooseLabel,
 }: {
   agents: Agent[];
   value: string | null;
@@ -27,6 +28,7 @@ export function ReportsToPicker({
   disabledEmptyLabel?: string;
   chooseLabel?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
   const rows = agents.filter(
@@ -35,6 +37,10 @@ export function ReportsToPicker({
   const current = value ? agents.find((a) => a.id === value) : null;
   const terminatedManager = current?.status === "terminated";
   const unknownManager = Boolean(value && !current);
+  const resolvedDisabledEmptyLabel =
+    disabledEmptyLabel ?? t("reports_to_picker.disabled_empty_label");
+  const resolvedChooseLabel = chooseLabel ?? t("reports_to_picker.choose_label");
+  const terminatedSuffix = t("reports_to_picker.terminated");
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -51,7 +57,9 @@ export function ReportsToPicker({
           {unknownManager ? (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate text-muted-foreground">Unknown manager (stale ID)</span>
+              <span className="min-w-0 truncate text-muted-foreground">
+                {t("reports_to_picker.unknown_manager")}
+              </span>
             </>
           ) : current ? (
             <>
@@ -62,14 +70,17 @@ export function ReportsToPicker({
                   terminatedManager && "text-amber-900 dark:text-amber-200",
                 )}
               >
-                {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}
+                {t("reports_to_picker.reports_to_name", {
+                  name: current.name,
+                  suffix: terminatedManager ? ` (${terminatedSuffix})` : "",
+                })}
               </span>
             </>
           ) : (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate">
-                {disabled ? disabledEmptyLabel : chooseLabel}
+                {disabled ? resolvedDisabledEmptyLabel : resolvedChooseLabel}
               </span>
             </>
           )}
@@ -87,19 +98,19 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          No manager
+          {t("reports_to_picker.no_manager")}
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
             <span className="min-w-0 truncate">
-              Current: {current.name} (terminated)
+              {t("reports_to_picker.current_terminated", { name: current.name })}
             </span>
           </div>
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
+            {t("reports_to_picker.saved_manager_missing")}
           </div>
         )}
         {rows.map((a) => (

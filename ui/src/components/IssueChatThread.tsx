@@ -66,7 +66,8 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { timeAgo } from "../lib/timeAgo";
+import { formatRelativeTime as fmtRelativeTime, getActiveLocale } from "../lib/i18n";
+import { useI18n } from "../context/I18nContext";
 import {
   describeToolInput,
   displayToolName,
@@ -268,13 +269,16 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 }
 
-function fallbackAuthorLabel(message: import("@assistant-ui/react").ThreadMessage) {
+function fallbackAuthorLabel(
+  message: import("@assistant-ui/react").ThreadMessage,
+  t: (key: string) => string,
+) {
   const custom = message.metadata?.custom as Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
-  if (message.role === "assistant") return "Agent";
-  if (message.role === "user") return "You";
-  return "System";
+  if (message.role === "assistant") return t("chat.role.agent");
+  if (message.role === "user") return t("chat.role.you");
+  return t("chat.role.system");
 }
 
 function fallbackTextParts(message: import("@assistant-ui/react").ThreadMessage) {
@@ -308,15 +312,16 @@ function IssueChatFallbackThread({
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
+  const { t } = useI18n();
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">{t("issue_chat.renderer_error")}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              {t("issue_chat.renderer_fallback")}
             </p>
           </div>
         </div>
@@ -338,7 +343,7 @@ function IssueChatFallbackThread({
             return (
               <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message, t)}</span>
                   {message.createdAt ? (
                     <span className="text-[11px] text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
@@ -349,7 +354,7 @@ function IssueChatFallbackThread({
                   {lines.length > 0 ? lines.map((line, index) => (
                     <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
                   )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                    <p className="text-sm text-muted-foreground">{t("issue_chat.no_message_content")}</p>
                   )}
                 </div>
               </div>
@@ -417,7 +422,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 function commentDateLabel(date: Date | string | undefined): string {
   if (!date) return "";
   const then = new Date(date).getTime();
-  if (Date.now() - then < WEEK_MS) return timeAgo(date);
+  if (Date.now() - then < WEEK_MS) return fmtRelativeTime(getActiveLocale(), date);
   return formatShortDate(date);
 }
 
@@ -435,23 +440,24 @@ function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolea
   );
 }
 
-function humanizeValue(value: string | null) {
-  if (!value) return "None";
+function humanizeValue(value: string | null, t: (key: string) => string) {
+  if (!value) return t("common.none");
   return value.replace(/_/g, " ");
 }
 
 function formatTimelineAssigneeLabel(
   assignee: IssueTimelineAssignee,
-  agentMap?: Map<string, Agent>,
-  currentUserId?: string | null,
+  agentMap: Map<string, Agent> | undefined,
+  currentUserId: string | null | undefined,
+  t: (key: string) => string,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? t("common.board");
   }
-  return "Unassigned";
+  return t("common.unassigned");
 }
 
 function initialsForName(name: string) {
@@ -462,10 +468,10 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-function formatRunStatusLabel(status: string) {
+function formatRunStatusLabel(status: string, t: (key: string) => string) {
   switch (status) {
     case "timed_out":
-      return "timed out";
+      return t("common.timed_out");
     default:
       return status.replace(/_/g, " ");
   }
@@ -492,7 +498,10 @@ function runStatusClass(status: string) {
   }
 }
 
-function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
+function toolCountSummary(
+  toolParts: ToolCallMessagePart[],
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
   if (toolParts.length === 0) return null;
   let commands = 0;
   let other = 0;
@@ -501,8 +510,8 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
     else other++;
   }
   const parts: string[] = [];
-  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
-  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
+  if (commands > 0) parts.push(t(commands === 1 ? "chat.ran_commands" : "chat.ran_commands_plural", { count: commands }));
+  if (other > 0) parts.push(t(other === 1 ? "chat.called_tools" : "chat.called_tools_plural", { count: other }));
   return parts.join(", ");
 }
 
@@ -516,6 +525,7 @@ function cleanToolDisplayText(tool: ToolCallMessagePart): string {
 }
 
 function IssueChatChainOfThought() {
+  const { t } = useI18n();
   const { agentMap } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
@@ -557,18 +567,18 @@ function IssueChatChainOfThought() {
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    headerVerb = "Working";
-    if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
+    headerVerb = t("issue_chat.working");
+    if (liveElapsed) headerSuffix = t("issue_chat.for_duration", { duration: liveElapsed });
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
     const durationText = formatDurationWords(durationMs);
-    headerVerb = "Worked";
-    if (durationText) headerSuffix = `for ${durationText}`;
+    headerVerb = t("issue_chat.worked");
+    if (durationText) headerSuffix = t("issue_chat.for_duration", { duration: durationText });
   } else {
-    headerVerb = "Worked";
+    headerVerb = t("issue_chat.worked");
   }
 
-  const toolSummary = toolCountSummary(toolParts);
+  const toolSummary = toolCountSummary(toolParts, t);
   const hasContent = allReasoningText.trim().length > 0 || toolParts.length > 0;
 
   return (
@@ -738,6 +748,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useI18n();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -747,8 +758,8 @@ function CopyablePreBlock({ children, className }: { children: string; className
           "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground group-hover/pre:opacity-100",
           copied && "opacity-100",
         )}
-        title="Copy"
-        aria-label="Copy"
+        title={t("chat.copy")}
+        aria-label={t("chat.copy")}
         onClick={() => {
           void navigator.clipboard.writeText(children).then(() => {
             setCopied(true);
@@ -783,6 +794,7 @@ function IssueChatToolPart({
   result?: unknown;
   isError?: boolean;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
@@ -834,7 +846,7 @@ function IssueChatToolPart({
             {nonIntentDetails.length > 0 ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("chat.input")}
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
@@ -852,7 +864,7 @@ function IssueChatToolPart({
             ) : rawArgsText ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("chat.input")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
               </div>
@@ -860,7 +872,7 @@ function IssueChatToolPart({
             {result !== undefined ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Result
+                  {t("chat.result")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
@@ -873,6 +885,7 @@ function IssueChatToolPart({
 }
 
 function IssueChatUserMessage() {
+  const { t } = useI18n();
   const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
@@ -898,7 +911,7 @@ function IssueChatUserMessage() {
             {queued ? (
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-                  Queued
+                  {t("chat.queued")}
                 </span>
                 {queueTargetRunId && onInterruptQueued ? (
                   <Button
@@ -908,7 +921,7 @@ function IssueChatUserMessage() {
                     disabled={interruptingQueuedRunId === queueTargetRunId}
                     onClick={() => void onInterruptQueued(queueTargetRunId)}
                   >
-                    {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                    {interruptingQueuedRunId === queueTargetRunId ? t("chat.interrupting") : t("chat.interrupt")}
                   </Button>
                 ) : null}
               </div>
@@ -923,7 +936,7 @@ function IssueChatUserMessage() {
           </div>
 
           {pending ? (
-            <div className="mt-1 flex justify-end px-1 text-[11px] text-muted-foreground">Sending...</div>
+            <div className="mt-1 flex justify-end px-1 text-[11px] text-muted-foreground">{t("issue_chat.sending")}</div>
           ) : (
             <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
               <Tooltip>
@@ -942,8 +955,8 @@ function IssueChatUserMessage() {
               <button
                 type="button"
                 className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-                title="Copy message"
-                aria-label="Copy message"
+                title={t("issue_chat.copy_message")}
+                aria-label={t("issue_chat.copy_message")}
                 onClick={() => {
                   const text = message.content
                     .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -962,7 +975,7 @@ function IssueChatUserMessage() {
         </div>
 
         <Avatar size="sm" className="mt-1 shrink-0">
-          <AvatarFallback>You</AvatarFallback>
+          <AvatarFallback>{t("chat.role.you")}</AvatarFallback>
         </Avatar>
       </div>
     </MessagePrimitive.Root>
@@ -977,6 +990,7 @@ function IssueChatAssistantMessage() {
     onVote,
     agentMap,
   } = useContext(IssueChatCtx);
+  const { t } = useI18n();
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -984,7 +998,7 @@ function IssueChatAssistantMessage() {
     ? custom.authorName
     : typeof custom.runAgentName === "string"
       ? custom.runAgentName
-      : "Agent";
+      : t("chat.role.agent");
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
@@ -1065,7 +1079,7 @@ function IssueChatAssistantMessage() {
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
+                  {t("issue_chat.running")}
                 </span>
               ) : null}
             </div>
@@ -1110,8 +1124,8 @@ function IssueChatAssistantMessage() {
                 <ActionBarPrimitive.Copy
                   copiedDuration={2000}
                   className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
-                  title="Copy message"
-                  aria-label="Copy message"
+                  title={t("issue_chat.copy_message")}
+                  aria-label={t("issue_chat.copy_message")}
                 >
                   <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
                   <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
@@ -1143,8 +1157,8 @@ function IssueChatAssistantMessage() {
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
+                      title={t("issue_chat.more_actions")}
+                      aria-label={t("issue_chat.more_actions")}
                     >
                       <MoreHorizontal className="h-3.5 w-3.5" />
                     </Button>
@@ -1160,13 +1174,13 @@ function IssueChatAssistantMessage() {
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
-                      Copy message
+                      {t("issue_chat.copy_message")}
                     </DropdownMenuItem>
                     {runHref ? (
                       <DropdownMenuItem asChild>
                         <Link to={runHref} target="_blank" rel="noreferrer noopener">
                           <Search className="mr-2 h-3.5 w-3.5" />
-                          View run
+                          {t("issue_chat.view_run")}
                         </Link>
                       </DropdownMenuItem>
                     ) : null}
@@ -1192,6 +1206,7 @@ function IssueChatFeedbackButtons({
   termsUrl: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [isSaving, setIsSaving] = useState(false);
   const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -1271,8 +1286,8 @@ function IssueChatFeedbackButtons({
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
-        title="Helpful"
-        aria-label="Helpful"
+        title={t("feedback.helpful")}
+        aria-label={t("feedback.helpful")}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -1288,19 +1303,19 @@ function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={t("feedback.needs_work")}
+            aria-label={t("feedback.needs_work")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("feedback.what_could_be_better")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("feedback.add_short_note")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -1315,7 +1330,7 @@ function IssueChatFeedbackButtons({
                 setDownvoteReason("");
               }}
             >
-              Dismiss
+              {t("feedback.dismiss")}
             </Button>
             <Button
               type="button"
@@ -1323,7 +1338,7 @@ function IssueChatFeedbackButtons({
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("feedback.saving") : t("feedback.save_note")}
             </Button>
           </div>
         </PopoverContent>
@@ -1340,21 +1355,18 @@ function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
-            <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+            <DialogTitle>{t("feedback.sharing_title")}</DialogTitle>
+            <DialogDescription>{t("feedback.sharing_description")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
+            <p>{t("feedback.vote_saved_locally")}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              {t("feedback.sharing_allow_hint", {
+                allowLabel: t("feedback.always_allow"),
+                dontAllowLabel: t("feedback.dont_allow"),
+              })}
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>{t("feedback.change_later")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -1362,7 +1374,7 @@ function IssueChatFeedbackButtons({
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                {t("feedback.read_terms")}
               </a>
             ) : null}
           </div>
@@ -1379,7 +1391,7 @@ function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("feedback.saving") : t("feedback.dont_allow")}
             </Button>
             <Button
               type="button"
@@ -1392,7 +1404,7 @@ function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("feedback.saving") : t("feedback.always_allow")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1403,6 +1415,7 @@ function IssueChatFeedbackButtons({
 
 function IssueChatSystemMessage() {
   const { agentMap, currentUserId } = useContext(IssueChatCtx);
+  const { t } = useI18n();
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1432,37 +1445,37 @@ function IssueChatSystemMessage() {
       <div className="min-w-0 space-y-1">
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">{t("issue_chat.updated_task")}</span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
           >
-            {timeAgo(message.createdAt)}
+            {fmtRelativeTime(getActiveLocale(), message.createdAt)}
           </a>
         </div>
 
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
+              {t("chat.status_label")}
             </span>
-            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
+            <span className="text-muted-foreground">{humanizeValue(statusChange.from, t)}</span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+            <span className="font-medium text-foreground">{humanizeValue(statusChange.to, t)}</span>
           </div>
         ) : null}
 
         {assigneeChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Assignee
+              {t("chat.assignee_label")}
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, t)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, t)}
             </span>
           </div>
         ) : null}
@@ -1516,7 +1529,7 @@ function IssueChatSystemMessage() {
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
-              <span className="text-muted-foreground">run</span>
+              <span className="text-muted-foreground">{t("chat.run_word")}</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -1524,13 +1537,13 @@ function IssueChatSystemMessage() {
                 {runId.slice(0, 8)}
               </Link>
               <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
+                {formatRunStatusLabel(runStatus, t)}
               </span>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
               >
-                {timeAgo(message.createdAt)}
+                {fmtRelativeTime(getActiveLocale(), message.createdAt)}
               </a>
             </div>
           </div>
@@ -1555,6 +1568,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   composerDisabledReason = null,
   issueStatus,
 }, forwardedRef) {
+  const { t } = useI18n();
   const api = useAui();
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(issueStatus === "done" || issueStatus === "cancelled");
@@ -1677,7 +1691,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Reply"
+        placeholder={t("issue_chat.reply_placeholder")}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
@@ -1700,7 +1714,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               size="icon-sm"
               onClick={() => attachInputRef.current?.click()}
               disabled={attaching}
-              title="Attach image"
+              title={t("issue_chat.attach_image")}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -1714,21 +1728,21 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             onChange={(event) => setReopen(event.target.checked)}
             className="rounded border-border"
           />
-          Re-open
+          {t("issue_chat.reopen")}
         </label>
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder={t("chat.assignee_label")}
+            noneLabel={t("chat.no_assignee")}
+            searchPlaceholder={t("chat.search_assignees")}
+            emptyMessage={t("chat.no_assignees_found")}
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">{t("chat.assignee_label")}</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -1757,7 +1771,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ) : null}
 
         <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
+          {submitting ? t("issue_chat.posting") : t("issue_chat.send")}
         </Button>
       </div>
     </div>

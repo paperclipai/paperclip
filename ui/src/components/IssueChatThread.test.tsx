@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import { I18nProvider } from "../context/I18nContext";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -113,13 +114,43 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof window.localStorage?.getItem === "function"
+    && typeof window.localStorage?.setItem === "function"
+    && typeof window.localStorage?.removeItem === "function"
+    && typeof window.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
+
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    localStorage.clear();
+    ensureLocalStorageMock();
+    try { localStorage.clear(); } catch { /* ignore unavailable localStorage in jsdom */ }
     threadMessagesMock.mockImplementation(() => <div data-testid="thread-messages" />);
   });
 
@@ -135,17 +166,19 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            showComposer={false}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -167,20 +200,22 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            showComposer={false}
-            showJumpToLatest={false}
-            variant="embedded"
-            emptyMessage="No run output captured."
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              showJumpToLatest={false}
+              variant="embedded"
+              emptyMessage="No run output captured."
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -204,26 +239,28 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[{
-              id: "comment-1",
-              companyId: "company-1",
-              issueId: "issue-1",
-              authorAgentId: "agent-1",
-              authorUserId: null,
-              body: "Agent summary",
-              createdAt: new Date("2026-04-06T12:00:00.000Z"),
-              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
-            }]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            showComposer={false}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[{
+                id: "comment-1",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Agent summary",
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              }]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -243,17 +280,19 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            draftKey="issue-chat-draft:test-1"
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              draftKey="issue-chat-draft:test-1"
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -283,17 +322,19 @@ describe("IssueChatThread", () => {
     const remount = createRoot(container);
     act(() => {
       remount.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            draftKey="issue-chat-draft:test-1"
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              draftKey="issue-chat-draft:test-1"
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -310,16 +351,18 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 
@@ -351,17 +394,19 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            composerRef={composerRef}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
+        <I18nProvider>
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              composerRef={composerRef}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
       );
     });
 

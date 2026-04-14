@@ -71,3 +71,9 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.
+
+## Language
+
+- If `PAPERCLIP_UI_LOCALE` is set in your environment, respond in the corresponding language.
+- `zh-CN` → respond in Chinese (Simplified). `en` → respond in English.
+- Apply this to all issue comments, task updates, and chat replies. Technical identifiers, code, and proper nouns are exempt.
