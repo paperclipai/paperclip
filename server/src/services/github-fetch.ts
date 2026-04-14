@@ -53,7 +53,7 @@ export async function ghFetch(
     }
   }
   try {
-    return await fetch(url, { ...init, headers, redirect: "manual" });
+    return await fetch(url, { ...init, headers, redirect: authToken ? "manual" : "follow" });
   } catch {
     throw unprocessable(`Could not connect to ${new URL(url).hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);
   }
