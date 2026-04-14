@@ -20,14 +20,20 @@ export function Goals() {
     setBreadcrumbs([{ label: "Goals" }]);
   }, [setBreadcrumbs]);
 
-  const { data: goals, isLoading, error } = useQuery({
+  const {
+    data: goals,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Target} message="Select a company to view goals." />;
+    return (
+      <EmptyState icon={Target} message="Select a company to view goals." />
+    );
   }
 
   if (isLoading) {
@@ -49,7 +55,7 @@ export function Goals() {
 
       {goals && goals.length > 0 && (
         <>
-          <div className="flex items-center justify-start">
+          <div className="flex items-center justify-between">
             <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
               <Plus className="h-3.5 w-3.5 mr-1.5" />
               New Goal

@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
+import {
+  Puzzle,
+  ArrowLeft,
+  ShieldAlert,
+  ActivitySquare,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  Clock,
+  Cpu,
+  Webhook,
+  CalendarClock,
+  AlertTriangle,
+} from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
@@ -60,8 +73,13 @@ import {
 export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
-  const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
+  const { companyPrefix, pluginId } = useParams<{
+    companyPrefix?: string;
+    pluginId: string;
+  }>();
+  const [activeTab, setActiveTab] = useState<"configuration" | "status">(
+    "configuration",
+  );
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
     queryKey: queryKeys.plugins.detail(pluginId!),
@@ -91,8 +109,13 @@ export function PluginSettings() {
   });
 
   // Fetch existing config for the plugin
-  const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
-  const hasConfigSchema = configSchema && configSchema.properties && Object.keys(configSchema.properties).length > 0;
+  const configSchema = plugin?.manifestJson?.instanceConfigSchema as
+    | JsonSchemaNode
+    | undefined;
+  const hasConfigSchema =
+    configSchema &&
+    configSchema.properties &&
+    Object.keys(configSchema.properties).length > 0;
 
   const { data: configData, isLoading: configLoading } = useQuery({
     queryKey: queryKeys.plugins.config(pluginId!),
@@ -117,7 +140,12 @@ export function PluginSettings() {
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/instance/settings/heartbeats" },
       { label: "Plugins", href: "/instance/settings/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
+      {
+        label:
+          plugin?.manifestJson?.displayName ??
+          plugin?.packageName ??
+          "Plugin Details",
+      },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
 
@@ -126,7 +154,11 @@ export function PluginSettings() {
   }, [pluginId]);
 
   if (pluginLoading) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading plugin details...</div>;
+    return (
+      <div className="p-4 text-sm text-muted-foreground">
+        Loading plugin details...
+      </div>
+    );
   }
 
   if (!plugin) {
@@ -140,7 +172,8 @@ export function PluginSettings() {
       : plugin.status === "error"
         ? "destructive"
         : "secondary";
-  const pluginDescription = plugin.manifestJson.description || "No description provided.";
+  const pluginDescription =
+    plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
 
   return (
@@ -153,7 +186,9 @@ export function PluginSettings() {
         </Link>
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
+          <h1 className="text-xl font-bold">
+            {plugin.manifestJson.displayName ?? plugin.packageName}
+          </h1>
           <Badge variant={statusVariant} className="ml-2">
             {displayStatus}
           </Badge>
@@ -163,7 +198,13 @@ export function PluginSettings() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "configuration" | "status")} className="space-y-6">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) =>
+          setActiveTab(value as "configuration" | "status")
+        }
+        className="space-y-6"
+      >
         <PageTabBar
           align="start"
           items={[
@@ -171,7 +212,9 @@ export function PluginSettings() {
             { value: "status", label: "Status" },
           ]}
           value={activeTab}
-          onValueChange={(value) => setActiveTab(value as "configuration" | "status")}
+          onValueChange={(value) =>
+            setActiveTab(value as "configuration" | "status")
+          }
         />
 
         <TabsContent value="configuration" className="space-y-6">
@@ -180,20 +223,34 @@ export function PluginSettings() {
               <h2 className="text-base font-semibold">About</h2>
               <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]">
                 <div className="space-y-2">
-                  <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
-                  <p className="text-sm leading-6 text-foreground/90">{pluginDescription}</p>
+                  <h3 className="text-sm font-medium text-muted-foreground">
+                    Description
+                  </h3>
+                  <p className="text-sm leading-6 text-foreground/90">
+                    {pluginDescription}
+                  </p>
                 </div>
                 <div className="space-y-4 text-sm">
                   <div className="space-y-1.5">
-                    <h3 className="font-medium text-muted-foreground">Author</h3>
-                    <p className="text-foreground">{plugin.manifestJson.author}</p>
+                    <h3 className="font-medium text-muted-foreground">
+                      Author
+                    </h3>
+                    <p className="text-foreground">
+                      {plugin.manifestJson.author}
+                    </p>
                   </div>
                   <div className="space-y-2">
-                    <h3 className="font-medium text-muted-foreground">Categories</h3>
+                    <h3 className="font-medium text-muted-foreground">
+                      Categories
+                    </h3>
                     <div className="flex flex-wrap gap-2">
                       {plugin.categories.length > 0 ? (
                         plugin.categories.map((category) => (
-                          <Badge key={category} variant="outline" className="capitalize">
+                          <Badge
+                            key={category}
+                            variant="outline"
+                            className="capitalize"
+                          >
                             {category}
                           </Badge>
                         ))
@@ -233,7 +290,10 @@ export function PluginSettings() {
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
-                  supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
+                  supportsConfigTest={
+                    (plugin as unknown as { supportsConfigTest?: boolean })
+                      .supportsConfigTest === true
+                  }
                 />
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -268,22 +328,40 @@ export function PluginSettings() {
                         {dashboardData.worker ? (
                           <div className="grid grid-cols-2 gap-3 text-sm">
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Status</span>
-                              <Badge variant={dashboardData.worker.status === "running" ? "default" : "secondary"}>
+                              <span className="text-muted-foreground">
+                                Status
+                              </span>
+                              <Badge
+                                variant={
+                                  dashboardData.worker.status === "running"
+                                    ? "default"
+                                    : "secondary"
+                                }
+                              >
                                 {dashboardData.worker.status}
                               </Badge>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">PID</span>
-                              <span className="font-mono text-xs">{dashboardData.worker.pid ?? "—"}</span>
+                              <span className="font-mono text-xs">
+                                {dashboardData.worker.pid ?? "—"}
+                              </span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Uptime</span>
-                              <span className="text-xs">{formatUptime(dashboardData.worker.uptime)}</span>
+                              <span className="text-muted-foreground">
+                                Uptime
+                              </span>
+                              <span className="text-xs">
+                                {formatUptime(dashboardData.worker.uptime)}
+                              </span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Pending RPCs</span>
-                              <span className="text-xs">{dashboardData.worker.pendingRequests}</span>
+                              <span className="text-muted-foreground">
+                                Pending RPCs
+                              </span>
+                              <span className="text-xs">
+                                {dashboardData.worker.pendingRequests}
+                              </span>
                             </div>
                             {dashboardData.worker.totalCrashes > 0 && (
                               <>
@@ -293,20 +371,30 @@ export function PluginSettings() {
                                     Crashes
                                   </span>
                                   <span className="text-xs">
-                                    {dashboardData.worker.consecutiveCrashes} consecutive / {dashboardData.worker.totalCrashes} total
+                                    {dashboardData.worker.consecutiveCrashes}{" "}
+                                    consecutive /{" "}
+                                    {dashboardData.worker.totalCrashes} total
                                   </span>
                                 </div>
                                 {dashboardData.worker.lastCrashAt && (
                                   <div className="flex justify-between col-span-2">
-                                    <span className="text-muted-foreground">Last Crash</span>
-                                    <span className="text-xs">{formatTimestamp(dashboardData.worker.lastCrashAt)}</span>
+                                    <span className="text-muted-foreground">
+                                      Last Crash
+                                    </span>
+                                    <span className="text-xs">
+                                      {formatTimestamp(
+                                        dashboardData.worker.lastCrashAt,
+                                      )}
+                                    </span>
                                   </div>
                                 )}
                               </>
                             )}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No worker process registered.</p>
+                          <p className="text-sm text-muted-foreground italic">
+                            No worker process registered.
+                          </p>
                         )}
                       </div>
 
@@ -326,22 +414,36 @@ export function PluginSettings() {
                               >
                                 <div className="flex min-w-0 items-center gap-2">
                                   <JobStatusDot status={run.status} />
-                                  <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
+                                  <span
+                                    className="truncate font-mono text-xs"
+                                    title={run.jobKey ?? run.jobId}
+                                  >
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
-                                  <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                                  <Badge
+                                    variant="outline"
+                                    className="px-1 py-0 text-[10px]"
+                                  >
                                     {run.trigger}
                                   </Badge>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                                  {run.durationMs != null ? <span>{formatDuration(run.durationMs)}</span> : null}
-                                  <span title={run.createdAt}>{formatRelativeTime(run.createdAt)}</span>
+                                  {run.durationMs != null ? (
+                                    <span>
+                                      {formatDuration(run.durationMs)}
+                                    </span>
+                                  ) : null}
+                                  <span title={run.createdAt}>
+                                    {formatRelativeTime(run.createdAt)}
+                                  </span>
                                 </div>
                               </div>
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No job runs recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">
+                            No job runs recorded yet.
+                          </p>
                         )}
                       </div>
 
@@ -354,32 +456,48 @@ export function PluginSettings() {
                         </h3>
                         {dashboardData.recentWebhookDeliveries.length > 0 ? (
                           <div className="space-y-2">
-                            {dashboardData.recentWebhookDeliveries.map((delivery) => (
-                              <div
-                                key={delivery.id}
-                                className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
-                              >
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <DeliveryStatusDot status={delivery.status} />
-                                  <span className="truncate font-mono text-xs" title={delivery.webhookKey}>
-                                    {delivery.webhookKey}
-                                  </span>
+                            {dashboardData.recentWebhookDeliveries.map(
+                              (delivery) => (
+                                <div
+                                  key={delivery.id}
+                                  className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
+                                >
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <DeliveryStatusDot
+                                      status={delivery.status}
+                                    />
+                                    <span
+                                      className="truncate font-mono text-xs"
+                                      title={delivery.webhookKey}
+                                    >
+                                      {delivery.webhookKey}
+                                    </span>
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                                    {delivery.durationMs != null ? (
+                                      <span>
+                                        {formatDuration(delivery.durationMs)}
+                                      </span>
+                                    ) : null}
+                                    <span title={delivery.createdAt}>
+                                      {formatRelativeTime(delivery.createdAt)}
+                                    </span>
+                                  </div>
                                 </div>
-                                <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                                  {delivery.durationMs != null ? <span>{formatDuration(delivery.durationMs)}</span> : null}
-                                  <span title={delivery.createdAt}>{formatRelativeTime(delivery.createdAt)}</span>
-                                </div>
-                              </div>
-                            ))}
+                              ),
+                            )}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No webhook deliveries recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">
+                            No webhook deliveries recorded yet.
+                          </p>
                         )}
                       </div>
 
                       <div className="flex items-center gap-1.5 border-t border-border/50 pt-2 text-xs text-muted-foreground">
                         <Clock className="h-3 w-3" />
-                        Last checked: {new Date(dashboardData.checkedAt).toLocaleTimeString()}
+                        Last checked:{" "}
+                        {new Date(dashboardData.checkedAt).toLocaleTimeString()}
                       </div>
                     </>
                   ) : (
@@ -397,7 +515,9 @@ export function PluginSettings() {
                       <ActivitySquare className="h-4 w-4" />
                       Recent Logs
                     </CardTitle>
-                    <CardDescription>Last {recentLogs.length} log entries</CardDescription>
+                    <CardDescription>
+                      Last {recentLogs.length} log entries
+                    </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
@@ -414,9 +534,18 @@ export function PluginSettings() {
                                   : "text-muted-foreground"
                           }`}
                         >
-                          <span className="shrink-0 text-muted-foreground/50">{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">{entry.level}</Badge>
-                          <span className="truncate" title={entry.message}>{entry.message}</span>
+                          <span className="shrink-0 text-muted-foreground/50">
+                            {new Date(entry.createdAt).toLocaleTimeString()}
+                          </span>
+                          <Badge
+                            variant="outline"
+                            className="h-4 shrink-0 px-1 text-[10px]"
+                          >
+                            {entry.level}
+                          </Badge>
+                          <span className="truncate" title={entry.message}>
+                            {entry.message}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -435,12 +564,18 @@ export function PluginSettings() {
                 </CardHeader>
                 <CardContent>
                   {healthLoading ? (
-                    <p className="text-sm text-muted-foreground">Checking health...</p>
+                    <p className="text-sm text-muted-foreground">
+                      Checking health...
+                    </p>
                   ) : healthData ? (
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Overall</span>
-                        <Badge variant={healthData.healthy ? "default" : "destructive"}>
+                        <Badge
+                          variant={
+                            healthData.healthy ? "default" : "destructive"
+                          }
+                        >
                           {healthData.status}
                         </Badge>
                       </div>
@@ -448,8 +583,14 @@ export function PluginSettings() {
                       {healthData.checks.length > 0 ? (
                         <div className="space-y-2 border-t border-border/50 pt-2">
                           {healthData.checks.map((check, i) => (
-                            <div key={i} className="flex items-start justify-between gap-2">
-                              <span className="truncate text-muted-foreground" title={check.name}>
+                            <div
+                              key={i}
+                              className="flex items-start justify-between gap-2"
+                            >
+                              <span
+                                className="truncate text-muted-foreground"
+                                title={check.name}
+                              >
                                 {check.name}
                               </span>
                               {check.passed ? (
@@ -492,21 +633,30 @@ export function PluginSettings() {
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
                     <span>Plugin ID</span>
-                    <span className="font-mono text-xs text-right">{plugin.id}</span>
+                    <span className="font-mono text-xs text-right">
+                      {plugin.id}
+                    </span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>Plugin Key</span>
-                    <span className="font-mono text-xs text-right">{plugin.pluginKey}</span>
+                    <span className="font-mono text-xs text-right">
+                      {plugin.pluginKey}
+                    </span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>NPM Package</span>
-                    <span className="max-w-[170px] truncate text-right text-xs" title={plugin.packageName}>
+                    <span
+                      className="max-w-[170px] truncate text-right text-xs"
+                      title={plugin.packageName}
+                    >
                       {plugin.packageName}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>Version</span>
-                    <span className="text-right text-foreground">v{plugin.manifestJson.version ?? plugin.version}</span>
+                    <span className="text-right text-foreground">
+                      v{plugin.manifestJson.version ?? plugin.version}
+                    </span>
                   </div>
                 </CardContent>
               </Card>
@@ -522,13 +672,18 @@ export function PluginSettings() {
                   {pluginCapabilities.length > 0 ? (
                     <ul className="space-y-2 text-sm text-muted-foreground">
                       {pluginCapabilities.map((cap) => (
-                        <li key={cap} className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85">
+                        <li
+                          key={cap}
+                          className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85"
+                        >
                           {cap}
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                    <p className="text-sm text-muted-foreground italic">
+                      No special permissions requested.
+                    </p>
                   )}
                 </CardContent>
               </Card>
@@ -562,7 +717,14 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({
+  pluginId,
+  schema,
+  initialValues,
+  isLoading,
+  pluginStatus,
+  supportsConfigTest,
+}: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -586,14 +748,22 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   }, [initialValues, schema]);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [testResult, setTestResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [saveMessage, setSaveMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   // Dirty tracking: compare against initial values
-  const isDirty = JSON.stringify(values) !== JSON.stringify({
-    ...getDefaultValues(schema),
-    ...(initialValues ?? {}),
-  });
+  const isDirty =
+    JSON.stringify(values) !==
+    JSON.stringify({
+      ...getDefaultValues(schema),
+      ...(initialValues ?? {}),
+    });
 
   // Save mutation
   const saveMutation = useMutation({
@@ -602,12 +772,17 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
     onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.config(pluginId),
+      });
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
-      setSaveMessage({ type: "error", text: err.message || "Failed to save configuration." });
+      setSaveMessage({
+        type: "error",
+        text: err.message || "Failed to save configuration.",
+      });
     },
   });
 
@@ -619,11 +794,17 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
       if (result.valid) {
         setTestResult({ type: "success", text: "Configuration test passed." });
       } else {
-        setTestResult({ type: "error", text: result.message || "Configuration test failed." });
+        setTestResult({
+          type: "error",
+          text: result.message || "Configuration test failed.",
+        });
       }
     },
     onError: (err: Error) => {
-      setTestResult({ type: "error", text: err.message || "Configuration test failed." });
+      setTestResult({
+        type: "error",
+        text: err.message || "Configuration test failed.",
+      });
     },
   });
 

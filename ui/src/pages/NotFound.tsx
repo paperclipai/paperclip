@@ -12,7 +12,10 @@ interface NotFoundPageProps {
   requestedPrefix?: string;
 }
 
-export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
+export function NotFoundPage({
+  scope = "global",
+  requestedPrefix,
+}: NotFoundPageProps) {
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();
@@ -22,11 +25,14 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
-  const dashboardHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/dashboard` : "/";
+  const dashboardHref = fallbackCompany
+    ? `/${fallbackCompany.issuePrefix}/dashboard`
+    : "/";
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
+  const title =
+    scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
   const description =
     scope === "invalid_company_prefix"
       ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
@@ -40,7 +46,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
             <AlertTriangle className="h-5 w-5 text-destructive" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">{title}</h1>
+            <h1 className="text-xl font-bold">{title}</h1>
             <p className="text-sm text-muted-foreground">{description}</p>
           </div>
         </div>

@@ -8,7 +8,12 @@ import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
 import { workspaceRuntimeServices } from "@paperclipai/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
+import {
+  asNumber,
+  asString,
+  parseObject,
+  renderTemplate,
+} from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 
@@ -89,12 +94,17 @@ function stableStringify(value: unknown): string {
   }
   if (value && typeof value === "object") {
     const rec = value as Record<string, unknown>;
-    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
+    return `{${Object.keys(rec)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`)
+      .join(",")}}`;
   }
   return JSON.stringify(value);
 }
 
-export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sanitizeRuntimeServiceBaseEnv(
+  baseEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PAPERCLIP_")) {
@@ -133,7 +143,10 @@ function stableRuntimeServiceId(input: {
   return `${input.adapterType}-${digest}`;
 }
 
-function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<RuntimeServiceRef>): RuntimeServiceRef {
+function toRuntimeServiceRef(
+  record: RuntimeServiceRecord,
+  overrides?: Partial<RuntimeServiceRef>,
+): RuntimeServiceRef {
   return {
     id: record.id,
     companyId: record.companyId,
@@ -165,7 +178,10 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
   };
 }
 
-function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
+function sanitizeSlugPart(
+  value: string | null | undefined,
+  fallback: string,
+): string {
   const raw = (value ?? "").trim().toLowerCase();
   const normalized = raw
     .replace(/[^a-z0-9/_-]+/g, "-")
@@ -174,14 +190,20 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function renderWorkspaceTemplate(template: string, input: {
-  issue: ExecutionWorkspaceIssueRef | null;
-  agent: ExecutionWorkspaceAgentRef;
-  projectId: string | null;
-  repoRef: string | null;
-}) {
+function renderWorkspaceTemplate(
+  template: string,
+  input: {
+    issue: ExecutionWorkspaceIssueRef | null;
+    agent: ExecutionWorkspaceAgentRef;
+    projectId: string | null;
+    repoRef: string | null;
+  },
+) {
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
-  const slug = sanitizeSlugPart(input.issue?.title, sanitizeSlugPart(issueIdentifier, "issue"));
+  const slug = sanitizeSlugPart(
+    input.issue?.title,
+    sanitizeSlugPart(issueIdentifier, "issue"),
+  );
   return renderTemplate(template, {
     issue: {
       id: input.issue?.id ?? "",
@@ -203,12 +225,14 @@ function renderWorkspaceTemplate(template: string, input: {
 }
 
 function sanitizeBranchName(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9._/-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9._/-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[-/.]+|[-/.]+$/g, "")
+      .slice(0, 120) || "paperclip-work"
+  );
 }
 
 function isAbsolutePath(value: string) {
@@ -224,7 +248,9 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
 
 function formatCommandForDisplay(command: string, args: string[]) {
   return [command, ...args]
-    .map((part) => (/^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part)))
+    .map((part) =>
+      /^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part),
+    )
     .join(" ");
 }
 
@@ -234,7 +260,11 @@ async function executeProcess(input: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+  const proc = await new Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+  }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -259,9 +289,14 @@ async function runGit(args: string[], cwd: string): Promise<string> {
     command: "git",
     args,
     cwd,
+    env: { ...process.env, LANG: "C", LC_ALL: "C" },
   });
   if (proc.code !== 0) {
-    throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
+    throw new Error(
+      proc.stderr.trim() ||
+        proc.stdout.trim() ||
+        `git ${args.join(" ")} failed`,
+    );
   }
   return proc.stdout.trim();
 }
@@ -272,7 +307,10 @@ function gitErrorIncludes(error: unknown, needle: string) {
 }
 
 async function directoryExists(value: string) {
-  return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+  return fs
+    .stat(value)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false);
 }
 
 function terminateChildProcess(child: ChildProcess) {
@@ -336,7 +374,9 @@ async function runWorkspaceCommand(input: {
   });
   if (proc.code === 0) return;
 
-  const details = [proc.stderr.trim(), proc.stdout.trim()].filter(Boolean).join("\n");
+  const details = [proc.stderr.trim(), proc.stdout.trim()]
+    .filter(Boolean)
+    .join("\n");
   throw new Error(
     details.length > 0
       ? `${input.label} failed: ${details}`
@@ -372,6 +412,7 @@ async function recordGitOperation(
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: { ...process.env, LANG: "C", LC_ALL: "C" },
       });
       stdout = result.stdout;
       stderr = result.stderr;
@@ -381,7 +422,7 @@ async function recordGitOperation(
         exitCode: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
-        system: result.code === 0 ? input.successMessage ?? null : null,
+        system: result.code === 0 ? (input.successMessage ?? null) : null,
       };
     },
   });
@@ -438,7 +479,7 @@ async function recordWorkspaceCommandOperation(
         exitCode: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
-        system: result.code === 0 ? input.successMessage ?? null : null,
+        system: result.code === 0 ? (input.successMessage ?? null) : null,
       };
     },
   });
@@ -526,15 +567,20 @@ async function resolveGitRepoRootForWorkspaceCleanup(
 ): Promise<string | null> {
   if (projectWorkspaceCwd) {
     const resolvedProjectWorkspaceCwd = path.resolve(projectWorkspaceCwd);
-    const gitDir = await runGit(["rev-parse", "--git-common-dir"], resolvedProjectWorkspaceCwd)
-      .catch(() => null);
+    const gitDir = await runGit(
+      ["rev-parse", "--git-common-dir"],
+      resolvedProjectWorkspaceCwd,
+    ).catch(() => null);
     if (gitDir) {
       const resolvedGitDir = path.resolve(resolvedProjectWorkspaceCwd, gitDir);
       return path.dirname(resolvedGitDir);
     }
   }
 
-  const gitDir = await runGit(["rev-parse", "--git-common-dir"], worktreePath).catch(() => null);
+  const gitDir = await runGit(
+    ["rev-parse", "--git-common-dir"],
+    worktreePath,
+  ).catch(() => null);
   if (!gitDir) return null;
   const resolvedGitDir = path.resolve(worktreePath, gitDir);
   return path.dirname(resolvedGitDir);
@@ -561,8 +607,14 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
-  const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
+  const repoRoot = await runGit(
+    ["rev-parse", "--show-toplevel"],
+    input.base.baseCwd,
+  );
+  const branchTemplate = asString(
+    rawStrategy.branchTemplate,
+    "{{issue.identifier}}-{{slug}}",
+  );
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,
     agent: input.agent,
@@ -581,7 +633,10 @@ export async function realizeExecutionWorkspace(input: {
 
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
-    const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
+    const existingGitDir = await runGit(
+      ["rev-parse", "--git-dir"],
+      worktreePath,
+    ).catch(() => null);
     if (existingGitDir) {
       if (input.recorder) {
         await input.recorder.recordOperation({
@@ -623,7 +678,9 @@ export async function realizeExecutionWorkspace(input: {
         created: false,
       };
     }
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a git worktree.`);
+    throw new Error(
+      `Configured worktree path "${worktreePath}" already exists and is not a git worktree.`,
+    );
   }
 
   try {
@@ -748,7 +805,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
-        warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
+        warnings.push(
+          `Could not resolve git repo root for "${workspacePath}".`,
+        );
       } else {
         try {
           await recordGitOperation(input.recorder, {
@@ -771,7 +830,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
     if (createdByRuntime && input.workspace.branchName) {
       if (!repoRoot) {
-        warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
+        warnings.push(
+          `Could not resolve git repo root to delete branch "${input.workspace.branchName}".`,
+        );
       } else {
         try {
           await recordGitOperation(input.recorder, {
@@ -789,21 +850,29 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          warnings.push(`Skipped deleting branch "${input.workspace.branchName}": ${message}`);
+          warnings.push(
+            `Skipped deleting branch "${input.workspace.branchName}": ${message}`,
+          );
         }
       }
     }
-  } else if (input.workspace.providerType === "local_fs" && createdByRuntime && workspacePath) {
-    const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
+  } else if (
+    input.workspace.providerType === "local_fs" &&
+    createdByRuntime &&
+    workspacePath
+  ) {
+    const projectWorkspaceCwd = input.projectWorkspace?.cwd
+      ? path.resolve(input.projectWorkspace.cwd)
+      : null;
     const resolvedWorkspacePath = path.resolve(workspacePath);
     const containsProjectWorkspace = projectWorkspaceCwd
-      ? (
-          resolvedWorkspacePath === projectWorkspaceCwd ||
-          projectWorkspaceCwd.startsWith(`${resolvedWorkspacePath}${path.sep}`)
-        )
+      ? resolvedWorkspacePath === projectWorkspaceCwd ||
+        projectWorkspaceCwd.startsWith(`${resolvedWorkspacePath}${path.sep}`)
       : false;
     if (containsProjectWorkspace) {
-      warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
+      warnings.push(
+        `Refusing to remove path "${workspacePath}" because it contains the project workspace.`,
+      );
     } else {
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
       if (input.recorder) {
@@ -825,9 +894,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
-  const cleaned =
-    !workspacePath ||
-    !(await directoryExists(workspacePath));
+  const cleaned = !workspacePath || !(await directoryExists(workspacePath));
 
   return {
     cleanedPath: workspacePath,
@@ -897,16 +964,26 @@ function resolveServiceScopeId(input: {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
 } {
-  const scopeTypeRaw = asString(input.service.reuseScope, input.service.lifecycle === "shared" ? "project_workspace" : "run");
+  const scopeTypeRaw = asString(
+    input.service.reuseScope,
+    input.service.lifecycle === "shared" ? "project_workspace" : "run",
+  );
   const scopeType =
     scopeTypeRaw === "project_workspace" ||
     scopeTypeRaw === "execution_workspace" ||
     scopeTypeRaw === "agent"
       ? scopeTypeRaw
       : "run";
-  if (scopeType === "project_workspace") return { scopeType, scopeId: input.workspace.workspaceId ?? input.workspace.projectId };
+  if (scopeType === "project_workspace")
+    return {
+      scopeType,
+      scopeId: input.workspace.workspaceId ?? input.workspace.projectId,
+    };
   if (scopeType === "execution_workspace") {
-    return { scopeType, scopeId: input.executionWorkspaceId ?? input.workspace.cwd };
+    return {
+      scopeType,
+      scopeId: input.executionWorkspaceId ?? input.workspace.cwd,
+    };
   }
   if (scopeType === "agent") return { scopeType, scopeId: input.agent.id };
   return { scopeType: "run" as const, scopeId: input.runId };
@@ -936,7 +1013,9 @@ async function waitForReadiness(input: {
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
 }
 
-function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeof workspaceRuntimeServices.$inferInsert {
+function toPersistedWorkspaceRuntimeService(
+  record: RuntimeServiceRecord,
+): typeof workspaceRuntimeServices.$inferInsert {
   return {
     id: record.id,
     companyId: record.companyId,
@@ -967,7 +1046,10 @@ function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeo
   };
 }
 
-async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeServiceRecord) {
+async function persistRuntimeServiceRecord(
+  db: Db | undefined,
+  record: RuntimeServiceRecord,
+) {
   if (!db) return;
   const values = toPersistedWorkspaceRuntimeService(record);
   await db
@@ -1028,7 +1110,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
       (scopeType === "project_workspace"
         ? input.workspace.workspaceId
         : scopeType === "execution_workspace"
-          ? input.executionWorkspaceId ?? input.workspace.cwd
+          ? (input.executionWorkspaceId ?? input.workspace.cwd)
           : scopeType === "agent"
             ? input.agent.id
             : input.runId) ??
@@ -1038,7 +1120,11 @@ export function normalizeAdapterManagedRuntimeServices(input: {
     const lifecycle = report.lifecycle ?? "ephemeral";
     const healthStatus =
       report.healthStatus ??
-      (status === "running" ? "healthy" : status === "failed" ? "unhealthy" : "unknown");
+      (status === "running"
+        ? "healthy"
+        : status === "failed"
+          ? "unhealthy"
+          : "unknown");
     return {
       id: stableRuntimeServiceId({
         adapterType: input.adapterType,
@@ -1052,7 +1138,8 @@ export function normalizeAdapterManagedRuntimeServices(input: {
       }),
       companyId: input.agent.companyId,
       projectId: report.projectId ?? input.workspace.projectId,
-      projectWorkspaceId: report.projectWorkspaceId ?? input.workspace.workspaceId,
+      projectWorkspaceId:
+        report.projectWorkspaceId ?? input.workspace.workspaceId,
       executionWorkspaceId: input.executionWorkspaceId ?? null,
       issueId: report.issueId ?? input.issue?.id ?? null,
       serviceName,
@@ -1094,12 +1181,17 @@ async function startLocalRuntimeService(input: {
   scopeId: string | null;
 }): Promise<RuntimeServiceRecord> {
   const serviceName = asString(input.service.name, "service");
-  const lifecycle = asString(input.service.lifecycle, "shared") === "ephemeral" ? "ephemeral" : "shared";
+  const lifecycle =
+    asString(input.service.lifecycle, "shared") === "ephemeral"
+      ? "ephemeral"
+      : "shared";
   const command = asString(input.service.command, "");
-  if (!command) throw new Error(`Runtime service "${serviceName}" is missing command`);
+  if (!command)
+    throw new Error(`Runtime service "${serviceName}" is missing command`);
   const serviceCwdTemplate = asString(input.service.cwd, ".");
   const portConfig = parseObject(input.service.port);
-  const port = asString(portConfig.type, "") === "auto" ? await allocatePort() : null;
+  const port =
+    asString(portConfig.type, "") === "auto" ? await allocatePort() : null;
   const envConfig = parseObject(input.service.env);
   const templateData = buildTemplateData({
     workspace: input.workspace,
@@ -1108,7 +1200,10 @@ async function startLocalRuntimeService(input: {
     adapterEnv: input.adapterEnv,
     port,
   });
-  const serviceCwd = resolveConfiguredPath(renderTemplate(serviceCwdTemplate, templateData), input.workspace.cwd);
+  const serviceCwd = resolveConfiguredPath(
+    renderTemplate(serviceCwdTemplate, templateData),
+    input.workspace.cwd,
+  );
   const env: Record<string, string> = {
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...input.adapterEnv,
@@ -1134,19 +1229,20 @@ async function startLocalRuntimeService(input: {
   child.stdout?.on("data", async (chunk) => {
     const text = String(chunk);
     stdoutExcerpt = (stdoutExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${text}`);
+    if (input.onLog)
+      await input.onLog("stdout", `[service:${serviceName}] ${text}`);
   });
   child.stderr?.on("data", async (chunk) => {
     const text = String(chunk);
     stderrExcerpt = (stderrExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
+    if (input.onLog)
+      await input.onLog("stderr", `[service:${serviceName}] ${text}`);
   });
 
   const expose = parseObject(input.service.expose);
   const readiness = parseObject(input.service.readiness);
   const urlTemplate =
-    asString(expose.urlTemplate, "") ||
-    asString(readiness.urlTemplate, "");
+    asString(expose.urlTemplate, "") || asString(readiness.urlTemplate, "");
   const url = urlTemplate ? renderTemplate(urlTemplate, templateData) : null;
 
   try {
@@ -1158,7 +1254,9 @@ async function startLocalRuntimeService(input: {
     );
   }
 
-  const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
+  const envFingerprint = createHash("sha256")
+    .update(stableStringify(envConfig))
+    .digest("hex");
   return {
     id: randomUUID(),
     companyId: input.agent.companyId,
@@ -1198,7 +1296,10 @@ function scheduleIdleStop(record: RuntimeServiceRecord) {
   clearIdleTimer(record);
   const stopType = asString(record.stopPolicy?.type, "manual");
   if (stopType !== "idle_timeout") return;
-  const idleSeconds = Math.max(1, asNumber(record.stopPolicy?.idleSeconds, 1800));
+  const idleSeconds = Math.max(
+    1,
+    asNumber(record.stopPolicy?.idleSeconds, 1800),
+  );
   record.idleTimer = setTimeout(() => {
     stopRuntimeService(record.id).catch(() => undefined);
   }, idleSeconds * 1000);
@@ -1237,13 +1338,19 @@ async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
     })
     .where(
       and(
-        eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+        eq(
+          workspaceRuntimeServices.executionWorkspaceId,
+          input.executionWorkspaceId,
+        ),
         inArray(workspaceRuntimeServices.status, ["starting", "running"]),
       ),
     );
 }
 
-function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord) {
+function registerRuntimeService(
+  db: Db | undefined,
+  record: RuntimeServiceRecord,
+) {
   record.db = db;
   runtimeServicesById.set(record.id, record);
   if (record.reuseKey) {
@@ -1255,11 +1362,15 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
     if (!current) return;
     clearIdleTimer(current);
     current.status = code === 0 || signal === "SIGTERM" ? "stopped" : "failed";
-    current.healthStatus = current.status === "failed" ? "unhealthy" : "unknown";
+    current.healthStatus =
+      current.status === "failed" ? "unhealthy" : "unknown";
     current.lastUsedAt = new Date().toISOString();
     current.stoppedAt = new Date().toISOString();
     runtimeServicesById.delete(current.id);
-    if (current.reuseKey && runtimeServicesByReuseKey.get(current.reuseKey) === current.id) {
+    if (
+      current.reuseKey &&
+      runtimeServicesByReuseKey.get(current.reuseKey) === current.id
+    ) {
       runtimeServicesByReuseKey.delete(current.reuseKey);
     }
     void persistRuntimeServiceRecord(db, current);
@@ -1279,7 +1390,10 @@ export async function ensureRuntimeServicesForRun(input: {
 }): Promise<RuntimeServiceRef[]> {
   const runtime = parseObject(input.config.workspaceRuntime);
   const rawServices = Array.isArray(runtime.services)
-    ? runtime.services.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+    ? runtime.services.filter(
+        (entry): entry is Record<string, unknown> =>
+          typeof entry === "object" && entry !== null,
+      )
     : [];
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
@@ -1287,7 +1401,10 @@ export async function ensureRuntimeServicesForRun(input: {
 
   try {
     for (const service of rawServices) {
-      const lifecycle = asString(service.lifecycle, "shared") === "ephemeral" ? "ephemeral" : "shared";
+      const lifecycle =
+        asString(service.lifecycle, "shared") === "ephemeral"
+          ? "ephemeral"
+          : "shared";
       const { scopeType, scopeId } = resolveServiceScopeId({
         service,
         workspace: input.workspace,
@@ -1297,7 +1414,9 @@ export async function ensureRuntimeServicesForRun(input: {
         agent: input.agent,
       });
       const envConfig = parseObject(service.env);
-      const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
+      const envFingerprint = createHash("sha256")
+        .update(stableStringify(envConfig))
+        .digest("hex");
       const serviceName = asString(service.name, "service");
       const reuseKey =
         lifecycle === "shared"
@@ -1306,7 +1425,9 @@ export async function ensureRuntimeServicesForRun(input: {
 
       if (reuseKey) {
         const existingId = runtimeServicesByReuseKey.get(reuseKey);
-        const existing = existingId ? runtimeServicesById.get(existingId) : null;
+        const existing = existingId
+          ? runtimeServicesById.get(existingId)
+          : null;
         if (existing && existing.status === "running") {
           existing.leaseRunIds.add(input.runId);
           existing.lastUsedAt = new Date().toISOString();
@@ -1354,7 +1475,10 @@ export async function releaseRuntimeServicesForRun(runId: string) {
     if (!record) continue;
     record.leaseRunIds.delete(runId);
     record.lastUsedAt = new Date().toISOString();
-    const stopType = asString(record.stopPolicy?.type, record.lifecycle === "ephemeral" ? "on_run_finish" : "manual");
+    const stopType = asString(
+      record.stopPolicy?.type,
+      record.lifecycle === "ephemeral" ? "on_run_finish" : "manual",
+    );
     await persistRuntimeServiceRecord(record.db, record);
     if (record.leaseRunIds.size === 0) {
       if (record.lifecycle === "ephemeral" || stopType === "on_run_finish") {
@@ -1371,10 +1495,13 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
 }) {
-  const normalizedWorkspaceCwd = input.workspaceCwd ? path.resolve(input.workspaceCwd) : null;
+  const normalizedWorkspaceCwd = input.workspaceCwd
+    ? path.resolve(input.workspaceCwd)
+    : null;
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
-      if (record.executionWorkspaceId === input.executionWorkspaceId) return true;
+      if (record.executionWorkspaceId === input.executionWorkspaceId)
+        return true;
       if (!normalizedWorkspaceCwd || !record.cwd) return false;
       const resolvedCwd = path.resolve(record.cwd);
       return (
@@ -1401,19 +1528,29 @@ export async function listWorkspaceRuntimeServicesForProjectWorkspaces(
   companyId: string,
   projectWorkspaceIds: string[],
 ) {
-  if (projectWorkspaceIds.length === 0) return new Map<string, typeof workspaceRuntimeServices.$inferSelect[]>();
+  if (projectWorkspaceIds.length === 0)
+    return new Map<string, (typeof workspaceRuntimeServices.$inferSelect)[]>();
   const rows = await db
     .select()
     .from(workspaceRuntimeServices)
     .where(
       and(
         eq(workspaceRuntimeServices.companyId, companyId),
-        inArray(workspaceRuntimeServices.projectWorkspaceId, projectWorkspaceIds),
+        inArray(
+          workspaceRuntimeServices.projectWorkspaceId,
+          projectWorkspaceIds,
+        ),
       ),
     )
-    .orderBy(desc(workspaceRuntimeServices.updatedAt), desc(workspaceRuntimeServices.createdAt));
+    .orderBy(
+      desc(workspaceRuntimeServices.updatedAt),
+      desc(workspaceRuntimeServices.createdAt),
+    );
 
-  const grouped = new Map<string, typeof workspaceRuntimeServices.$inferSelect[]>();
+  const grouped = new Map<
+    string,
+    (typeof workspaceRuntimeServices.$inferSelect)[]
+  >();
   for (const row of rows) {
     if (!row.projectWorkspaceId) continue;
     const existing = grouped.get(row.projectWorkspaceId);
@@ -1472,7 +1609,12 @@ export async function persistAdapterManagedRuntimeServices(input: {
   const existingRows = await input.db
     .select()
     .from(workspaceRuntimeServices)
-    .where(inArray(workspaceRuntimeServices.id, refs.map((ref) => ref.id)));
+    .where(
+      inArray(
+        workspaceRuntimeServices.id,
+        refs.map((ref) => ref.id),
+      ),
+    );
   const existingById = new Map(existingRows.map((row) => [row.id, row]));
 
   for (const ref of refs) {
@@ -1550,13 +1692,19 @@ export function buildWorkspaceReadyComment(input: {
 }) {
   const lines = ["## Workspace Ready", ""];
   lines.push(`- Strategy: \`${input.workspace.strategy}\``);
-  if (input.workspace.branchName) lines.push(`- Branch: \`${input.workspace.branchName}\``);
+  if (input.workspace.branchName)
+    lines.push(`- Branch: \`${input.workspace.branchName}\``);
   lines.push(`- CWD: \`${input.workspace.cwd}\``);
-  if (input.workspace.worktreePath && input.workspace.worktreePath !== input.workspace.cwd) {
+  if (
+    input.workspace.worktreePath &&
+    input.workspace.worktreePath !== input.workspace.cwd
+  ) {
     lines.push(`- Worktree: \`${input.workspace.worktreePath}\``);
   }
   for (const service of input.runtimeServices) {
-    const detail = service.url ? `${service.serviceName}: ${service.url}` : `${service.serviceName}: running`;
+    const detail = service.url
+      ? `${service.serviceName}: ${service.url}`
+      : `${service.serviceName}: running`;
     const suffix = service.reused ? " (reused)" : "";
     lines.push(`- Service: ${detail}${suffix}`);
   }

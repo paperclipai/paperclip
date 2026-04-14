@@ -9,6 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Popover,
   PopoverContent,
@@ -17,7 +18,10 @@ import {
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
-import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
+import {
+  AgentConfigForm,
+  type CreateConfigValues,
+} from "../components/AgentConfigForm";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ReportsToPicker } from "../components/ReportsToPicker";
@@ -28,7 +32,9 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 
-const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
+const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<
+  CreateConfigValues["adapterType"]
+>([
   "claude_local",
   "codex_local",
   "gemini_local",
@@ -69,7 +75,8 @@ export function NewAgent() {
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
   const [reportsTo, setReportsTo] = useState<string | null>(null);
-  const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
+  const [configValues, setConfigValues] =
+    useState<CreateConfigValues>(defaultCreateValues);
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -87,9 +94,13 @@ export function NewAgent() {
     isFetching: adapterModelsFetching,
   } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, configValues.adapterType)
+      ? queryKeys.agents.adapterModels(
+          selectedCompanyId,
+          configValues.adapterType,
+        )
       : ["agents", "none", "adapter-models", configValues.adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType),
+    queryFn: () =>
+      agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType),
     enabled: Boolean(selectedCompanyId),
   });
 
@@ -119,12 +130,18 @@ export function NewAgent() {
   useEffect(() => {
     const requested = presetAdapterType;
     if (!requested) return;
-    if (!SUPPORTED_ADVANCED_ADAPTER_TYPES.has(requested as CreateConfigValues["adapterType"])) {
+    if (
+      !SUPPORTED_ADVANCED_ADAPTER_TYPES.has(
+        requested as CreateConfigValues["adapterType"],
+      )
+    ) {
       return;
     }
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      return createValuesForAdapterType(
+        requested as CreateConfigValues["adapterType"],
+      );
     });
   }, [presetAdapterType]);
 
@@ -132,12 +149,18 @@ export function NewAgent() {
     mutationFn: (data: Record<string, unknown>) =>
       agentsApi.hire(selectedCompanyId!, data),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.list(selectedCompanyId!),
+      });
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {
-      setFormError(error instanceof Error ? error.message : "Failed to create agent");
+      setFormError(
+        error instanceof Error ? error.message : "Failed to create agent",
+      );
     },
   });
 
@@ -152,7 +175,9 @@ export function NewAgent() {
     if (configValues.adapterType === "opencode_local") {
       const selectedModel = configValues.model.trim();
       if (!selectedModel) {
-        setFormError("OpenCode requires an explicit model in provider/model format.");
+        setFormError(
+          "OpenCode requires an explicit model in provider/model format.",
+        );
         return;
       }
       if (adapterModelsError) {
@@ -164,7 +189,9 @@ export function NewAgent() {
         return;
       }
       if (adapterModelsLoading || adapterModelsFetching) {
-        setFormError("OpenCode models are still loading. Please wait and try again.");
+        setFormError(
+          "OpenCode models are still loading. Please wait and try again.",
+        );
         return;
       }
       const discovered = adapterModels ?? [];
@@ -182,7 +209,9 @@ export function NewAgent() {
       role: effectiveRole,
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(reportsTo ? { reportsTo } : {}),
-      ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
+      ...(selectedSkillKeys.length > 0
+        ? { desiredSkills: selectedSkillKeys }
+        : {}),
       adapterType: configValues.adapterType,
       adapterConfig: buildAdapterConfig(),
       runtimeConfig: {
@@ -198,7 +227,9 @@ export function NewAgent() {
     });
   }
 
-  const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
+  const availableSkills = (companySkills ?? []).filter(
+    (skill) => !skill.key.startsWith("paperclipai/paperclip/"),
+  );
 
   function toggleSkill(key: string, checked: boolean) {
     setSelectedSkillKeys((prev) => {
@@ -221,7 +252,14 @@ export function NewAgent() {
       <div className="border border-border">
         {/* Name */}
         <div className="px-4 pt-4 pb-2">
+          <Label htmlFor="new-agent-name" className="sr-only">
+            Agent name
+          </Label>
           <input
+            id="new-agent-name"
+            aria-label="Agent name"
+            aria-required="true"
+            aria-describedby={formError ? "new-agent-form-error" : undefined}
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
             placeholder="Agent name"
             value={name}
@@ -232,7 +270,12 @@ export function NewAgent() {
 
         {/* Title */}
         <div className="px-4 pb-2">
+          <Label htmlFor="new-agent-title" className="sr-only">
+            Agent title
+          </Label>
           <input
+            id="new-agent-title"
+            aria-label="Agent title"
             className="w-full bg-transparent outline-none text-sm text-muted-foreground placeholder:text-muted-foreground/40"
             placeholder="Title (e.g. VP of Engineering)"
             value={title}
@@ -245,9 +288,11 @@ export function NewAgent() {
           <Popover open={roleOpen} onOpenChange={setRoleOpen}>
             <PopoverTrigger asChild>
               <button
+                aria-label="Select role"
+                aria-haspopup="listbox"
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  isFirstAgent && "opacity-60 cursor-not-allowed"
+                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 min-h-[44px] min-w-[44px] text-xs hover:bg-accent/50 transition-colors",
+                  isFirstAgent && "opacity-60 cursor-not-allowed",
                 )}
                 disabled={isFirstAgent}
               >
@@ -259,11 +304,15 @@ export function NewAgent() {
               {AGENT_ROLES.map((r) => (
                 <button
                   key={r}
+                  aria-pressed={r === role}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    r === role && "bg-accent"
+                    r === role && "bg-accent",
                   )}
-                  onClick={() => { setRole(r); setRoleOpen(false); }}
+                  onClick={() => {
+                    setRole(r);
+                    setRoleOpen(false);
+                  }}
                 >
                   {roleLabels[r] ?? r}
                 </button>
@@ -283,7 +332,9 @@ export function NewAgent() {
         <AgentConfigForm
           mode="create"
           values={configValues}
-          onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+          onChange={(patch) =>
+            setConfigValues((prev) => ({ ...prev, ...patch }))
+          }
           adapterModels={adapterModels}
         />
 
@@ -292,7 +343,8 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Optional skills from the company library. Built-in Paperclip
+                runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (
@@ -309,14 +361,21 @@ export function NewAgent() {
                       <Checkbox
                         id={inputId}
                         checked={checked}
-                        onCheckedChange={(next) => toggleSkill(skill.key, next === true)}
+                        onCheckedChange={(next) =>
+                          toggleSkill(skill.key, next === true)
+                        }
                       />
-                      <label htmlFor={inputId} className="grid gap-1 leading-none">
-                        <span className="text-sm font-medium">{skill.name}</span>
+                      <Label
+                        htmlFor={inputId}
+                        className="grid gap-1 leading-none"
+                      >
+                        <span className="text-sm font-medium">
+                          {skill.name}
+                        </span>
                         <span className="text-xs text-muted-foreground">
                           {skill.description ?? skill.key}
                         </span>
-                      </label>
+                      </Label>
                     </div>
                   );
                 })}
@@ -328,13 +387,24 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
+            <p className="text-xs text-muted-foreground mb-2">
+              This will be the CEO
+            </p>
           )}
           {formError && (
-            <p className="text-xs text-destructive mb-2">{formError}</p>
+            <p
+              id="new-agent-form-error"
+              className="text-xs text-destructive mb-2"
+            >
+              {formError}
+            </p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate("/agents")}
+            >
               Cancel
             </Button>
             <Button

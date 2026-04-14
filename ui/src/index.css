@@ -1,7 +1,6 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Inter:wght@400;500;600&display=swap");
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
-
-@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
@@ -36,82 +35,53 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.125rem;
 }
 
 :root {
   color-scheme: light;
-  --radius: 0;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --radius: 0.75rem;
+  --background: oklch(0.985 0.007 250);
+  --foreground: oklch(0.165 0.015 250);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.165 0.015 250);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --popover-foreground: oklch(0.165 0.015 250);
+  --primary: oklch(0.63 0.14 250);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.975 0.006 250);
+  --secondary-foreground: oklch(0.165 0.015 250);
+  --muted: oklch(0.975 0.006 250);
+  --muted-foreground: oklch(0.52 0.01 250);
+  --accent: oklch(0.62 0.18 345);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.53 0.22 27);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.93 0.008 250);
+  --input: oklch(0.93 0.008 250);
+  --ring: oklch(0.65 0.12 250);
+  --chart-1: oklch(0.63 0.14 250);
+  --chart-2: oklch(0.58 0.17 150);
+  --chart-3: oklch(0.62 0.16 80);
+  --chart-4: oklch(0.55 0.18 350);
+  --chart-5: oklch(0.53 0.22 27);
+  --sidebar: oklch(0.985 0.007 250);
+  --sidebar-foreground: oklch(0.165 0.015 250);
+  --sidebar-primary: oklch(0.63 0.14 250);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.975 0.006 250);
+  --sidebar-accent-foreground: oklch(0.165 0.015 250);
+  --sidebar-border: oklch(0.93 0.008 250);
+  --sidebar-ring: oklch(0.63 0.14 250);
+  --warning: oklch(0.62 0.16 80);
+  --warning-foreground: oklch(0.25 0.05 80);
+  --info: oklch(0.63 0.14 250);
+  --info-foreground: oklch(1 0 0);
+  --success: oklch(0.58 0.17 150);
+  --success-foreground: oklch(1 0 0);
 }
 
 @layer base {
@@ -120,7 +90,11 @@
   }
   html {
     height: 100%;
-    -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    -webkit-tap-highlight-color: color-mix(
+      in oklab,
+      var(--foreground) 20%,
+      transparent
+    );
   }
   body {
     @apply bg-background text-foreground antialiased;
@@ -130,7 +104,11 @@
   h1,
   h2,
   h3 {
+    font-family: "Poppins", system-ui, sans-serif;
     text-wrap: balance;
+  }
+  body {
+    font-family: "Inter", system-ui, sans-serif;
   }
   /* Prevent double-tap-to-zoom on interactive elements for mobile */
   a,
@@ -159,27 +137,23 @@
   }
 }
 
-/* Dark mode scrollbars */
-.dark {
-  color-scheme: dark;
-}
-
-.dark *::-webkit-scrollbar {
+/* Light mode scrollbars */
+*::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.dark *::-webkit-scrollbar-track {
-  background: oklch(0.205 0 0);
+*::-webkit-scrollbar-track {
+  background: oklch(0.96 0 0);
 }
 
-.dark *::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0);
+*::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0 0);
   border-radius: 4px;
 }
 
-.dark *::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.5 0 0);
+*::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.65 0 0);
 }
 
 /* Auto-hide scrollbar: always reserves space, thumb visible only on hover */
@@ -194,13 +168,13 @@
   background: transparent !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
-  background: oklch(0.205 0 0) !important;
+  background: oklch(0.96 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0) !important;
+  background: oklch(0.78 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.5 0 0) !important;
+  background: oklch(0.65 0 0) !important;
 }
 
 /* Expandable dialog transition for max-width changes */
@@ -246,6 +220,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .activity-row-enter {
+    animation: none;
+  }
+
+  .animate-pulse {
     animation: none;
   }
 }
@@ -366,7 +344,8 @@ a.paperclip-mention-chip::before {
   flex: none;
 }
 
-.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="project"]::before,
+.paperclip-mdxeditor-content
+  a.paperclip-mention-chip[data-mention-kind="project"]::before,
 a.paperclip-mention-chip[data-mention-kind="project"]::before {
   width: 0.45rem;
   height: 0.45rem;
@@ -374,7 +353,8 @@ a.paperclip-mention-chip[data-mention-kind="project"]::before {
   background-color: var(--paperclip-mention-project-color, currentColor);
 }
 
-.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="agent"]::before,
+.paperclip-mdxeditor-content
+  a.paperclip-mention-chip[data-mention-kind="agent"]::before,
 a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   width: 0.75rem;
   height: 0.75rem;
@@ -448,7 +428,9 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-mdxeditor-content code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 1em;
 }
 
@@ -457,48 +439,64 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   padding: 0;
   border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
   border-radius: calc(var(--radius) - 3px);
-  background: #1e1e2e;
-  color: #cdd6f4;
+  background: var(--background);
+  color: var(--foreground);
   overflow-x: auto;
 }
 
-/* Dark theme for CodeMirror code blocks inside the MDXEditor.
+/* CodeMirror code blocks inside the MDXEditor.
    Overrides the default cm6-theme-basic-light that MDXEditor bundles. */
 .paperclip-mdxeditor .cm-editor {
-  background-color: #1e1e2e !important;
-  color: #cdd6f4 !important;
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
   font-size: 1em;
 }
 
 .paperclip-mdxeditor .cm-gutters {
-  background-color: #181825 !important;
-  color: #585b70 !important;
-  border-right: 1px solid #313244 !important;
+  background-color: color-mix(
+    in oklab,
+    var(--background) 85%,
+    black
+  ) !important;
+  color: var(--muted-foreground) !important;
+  border-right: 1px solid var(--border) !important;
 }
 
 .paperclip-mdxeditor .cm-activeLineGutter {
-  background-color: #1e1e2e !important;
+  background-color: var(--background) !important;
 }
 
 .paperclip-mdxeditor .cm-activeLine {
-  background-color: color-mix(in oklab, #cdd6f4 5%, transparent) !important;
+  background-color: color-mix(
+    in oklab,
+    var(--foreground) 5%,
+    transparent
+  ) !important;
 }
 
 .paperclip-mdxeditor .cm-cursor,
 .paperclip-mdxeditor .cm-dropCursor {
-  border-left-color: #cdd6f4 !important;
+  border-left-color: var(--foreground) !important;
 }
 
 .paperclip-mdxeditor .cm-selectionBackground {
-  background-color: color-mix(in oklab, #89b4fa 25%, transparent) !important;
+  background-color: color-mix(
+    in oklab,
+    var(--primary) 25%,
+    transparent
+  ) !important;
 }
 
 .paperclip-mdxeditor .cm-focused .cm-selectionBackground {
-  background-color: color-mix(in oklab, #89b4fa 30%, transparent) !important;
+  background-color: color-mix(
+    in oklab,
+    var(--primary) 30%,
+    transparent
+  ) !important;
 }
 
 .paperclip-mdxeditor .cm-content {
-  caret-color: #cdd6f4;
+  caret-color: var(--foreground);
 }
 
 /* MDXEditor code block language selector – show on hover only */
@@ -518,26 +516,31 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-mdxeditor-content [class*="_codeMirrorToolbar_"] select,
 .paperclip-mdxeditor-content [class*="_codeBlockToolbar_"] select {
-  background-color: #313244;
-  color: #cdd6f4;
-  border-color: #45475a;
+  background-color: var(--card);
+  color: var(--foreground);
+  border-color: var(--border);
 }
 
-.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeMirrorToolbar_"],
-.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeBlockToolbar_"],
-.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeMirrorToolbar_"],
-.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeBlockToolbar_"] {
+.paperclip-mdxeditor-content
+  [class*="_codeMirrorWrapper_"]:hover
+  [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content
+  [class*="_codeMirrorWrapper_"]:hover
+  [class*="_codeBlockToolbar_"],
+.paperclip-mdxeditor-content
+  [class*="_codeMirrorWrapper_"]:focus-within
+  [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content
+  [class*="_codeMirrorWrapper_"]:focus-within
+  [class*="_codeBlockToolbar_"] {
   opacity: 1;
 }
 
 /* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
-   Dark theme code blocks with compact sizing.
-   Override prose CSS variables so prose-invert can't revert to defaults. */
+   Compact sizing with light theme code blocks. */
 .paperclip-markdown {
-  --tw-prose-pre-bg: #1e1e2e;
-  --tw-prose-pre-code: #cdd6f4;
-  --tw-prose-invert-pre-bg: #1e1e2e;
-  --tw-prose-invert-pre-code: #cdd6f4;
+  --tw-prose-pre-bg: var(--background);
+  --tw-prose-pre-code: var(--foreground);
 }
 
 .paperclip-markdown pre {
@@ -553,7 +556,9 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 1em;
 }
 
@@ -575,10 +580,6 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   padding: 0.15em 0.35em;
   border-radius: 3px;
   font-weight: 500;
-}
-
-.dark .prose :not(pre) > code {
-  background-color: #ffffff0f;
 }
 
 .paperclip-markdown {
@@ -669,14 +670,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-underline-offset: 0.15em;
 }
 
-.dark .paperclip-markdown a {
-  color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
-}
-
 .paperclip-markdown blockquote {
   margin-left: 0;
   padding-left: 0.95rem;
-  border-left: 0.24rem solid color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
+  border-left: 0.24rem solid
+    color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
   color: var(--muted-foreground);
 }
 
@@ -687,7 +685,8 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown img {
   border-radius: calc(var(--radius) + 2px);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 
 .paperclip-markdown table {

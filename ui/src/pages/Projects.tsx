@@ -22,7 +22,11 @@ export function Projects() {
     setBreadcrumbs([{ label: "Projects" }]);
   }, [setBreadcrumbs]);
 
-  const { data: allProjects, isLoading, error } = useQuery({
+  const {
+    data: allProjects,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -33,7 +37,9 @@ export function Projects() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return (
+      <EmptyState icon={Hexagon} message="Select a company to view projects." />
+    );
   }
 
   if (isLoading) {
@@ -42,7 +48,7 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between">
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project
@@ -51,7 +57,7 @@ export function Projects() {
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {!isLoading && projects.length === 0 && (
+      {projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
           message="No projects yet."

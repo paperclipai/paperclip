@@ -12,10 +12,7 @@ export function InstanceExperimentalSettings() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "Experimental" },
-    ]);
+    setBreadcrumbs([{ label: "Instance Settings" }, { label: "Experimental" }]);
   }, [setBreadcrumbs]);
 
   const experimentalQuery = useQuery({
@@ -24,22 +21,34 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
-      instanceSettingsApi.updateExperimental(patch),
+    mutationFn: async (patch: {
+      enableIsolatedWorkspaces?: boolean;
+      autoRestartDevServerWhenIdle?: boolean;
+    }) => instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.instance.experimentalSettings,
+        }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to update experimental settings.",
+      );
     },
   });
 
   if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+    return (
+      <div className="text-sm text-muted-foreground">
+        Loading experimental settings...
+      </div>
+    );
   }
 
   if (experimentalQuery.error) {
@@ -52,8 +61,10 @@ export function InstanceExperimentalSettings() {
     );
   }
 
-  const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
-  const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const enableIsolatedWorkspaces =
+    experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const autoRestartDevServerWhenIdle =
+    experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -63,7 +74,8 @@ export function InstanceExperimentalSettings() {
           <h1 className="text-lg font-semibold">Experimental</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Opt into features that are still being evaluated before they become default behavior.
+          Opt into features that are still being evaluated before they become
+          default behavior.
         </p>
       </div>
 
@@ -76,27 +88,37 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
+            <h2 className="text-sm font-semibold">
+              Enable Isolated Workspaces
+            </h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show execution workspace controls in project configuration and allow isolated workspace behavior for new
-              and existing issue runs.
+              Show execution workspace controls in project configuration and
+              allow isolated workspace behavior for new and existing issue runs.
             </p>
           </div>
           <button
             type="button"
+            role="switch"
             data-slot="toggle"
             aria-label="Toggle isolated workspaces experimental setting"
+            aria-checked={enableIsolatedWorkspaces}
             disabled={toggleMutation.isPending}
             className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              "relative inline-flex h-5 w-9 min-h-[44px] min-w-[44px] items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
               enableIsolatedWorkspaces ? "bg-green-600" : "bg-muted",
             )}
-            onClick={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
+            onClick={() =>
+              toggleMutation.mutate({
+                enableIsolatedWorkspaces: !enableIsolatedWorkspaces,
+              })
+            }
           >
             <span
               className={cn(
                 "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                enableIsolatedWorkspaces ? "translate-x-4.5" : "translate-x-0.5",
+                enableIsolatedWorkspaces
+                  ? "translate-x-4.5"
+                  : "translate-x-0.5",
               )}
             />
           </button>
@@ -106,29 +128,38 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
+            <h2 className="text-sm font-semibold">
+              Auto-Restart Dev Server When Idle
+            </h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
-              automatically when backend changes or migrations make the current boot stale.
+              In `pnpm dev:once`, wait for all queued and running local agent
+              runs to finish, then restart the server automatically when backend
+              changes or migrations make the current boot stale.
             </p>
           </div>
           <button
             type="button"
+            role="switch"
             data-slot="toggle"
             aria-label="Toggle guarded dev-server auto-restart"
+            aria-checked={autoRestartDevServerWhenIdle}
             disabled={toggleMutation.isPending}
             className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              "relative inline-flex h-5 w-9 min-h-[44px] min-w-[44px] items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
               autoRestartDevServerWhenIdle ? "bg-green-600" : "bg-muted",
             )}
             onClick={() =>
-              toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })
+              toggleMutation.mutate({
+                autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle,
+              })
             }
           >
             <span
               className={cn(
                 "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                autoRestartDevServerWhenIdle ? "translate-x-4.5" : "translate-x-0.5",
+                autoRestartDevServerWhenIdle
+                  ? "translate-x-4.5"
+                  : "translate-x-0.5",
               )}
             />
           </button>

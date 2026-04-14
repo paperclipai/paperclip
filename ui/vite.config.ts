@@ -16,7 +16,11 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:3100",
+        changeOrigin: true,
         ws: true,
+        headers: {
+          Origin: "http://127.0.0.1:3100",
+        },
       },
     },
   },

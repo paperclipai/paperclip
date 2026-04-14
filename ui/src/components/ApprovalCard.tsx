@@ -1,16 +1,29 @@
-import { CheckCircle2, XCircle, Clock } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
-import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
+import {
+  approvalLabel,
+  typeIcon,
+  defaultTypeIcon,
+  ApprovalPayloadRenderer,
+} from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
 
 function statusIcon(status: string) {
-  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
-  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />;
-  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
-  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />;
+  if (status === "approved")
+    return (
+      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+    );
+  if (status === "rejected")
+    return <XCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />;
+  if (status === "revision_requested")
+    return <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
+  if (status === "pending")
+    return (
+      <Clock className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />
+    );
   return null;
 }
 
@@ -32,7 +45,10 @@ export function ApprovalCard({
   isPending: boolean;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const label = approvalLabel(
+    approval.type,
+    approval.payload as Record<string, unknown> | null,
+  );
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
@@ -41,26 +57,55 @@ export function ApprovalCard({
     <div className="border border-border rounded-lg p-4 space-y-0">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-sm">{label}</span>
+          <div className="flex items-center gap-2 min-w-0">
+            {detailLink ? (
+              <Link
+                to={detailLink}
+                className="font-medium text-sm hover:underline underline-offset-2 truncate"
+              >
+                {label}
+              </Link>
+            ) : (
+              <span className="font-medium text-sm truncate">{label}</span>
+            )}
             {requesterAgent && (
-              <span className="text-xs text-muted-foreground">
-                requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
+              <span className="text-xs text-muted-foreground shrink-0">
+                requested by{" "}
+                <Identity
+                  name={requesterAgent.name}
+                  size="sm"
+                  className="inline-flex"
+                />
               </span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {statusIcon(approval.status)}
-          <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
-          <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
+          <span className="text-xs text-muted-foreground capitalize">
+            {approval.status}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            · {timeAgo(approval.createdAt)}
+          </span>
+          {detailLink && (
+            <Link
+              to={detailLink}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Link>
+          )}
         </div>
       </div>
 
       {/* Payload */}
-      <ApprovalPayloadRenderer type={approval.type} payload={approval.payload} />
+      <ApprovalPayloadRenderer
+        type={approval.type}
+        payload={approval.payload}
+      />
 
       {/* Decision note */}
       {approval.decisionNote && (
@@ -90,17 +135,18 @@ export function ApprovalCard({
           </Button>
         </div>
       )}
-      <div className="mt-3">
-        {detailLink ? (
-          <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
-            <Link to={detailLink}>View details</Link>
-          </Button>
-        ) : (
-          <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
+      {!detailLink && onOpen && (
+        <div className="mt-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs px-0"
+            onClick={onOpen}
+          >
             View details
           </Button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,9 +1,17 @@
-import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
+import {
+  isValidElement,
+  useEffect,
+  useId,
+  useState,
+  type ReactNode,
+} from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { useTheme } from "../context/ThemeContext";
-import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
+import {
+  mentionChipInlineStyle,
+  parseMentionChipHref,
+} from "../lib/mention-chips";
 
 interface MarkdownBodyProps {
   children: string;
@@ -12,7 +20,8 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
 }
 
-let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
+let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null =
+  null;
 
 function loadMermaid() {
   if (!mermaidLoaderPromise) {
@@ -23,20 +32,25 @@ function loadMermaid() {
 
 function flattenText(value: ReactNode): string {
   if (value == null) return "";
-  if (typeof value === "string" || typeof value === "number") return String(value);
-  if (Array.isArray(value)) return value.map((item) => flattenText(item)).join("");
+  if (typeof value === "string" || typeof value === "number")
+    return String(value);
+  if (Array.isArray(value))
+    return value.map((item) => flattenText(item)).join("");
   return "";
 }
 
 function extractMermaidSource(children: ReactNode): string | null {
   if (!isValidElement(children)) return null;
-  const childProps = children.props as { className?: unknown; children?: ReactNode };
+  const childProps = children.props as {
+    className?: unknown;
+    children?: ReactNode;
+  };
   if (typeof childProps.className !== "string") return null;
   if (!/\blanguage-mermaid\b/i.test(childProps.className)) return null;
   return flattenText(childProps.children).replace(/\n$/, "");
 }
 
-function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
+function MermaidDiagramBlock({ source }: { source: string }) {
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,11 +65,14 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
-          theme: darkMode ? "dark" : "default",
+          theme: "default",
           fontFamily: "inherit",
           suppressErrorRendering: true,
         });
-        const rendered = await mermaid.render(`paperclip-mermaid-${renderId}`, source);
+        const rendered = await mermaid.render(
+          `paperclip-mermaid-${renderId}`,
+          source,
+        );
         if (!active) return;
         setSvg(rendered.svg);
       })
@@ -71,7 +88,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
     return () => {
       active = false;
     };
-  }, [darkMode, renderId, source]);
+  }, [renderId, source]);
 
   return (
     <div className="paperclip-mermaid">
@@ -79,8 +96,15 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         <div dangerouslySetInnerHTML={{ __html: svg }} />
       ) : (
         <>
-          <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+          <p
+            className={cn(
+              "paperclip-mermaid-status",
+              error && "paperclip-mermaid-status-error",
+            )}
+          >
+            {error
+              ? `Unable to render Mermaid diagram: ${error}`
+              : "Rendering Mermaid diagram..."}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>
@@ -91,22 +115,26 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
-  const { theme } = useTheme();
+export function MarkdownBody({
+  children,
+  className,
+  resolveImageSrc,
+}: MarkdownBodyProps) {
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
       if (mermaidSource) {
-        return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
+        return <MermaidDiagramBlock source={mermaidSource} />;
       }
       return <pre {...preProps}>{preChildren}</pre>;
     },
     a: ({ href, children: linkChildren }) => {
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
-        const targetHref = parsed.kind === "project"
-          ? `/projects/${parsed.projectId}`
-          : `/agents/${parsed.agentId}`;
+        const targetHref =
+          parsed.kind === "project"
+            ? `/projects/${parsed.projectId}`
+            : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}
@@ -140,11 +168,14 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
     <div
       className={cn(
         "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden",
-        theme === "dark" && "prose-invert",
         className,
       )}
     >
-      <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        components={components}
+        urlTransform={(url) => url}
+      >
         {children}
       </Markdown>
     </div>

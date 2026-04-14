@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { ChevronDown, ChevronRight, MoreHorizontal, Play, Plus, Repeat } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal,
+  Play,
+  Plus,
+  Repeat,
+} from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -9,15 +16,29 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import {
+  getRecentAssigneeIds,
+  sortAgentsByRecency,
+  trackRecentAssignee,
+} from "../lib/recent-assignees";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import {
+  InlineEntitySelector,
+  type InlineEntityOption,
+} from "../components/InlineEntitySelector";
+import {
+  MarkdownEditor,
+  type MarkdownEditorRef,
+} from "../components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -34,16 +55,24 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
+const concurrencyPolicies = [
+  "coalesce_if_active",
+  "always_enqueue",
+  "skip_if_active",
+];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
-  always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
+  coalesce_if_active:
+    "If a run is already active, keep just one follow-up run queued.",
+  always_enqueue:
+    "Queue every trigger occurrence, even if the routine is already running.",
   skip_if_active: "Drop new trigger occurrences while a run is still active.",
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
-  skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
+  skip_missed:
+    "Ignore windows that were missed while the scheduler or routine was paused.",
+  enqueue_missed_with_cap:
+    "Catch up missed schedule windows in capped batches after recovery.",
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -73,7 +102,9 @@ export function Routines() {
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
-  const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<string | null>(null);
+  const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<
+    string | null
+  >(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [draft, setDraft] = useState({
@@ -90,7 +121,11 @@ export function Routines() {
     setBreadcrumbs([{ label: "Routines" }]);
   }, [setBreadcrumbs]);
 
-  const { data: routines, isLoading, error } = useQuery({
+  const {
+    data: routines,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
     queryFn: () => routinesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -128,7 +163,9 @@ export function Routines() {
       });
       setComposerOpen(false);
       setAdvancedOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.routines.list(selectedCompanyId!),
+      });
       pushToast({
         title: "Routine created",
         body: "Add the first trigger to turn it into a live workflow.",
@@ -139,14 +176,19 @@ export function Routines() {
   });
 
   const updateRoutineStatus = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => routinesApi.update(id, { status }),
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      routinesApi.update(id, { status }),
     onMutate: ({ id }) => {
       setStatusMutationRoutineId(id);
     },
     onSuccess: async (_, variables) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(variables.id) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.routines.list(selectedCompanyId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.routines.detail(variables.id),
+        }),
       ]);
     },
     onSettled: () => {
@@ -155,7 +197,10 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        body:
+          mutationError instanceof Error
+            ? mutationError.message
+            : "Paperclip could not update the routine.",
         tone: "error",
       });
     },
@@ -168,8 +213,12 @@ export function Routines() {
     },
     onSuccess: async (_, id) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.routines.list(selectedCompanyId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.routines.detail(id),
+        }),
       ]);
     },
     onSettled: () => {
@@ -178,13 +227,19 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body:
+          mutationError instanceof Error
+            ? mutationError.message
+            : "Paperclip could not start the routine run.",
         tone: "error",
       });
     },
   });
 
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
+  const recentAssigneeIds = useMemo(
+    () => getRecentAssigneeIds(),
+    [composerOpen],
+  );
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -214,11 +269,17 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
-  const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
-  const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
+  const currentAssignee = draft.assigneeAgentId
+    ? (agentById.get(draft.assigneeAgentId) ?? null)
+    : null;
+  const currentProject = draft.projectId
+    ? (projectById.get(draft.projectId) ?? null)
+    : null;
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return (
+      <EmptyState icon={Repeat} message="Select a company to view routines." />
+    );
   }
 
   if (isLoading) {
@@ -229,12 +290,15 @@ export function Routines() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+          <h1 className="text-xl font-bold flex items-center gap-2">
             Routines
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Beta</span>
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+              Beta
+            </span>
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution issues.
+            Recurring work definitions that materialize into auditable execution
+            issues.
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
@@ -251,12 +315,18 @@ export function Routines() {
           }
         }}
       >
-        <DialogContent showCloseButton={false} className="max-w-3xl gap-0 overflow-hidden p-0">
+        <DialogContent
+          showCloseButton={false}
+          className="max-w-3xl gap-0 overflow-hidden p-0"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                New routine
+              </p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Trigger setup comes next on the detail page.
+                Define the recurring work first. Trigger setup comes next on the
+                detail page.
               </p>
             </div>
             <Button
@@ -280,11 +350,19 @@ export function Routines() {
               rows={1}
               value={draft.title}
               onChange={(event) => {
-                setDraft((current) => ({ ...current, title: event.target.value }));
+                setDraft((current) => ({
+                  ...current,
+                  title: event.target.value,
+                }));
                 autoResizeTextarea(event.target);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                if (
+                  event.key === "Enter" &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.nativeEvent.isComposing
+                ) {
                   event.preventDefault();
                   descriptionEditorRef.current?.focus();
                   return;
@@ -333,7 +411,10 @@ export function Routines() {
                     option ? (
                       currentAssignee ? (
                         <>
-                          <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <AgentIcon
+                            icon={currentAssignee.icon}
+                            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
@@ -344,11 +425,17 @@ export function Routines() {
                     )
                   }
                   renderOption={(option) => {
-                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    if (!option.id)
+                      return <span className="truncate">{option.label}</span>;
                     const assignee = agentById.get(option.id);
                     return (
                       <>
-                        {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                        {assignee ? (
+                          <AgentIcon
+                            icon={assignee.icon}
+                            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                        ) : null}
                         <span className="truncate">{option.label}</span>
                       </>
                     );
@@ -363,14 +450,18 @@ export function Routines() {
                   noneLabel="No project"
                   searchPlaceholder="Search projects..."
                   emptyMessage="No projects found."
-                  onChange={(projectId) => setDraft((current) => ({ ...current, projectId }))}
+                  onChange={(projectId) =>
+                    setDraft((current) => ({ ...current, projectId }))
+                  }
                   onConfirm={() => descriptionEditorRef.current?.focus()}
                   renderTriggerValue={(option) =>
                     option && currentProject ? (
                       <>
                         <span
                           className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                          style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                          style={{
+                            backgroundColor: currentProject.color ?? "#64748b",
+                          }}
                         />
                         <span className="truncate">{option.label}</span>
                       </>
@@ -379,13 +470,16 @@ export function Routines() {
                     )
                   }
                   renderOption={(option) => {
-                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    if (!option.id)
+                      return <span className="truncate">{option.label}</span>;
                     const project = projectById.get(option.id);
                     return (
                       <>
                         <span
                           className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                          style={{ backgroundColor: project?.color ?? "#64748b" }}
+                          style={{
+                            backgroundColor: project?.color ?? "#64748b",
+                          }}
                         />
                         <span className="truncate">{option.label}</span>
                       </>
@@ -400,12 +494,19 @@ export function Routines() {
             <MarkdownEditor
               ref={descriptionEditorRef}
               value={draft.description}
-              onChange={(description) => setDraft((current) => ({ ...current, description }))}
+              onChange={(description) =>
+                setDraft((current) => ({ ...current, description }))
+              }
               placeholder="Add instructions..."
               bordered={false}
               contentClassName="min-h-[160px] text-sm text-muted-foreground"
               onSubmit={() => {
-                if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
+                if (
+                  !createRoutine.isPending &&
+                  draft.title.trim() &&
+                  draft.projectId &&
+                  draft.assigneeAgentId
+                ) {
                   createRoutine.mutate();
                 }
               }}
@@ -416,46 +517,73 @@ export function Routines() {
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
               <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                 <div>
-                  <p className="text-sm font-medium">Advanced delivery settings</p>
-                  <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                  <p className="text-sm font-medium">
+                    Advanced delivery settings
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Keep policy controls secondary to the work definition.
+                  </p>
                 </div>
-                {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                {advancedOpen ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-3">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                      Concurrency
+                    </p>
                     <Select
                       value={draft.concurrencyPolicy}
-                      onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
+                      onValueChange={(concurrencyPolicy) =>
+                        setDraft((current) => ({
+                          ...current,
+                          concurrencyPolicy,
+                        }))
+                      }
                     >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         {concurrencyPolicies.map((value) => (
-                          <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                          <SelectItem key={value} value={value}>
+                            {value.replaceAll("_", " ")}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {concurrencyPolicyDescriptions[draft.concurrencyPolicy]}
+                    </p>
                   </div>
                   <div className="space-y-2">
-                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                      Catch-up
+                    </p>
                     <Select
                       value={draft.catchUpPolicy}
-                      onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
+                      onValueChange={(catchUpPolicy) =>
+                        setDraft((current) => ({ ...current, catchUpPolicy }))
+                      }
                     >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         {catchUpPolicies.map((value) => (
-                          <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                          <SelectItem key={value} value={value}>
+                            {value.replaceAll("_", " ")}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[draft.catchUpPolicy]}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {catchUpPolicyDescriptions[draft.catchUpPolicy]}
+                    </p>
                   </div>
                 </div>
               </CollapsibleContent>
@@ -464,7 +592,8 @@ export function Routines() {
 
           <div className="flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.
+              After creation, Paperclip takes you straight to trigger setup for
+              schedules, webhooks, or internal runs.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -481,7 +610,9 @@ export function Routines() {
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  {createRoutine.error instanceof Error
+                    ? createRoutine.error.message
+                    : "Failed to create routine"}
                 </p>
               ) : null}
             </div>
@@ -522,7 +653,8 @@ export function Routines() {
                 {(routines ?? []).map((routine) => {
                   const enabled = routine.status === "active";
                   const isArchived = routine.status === "archived";
-                  const isStatusPending = statusMutationRoutineId === routine.id;
+                  const isStatusPending =
+                    statusMutationRoutineId === routine.id;
                   return (
                     <tr
                       key={routine.id}
@@ -531,9 +663,7 @@ export function Routines() {
                     >
                       <td className="px-3 py-2.5">
                         <div className="min-w-[180px]">
-                          <span className="font-medium">
-                            {routine.title}
-                          </span>
+                          <span className="font-medium">{routine.title}</span>
                           {(isArchived || routine.status === "paused") && (
                             <div className="mt-1 text-xs text-muted-foreground">
                               {isArchived ? "archived" : "paused"}
@@ -546,43 +676,74 @@ export function Routines() {
                           <div className="flex items-center gap-2 text-sm text-muted-foreground">
                             <span
                               className="shrink-0 h-3 w-3 rounded-sm"
-                              style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#6366f1" }}
+                              style={{
+                                backgroundColor:
+                                  projectById.get(routine.projectId)?.color ??
+                                  "#6366f1",
+                              }}
                             />
-                            <span className="truncate">{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
+                            <span className="truncate">
+                              {projectById.get(routine.projectId)?.name ??
+                                "Unknown"}
+                            </span>
                           </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        {routine.assigneeAgentId ? (() => {
-                          const agent = agentById.get(routine.assigneeAgentId);
-                          return agent ? (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                              <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
-                              <span className="truncate">{agent.name}</span>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Unknown</span>
-                          );
-                        })() : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                        {routine.assigneeAgentId ? (
+                          (() => {
+                            const agent = agentById.get(
+                              routine.assigneeAgentId,
+                            );
+                            return agent ? (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <AgentIcon
+                                  icon={agent.icon}
+                                  className="h-4 w-4 shrink-0"
+                                />
+                                <span className="truncate">{agent.name}</span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                Unknown
+                              </span>
+                            );
+                          })()
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-muted-foreground">
-                        <div>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}</div>
+                        <div>
+                          {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
+                        </div>
                         {routine.lastRun ? (
-                          <div className="mt-1 text-xs">{routine.lastRun.status.replaceAll("_", " ")}</div>
+                          <div className="mt-1 text-xs">
+                            {routine.lastRun.status.replaceAll("_", " ")}
+                          </div>
                         ) : null}
                       </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="px-3 py-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex items-center gap-3">
                           <button
                             type="button"
                             role="switch"
                             data-slot="toggle"
                             aria-checked={enabled}
-                            aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
+                            aria-label={
+                              enabled
+                                ? `Disable ${routine.title}`
+                                : `Enable ${routine.title}`
+                            }
                             disabled={isStatusPending || isArchived}
                             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                               enabled ? "bg-foreground" : "bg-muted"
@@ -590,7 +751,10 @@ export function Routines() {
                             onClick={() =>
                               updateRoutineStatus.mutate({
                                 id: routine.id,
-                                status: nextRoutineStatus(routine.status, !enabled),
+                                status: nextRoutineStatus(
+                                  routine.status,
+                                  !enabled,
+                                ),
                               })
                             }
                           >
@@ -605,22 +769,37 @@ export function Routines() {
                           </span>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="px-3 py-2.5 text-right"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`More actions for ${routine.title}`}
+                            >
                               <MoreHorizontal className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/routines/${routine.id}`)}>
+                            <DropdownMenuItem
+                              onClick={() =>
+                                navigate(`/routines/${routine.id}`)
+                              }
+                            >
                               Edit
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              disabled={runningRoutineId === routine.id || isArchived}
+                              disabled={
+                                runningRoutineId === routine.id || isArchived
+                              }
                               onClick={() => runRoutine.mutate(routine.id)}
                             >
-                              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+                              {runningRoutineId === routine.id
+                                ? "Running..."
+                                : "Run now"}
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -638,12 +817,17 @@ export function Routines() {
                               onClick={() =>
                                 updateRoutineStatus.mutate({
                                   id: routine.id,
-                                  status: routine.status === "archived" ? "active" : "archived",
+                                  status:
+                                    routine.status === "archived"
+                                      ? "active"
+                                      : "archived",
                                 })
                               }
                               disabled={isStatusPending}
                             >
-                              {routine.status === "archived" ? "Restore" : "Archive"}
+                              {routine.status === "archived"
+                                ? "Restore"
+                                : "Archive"}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>

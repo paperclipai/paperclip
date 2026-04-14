@@ -28,7 +28,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,7 +86,10 @@ function stripFrontmatter(markdown: string) {
   return normalized.slice(closing + 5).trim();
 }
 
-function splitFrontmatter(markdown: string): { frontmatter: string | null; body: string } {
+function splitFrontmatter(markdown: string): {
+  frontmatter: string | null;
+  body: string;
+} {
   const normalized = markdown.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
     return { frontmatter: null, body: normalized };
@@ -104,7 +111,12 @@ function mergeFrontmatter(markdown: string, body: string) {
 }
 
 function buildTree(entries: CompanySkillFileInventoryEntry[]) {
-  const root: SkillTreeNode = { name: "", path: null, kind: "dir", children: [] };
+  const root: SkillTreeNode = {
+    name: "",
+    path: null,
+    kind: "dir",
+    children: [],
+  };
 
   for (const entry of entries) {
     const segments = entry.path.split("/").filter(Boolean);
@@ -142,26 +154,58 @@ function buildTree(entries: CompanySkillFileInventoryEntry[]) {
   return root.children;
 }
 
-function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | null) {
+function sourceMeta(
+  sourceBadge: CompanySkillSourceBadge,
+  sourceLabel: string | null,
+) {
   const normalizedLabel = sourceLabel?.toLowerCase() ?? "";
   const isSkillsShManaged =
-    normalizedLabel.includes("skills.sh") || normalizedLabel.includes("vercel-labs/skills");
+    normalizedLabel.includes("skills.sh") ||
+    normalizedLabel.includes("vercel-labs/skills");
 
   switch (sourceBadge) {
     case "skills_sh":
-      return { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" };
+      return {
+        icon: VercelMark,
+        label: sourceLabel ?? "skills.sh",
+        managedLabel: "skills.sh managed",
+      };
     case "github":
       return isSkillsShManaged
-        ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" }
-        : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
+        ? {
+            icon: VercelMark,
+            label: sourceLabel ?? "skills.sh",
+            managedLabel: "skills.sh managed",
+          }
+        : {
+            icon: Github,
+            label: sourceLabel ?? "GitHub",
+            managedLabel: "GitHub managed",
+          };
     case "url":
-      return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
+      return {
+        icon: Link2,
+        label: sourceLabel ?? "URL",
+        managedLabel: "URL managed",
+      };
     case "local":
-      return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
+      return {
+        icon: Folder,
+        label: sourceLabel ?? "Folder",
+        managedLabel: "Folder managed",
+      };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
+      return {
+        icon: Paperclip,
+        label: sourceLabel ?? "Paperclip",
+        managedLabel: "Paperclip managed",
+      };
     default:
-      return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
+      return {
+        icon: Boxes,
+        label: sourceLabel ?? "Catalog",
+        managedLabel: "Catalog managed",
+      };
   }
 }
 
@@ -176,7 +220,8 @@ function formatProjectScanSummary(result: CompanySkillProjectScanResult) {
     `${result.imported.length} imported`,
     `${result.updated.length} updated`,
   ];
-  if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
+  if (result.conflicts.length > 0)
+    parts.push(`${result.conflicts.length} conflicts`);
   if (result.skipped.length > 0) parts.push(`${result.skipped.length} skipped`);
   return `${parts.join(", ")} across ${result.scannedWorkspaces} workspace${result.scannedWorkspaces === 1 ? "" : "s"}.`;
 }
@@ -187,7 +232,10 @@ function fileIcon(kind: CompanySkillFileInventoryEntry["kind"]) {
 }
 
 function encodeSkillFilePath(filePath: string) {
-  return filePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  return filePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 function decodeSkillFilePath(filePath: string | undefined) {
@@ -228,7 +276,9 @@ function parseSkillRoute(routePath: string | undefined) {
 }
 
 function skillRoute(skillId: string, filePath?: string | null) {
-  return filePath ? `/skills/${skillId}/files/${encodeSkillFilePath(filePath)}` : `/skills/${skillId}`;
+  return filePath
+    ? `/skills/${skillId}/files/${encodeSkillFilePath(filePath)}`
+    : `/skills/${skillId}`;
 }
 
 function parentDirectoryPaths(filePath: string) {
@@ -275,12 +325,23 @@ function NewSkillForm({
           className="min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={isPending}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCancel}
+            disabled={isPending}
+          >
             Cancel
           </Button>
           <Button
             size="sm"
-            onClick={() => onCreate({ name, slug: slug || null, description: description || null })}
+            onClick={() =>
+              onCreate({
+                name,
+                slug: slug || null,
+                description: description || null,
+              })
+            }
             disabled={isPending || name.trim().length === 0}
           >
             {isPending ? "Creating..." : "Create skill"}
@@ -311,7 +372,10 @@ function SkillTree({
   return (
     <div>
       {nodes.map((node) => {
-        const expanded = node.kind === "dir" && node.path ? expandedDirs.has(node.path) : false;
+        const expanded =
+          node.kind === "dir" && node.path
+            ? expandedDirs.has(node.path)
+            : false;
         if (node.kind === "dir") {
           return (
             <div key={node.path ?? node.name}>
@@ -324,11 +388,17 @@ function SkillTree({
                 <button
                   type="button"
                   className="flex min-w-0 items-center gap-2 py-1 text-left"
-                  style={{ paddingLeft: `${SKILL_TREE_BASE_INDENT + depth * SKILL_TREE_STEP_INDENT}px` }}
+                  style={{
+                    paddingLeft: `${SKILL_TREE_BASE_INDENT + depth * SKILL_TREE_STEP_INDENT}px`,
+                  }}
                   onClick={() => node.path && onToggleDir(node.path)}
                 >
                   <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                    {expanded ? <FolderOpen className="h-3.5 w-3.5" /> : <Folder className="h-3.5 w-3.5" />}
+                    {expanded ? (
+                      <FolderOpen className="h-3.5 w-3.5" />
+                    ) : (
+                      <Folder className="h-3.5 w-3.5" />
+                    )}
                   </span>
                   <span className="truncate">{node.name}</span>
                 </button>
@@ -337,7 +407,11 @@ function SkillTree({
                   className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
                   onClick={() => node.path && onToggleDir(node.path)}
                 >
-                  {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  {expanded ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
                 </button>
               </div>
               {expanded && (
@@ -364,7 +438,9 @@ function SkillTree({
               SKILL_TREE_ROW_HEIGHT_CLASS,
               node.path === selectedPath && "text-foreground",
             )}
-            style={{ paddingInlineStart: `${SKILL_TREE_BASE_INDENT + depth * SKILL_TREE_STEP_INDENT}px` }}
+            style={{
+              paddingInlineStart: `${SKILL_TREE_BASE_INDENT + depth * SKILL_TREE_STEP_INDENT}px`,
+            }}
             to={skillRoute(skillId, node.path)}
             onClick={() => node.path && onSelectPath(node.path)}
           >
@@ -403,7 +479,8 @@ function SkillList({
   onSelectPath: (skillId: string, path: string) => void;
 }) {
   const filteredSkills = skills.filter((skill) => {
-    const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
+    const haystack =
+      `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
     return haystack.includes(skillFilter.toLowerCase());
   });
 
@@ -444,7 +521,9 @@ function SkillList({
                         <span className="sr-only">{source.managedLabel}</span>
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent side="top">{source.managedLabel}</TooltipContent>
+                    <TooltipContent side="top">
+                      {source.managedLabel}
+                    </TooltipContent>
                   </Tooltip>
                   <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                     {skill.name}
@@ -455,16 +534,24 @@ function SkillList({
                 type="button"
                 className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
                 onClick={() => onToggleSkill(skill.id)}
-                aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
+                aria-label={
+                  expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`
+                }
               >
-                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                {expanded ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
               </button>
             </div>
             <div
               aria-hidden={!expanded}
               className={cn(
                 "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-                expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+                expanded
+                  ? "grid-rows-[1fr] opacity-100"
+                  : "grid-rows-[0fr] opacity-0",
               )}
             >
               <div className="min-h-0 overflow-hidden">
@@ -532,17 +619,16 @@ function SkillPane({
       return <PageSkeleton variant="detail" />;
     }
     return (
-      <EmptyState
-        icon={Boxes}
-        message="Select a skill to inspect its files."
-      />
+      <EmptyState icon={Boxes} message="Select a skill to inspect its files." />
     );
   }
 
   const source = sourceMeta(detail.sourceBadge, detail.sourceLabel);
   const SourceIcon = source.icon;
   const usedBy = detail.usedByAgents;
-  const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
+  const body = file?.markdown
+    ? stripFrontmatter(file.content)
+    : (file?.content ?? "");
   const currentPin = shortRef(detail.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
 
@@ -551,12 +637,14 @@ function SkillPane({
       <div className="border-b border-border px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="flex items-center gap-2 truncate text-2xl font-semibold">
+            <h1 className="flex items-center gap-2 truncate text-xl font-bold">
               <SourceIcon className="h-5 w-5 shrink-0 text-muted-foreground" />
               {detail.name}
             </h1>
             {detail.description && (
-              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{detail.description}</p>
+              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+                {detail.description}
+              </p>
             )}
           </div>
           {detail.editable ? (
@@ -568,14 +656,18 @@ function SkillPane({
               {editMode ? "Stop editing" : "Edit"}
             </button>
           ) : (
-            <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
+            <div className="text-sm text-muted-foreground">
+              {detail.editableReason}
+            </div>
           )}
         </div>
 
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                Source
+              </span>
               <span className="flex items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath ? (
@@ -595,10 +687,16 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
-                <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
+                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  Pin
+                </span>
+                <span className="font-mono text-xs">
+                  {currentPin ?? "untracked"}
+                </span>
                 {updateStatus?.trackingRef && (
-                  <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
+                  <span className="text-xs text-muted-foreground">
+                    tracking {updateStatus.trackingRef}
+                  </span>
                 )}
                 <Button
                   variant="ghost"
@@ -606,7 +704,13 @@ function SkillPane({
                   onClick={onCheckUpdates}
                   disabled={checkUpdatesPending || updateStatusLoading}
                 >
-                  <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", (checkUpdatesPending || updateStatusLoading) && "animate-spin")} />
+                  <RefreshCw
+                    className={cn(
+                      "mr-1.5 h-3.5 w-3.5",
+                      (checkUpdatesPending || updateStatusLoading) &&
+                        "animate-spin",
+                    )}
+                  />
                   Check for updates
                 </Button>
                 {updateStatus?.supported && updateStatus.hasUpdate && (
@@ -615,29 +719,46 @@ function SkillPane({
                     onClick={onInstallUpdate}
                     disabled={installUpdatePending}
                   >
-                    <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", installUpdatePending && "animate-spin")} />
+                    <RefreshCw
+                      className={cn(
+                        "mr-1.5 h-3.5 w-3.5",
+                        installUpdatePending && "animate-spin",
+                      )}
+                    />
                     Install update{latestPin ? ` ${latestPin}` : ""}
                   </Button>
                 )}
-                {updateStatus?.supported && !updateStatus.hasUpdate && !updateStatusLoading && (
-                  <span className="text-xs text-muted-foreground">Up to date</span>
-                )}
+                {updateStatus?.supported &&
+                  !updateStatus.hasUpdate &&
+                  !updateStatusLoading && (
+                    <span className="text-xs text-muted-foreground">
+                      Up to date
+                    </span>
+                  )}
                 {!updateStatus?.supported && updateStatus?.reason && (
-                  <span className="text-xs text-muted-foreground">{updateStatus.reason}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {updateStatus.reason}
+                  </span>
                 )}
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Key</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                Key
+              </span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                Mode
+              </span>
               <span>{detail.editable ? "Editable" : "Read only"}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
+            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+              Used by
+            </span>
             {usedBy.length === 0 ? (
               <span className="text-muted-foreground">No agents attached</span>
             ) : (
@@ -660,13 +781,19 @@ function SkillPane({
       <div className="border-b border-border px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate font-mono text-sm">{file?.path ?? "SKILL.md"}</div>
+            <div className="truncate font-mono text-sm">
+              {file?.path ?? "SKILL.md"}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {file?.markdown && !editMode && (
               <div className="flex items-center border border-border">
                 <button
-                  className={cn("px-3 py-1.5 text-sm", viewMode === "preview" && "text-foreground", viewMode !== "preview" && "text-muted-foreground")}
+                  className={cn(
+                    "px-3 py-1.5 text-sm",
+                    viewMode === "preview" && "text-foreground",
+                    viewMode !== "preview" && "text-muted-foreground",
+                  )}
                   onClick={() => setViewMode("preview")}
                 >
                   <span className="flex items-center gap-1.5">
@@ -675,7 +802,11 @@ function SkillPane({
                   </span>
                 </button>
                 <button
-                  className={cn("border-l border-border px-3 py-1.5 text-sm", viewMode === "code" && "text-foreground", viewMode !== "code" && "text-muted-foreground")}
+                  className={cn(
+                    "border-l border-border px-3 py-1.5 text-sm",
+                    viewMode === "code" && "text-foreground",
+                    viewMode !== "code" && "text-muted-foreground",
+                  )}
                   onClick={() => setViewMode("code")}
                 >
                   <span className="flex items-center gap-1.5">
@@ -687,7 +818,12 @@ function SkillPane({
             )}
             {editMode && file?.editable && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setEditMode(false)}
+                  disabled={savePending}
+                >
                   Cancel
                 </Button>
                 <Button size="sm" onClick={onSave} disabled={savePending}>
@@ -704,7 +840,9 @@ function SkillPane({
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
-          <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
+          <div className="text-sm text-muted-foreground">
+            Select a file to inspect.
+          </div>
         ) : editMode && file.editable ? (
           file.markdown ? (
             <MarkdownEditor
@@ -744,13 +882,19 @@ export function CompanySkills() {
   const [createOpen, setCreateOpen] = useState(false);
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(null);
-  const [expandedDirs, setExpandedDirs] = useState<Record<string, Set<string>>>({});
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, Set<string>>>(
+    {},
+  );
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState("");
-  const [displayedDetail, setDisplayedDetail] = useState<CompanySkillDetail | null>(null);
-  const [displayedFile, setDisplayedFile] = useState<CompanySkillFileDetail | null>(null);
-  const [scanStatusMessage, setScanStatusMessage] = useState<string | null>(null);
+  const [displayedDetail, setDisplayedDetail] =
+    useState<CompanySkillDetail | null>(null);
+  const [displayedFile, setDisplayedFile] =
+    useState<CompanySkillFileDetail | null>(null);
+  const [scanStatusMessage, setScanStatusMessage] = useState<string | null>(
+    null,
+  );
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
   const routeSkillId = parsedRoute.skillId;
   const selectedPath = parsedRoute.filePath;
@@ -779,24 +923,38 @@ export function CompanySkills() {
   }, [navigate, routeSkillId, selectedSkillId]);
 
   const detailQuery = useQuery({
-    queryKey: queryKeys.companySkills.detail(selectedCompanyId ?? "", selectedSkillId ?? ""),
-    queryFn: () => companySkillsApi.detail(selectedCompanyId!, selectedSkillId!),
+    queryKey: queryKeys.companySkills.detail(
+      selectedCompanyId ?? "",
+      selectedSkillId ?? "",
+    ),
+    queryFn: () =>
+      companySkillsApi.detail(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
 
   const fileQuery = useQuery({
-    queryKey: queryKeys.companySkills.file(selectedCompanyId ?? "", selectedSkillId ?? "", selectedPath),
-    queryFn: () => companySkillsApi.file(selectedCompanyId!, selectedSkillId!, selectedPath),
+    queryKey: queryKeys.companySkills.file(
+      selectedCompanyId ?? "",
+      selectedSkillId ?? "",
+      selectedPath,
+    ),
+    queryFn: () =>
+      companySkillsApi.file(selectedCompanyId!, selectedSkillId!, selectedPath),
     enabled: Boolean(selectedCompanyId && selectedSkillId && selectedPath),
   });
 
   const updateStatusQuery = useQuery({
-    queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId ?? "", selectedSkillId ?? ""),
-    queryFn: () => companySkillsApi.updateStatus(selectedCompanyId!, selectedSkillId!),
+    queryKey: queryKeys.companySkills.updateStatus(
+      selectedCompanyId ?? "",
+      selectedSkillId ?? "",
+    ),
+    queryFn: () =>
+      companySkillsApi.updateStatus(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(
-      selectedCompanyId
-      && selectedSkillId
-      && (detailQuery.data?.sourceType === "github" || displayedDetail?.sourceType === "github"),
+      selectedCompanyId &&
+      selectedSkillId &&
+      (detailQuery.data?.sourceType === "github" ||
+        displayedDetail?.sourceType === "github"),
     ),
     staleTime: 60_000,
   });
@@ -835,7 +993,11 @@ export function CompanySkills() {
   useEffect(() => {
     if (fileQuery.data) {
       setDisplayedFile(fileQuery.data);
-      setDraft(fileQuery.data.markdown ? splitFrontmatter(fileQuery.data.content).body : fileQuery.data.content);
+      setDraft(
+        fileQuery.data.markdown
+          ? splitFrontmatter(fileQuery.data.content).body
+          : fileQuery.data.content,
+      );
     }
   }, [fileQuery.data]);
 
@@ -849,9 +1011,12 @@ export function CompanySkills() {
   const activeFile = fileQuery.data ?? displayedFile;
 
   const importSkill = useMutation({
-    mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
+    mutationFn: (importSource: string) =>
+      companySkillsApi.importFromSource(selectedCompanyId!, importSource),
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+      });
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
       pushToast({
         tone: "success",
@@ -859,7 +1024,11 @@ export function CompanySkills() {
         body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
+        pushToast({
+          tone: "warn",
+          title: "Import warnings",
+          body: result.warnings[0],
+        });
       }
       setSource("");
     },
@@ -867,15 +1036,21 @@ export function CompanySkills() {
       pushToast({
         tone: "error",
         title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
+        body:
+          error instanceof Error
+            ? error.message
+            : "Failed to import skill source.",
       });
     },
   });
 
   const createSkill = useMutation({
-    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
+    mutationFn: (payload: CompanySkillCreateRequest) =>
+      companySkillsApi.create(selectedCompanyId!, payload),
     onSuccess: async (skill) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+      });
       navigate(skillRoute(skill.id));
       setCreateOpen(false);
       pushToast({
@@ -888,7 +1063,8 @@ export function CompanySkills() {
       pushToast({
         tone: "error",
         title: "Skill creation failed",
-        body: error instanceof Error ? error.message : "Failed to create skill.",
+        body:
+          error instanceof Error ? error.message : "Failed to create skill.",
       });
     },
   });
@@ -900,7 +1076,9 @@ export function CompanySkills() {
     },
     onSuccess: async (result) => {
       setScanStatusMessage("Refreshing skills list...");
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+      });
       const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
@@ -927,25 +1105,48 @@ export function CompanySkills() {
       pushToast({
         tone: "error",
         title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+        body:
+          error instanceof Error
+            ? error.message
+            : "Failed to scan project workspaces.",
       });
     },
   });
 
   const saveFile = useMutation({
-    mutationFn: () => companySkillsApi.updateFile(
-      selectedCompanyId!,
-      selectedSkillId!,
-      selectedPath,
-      activeFile?.markdown ? mergeFrontmatter(activeFile.content, draft) : draft,
-    ),
+    mutationFn: () =>
+      companySkillsApi.updateFile(
+        selectedCompanyId!,
+        selectedSkillId!,
+        selectedPath,
+        activeFile?.markdown
+          ? mergeFrontmatter(activeFile.content, draft)
+          : draft,
+      ),
     onSuccess: async (result) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, selectedSkillId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.file(selectedCompanyId!, selectedSkillId!, selectedPath) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.detail(
+            selectedCompanyId!,
+            selectedSkillId!,
+          ),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.file(
+            selectedCompanyId!,
+            selectedSkillId!,
+            selectedPath,
+          ),
+        }),
       ]);
-      setDraft(result.markdown ? splitFrontmatter(result.content).body : result.content);
+      setDraft(
+        result.markdown
+          ? splitFrontmatter(result.content).body
+          : result.content,
+      );
       setEditMode(false);
       pushToast({
         tone: "success",
@@ -957,38 +1158,65 @@ export function CompanySkills() {
       pushToast({
         tone: "error",
         title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        body:
+          error instanceof Error ? error.message : "Failed to save skill file.",
       });
     },
   });
 
   const installUpdate = useMutation({
-    mutationFn: () => companySkillsApi.installUpdate(selectedCompanyId!, selectedSkillId!),
+    mutationFn: () =>
+      companySkillsApi.installUpdate(selectedCompanyId!, selectedSkillId!),
     onSuccess: async (skill) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, selectedSkillId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId!, selectedSkillId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.file(selectedCompanyId!, selectedSkillId!, selectedPath) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.detail(
+            selectedCompanyId!,
+            selectedSkillId!,
+          ),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.updateStatus(
+            selectedCompanyId!,
+            selectedSkillId!,
+          ),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.file(
+            selectedCompanyId!,
+            selectedSkillId!,
+            selectedPath,
+          ),
+        }),
       ]);
       navigate(skillRoute(skill.id, selectedPath));
       pushToast({
         tone: "success",
         title: "Skill updated",
-        body: skill.sourceRef ? `Pinned to ${shortRef(skill.sourceRef)}` : skill.name,
+        body: skill.sourceRef
+          ? `Pinned to ${shortRef(skill.sourceRef)}`
+          : skill.name,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
         title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
+        body:
+          error instanceof Error
+            ? error.message
+            : "Failed to install skill update.",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return (
+      <EmptyState icon={Boxes} message="Select a company to manage skills." />
+    );
   }
 
   function handleAddSkillSource() {
@@ -1007,7 +1235,8 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Add a skill source</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
+              Paste a local path, GitHub URL, or `skills.sh` command into the
+              field first.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1034,7 +1263,8 @@ export function CompanySkills() {
               <span>
                 <span className="block font-medium">Search GitHub</span>
                 <span className="mt-1 block text-muted-foreground">
-                  Look for repositories with `SKILL.md`, then paste the repo URL here.
+                  Look for repositories with `SKILL.md`, then paste the repo URL
+                  here.
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1049,7 +1279,7 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">Skills</h1>
+                <h2 className="text-sm font-semibold">Skills</h2>
                 <p className="text-xs text-muted-foreground">
                   {skillsQuery.data?.length ?? 0} available
                 </p>
@@ -1062,9 +1292,18 @@ export function CompanySkills() {
                   disabled={scanProjects.isPending}
                   title="Scan project workspaces for skills"
                 >
-                  <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
+                  <RefreshCw
+                    className={cn(
+                      "h-4 w-4",
+                      scanProjects.isPending && "animate-spin",
+                    )}
+                  />
                 </Button>
-                <Button variant="ghost" size="icon-sm" onClick={() => setCreateOpen((value) => !value)}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setCreateOpen((value) => !value)}
+                >
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
@@ -1093,7 +1332,11 @@ export function CompanySkills() {
                 onClick={handleAddSkillSource}
                 disabled={importSkill.isPending}
               >
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
+                {importSkill.isPending ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Add"
+                )}
               </Button>
             </div>
             {scanStatusMessage && (
@@ -1114,7 +1357,9 @@ export function CompanySkills() {
           {skillsQuery.isLoading ? (
             <PageSkeleton variant="list" />
           ) : skillsQuery.error ? (
-            <div className="px-4 py-6 text-sm text-destructive">{skillsQuery.error.message}</div>
+            <div className="px-4 py-6 text-sm text-destructive">
+              {skillsQuery.error.message}
+            </div>
           ) : (
             <SkillList
               skills={skillsQuery.data ?? []}
@@ -1122,9 +1367,13 @@ export function CompanySkills() {
               skillFilter={skillFilter}
               expandedSkillId={expandedSkillId}
               expandedDirs={expandedDirs}
-              selectedPaths={selectedSkillId ? { [selectedSkillId]: selectedPath } : {}}
+              selectedPaths={
+                selectedSkillId ? { [selectedSkillId]: selectedPath } : {}
+              }
               onToggleSkill={(currentSkillId) =>
-                setExpandedSkillId((current) => current === currentSkillId ? null : currentSkillId)
+                setExpandedSkillId((current) =>
+                  current === currentSkillId ? null : currentSkillId,
+                )
               }
               onToggleDir={(currentSkillId, path) => {
                 setExpandedDirs((current) => {
@@ -1134,7 +1383,9 @@ export function CompanySkills() {
                   return { ...current, [currentSkillId]: next };
                 });
               }}
-              onSelectSkill={(currentSkillId) => setExpandedSkillId(currentSkillId)}
+              onSelectSkill={(currentSkillId) =>
+                setExpandedSkillId(currentSkillId)
+              }
               onSelectPath={() => {}}
             />
           )}
