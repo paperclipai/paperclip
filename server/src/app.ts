@@ -286,10 +286,22 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+      const indexHtmlPath = path.join(uiDist, "index.html");
+      let indexHtml = "";
+      let indexHtmlMtimeMs = 0;
+
+      const getIndexHtml = () => {
+        const nextMtimeMs = fs.statSync(indexHtmlPath).mtimeMs;
+        if (!indexHtml || nextMtimeMs !== indexHtmlMtimeMs) {
+          indexHtml = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
+          indexHtmlMtimeMs = nextMtimeMs;
+        }
+        return indexHtml;
+      };
+
       app.use(express.static(uiDist));
       app.get(/.*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
+        res.status(200).set("Content-Type", "text/html").end(getIndexHtml());
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
