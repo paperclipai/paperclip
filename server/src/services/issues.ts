@@ -368,14 +368,32 @@ export function issueService(db: Db) {
     );
   }
 
+  const STALE_RUN_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    // A run that claims to be running/queued but hasn't heartbeated in
+    // STALE_RUN_THRESHOLD_MS is likely dead (OOM, container restart, etc.).
+    if (run.updatedAt) {
+      const age = Date.now() - new Date(run.updatedAt).getTime();
+      if (age > STALE_RUN_THRESHOLD_MS) return true;
+    }
+    return false;
+  }
+
+  async function isSameAgentRun(runId: string, agentId: string) {
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return run != null && run.agentId === agentId;
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -384,7 +402,9 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const stale =
+      (await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId)) ||
+      (await isSameAgentRun(input.expectedCheckoutRunId, input.actorAgentId));
     if (!stale) return null;
 
     const now = new Date();
@@ -930,6 +950,45 @@ export function issueService(db: Db) {
         }
       }
 
+      // State E: checkoutRunId was cleared (e.g. by releaseIssueExecutionAndPromote
+      // after a process_lost reap) but the issue is still in_progress with the same
+      // assignee.  The agent on a fresh run should reclaim the lock.
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null
+      ) {
+        const now = new Date();
+        const reclaimed = await db
+          .update(issues)
+          .set({
+            checkoutRunId: actorRunId,
+            executionRunId: actorRunId,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.status, "in_progress"),
+              eq(issues.assigneeAgentId, actorAgentId),
+              isNull(issues.checkoutRunId),
+            ),
+          )
+          .returning({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+          })
+          .then((rows) => rows[0] ?? null);
+
+        if (reclaimed) {
+          return { ...reclaimed, adoptedFromRunId: null as string | null };
+        }
+      }
+
       throw conflict("Issue run ownership conflict", {
         issueId: current.id,
         status: current.status,
@@ -958,12 +1017,19 @@ export function issueService(db: Db) {
         existing.checkoutRunId &&
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
-        throw conflict("Only checkout run can release issue", {
-          issueId: existing.id,
-          assigneeAgentId: existing.assigneeAgentId,
-          checkoutRunId: existing.checkoutRunId,
-          actorRunId: actorRunId ?? null,
-        });
+        // Allow release if the old checkout run is terminal, stale, or from the same agent.
+        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        const sameAgent = actorRunId
+          ? await isSameAgentRun(existing.checkoutRunId, actorAgentId)
+          : false;
+        if (!stale && !sameAgent) {
+          throw conflict("Only checkout run can release issue", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            checkoutRunId: existing.checkoutRunId,
+            actorRunId: actorRunId ?? null,
+          });
+        }
       }
 
       const updated = await db
@@ -972,6 +1038,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
