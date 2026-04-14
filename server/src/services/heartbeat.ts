@@ -2723,7 +2723,12 @@ export function heartbeatService(db: Db) {
             issueContext.assigneeAdapterOverrides,
           )
         : null;
+    const generalSettings = await instanceSettings.getGeneral();
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    const uiLocale = generalSettings.locale ?? "en";
+    if (uiLocale) {
+      context.uiLocale = uiLocale;
+    }
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
       : null;

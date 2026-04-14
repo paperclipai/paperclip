@@ -15,6 +15,7 @@ import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/I18nContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -48,8 +49,9 @@ import {
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
 import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
+import { translateActive } from "../lib/i18n";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
@@ -228,9 +230,9 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
-  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
-  return <Identity name={id || "Unknown"} size="sm" />;
+  if (evt.actorType === "system") return <Identity name={translateActive("issueDetail.system")} size="sm" />;
+  if (evt.actorType === "user") return <Identity name={translateActive("issueDetail.board")} size="sm" />;
+  return <Identity name={id || translateActive("common.unknown")} size="sm" />;
 }
 
 function IssueSectionSkeleton({
@@ -370,6 +372,7 @@ export function IssueDetail() {
   const { openNewIssue } = useDialog();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t, formatRelativeTime } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -512,8 +515,8 @@ export function IssueDetail() {
     [activeRun, liveRuns],
   );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [issueId, location.state, location.search],
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: t("nav.issues"), href: "/issues" },
+    [issueId, location.state, location.search, t],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -911,8 +914,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: t("issueDetail.issue_update_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_save_issue_changes"),
         tone: "error",
       });
     },
@@ -946,14 +949,14 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title: variables.action === "approve" ? t("issueDetail.approval_approved") : t("issueDetail.approval_rejected"),
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        title: variables.action === "approve" ? t("issueDetail.approval_failed") : t("issueDetail.rejection_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_update_approval"),
         tone: "error",
       });
     },
@@ -1028,8 +1031,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.comment_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_post_comment"),
         tone: "error",
       });
     },
@@ -1127,8 +1130,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.comment_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_post_comment"),
         tone: "error",
       });
     },
@@ -1185,8 +1188,8 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
-        body: "The active run is stopping so queued comments can continue next.",
+        title: t("issueDetail.interrupt_requested"),
+        body: t("issueDetail.interrupt_requested_body"),
         tone: "success",
       });
     },
@@ -1195,8 +1198,8 @@ export function IssueDetail() {
       queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
       queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: t("issueDetail.interrupt_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_interrupt_active_run"),
         tone: "error",
       });
     },
@@ -1247,11 +1250,11 @@ export function IssueDetail() {
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
             ? variables.allowSharing
-              ? "Feedback saved. Future votes will share"
-              : "Feedback saved. Future votes will stay local"
+              ? t("issueDetail.feedback_saved_share")
+              : t("issueDetail.feedback_saved_local")
             : variables.allowSharing
-              ? "Feedback saved and sharing enabled"
-              : "Feedback saved",
+              ? t("issueDetail.feedback_saved_sharing_enabled")
+              : t("issueDetail.feedback_saved"),
         tone: "success",
       });
     },
@@ -1260,8 +1263,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("issueDetail.feedback_failed"),
+        body: err instanceof Error ? err.message : t("common.unknown"),
         tone: "error",
       });
     },
@@ -1269,7 +1272,7 @@ export function IssueDetail() {
 
   const uploadAttachment = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error(t("common.no_company_selected"));
       return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
     },
     onSuccess: () => {
@@ -1278,7 +1281,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue_detail.upload_failed"));
     },
   });
 
@@ -1303,7 +1306,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue_detail.document_import_failed"));
     },
   });
 
@@ -1315,7 +1318,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue_detail.delete_failed"));
     },
   });
 
@@ -1324,12 +1327,12 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Issue archived from inbox", tone: "success" });
+      pushToast({ title: t("issueDetail.issue_archived_from_inbox"), tone: "success" });
     },
     onError: (err) => {
       pushToast({
-        title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        title: t("issueDetail.archive_failed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unable_to_archive_issue_from_inbox"),
         tone: "error",
       });
     },
@@ -1551,7 +1554,7 @@ export function IssueDetail() {
     const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
     await navigator.clipboard.writeText(md);
     setCopied(true);
-    pushToast({ title: "Copied to clipboard", tone: "success" });
+    pushToast({ title: t("copy_text.copied"), tone: "success" });
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -1630,10 +1633,10 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? t("issue_detail.uploading") : (
           <>
-            <span className="hidden sm:inline">Upload attachment</span>
-            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">{t("issue_detail.upload_attachment")}</span>
+            <span className="sm:hidden">{t("issue_detail.upload")}</span>
           </>
         )}
       </Button>
@@ -1749,7 +1752,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={t("issue_detail.copy_as_markdown")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -1757,7 +1760,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
+              title={t("issue_detail.properties")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -1768,7 +1771,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={t("issue_detail.copy_as_markdown")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -1780,7 +1783,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title={t("issue_detail.show_properties")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -1822,7 +1825,7 @@ export function IssueDetail() {
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
           className="text-[15px] leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("issue_detail.description_placeholder")}
           multiline
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
@@ -1879,11 +1882,11 @@ export function IssueDetail() {
       {(childIssuesLoading || childIssues.length > 0) && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">{t("issue_props.sub_issues")}</h3>
             <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
               <ListTree className="h-3.5 w-3.5 mr-1.5" />
-              <span className="hidden sm:inline">Add sub-issue</span>
-              <span className="sm:hidden">Sub-issue</span>
+              <span className="hidden sm:inline">{t("issue_props.add_sub_issue")}</span>
+              <span className="sm:hidden">{t("issue_props.sub_issues")}</span>
             </Button>
           </div>
           {childIssuesLoading ? (
@@ -1952,8 +1955,8 @@ export function IssueDetail() {
             {childIssues.length === 0 && (
               <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
                 <ListTree className="h-3.5 w-3.5 mr-1.5" />
-                <span className="hidden sm:inline">Add sub-issue</span>
-                <span className="sm:hidden">Sub-issue</span>
+                <span className="hidden sm:inline">{t("issue_props.add_sub_issue")}</span>
+                <span className="sm:hidden">{t("issue_props.sub_issues")}</span>
               </Button>
             )}
           </>
@@ -1982,7 +1985,7 @@ export function IssueDetail() {
         onDrop={(evt) => void handleAttachmentDrop(evt)}
       >
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("issue_detail.attachments")}</h3>
           {attachmentUploadButton}
         </div>
 
@@ -2004,7 +2007,7 @@ export function IssueDetail() {
               >
                 <img
                   src={attachment.contentPath}
-                  alt={attachment.originalFilename ?? "attachment"}
+                  alt={attachment.originalFilename ?? t("issue_detail.attachments")}
                   className="h-full w-full object-cover"
                   loading="lazy"
                 />
@@ -2048,7 +2051,7 @@ export function IssueDetail() {
                       e.stopPropagation();
                       setConfirmDeleteId(attachment.id);
                     }}
-                    title="Delete attachment"
+                    title={t("issue_detail.delete_attachment")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -2077,7 +2080,7 @@ export function IssueDetail() {
                     className="text-muted-foreground hover:text-destructive"
                     onClick={() => deleteAttachment.mutate(attachment.id)}
                     disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
+                    title={t("issue_detail.delete_attachment")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -2140,7 +2143,7 @@ export function IssueDetail() {
                       void fetchOlderComments();
                     }}
                   >
-                    {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+                    {commentsLoadingOlder ? t("issue_detail.loading_earlier_comments") : t("issue_detail.load_earlier_comments")}
                   </Button>
                 </div>
               ) : null}
@@ -2235,9 +2238,9 @@ export function IssueDetail() {
               )}
               {linkedRuns && linkedRuns.length > 0 && (
                 <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-                  <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+                  <div className="text-sm font-medium text-muted-foreground mb-1">{t("issue_detail.cost_summary")}</div>
                   {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
-                    <div className="text-xs text-muted-foreground">No cost data yet.</div>
+                    <div className="text-xs text-muted-foreground">{t("costs.no_cost_events")}</div>
                   ) : (
                     <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
                       {issueCostSummary.hasCost && (
@@ -2247,10 +2250,18 @@ export function IssueDetail() {
                       )}
                       {issueCostSummary.hasTokens && (
                         <span>
-                          Tokens {formatTokens(issueCostSummary.totalTokens)}
                           {issueCostSummary.cached > 0
-                            ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                            : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                            ? t("issue_detail.tokens_summary_cached", {
+                                tokens: formatTokens(issueCostSummary.totalTokens),
+                                input: formatTokens(issueCostSummary.input),
+                                output: formatTokens(issueCostSummary.output),
+                                cached: formatTokens(issueCostSummary.cached),
+                              })
+                            : t("issue_detail.tokens_summary", {
+                                tokens: formatTokens(issueCostSummary.totalTokens),
+                                input: formatTokens(issueCostSummary.input),
+                                output: formatTokens(issueCostSummary.output),
+                              })}
                         </span>
                       )}
                     </div>
@@ -2258,14 +2269,14 @@ export function IssueDetail() {
                 </div>
               )}
               {!activity || activity.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No activity yet.</p>
+                <p className="text-xs text-muted-foreground">{t("activity.empty")}</p>
               ) : (
                 <div className="space-y-1.5">
                   {activity.slice(0, 20).map((evt) => (
                     <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <ActorIdentity evt={evt} agentMap={agentMap} />
                       <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId })}</span>
-                      <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                      <span className="ml-auto shrink-0">{formatRelativeTime(evt.createdAt)}</span>
                     </div>
                   ))}
                 </div>
@@ -2294,7 +2305,7 @@ export function IssueDetail() {
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
+            <SheetTitle className="text-sm">{t("issue_detail.properties")}</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">

@@ -500,6 +500,39 @@ export function renderPaperclipWakePrompt(
   return lines.join("\n").trim();
 }
 
+export function renderUiLocalePrompt(locale: string | null | undefined): string {
+  const normalized = typeof locale === "string" ? locale.trim() : "";
+  if (!normalized) return "";
+
+  if (normalized === "zh-CN") {
+    return [
+      "## Reply Language",
+      "",
+      "The Paperclip interface is currently set to zh-CN.",
+      "Respond in Chinese (Simplified) for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language.",
+      "Keep code, technical identifiers, logs, shell commands, and proper nouns unchanged unless translation is clearly appropriate.",
+    ].join("\n");
+  }
+
+  if (normalized === "en") {
+    return [
+      "## Reply Language",
+      "",
+      "The Paperclip interface is currently set to en.",
+      "Respond in English for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language.",
+      "Keep code, technical identifiers, logs, shell commands, and proper nouns unchanged unless translation is clearly appropriate.",
+    ].join("\n");
+  }
+
+  return [
+    "## Reply Language",
+    "",
+    `The Paperclip interface locale is currently set to ${normalized}.`,
+    "Match that locale for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language.",
+    "Keep code, technical identifiers, logs, shell commands, and proper nouns unchanged unless translation is clearly appropriate.",
+  ].join("\n");
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {

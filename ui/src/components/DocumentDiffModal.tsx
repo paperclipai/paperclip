@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { relativeTime } from "../lib/utils";
+import { useI18n } from "../context/I18nContext";
 import {
   Dialog,
   DialogContent,
@@ -18,13 +18,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-function getRevisionLabel(revision: DocumentRevision) {
+function getRevisionLabel(revision: DocumentRevision, formatRelativeTime: (date: Date | string) => string) {
   const actor = revision.createdByUserId
     ? "board"
     : revision.createdByAgentId
       ? "agent"
       : "system";
-  return `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)} • ${actor}`;
+  return `rev ${revision.revisionNumber} — ${formatRelativeTime(revision.createdAt)} • ${actor}`;
 }
 
 type DiffRow = {
@@ -130,6 +130,7 @@ export function DocumentDiffModal({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { formatRelativeTime } = useI18n();
   const { data: revisions } = useQuery({
     queryKey: queryKeys.issues.documentRevisions(issueId, documentKey),
     queryFn: () => issuesApi.listDocumentRevisions(issueId, documentKey),
@@ -195,7 +196,7 @@ export function DocumentDiffModal({
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
                     <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                      {getRevisionLabel(revision)}
+                      {getRevisionLabel(revision, formatRelativeTime)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -213,7 +214,7 @@ export function DocumentDiffModal({
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
                     <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                      {getRevisionLabel(revision)}
+                      {getRevisionLabel(revision, formatRelativeTime)}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -1,13 +1,28 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups } from "./Routines";
+import { I18nProvider } from "../context/I18nContext";
 
 let currentSearch = "";
+const storage = new Map<string, string>();
+const localStorageMock = {
+  getItem: vi.fn((key: string) => storage.get(key) ?? null),
+  setItem: vi.fn((key: string, value: string) => {
+    storage.set(key, value);
+  }),
+  removeItem: vi.fn((key: string) => {
+    storage.delete(key);
+  }),
+  clear: vi.fn(() => {
+    storage.clear();
+  }),
+};
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
@@ -17,6 +32,9 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
 ));
 
 vi.mock("@/lib/router", () => ({
+  Link: ({ children, className, ...props }: ComponentProps<"a">) => (
+    <a className={className} {...props}>{children}</a>
+  ),
   useNavigate: () => navigateMock,
   useLocation: () => ({ pathname: "/routines", search: currentSearch ? `?${currentSearch}` : "", hash: "" }),
   useSearchParams: () => [new URLSearchParams(currentSearch), vi.fn()],
@@ -304,7 +322,16 @@ describe("Routines page", () => {
     routinesListMock.mockReset();
     issuesListMock.mockReset();
     issuesListRenderMock.mockClear();
-    localStorage.clear();
+    storage.clear();
+    Object.defineProperty(window, "localStorage", {
+      value: localStorageMock,
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      value: localStorageMock,
+      configurable: true,
+    });
+    try { localStorage.clear(); } catch { /* ignore unavailable localStorage in jsdom */ }
   });
 
   afterEach(() => {
@@ -351,14 +378,53 @@ describe("Routines page", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <Routines />
-        </QueryClientProvider>,
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <Routines />
+          </QueryClientProvider>
+        </I18nProvider>,
       );
       await flush();
     });
 
     expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders zh-CN copy for the routines page shell", async () => {
+    localStorage.setItem("paperclip.locale", "zh-CN");
+    routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1" })]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <Routines />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      await flush();
+    });
+
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("例行任务");
+    expect(container.textContent).toContain("创建例行任务");
+    expect(container.textContent).toContain("最近运行");
+    expect(container.textContent).not.toContain("Create routine");
+    expect(container.textContent).not.toContain("Recent Runs");
 
     await act(async () => {
       root.unmount();

@@ -354,6 +354,13 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (wakePayload.issueIds.length > 0) {
     paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
+  const uiLocale =
+    typeof ctx.context.uiLocale === "string" && ctx.context.uiLocale.trim().length > 0
+      ? ctx.context.uiLocale.trim()
+      : null;
+  if (uiLocale) {
+    paperclipEnv.PAPERCLIP_UI_LOCALE = uiLocale;
+  }
 
   return paperclipEnv;
 }
@@ -386,6 +393,7 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const localeHint = paperclipEnv.PAPERCLIP_UI_LOCALE;
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -398,6 +406,17 @@ function buildWakeText(
     "",
     `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
     "",
+    ...(localeHint
+      ? [
+          `ui_locale=${localeHint}`,
+          localeHint === "zh-CN"
+            ? "Respond in Chinese (Simplified) for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language."
+            : localeHint === "en"
+              ? "Respond in English for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language."
+              : `Match the UI locale (${localeHint}) for issue comments, task updates, and other user-facing output unless the user explicitly asks for another language.`,
+          "",
+        ]
+      : []),
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
     `issue_id=${payload.issueId ?? ""}`,

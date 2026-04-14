@@ -17,6 +17,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
+  renderUiLocalePrompt,
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
@@ -306,6 +307,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const uiLocale =
+    typeof context.uiLocale === "string" && context.uiLocale.trim().length > 0
+      ? context.uiLocale.trim()
+      : null;
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
   }
@@ -326,6 +331,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  }
+  if (uiLocale) {
+    env.PAPERCLIP_UI_LOCALE = uiLocale;
   }
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
@@ -439,6 +447,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
+  const localePrompt = renderUiLocalePrompt(uiLocale);
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
@@ -471,6 +480,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
+    localePrompt,
     wakePrompt,
     sessionHandoffNote,
     renderedPrompt,

@@ -8,6 +8,7 @@ import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { queryKeys } from "../lib/queryKeys";
+import { I18nProvider } from "../context/I18nContext";
 
 const mockIssuesApi = vi.hoisted(() => ({
   listDocuments: vi.fn(),
@@ -300,9 +301,11 @@ describe("IssueDocumentsSection", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
-        </QueryClientProvider>,
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+          </QueryClientProvider>
+        </I18nProvider>,
       );
     });
     await flush();
@@ -376,9 +379,11 @@ describe("IssueDocumentsSection", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
-        </QueryClientProvider>,
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+          </QueryClientProvider>
+        </I18nProvider>,
       );
     });
     await flush();
@@ -455,9 +460,11 @@ describe("IssueDocumentsSection", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
-        </QueryClientProvider>,
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+          </QueryClientProvider>
+        </I18nProvider>,
       );
     });
     await flush();
@@ -516,9 +523,11 @@ describe("IssueDocumentsSection", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
-        </QueryClientProvider>,
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+          </QueryClientProvider>
+        </I18nProvider>,
       );
     });
 
@@ -552,8 +561,9 @@ describe("IssueDocumentsSection", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDocumentsSection
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection
             issue={issue}
             canDeleteDocuments={false}
             extraActions={(
@@ -563,7 +573,8 @@ describe("IssueDocumentsSection", () => {
               </>
             )}
           />
-        </QueryClientProvider>,
+          </QueryClientProvider>
+        </I18nProvider>,
       );
     });
 

@@ -8,6 +8,7 @@ import type {
   CompanyPortabilityAdapterOverride,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
+import { useI18n } from "../context/I18nContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { authApi } from "../api/auth";
@@ -652,6 +653,7 @@ export function CompanyImport() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
   const { data: session } = useQuery({
@@ -1234,7 +1236,7 @@ export function CompanyImport() {
             onClick={() => previewMutation.mutate()}
             disabled={previewMutation.isPending || !hasSource}
           >
-            {previewMutation.isPending ? "Previewing..." : "Preview import"}
+            {previewMutation.isPending ? t("company_import.previewing") : t("company_import.preview_import")}
           </Button>
         </div>
       </div>
@@ -1295,7 +1297,7 @@ export function CompanyImport() {
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending
-                ? "Importing..."
+                ? t("company_import.importing")
                 : `Import ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
             </Button>
           </div>

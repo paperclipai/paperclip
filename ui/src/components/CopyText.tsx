@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "../context/I18nContext";
 
 interface CopyTextProps {
   text: string;
@@ -10,9 +11,11 @@ interface CopyTextProps {
   copiedLabel?: string;
 }
 
-export function CopyText({ text, children, className, copiedLabel = "Copied!" }: CopyTextProps) {
+export function CopyText({ text, children, className, copiedLabel }: CopyTextProps) {
+  const { t } = useI18n();
+  const resolvedCopiedLabel = copiedLabel ?? t("copy_text.copied");
   const [visible, setVisible] = useState(false);
-  const [label, setLabel] = useState(copiedLabel);
+  const [label, setLabel] = useState(resolvedCopiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -35,14 +38,14 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
           document.body.removeChild(textarea);
         }
       }
-      setLabel(copiedLabel);
+      setLabel(resolvedCopiedLabel);
     } catch {
-      setLabel("Copy failed");
+      setLabel(t("copy_text.copy_failed"));
     }
     clearTimeout(timerRef.current);
     setVisible(true);
     timerRef.current = setTimeout(() => setVisible(false), 1500);
-  }, [copiedLabel, text]);
+  }, [resolvedCopiedLabel, t, text]);
 
   return (
     <span className="relative inline-flex">

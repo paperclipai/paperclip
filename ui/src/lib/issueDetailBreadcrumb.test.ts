@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -12,6 +12,7 @@ import {
   withIssueDetailHeaderSeed,
 } from "./issueDetailBreadcrumb";
 import type { Issue } from "@paperclipai/shared";
+import { setActiveLocale } from "./i18n";
 
 const sessionStorageMock = (() => {
   const store = new Map<string, string>();
@@ -32,6 +33,10 @@ Object.defineProperty(globalThis, "window", {
 });
 
 describe("issueDetailBreadcrumb", () => {
+  beforeEach(() => {
+    setActiveLocale("en");
+  });
+
   function createIssue(overrides: Partial<Issue> = {}): Issue {
     return {
       id: "11111111-1111-4111-8111-111111111111",
@@ -133,6 +138,15 @@ describe("issueDetailBreadcrumb", () => {
   it("falls back to the source query param when route state is unavailable", () => {
     expect(readIssueDetailBreadcrumb("PAP-465", null, "?from=inbox")).toEqual({
       label: "Inbox",
+      href: "/inbox",
+    });
+  });
+
+  it("localizes fallback breadcrumb labels from the source query param", () => {
+    setActiveLocale("zh-CN");
+
+    expect(readIssueDetailBreadcrumb("PAP-465", null, "?from=inbox")).toEqual({
+      label: "收件箱",
       href: "/inbox",
     });
   });

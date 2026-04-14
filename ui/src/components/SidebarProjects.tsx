@@ -14,6 +14,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
+import { useI18n } from "../context/I18nContext";
 import { useSidebar } from "../context/SidebarContext";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
@@ -49,6 +50,7 @@ function SortableProjectItem({
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const {
     attributes,
     listeners,
@@ -91,7 +93,7 @@ function SortableProjectItem({
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
           <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title={t("nav.project_paused_by_budget")} /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -121,6 +123,7 @@ export function SidebarProjects() {
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
+  const { t } = useI18n();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
@@ -188,7 +191,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {t("nav.projects")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -197,7 +200,7 @@ export function SidebarProjects() {
               openNewProject();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New project"
+            aria-label={t("nav.new_project")}
           >
             <Plus className="h-3 w-3" />
           </button>

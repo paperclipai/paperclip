@@ -2,11 +2,13 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "../context/I18nContext";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 
 export function CliAuthPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -91,7 +93,7 @@ export function CliAuthPage() {
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-xl font-semibold">
-            {challenge.status === "expired" ? "CLI auth challenge expired" : "CLI auth challenge cancelled"}
+            {challenge.status === "expired" ? t("cli_auth.expired") : t("cli_auth.cancelled")}
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Start the CLI auth flow again from your terminal to generate a new approval request.

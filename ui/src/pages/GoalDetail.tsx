@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useI18n } from "../context/I18nContext";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
@@ -30,6 +31,7 @@ export function GoalPropertiesToggleButton({
   panelVisible,
   onShowProperties,
 }: GoalPropertiesToggleButtonProps) {
+  const { t } = useI18n();
   return (
     <Button
       variant="ghost"
@@ -39,7 +41,7 @@ export function GoalPropertiesToggleButton({
         panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
       )}
       onClick={onShowProperties}
-      title="Show properties"
+      title={t("issue_detail.show_properties")}
     >
       <SlidersHorizontal className="h-4 w-4" />
     </Button>
