@@ -14,29 +14,22 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Shield, User } from "lucide-react";
+import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
 import { defaultCreateValues } from "../components/agent-config-defaults";
-import { getUIAdapter } from "../adapters";
-import { AgentIcon } from "../components/AgentIconPicker";
+import { getUIAdapter, listUIAdapters } from "../adapters";
+import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { isValidAdapterType } from "../adapters/metadata";
+import { ReportsToPicker } from "../components/ReportsToPicker";
+import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-
-const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
-  "claude_local",
-  "codex_local",
-  "gemini_local",
-  "opencode_local",
-  "pi_local",
-  "cursor",
-  "openclaw_gateway",
-]);
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -68,11 +61,10 @@ export function NewAgent() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
-  const [reportsTo, setReportsTo] = useState("");
+  const [reportsTo, setReportsTo] = useState<string | null>(null);
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
-  const [reportsToOpen, setReportsToOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const { data: agents } = useQuery({
@@ -120,9 +112,7 @@ export function NewAgent() {
   useEffect(() => {
     const requested = presetAdapterType;
     if (!requested) return;
-    if (!SUPPORTED_ADVANCED_ADAPTER_TYPES.has(requested as CreateConfigValues["adapterType"])) {
-      return;
-    }
+    if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
@@ -186,20 +176,14 @@ export function NewAgent() {
       ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
       adapterType: configValues.adapterType,
       adapterConfig: buildAdapterConfig(),
-      runtimeConfig: {
-        heartbeat: {
-          enabled: configValues.heartbeatEnabled,
-          intervalSec: configValues.intervalSec,
-          wakeOnDemand: true,
-          cooldownSec: 10,
-          maxConcurrentRuns: 1,
-        },
-      },
+      runtimeConfig: buildNewAgentRuntimeConfig({
+        heartbeatEnabled: configValues.heartbeatEnabled,
+        intervalSec: configValues.intervalSec,
+      }),
       budgetMonthlyCents: 0,
     });
   }
 
-  const currentReportsTo = (agents ?? []).find((a) => a.id === reportsTo);
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
 
   function toggleSkill(key: string, checked: boolean) {
@@ -273,54 +257,12 @@ export function NewAgent() {
             </PopoverContent>
           </Popover>
 
-          <Popover open={reportsToOpen} onOpenChange={setReportsToOpen}>
-            <PopoverTrigger asChild>
-              <button
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  isFirstAgent && "opacity-60 cursor-not-allowed"
-                )}
-                disabled={isFirstAgent}
-              >
-                {currentReportsTo ? (
-                  <>
-                    <AgentIcon icon={currentReportsTo.icon} className="h-3 w-3 text-muted-foreground" />
-                    {`Reports to ${currentReportsTo.name}`}
-                  </>
-                ) : (
-                  <>
-                    <User className="h-3 w-3 text-muted-foreground" />
-                    {isFirstAgent ? "Reports to: N/A (CEO)" : "Reports to..."}
-                  </>
-                )}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-48 p-1" align="start">
-              <button
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  !reportsTo && "bg-accent"
-                )}
-                onClick={() => { setReportsTo(""); setReportsToOpen(false); }}
-              >
-                No manager
-              </button>
-              {(agents ?? []).map((a) => (
-                <button
-                  key={a.id}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
-                    a.id === reportsTo && "bg-accent"
-                  )}
-                  onClick={() => { setReportsTo(a.id); setReportsToOpen(false); }}
-                >
-                  <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-                  {a.name}
-                  <span className="text-muted-foreground ml-auto">{roleLabels[a.role] ?? a.role}</span>
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
+          <ReportsToPicker
+            agents={agents ?? []}
+            value={reportsTo}
+            onChange={setReportsTo}
+            disabled={isFirstAgent}
+          />
         </div>
 
         {/* Shared config form */}

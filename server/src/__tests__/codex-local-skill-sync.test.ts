@@ -43,7 +43,7 @@ describe("codex local skill sync", () => {
     expect(before.desiredSkills).toContain(paperclipKey);
     expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
     expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.detail).toContain(".agents/skills");
+    expect(before.entries.find((entry) => entry.key === paperclipKey)?.detail).toContain("CODEX_HOME/skills/");
   });
 
   it("does not persist Paperclip skills into CODEX_HOME during sync", async () => {

@@ -12,6 +12,8 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
@@ -47,6 +49,41 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+export interface CursorAuthInfo {
+  email: string | null;
+  displayName: string | null;
+  userId: number | null;
+}
+
+export function cursorConfigPath(cursorHome?: string): string {
+  return path.join(cursorHome ?? path.join(os.homedir(), ".cursor"), "cli-config.json");
+}
+
+export async function readCursorAuthInfo(cursorHome?: string): Promise<CursorAuthInfo | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(cursorConfigPath(cursorHome), "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  const authInfo = obj.authInfo;
+  if (typeof authInfo !== "object" || authInfo === null) return null;
+  const info = authInfo as Record<string, unknown>;
+  const email = typeof info.email === "string" && info.email.trim().length > 0 ? info.email.trim() : null;
+  const displayName = typeof info.displayName === "string" && info.displayName.trim().length > 0 ? info.displayName.trim() : null;
+  const userId = typeof info.userId === "number" ? info.userId : null;
+  if (!email && !displayName && userId == null) return null;
+  return { email, displayName, userId };
 }
 
 const CURSOR_AUTH_REQUIRED_RE =
@@ -109,12 +146,25 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else {
-    checks.push({
-      code: "cursor_api_key_missing",
-      level: "warn",
-      message: "CURSOR_API_KEY is not set. Cursor runs may fail until authentication is configured.",
-      hint: "Set CURSOR_API_KEY in adapter env or run `agent login`.",
-    });
+    const cursorHome = isNonEmpty(env.CURSOR_HOME) ? env.CURSOR_HOME : undefined;
+    const cursorAuth = await readCursorAuthInfo(cursorHome).catch(() => null);
+    if (cursorAuth) {
+      checks.push({
+        code: "cursor_native_auth_present",
+        level: "info",
+        message: "Cursor is authenticated via `agent login`.",
+        detail: cursorAuth.email
+          ? `Logged in as ${cursorAuth.email}.`
+          : `Credentials found in ${cursorConfigPath(cursorHome)}.`,
+      });
+    } else {
+      checks.push({
+        code: "cursor_api_key_missing",
+        level: "warn",
+        message: "CURSOR_API_KEY is not set. Cursor runs may fail until authentication is configured.",
+        hint: "Set CURSOR_API_KEY in adapter env or run `agent login`.",
+      });
+    }
   }
 
   const canRunProbe =

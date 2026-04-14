@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
+import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -17,17 +19,22 @@ import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveSta
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { projectRouteRef, cn } from "../lib/utils";
+import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
+import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { projectRouteRef } from "../lib/utils";
+import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -44,6 +51,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -63,6 +71,7 @@ function OverviewContent({
       <InlineEditor
         value={project.description ?? ""}
         onSave={(description) => onUpdate({ description })}
+        nullable
         as="p"
         className="text-sm text-muted-foreground"
         placeholder="Add a description..."
@@ -162,6 +171,11 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
     refetchInterval: 5000,
   });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
 
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
@@ -192,11 +206,116 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-view:${projectId}`}
+      viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
+  );
+}
+
+function ProjectWorkspacesContent({
+  companyId,
+  projectId,
+  projectRef,
+  summaries,
+}: {
+  companyId: string;
+  projectId: string;
+  projectRef: string;
+  summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
+}) {
+  const queryClient = useQueryClient();
+  const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
+  const [closingWorkspace, setClosingWorkspace] = useState<{
+    id: string;
+    name: string;
+    status: ExecutionWorkspace["status"];
+  } | null>(null);
+  const controlWorkspaceRuntime = useMutation({
+    mutationFn: async (input: {
+      key: string;
+      kind: "project_workspace" | "execution_workspace";
+      workspaceId: string;
+      action: "start" | "stop" | "restart";
+    }) => {
+      setRuntimeActionKey(`${input.key}:${input.action}`);
+      if (input.kind === "project_workspace") {
+        return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
+      }
+      return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
+    },
+    onSettled: () => {
+      setRuntimeActionKey(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+    },
+  });
+
+  if (summaries.length === 0) {
+    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+  }
+
+  const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
+  const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          {activeSummaries.map((summary) => (
+            <ProjectWorkspaceSummaryCard
+              key={summary.key}
+              projectRef={projectRef}
+              summary={summary}
+              runtimeActionKey={runtimeActionKey}
+              runtimeActionPending={controlWorkspaceRuntime.isPending}
+              onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+              onCloseWorkspace={(input) => setClosingWorkspace(input)}
+            />
+          ))}
+        </div>
+        {cleanupFailedSummaries.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Cleanup attention needed
+            </div>
+            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
+              {cleanupFailedSummaries.map((summary) => (
+                <ProjectWorkspaceSummaryCard
+                  key={summary.key}
+                  projectRef={projectRef}
+                  summary={summary}
+                  runtimeActionKey={runtimeActionKey}
+                  runtimeActionPending={controlWorkspaceRuntime.isPending}
+                  onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+                  onCloseWorkspace={(input) => setClosingWorkspace(input)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      {closingWorkspace ? (
+        <ExecutionWorkspaceCloseDialog
+          workspaceId={closingWorkspace.id}
+          workspaceName={closingWorkspace.name}
+          currentStatus={closingWorkspace.status}
+          open
+          onOpenChange={(open) => {
+            if (!open) setClosingWorkspace(null);
+          }}
+          onClosed={() => {
+            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+            setClosingWorkspace(null);
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -241,6 +360,11 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const experimentalSettingsQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
   const {
     slots: pluginDetailSlots,
     isLoading: pluginDetailSlotsLoading,
@@ -259,6 +383,39 @@ export function ProjectDetail() {
     [pluginDetailSlots],
   );
   const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
+  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const workspaceTabProjectId = project?.id ?? null;
+  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
+      : ["issues", "__workspace-tab__", "disabled"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const {
+    data: workspaceTabExecutionWorkspaces = [],
+    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
+    error: workspaceTabExecutionWorkspacesError,
+  } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
+      : ["execution-workspaces", "__workspace-tab__", "disabled"],
+    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const workspaceSummaries = useMemo(() => {
+    if (!project || !isolatedWorkspacesEnabled) return [];
+    return buildProjectWorkspaceSummaries({
+      project,
+      issues: workspaceTabIssues,
+      executionWorkspaces: workspaceTabExecutionWorkspaces,
+    });
+  }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
+  const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const workspaceTabDecisionLoaded =
+    experimentalSettingsQuery.isFetched &&
+    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
+  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -343,6 +500,10 @@ export function ProjectDetail() {
     }
     if (activeTab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
+      return;
+    }
+    if (activeTab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
     }
     if (activeTab === "list") {
@@ -455,6 +616,10 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
+  if (activeTab === "workspaces" && workspaceTabDecisionLoaded && !showWorkspacesTab) {
+    return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
+  }
+
   // Redirect bare /projects/:id to cached tab or default /issues
   if (routeProjectRef && activeTab === null) {
     let cachedTab: string | null = null;
@@ -469,6 +634,12 @@ export function ProjectDetail() {
     }
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
+    }
+    if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
+    }
+    if (cachedTab === "workspaces" && !workspaceTabDecisionLoaded) {
+      return <PageSkeleton variant="detail" />;
     }
     if (isProjectPluginTab(cachedTab)) {
       return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
@@ -491,6 +662,8 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
@@ -561,6 +734,7 @@ export function ProjectDetail() {
           items={[
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -588,6 +762,23 @@ export function ProjectDetail() {
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
+
+      {activeTab === "workspaces" ? (
+        workspaceTabDecisionLoaded ? (
+          workspaceTabError ? (
+            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+          ) : (
+            <ProjectWorkspacesContent
+              companyId={resolvedCompanyId!}
+              projectId={project.id}
+              projectRef={canonicalProjectRef}
+              summaries={workspaceSummaries}
+            />
+          )
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+        )
+      ) : null}
 
       {activeTab === "configuration" && (
         <div className="max-w-4xl">

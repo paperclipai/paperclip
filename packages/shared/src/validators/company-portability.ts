@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -14,6 +15,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -36,6 +38,15 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
+  feedbackDataSharingEnabled: z.boolean().default(false),
+  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
+  feedbackDataSharingTermsVersion: z.string().nullable().default(null),
+});
+
+export const portabilitySidebarOrderSchema = z.object({
+  agents: z.array(z.string().min(1)).default([]),
+  projects: z.array(z.string().min(1)).default([]),
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({
@@ -85,7 +96,37 @@ export const portabilityProjectManifestEntrySchema = z.object({
   color: z.string().nullable(),
   status: z.string().nullable(),
   executionWorkspacePolicy: z.record(z.unknown()).nullable(),
+  workspaces: z.array(z.object({
+    key: z.string().min(1),
+    name: z.string().min(1),
+    sourceType: z.string().nullable(),
+    repoUrl: z.string().nullable(),
+    repoRef: z.string().nullable(),
+    defaultRef: z.string().nullable(),
+    visibility: z.string().nullable(),
+    setupCommand: z.string().nullable(),
+    cleanupCommand: z.string().nullable(),
+    metadata: z.record(z.unknown()).nullable(),
+    isPrimary: z.boolean(),
+  })).default([]),
   metadata: z.record(z.unknown()).nullable(),
+});
+
+export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
+  kind: z.string().min(1),
+  label: z.string().nullable(),
+  enabled: z.boolean(),
+  cronExpression: z.string().nullable(),
+  timezone: z.string().nullable(),
+  signingMode: z.string().nullable(),
+  replayWindowSec: z.number().int().nullable(),
+});
+
+export const portabilityIssueRoutineManifestEntrySchema = z.object({
+  concurrencyPolicy: z.string().nullable(),
+  catchUpPolicy: z.string().nullable(),
+  variables: z.array(routineVariableSchema).nullable().optional(),
+  triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
 });
 
 export const portabilityIssueManifestEntrySchema = z.object({
@@ -94,9 +135,12 @@ export const portabilityIssueManifestEntrySchema = z.object({
   title: z.string().min(1),
   path: z.string().min(1),
   projectSlug: z.string().min(1).nullable(),
+  projectWorkspaceKey: z.string().min(1).nullable(),
   assigneeAgentSlug: z.string().min(1).nullable(),
   description: z.string().nullable(),
-  recurrence: z.record(z.unknown()).nullable(),
+  recurring: z.boolean().default(false),
+  routine: portabilityIssueRoutineManifestEntrySchema.nullable(),
+  legacyRecurrence: z.record(z.unknown()).nullable(),
   status: z.string().nullable(),
   priority: z.string().nullable(),
   labelIds: z.array(z.string().min(1)).default([]),
@@ -123,6 +167,7 @@ export const portabilityManifestSchema = z.object({
     skills: z.boolean(),
   }),
   company: portabilityCompanyManifestEntrySchema.nullable(),
+  sidebar: portabilitySidebarOrderSchema.nullable(),
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
@@ -169,6 +214,7 @@ export const companyPortabilityExportSchema = z.object({
   projectIssues: z.array(z.string().min(1)).optional(),
   selectedFiles: z.array(z.string().min(1)).optional(),
   expandReferencedSkills: z.boolean().optional(),
+  sidebarOrder: portabilitySidebarOrderSchema.partial().optional(),
 });
 
 export type CompanyPortabilityExport = z.infer<typeof companyPortabilityExportSchema>;

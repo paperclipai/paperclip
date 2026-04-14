@@ -10,6 +10,8 @@ export interface OrgNode {
   role: string;
   status: string;
   reports: OrgNode[];
+  /** Populated by collapseTree: the flattened list of hidden descendants for avatar grid rendering. */
+  collapsedReports?: OrgNode[];
 }
 
 export type OrgChartStyle = "monochrome" | "nebula" | "circuit" | "warmth" | "schematic";
@@ -321,6 +323,12 @@ const CARD_PAD_X = 22;
 const AVATAR_SIZE = 34;
 const GAP_X = 24;
 const GAP_Y = 56;
+
+// ── Collapsed avatar grid constants ─────────────────────────────
+const MINI_AVATAR_SIZE = 14;
+const MINI_AVATAR_GAP = 6;
+const MINI_AVATAR_PADDING = 10;
+const MINI_AVATAR_MAX_COLS = 8; // max avatars per row in the grid
 const PADDING = 48;
 const LOGO_PADDING = 16;
 
@@ -330,11 +338,42 @@ function measureText(text: string, fontSize: number): number {
   return text.length * fontSize * 0.58;
 }
 
+/** Calculate how many rows the avatar grid needs. */
+function avatarGridRows(count: number): number {
+  return Math.ceil(count / MINI_AVATAR_MAX_COLS);
+}
+
+/** Width needed for the avatar grid. */
+function avatarGridWidth(count: number): number {
+  const cols = Math.min(count, MINI_AVATAR_MAX_COLS);
+  return cols * (MINI_AVATAR_SIZE + MINI_AVATAR_GAP) - MINI_AVATAR_GAP + MINI_AVATAR_PADDING * 2;
+}
+
+/** Height of the avatar grid area. */
+function avatarGridHeight(count: number): number {
+  if (count === 0) return 0;
+  const rows = avatarGridRows(count);
+  return rows * (MINI_AVATAR_SIZE + MINI_AVATAR_GAP) - MINI_AVATAR_GAP + MINI_AVATAR_PADDING * 2;
+}
+
 function cardWidth(node: OrgNode): number {
-  const { roleLabel } = getRoleInfo(node);
+  const { roleLabel: defaultRoleLabel } = getRoleInfo(node);
+  const roleLabel = node.role.startsWith("×") ? node.role : defaultRoleLabel;
   const nameW = measureText(node.name, 14) + CARD_PAD_X * 2;
   const roleW = measureText(roleLabel, 11) + CARD_PAD_X * 2;
-  return Math.max(CARD_MIN_W, Math.max(nameW, roleW));
+  let w = Math.max(CARD_MIN_W, Math.max(nameW, roleW));
+  // Widen for avatar grid if needed
+  if (node.collapsedReports && node.collapsedReports.length > 0) {
+    w = Math.max(w, avatarGridWidth(node.collapsedReports.length));
+  }
+  return w;
+}
+
+function cardHeight(node: OrgNode): number {
+  if (node.collapsedReports && node.collapsedReports.length > 0) {
+    return CARD_H + avatarGridHeight(node.collapsedReports.length);
+  }
+  return CARD_H;
 }
 
 // ── Tree layout (top-down, centered) ─────────────────────────────
@@ -354,18 +393,19 @@ function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
   const sw = subtreeWidth(node);
   const cardX = x + (sw - w) / 2;
 
+  const h = cardHeight(node);
   const layoutNode: LayoutNode = {
     node,
     x: cardX,
     y,
     width: w,
-    height: CARD_H,
+    height: h,
     children: [],
   };
 
   if (node.reports && node.reports.length > 0) {
     let childX = x;
-    const childY = y + CARD_H + GAP_Y;
+    const childY = y + h + GAP_Y;
     for (let i = 0; i < node.reports.length; i++) {
       const child = node.reports[i];
       const childSW = subtreeWidth(child);
@@ -394,7 +434,19 @@ function renderEmojiAvatar(cx: number, cy: number, radius: number, bgFill: strin
 }
 
 function defaultRenderCard(ln: LayoutNode, theme: StyleTheme): string {
-  const { roleLabel, bg, emojiSvg } = getRoleInfo(ln.node);
+  // Overflow placeholder card: just shows "+N more" text, no avatar
+  if (ln.node.role === "overflow") {
+    const cx = ln.x + ln.width / 2;
+    const cy = ln.y + ln.height / 2;
+    return `<g>
+      <rect x="${ln.x}" y="${ln.y}" width="${ln.width}" height="${ln.height}" rx="${theme.cardRadius}" fill="${theme.bgColor}" stroke="${theme.cardBorder}" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="${cx}" y="${cy + 5}" text-anchor="middle" font-family="${theme.font}" font-size="13" font-weight="600" fill="${theme.roleColor}">${escapeXml(ln.node.name)}</text>
+    </g>`;
+  }
+
+  const { roleLabel: defaultRoleLabel, bg, emojiSvg } = getRoleInfo(ln.node);
+  // Use node.role directly when it's a collapse badge (e.g. "×15 reports")
+  const roleLabel = ln.node.role.startsWith("×") ? ln.node.role : defaultRoleLabel;
   const cx = ln.x + ln.width / 2;
 
   const avatarCY = ln.y + 27;
@@ -417,12 +469,33 @@ function defaultRenderCard(ln: LayoutNode, theme: StyleTheme): string {
   const avatarBg = isLight ? bg : "rgba(255,255,255,0.06)";
   const avatarStroke = isLight ? undefined : "rgba(255,255,255,0.08)";
 
+  // Render collapsed avatar grid if this node has hidden reports
+  let avatarGridSvg = "";
+  const collapsed = ln.node.collapsedReports;
+  if (collapsed && collapsed.length > 0) {
+    const gridTop = ln.y + CARD_H + MINI_AVATAR_PADDING;
+    const cols = Math.min(collapsed.length, MINI_AVATAR_MAX_COLS);
+    const gridTotalW = cols * (MINI_AVATAR_SIZE + MINI_AVATAR_GAP) - MINI_AVATAR_GAP;
+    const gridStartX = ln.x + (ln.width - gridTotalW) / 2;
+
+    for (let i = 0; i < collapsed.length; i++) {
+      const col = i % MINI_AVATAR_MAX_COLS;
+      const row = Math.floor(i / MINI_AVATAR_MAX_COLS);
+      const dotCx = gridStartX + col * (MINI_AVATAR_SIZE + MINI_AVATAR_GAP) + MINI_AVATAR_SIZE / 2;
+      const dotCy = gridTop + row * (MINI_AVATAR_SIZE + MINI_AVATAR_GAP) + MINI_AVATAR_SIZE / 2;
+      const { bg: dotBg } = getRoleInfo(collapsed[i]);
+      const dotFill = isLight ? dotBg : "rgba(255,255,255,0.1)";
+      avatarGridSvg += `<circle cx="${dotCx}" cy="${dotCy}" r="${MINI_AVATAR_SIZE / 2}" fill="${dotFill}" stroke="${theme.cardBorder}" stroke-width="0.5"/>`;
+    }
+  }
+
   return `<g>
     ${shadowDef}
     <rect x="${ln.x}" y="${ln.y}" width="${ln.width}" height="${ln.height}" rx="${theme.cardRadius}" fill="${theme.cardBg}" stroke="${theme.cardBorder}" stroke-width="1" ${shadowFilter}/>
     ${renderEmojiAvatar(cx, avatarCY, AVATAR_SIZE / 2, avatarBg, emojiSvg, avatarStroke)}
     <text x="${cx}" y="${nameY}" text-anchor="middle" font-family="${theme.font}" font-size="14" font-weight="600" fill="${theme.nameColor}">${escapeXml(ln.node.name)}</text>
     <text x="${cx}" y="${roleY}" text-anchor="middle" font-family="${theme.font}" font-size="11" font-weight="500" fill="${theme.roleColor}">${escapeXml(roleLabel)}</text>
+    ${avatarGridSvg}
   </g>`;
 }
 
@@ -496,19 +569,154 @@ const PAPERCLIP_LOGO_SVG = `<g>
 const TARGET_W = 1280;
 const TARGET_H = 640;
 
-export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "warmth"): string {
+export interface OrgChartOverlay {
+  /** Company name displayed top-left */
+  companyName?: string;
+  /** Summary stats displayed bottom-right, e.g. "Agents: 5, Skills: 8" */
+  stats?: string;
+}
+
+/** Count total nodes in a tree. */
+function countNodes(nodes: OrgNode[]): number {
+  let count = 0;
+  for (const n of nodes) {
+    count += 1 + countNodes(n.reports ?? []);
+  }
+  return count;
+}
+
+/** Threshold: auto-collapse orgs larger than this. */
+const COLLAPSE_THRESHOLD = 20;
+/** Max cards that can fit across the 1280px image. */
+const MAX_LEVEL_WIDTH = 8;
+/** Max children shown per parent before truncation with "and N more". */
+const MAX_CHILDREN_SHOWN = 6;
+
+/** Flatten all descendants of a node into a single list. */
+function flattenDescendants(nodes: OrgNode[]): OrgNode[] {
+  const result: OrgNode[] = [];
+  for (const n of nodes) {
+    result.push(n);
+    result.push(...flattenDescendants(n.reports ?? []));
+  }
+  return result;
+}
+
+/** Collect all nodes at a given depth in the tree. */
+function nodesAtDepth(nodes: OrgNode[], depth: number): OrgNode[] {
+  if (depth === 0) return nodes;
+  const result: OrgNode[] = [];
+  for (const n of nodes) {
+    result.push(...nodesAtDepth(n.reports ?? [], depth - 1));
+  }
+  return result;
+}
+
+/**
+ * Estimate how many cards would be shown at the next level if we expand,
+ * considering truncation (each parent shows at most MAX_CHILDREN_SHOWN + 1 placeholder).
+ */
+function estimateNextLevelWidth(parentNodes: OrgNode[]): number {
+  let total = 0;
+  for (const p of parentNodes) {
+    const childCount = (p.reports ?? []).length;
+    if (childCount === 0) continue;
+    total += Math.min(childCount, MAX_CHILDREN_SHOWN + 1); // +1 for "and N more" placeholder
+  }
+  return total;
+}
+
+/**
+ * Collapse a node's children to avatar dots (for wide levels that can't expand).
+ */
+function collapseToAvatars(node: OrgNode): OrgNode {
+  const childCount = countNodes(node.reports ?? []);
+  if (childCount === 0) return node;
+  return {
+    ...node,
+    role: `×${childCount} reports`,
+    collapsedReports: flattenDescendants(node.reports ?? []),
+    reports: [],
+  };
+}
+
+/**
+ * Truncate a node's children: keep first MAX_CHILDREN_SHOWN, replace rest with
+ * a summary "and N more" placeholder node (rendered as a count card).
+ */
+function truncateChildren(node: OrgNode): OrgNode {
+  const children = node.reports ?? [];
+  if (children.length <= MAX_CHILDREN_SHOWN) return node;
+  const kept = children.slice(0, MAX_CHILDREN_SHOWN);
+  const hiddenCount = children.length - MAX_CHILDREN_SHOWN;
+  const placeholder: OrgNode = {
+    id: `${node.id}-more`,
+    name: `+${hiddenCount} more`,
+    role: "overflow",
+    status: "active",
+    reports: [],
+  };
+  return { ...node, reports: [...kept, placeholder] };
+}
+
+/**
+ * Adaptive collapse: expands levels as long as they fit, truncates or collapses
+ * when a level is too wide.
+ */
+function smartCollapseTree(roots: OrgNode[]): OrgNode[] {
+  // Deep clone so we can mutate
+  const clone = (nodes: OrgNode[]): OrgNode[] =>
+    nodes.map((n) => ({ ...n, reports: clone(n.reports ?? []) }));
+  const tree = clone(roots);
+
+  // Walk levels from root down
+  for (let depth = 0; depth < 10; depth++) {
+    const parents = nodesAtDepth(tree, depth);
+    const parentsWithChildren = parents.filter((p) => (p.reports ?? []).length > 0);
+    if (parentsWithChildren.length === 0) break;
+
+    const nextWidth = estimateNextLevelWidth(parentsWithChildren);
+    if (nextWidth <= MAX_LEVEL_WIDTH) {
+      // Next level fits with truncation — truncate oversized parents, then continue deeper
+      for (const p of parentsWithChildren) {
+        if ((p.reports ?? []).length > MAX_CHILDREN_SHOWN) {
+          const truncated = truncateChildren(p);
+          p.reports = truncated.reports;
+        }
+      }
+      continue;
+    }
+
+    // Next level is too wide — collapse all children at this level to avatars
+    for (const p of parentsWithChildren) {
+      const collapsed = collapseToAvatars(p);
+      p.role = collapsed.role;
+      p.collapsedReports = collapsed.collapsedReports;
+      p.reports = [];
+    }
+    break;
+  }
+
+  return tree;
+}
+
+export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "warmth", overlay?: OrgChartOverlay): string {
   const theme = THEMES[style] || THEMES.warmth;
 
+  // Auto-collapse large orgs to keep the chart readable
+  const totalNodes = countNodes(orgTree);
+  const effectiveTree = totalNodes > COLLAPSE_THRESHOLD ? smartCollapseTree(orgTree) : orgTree;
+
   let root: OrgNode;
-  if (orgTree.length === 1) {
-    root = orgTree[0];
+  if (effectiveTree.length === 1) {
+    root = effectiveTree[0];
   } else {
     root = {
       id: "virtual-root",
       name: "Organization",
       role: "Root",
       status: "active",
-      reports: orgTree,
+      reports: effectiveTree,
     };
   }
 
@@ -529,6 +737,14 @@ export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "wa
   const logoX = TARGET_W - 110 - LOGO_PADDING;
   const logoY = LOGO_PADDING;
 
+  // Optional overlay elements
+  const overlayNameSvg = overlay?.companyName
+    ? `<text x="${LOGO_PADDING}" y="${LOGO_PADDING + 16}" font-family="'Inter', -apple-system, BlinkMacSystemFont, sans-serif" font-size="22" font-weight="700" fill="${theme.nameColor}">${svgEscape(overlay.companyName)}</text>`
+    : "";
+  const overlayStatsSvg = overlay?.stats
+    ? `<text x="${TARGET_W - LOGO_PADDING}" y="${TARGET_H - LOGO_PADDING}" text-anchor="end" font-family="'Inter', -apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500" fill="${theme.roleColor}">${svgEscape(overlay.stats)}</text>`
+    : "";
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_W}" height="${TARGET_H}" viewBox="0 0 ${TARGET_W} ${TARGET_H}">
   <defs>${theme.defs(TARGET_W, TARGET_H)}</defs>
   <rect width="100%" height="100%" fill="${theme.bgColor}" rx="6"/>
@@ -536,6 +752,8 @@ export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "wa
   <g transform="translate(${logoX}, ${logoY})" color="${theme.watermarkColor}">
     ${PAPERCLIP_LOGO_SVG}
   </g>
+  ${overlayNameSvg}
+  ${overlayStatsSvg}
   <g transform="translate(${offsetX}, ${offsetY}) scale(${scale})">
     ${renderConnectors(layout, theme)}
     ${renderCards(layout, theme)}
@@ -543,8 +761,12 @@ export function renderOrgChartSvg(orgTree: OrgNode[], style: OrgChartStyle = "wa
 </svg>`;
 }
 
-export async function renderOrgChartPng(orgTree: OrgNode[], style: OrgChartStyle = "warmth"): Promise<Buffer> {
-  const svg = renderOrgChartSvg(orgTree, style);
+function svgEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+export async function renderOrgChartPng(orgTree: OrgNode[], style: OrgChartStyle = "warmth", overlay?: OrgChartOverlay): Promise<Buffer> {
+  const svg = renderOrgChartSvg(orgTree, style, overlay);
   const sharpModule = await import("sharp");
   const sharp = sharpModule.default;
   // Render at 2x density for retina quality, resize to exact target dimensions

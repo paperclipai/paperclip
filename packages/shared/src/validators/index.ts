@@ -25,6 +25,19 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  feedbackDataSharingPreferenceSchema,
+  feedbackTargetTypeSchema,
+  feedbackTraceStatusSchema,
+  feedbackVoteValueSchema,
+  upsertIssueFeedbackVoteSchema,
+  type UpsertIssueFeedbackVote,
+} from "./feedback.js";
+export {
+  sidebarOrderPreferenceSchema,
+  upsertSidebarOrderPreferenceSchema,
+  type UpsertSidebarOrderPreference,
+} from "./sidebar-preferences.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -60,6 +73,7 @@ export {
   portabilityIncludeSchema,
   portabilityEnvInputSchema,
   portabilityCompanyManifestEntrySchema,
+  portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,
   portabilityManifestSchema,
@@ -84,6 +98,7 @@ export {
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsPathSchema,
   createAgentKeySchema,
+  agentMineInboxQuerySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
@@ -96,6 +111,7 @@ export {
   type UpsertAgentInstructionsFile,
   type UpdateAgentInstructionsPath,
   type CreateAgentKey,
+  type AgentMineInboxQuery,
   type WakeAgent,
   type ResetAgentSession,
   type TestAdapterEnvironment,
@@ -108,6 +124,7 @@ export {
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
+  projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
@@ -119,6 +136,8 @@ export {
   createIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
@@ -127,6 +146,7 @@ export {
   issueDocumentFormatSchema,
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
+  restoreIssueDocumentRevisionSchema,
   type CreateIssue,
   type CreateIssueLabel,
   type UpdateIssue,
@@ -137,6 +157,7 @@ export {
   type CreateIssueAttachmentMetadata,
   type IssueDocumentFormat,
   type UpsertIssueDocument,
+  type RestoreIssueDocumentRevision,
 } from "./issue.js";
 
 export {
@@ -150,8 +171,15 @@ export {
 } from "./work-product.js";
 
 export {
+  executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
+  executionWorkspaceCloseActionKindSchema,
+  executionWorkspaceCloseActionSchema,
+  executionWorkspaceCloseGitReadinessSchema,
+  executionWorkspaceCloseLinkedIssueSchema,
+  executionWorkspaceCloseReadinessSchema,
+  executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
 
@@ -193,6 +221,7 @@ export {
   updateRoutineSchema,
   createRoutineTriggerSchema,
   updateRoutineTriggerSchema,
+  routineVariableSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateRoutine,
@@ -226,6 +255,9 @@ export {
   acceptInviteSchema,
   listJoinRequestsQuerySchema,
   claimJoinRequestApiKeySchema,
+  boardCliAuthAccessLevelSchema,
+  createCliAuthChallengeSchema,
+  resolveCliAuthChallengeSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
@@ -233,6 +265,9 @@ export {
   type AcceptInvite,
   type ListJoinRequestsQuery,
   type ClaimJoinRequestApiKey,
+  type BoardCliAuthAccessLevel,
+  type CreateCliAuthChallenge,
+  type ResolveCliAuthChallenge,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";

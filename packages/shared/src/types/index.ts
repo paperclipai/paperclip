@@ -1,5 +1,18 @@
 export type { Company } from "./company.js";
-export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings } from "./instance.js";
+export type {
+  FeedbackVote,
+  FeedbackDataSharingPreference,
+  FeedbackTargetType,
+  FeedbackVoteValue,
+  FeedbackTrace,
+  FeedbackTraceStatus,
+  FeedbackTraceTargetSummary,
+  FeedbackTraceBundleCaptureStatus,
+  FeedbackTraceBundleFile,
+  FeedbackTraceBundle,
+} from "./feedback.js";
+export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
+export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
@@ -50,7 +63,20 @@ export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
   ExecutionWorkspace,
+  ExecutionWorkspaceConfig,
+  ExecutionWorkspaceCloseAction,
+  ExecutionWorkspaceCloseActionKind,
+  ExecutionWorkspaceCloseGitReadiness,
+  ExecutionWorkspaceCloseLinkedIssue,
+  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceCloseReadinessState,
+  ProjectWorkspaceRuntimeConfig,
+  WorkspaceCommandDefinition,
+  WorkspaceCommandKind,
+  WorkspaceRuntimeControlTarget,
   WorkspaceRuntimeService,
+  WorkspaceRuntimeServiceStateMap,
+  WorkspaceRuntimeDesiredState,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -75,6 +101,14 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueRelation,
+  IssueRelationIssueSummary,
+  IssueExecutionPolicy,
+  IssueExecutionState,
+  IssueExecutionStage,
+  IssueExecutionStageParticipant,
+  IssueExecutionStagePrincipal,
+  IssueExecutionDecision,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
@@ -109,6 +143,8 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineVariable,
+  RoutineVariableDefaultValue,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -120,6 +156,8 @@ export type {
 export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
+  AgentWakeupResponse,
+  AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
   AgentRuntimeState,
@@ -131,6 +169,8 @@ export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
 export type { ActivityEvent } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
+export type { SidebarOrderPreference } from "./sidebar-preferences.js";
+export type { InboxDismissal } from "./inbox-dismissal.js";
 export type {
   CompanyMembership,
   PrincipalPermissionGrant,
@@ -144,9 +184,13 @@ export type {
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
+  CompanyPortabilitySidebarOrder,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityProjectWorkspaceManifestEntry,
+  CompanyPortabilityIssueRoutineTriggerManifestEntry,
+  CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,

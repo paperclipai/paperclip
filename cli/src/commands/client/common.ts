@@ -1,5 +1,7 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
+import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
@@ -53,10 +55,12 @@ export function resolveCommandContext(
     profile.apiBase ||
     inferApiBaseFromConfig(options.config);
 
-  const apiKey =
+  const explicitApiKey =
     options.apiKey?.trim() ||
     process.env.PAPERCLIP_API_KEY?.trim() ||
     readKeyFromProfileEnv(profile);
+  const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
+  const apiKey = explicitApiKey || storedBoardCredential?.token;
 
   const companyId =
     options.companyId?.trim() ||
@@ -69,7 +73,27 @@ export function resolveCommandContext(
     );
   }
 
-  const api = new PaperclipApiClient({ apiBase, apiKey });
+  const api = new PaperclipApiClient({
+    apiBase,
+    apiKey,
+    recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
+      ? undefined
+      : async ({ error }) => {
+          const requestedAccess = error.message.includes("Instance admin required")
+            ? "instance_admin_required"
+            : "board";
+          if (!shouldRecoverBoardAuth(error)) {
+            return null;
+          }
+          const login = await loginBoardCli({
+            apiBase,
+            requestedAccess,
+            requestedCompanyId: companyId ?? null,
+            command: buildCliCommandLabel(),
+          });
+          return login.token;
+        },
+  });
   return {
     api,
     companyId,
@@ -77,6 +101,16 @@ export function resolveCommandContext(
     profile,
     json: Boolean(options.json),
   };
+}
+
+function shouldRecoverBoardAuth(error: ApiRequestError): boolean {
+  if (error.status === 401) return true;
+  if (error.status !== 403) return false;
+  return error.message.includes("Board access required") || error.message.includes("Instance admin required");
+}
+
+function canAttemptInteractiveBoardAuth(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 export function printOutput(data: unknown, opts: { json?: boolean; label?: string } = {}): void {

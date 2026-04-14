@@ -7,6 +7,14 @@ export function assertBoard(req: Request) {
   }
 }
 
+export function assertInstanceAdmin(req: Request) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    return;
+  }
+  throw forbidden("Instance admin access required");
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   if (req.actor.type === "none") {
     throw unauthorized();

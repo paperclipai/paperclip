@@ -160,6 +160,7 @@ export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
   priority: "Priority",
   assignee: "Assignee",
   project: "Project",
+  recurring: "Recurring",
   targetDate: "Target date",
 };
 
