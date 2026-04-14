@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -8,13 +8,9 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
-  activityLog,
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
-  issueExecutionDecisions,
-  issues,
-  issueComments,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -478,20 +474,8 @@ export function agentService(db: Db) {
 
       return db.transaction(async (tx) => {
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
-        await tx
-          .update(issues)
-          .set({ assigneeAgentId: null, createdByAgentId: null })
-          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(activityLog).where(
-          or(
-            eq(activityLog.agentId, id),
-            sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
-        );
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
@@ -520,21 +504,29 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean } | Array<{permission: string, allowed: boolean}>, actor?: string) => {
       const existing = await getById(id);
       if (!existing) return null;
 
-      const updated = await db
-        .update(agents)
-        .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // Handle both old and new format
+      if (Array.isArray(permissions)) {
+        // New grants-based format - permissions will be handled by access service
+        // Just return the agent without updating the legacy permissions field
+        return existing;
+      } else {
+        // Legacy format
+        const updated = await db
+          .update(agents)
+          .set({
+            permissions: normalizeAgentPermissions(permissions, existing.role),
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+        return updated ? normalizeAgentRow(updated) : null;
+      }
     },
 
     listConfigRevisions: async (id: string) =>

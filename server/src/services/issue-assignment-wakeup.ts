@@ -1,7 +1,10 @@
+import type { HeartbeatOnCompleteConfig } from "./heartbeat.js";
 import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
+
+type IssueAssignmentWakeupOnComplete = Partial<HeartbeatOnCompleteConfig>;
 
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
@@ -14,6 +17,8 @@ export interface IssueAssignmentWakeupDeps {
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
+      silentCompletion?: boolean;
+      onComplete?: IssueAssignmentWakeupOnComplete | null;
     },
   ) => Promise<unknown>;
 }
@@ -26,6 +31,8 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  silentCompletion?: boolean;
+  onComplete?: IssueAssignmentWakeupOnComplete | null;
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -39,6 +46,8 @@ export function queueIssueAssignmentWakeup(input: {
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
+      silentCompletion: input.silentCompletion === true,
+      onComplete: input.onComplete ?? null,
     })
     .catch((err) => {
       logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");

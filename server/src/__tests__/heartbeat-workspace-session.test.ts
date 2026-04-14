@@ -7,12 +7,15 @@ import {
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
-  extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
-  mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  renderHeartbeatOnCompleteComment,
+  resolveHeartbeatOnCompleteConfig,
+  resolveHeartbeatOnCompleteCreateIssueConfig,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldApplyHeartbeatOnCompleteActions,
+  shouldTriggerHeartbeatOnComplete,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -272,18 +275,6 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
-  it("resets session context on execution review wakes", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
-  });
-
-  it("resets session context on execution approval wakes", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_approval_requested" })).toBe(true);
-  });
-
-  it("resets session context on execution changes-requested wakes", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
-  });
-
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
@@ -343,6 +334,213 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("resolveHeartbeatOnCompleteCreateIssueConfig", () => {
+  it("parses createIssue follow-up config", () => {
+    expect(
+      resolveHeartbeatOnCompleteCreateIssueConfig({
+        title: "후속 작업",
+        description: "다음 단계 진행",
+        status: "todo",
+        priority: "high",
+        assignToAgentId: "agent-2",
+        commentBody: "생성됨: {createdIssueIdentifier}",
+      }),
+    ).toEqual({
+      title: "후속 작업",
+      description: "다음 단계 진행",
+      status: "todo",
+      priority: "high",
+      assignToAgentId: "agent-2",
+      commentBody: "생성됨: {createdIssueIdentifier}",
+    });
+  });
+
+  it("returns null for empty createIssue config", () => {
+    expect(resolveHeartbeatOnCompleteCreateIssueConfig({})).toBeNull();
+  });
+});
+
+describe("resolveHeartbeatOnCompleteConfig", () => {
+  it("reads top-level silentCompletion and onComplete config from wake context", () => {
+    const config = resolveHeartbeatOnCompleteConfig({
+      silentCompletion: true,
+      onComplete: {
+        agentId: "agent-2",
+        reason: "follow-up",
+        onlyOn: ["succeeded", "failed"],
+        payload: { task: "next" },
+        commentBody: "후속 실행: {outcome}",
+        issueStatus: "done",
+        createIssue: {
+          title: "후속 작업",
+          status: "todo",
+          priority: "high",
+        },
+      },
+    });
+
+    expect(config.silentCompletion).toBe(true);
+    expect(config.onComplete).toEqual({
+      agentId: "agent-2",
+      source: null,
+      triggerDetail: null,
+      reason: "follow-up",
+      payload: { task: "next" },
+      contextSnapshot: null,
+      commentBody: "후속 실행: {outcome}",
+      issueStatus: "done",
+      createIssue: {
+        title: "후속 작업",
+        description: null,
+        status: "todo",
+        priority: "high",
+        assignToAgentId: null,
+        commentBody: null,
+      },
+      onlyOn: ["succeeded", "failed"],
+    });
+  });
+
+  it("supports legacy payload-based completion config for backward compatibility", () => {
+    const config = resolveHeartbeatOnCompleteConfig({
+      payload: {
+        silentCompletion: true,
+        onComplete: {
+          reason: "legacy-follow-up",
+          onlyOn: ["succeeded", "bogus"],
+          issueStatus: "blocked",
+          createIssue: {
+            title: "복구 작업",
+            priority: "medium"
+          },
+        },
+      },
+    });
+
+    expect(config.silentCompletion).toBe(true);
+    expect(config.onComplete).toEqual({
+      agentId: null,
+      source: null,
+      triggerDetail: null,
+      reason: "legacy-follow-up",
+      payload: null,
+      contextSnapshot: null,
+      commentBody: null,
+      issueStatus: "blocked",
+      createIssue: {
+        title: "복구 작업",
+        description: null,
+        status: null,
+        priority: "medium",
+        assignToAgentId: null,
+        commentBody: null,
+      },
+      onlyOn: ["succeeded"],
+    });
+  });
+
+  it("ignores malformed onComplete config", () => {
+    const config = resolveHeartbeatOnCompleteConfig({
+      onComplete: "not-an-object" as unknown as Record<string, unknown>,
+    });
+
+    expect(config.silentCompletion).toBe(false);
+    expect(config.onComplete).toBeNull();
+  });
+});
+
+describe("renderHeartbeatOnCompleteComment", () => {
+  it("replaces known placeholders in explicit completion comments", () => {
+    expect(
+      renderHeartbeatOnCompleteComment("완료: {outcome} / {runId} / {agentId} / {issueId} / {createdIssueIdentifier}", {
+        outcome: "succeeded",
+        runId: "run-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        createdIssueIdentifier: "ORD-99",
+      }),
+    ).toBe("완료: succeeded / run-1 / agent-1 / issue-1 / ORD-99");
+  });
+
+  it("returns null when the rendered comment is empty", () => {
+    expect(
+      renderHeartbeatOnCompleteComment("   ", {
+        outcome: "failed",
+        runId: "run-1",
+        agentId: "agent-1",
+        issueId: null,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("shouldTriggerHeartbeatOnComplete", () => {
+  it("triggers when no onlyOn filter is configured", () => {
+    expect(
+      shouldTriggerHeartbeatOnComplete(
+        {
+          agentId: null,
+          source: null,
+          triggerDetail: null,
+          reason: null,
+          payload: null,
+          contextSnapshot: null,
+          commentBody: null,
+          issueStatus: null,
+          createIssue: null,
+          onlyOn: null,
+        },
+        "succeeded",
+      ),
+    ).toBe(true);
+  });
+
+  it("respects onlyOn filters", () => {
+    const config = {
+      agentId: null,
+      source: null,
+      triggerDetail: null,
+      reason: null,
+      payload: null,
+      contextSnapshot: null,
+      commentBody: null,
+      issueStatus: null,
+      createIssue: null,
+      onlyOn: ["failed", "timed_out"] as const,
+    };
+
+    expect(shouldTriggerHeartbeatOnComplete(config, "succeeded")).toBe(false);
+    expect(shouldTriggerHeartbeatOnComplete(config, "failed")).toBe(true);
+  });
+});
+
+describe("shouldApplyHeartbeatOnCompleteActions", () => {
+  it("skips local side effects when onlyOn excludes the current outcome", () => {
+    const config = {
+      agentId: null,
+      source: null,
+      triggerDetail: null,
+      reason: null,
+      payload: null,
+      contextSnapshot: null,
+      commentBody: "루틴 실행이 비정상 종료되었습니다. 결과: {outcome}",
+      issueStatus: "blocked" as const,
+      createIssue: {
+        title: "Follow-up",
+        description: null,
+        status: "todo" as const,
+        priority: "medium" as const,
+        assignToAgentId: null,
+        commentBody: null,
+      },
+      onlyOn: ["failed", "timed_out"] as const,
+    };
+
+    expect(shouldApplyHeartbeatOnCompleteActions(config, "succeeded")).toBe(false);
+    expect(shouldApplyHeartbeatOnCompleteActions(config, "failed")).toBe(true);
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -368,32 +566,6 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
-  });
-});
-
-describe("comment wake batching", () => {
-  it("preserves ordered wake comment ids when coalescing queued follow-up wakes", () => {
-    const merged = mergeCoalescedContextSnapshot(
-      {
-        issueId: "issue-1",
-        wakeReason: "issue_commented",
-        wakeCommentId: "comment-1",
-        wakeCommentIds: ["comment-1"],
-        paperclipWake: {
-          latestCommentId: "comment-1",
-        },
-      },
-      {
-        issueId: "issue-1",
-        wakeReason: "issue_commented",
-        wakeCommentId: "comment-2",
-      },
-    );
-
-    expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
-    expect(merged.commentId).toBe("comment-2");
-    expect(merged.wakeCommentId).toBe("comment-2");
-    expect(merged.paperclipWake).toBeUndefined();
   });
 });
 

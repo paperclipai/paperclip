@@ -53,7 +53,7 @@ describe("opencode_local environment diagnostics", () => {
       if (originalOpenAiKey === undefined) {
         delete process.env.OPENAI_API_KEY;
       } else {
-        process.env.OPENAI_API_KEY = originalOpenAiKey;
+        process.env.OPENAI_API_KEY=originalOpenAiKey;
       }
       await fs.rm(cwd, { recursive: true, force: true });
     }
