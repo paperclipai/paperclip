@@ -192,6 +192,11 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
     desiredState: raw.desiredState === "running" || raw.desiredState === "stopped" ? raw.desiredState : null,
+    serviceStates: isRecord(raw.serviceStates)
+      ? Object.fromEntries(
+          Object.entries(raw.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
+        ) as ExecutionWorkspaceConfig["serviceStates"]
+      : null,
   };
 
   const hasConfig = Object.values(config).some((value) => {
@@ -214,6 +219,7 @@ export function mergeExecutionWorkspaceConfig(
     cleanupCommand: null,
     workspaceRuntime: null,
     desiredState: null,
+    serviceStates: null,
   };
 
   if (patch === null) {
@@ -232,6 +238,14 @@ export function mergeExecutionWorkspaceConfig(
           ? patch.desiredState
           : null
         : current.desiredState,
+    serviceStates:
+      patch.serviceStates !== undefined && isRecord(patch.serviceStates)
+        ? Object.fromEntries(
+            Object.entries(patch.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
+          ) as ExecutionWorkspaceConfig["serviceStates"]
+        : patch.serviceStates !== undefined
+          ? null
+          : current.serviceStates,
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {
@@ -247,6 +261,7 @@ export function mergeExecutionWorkspaceConfig(
       cleanupCommand: nextConfig.cleanupCommand,
       workspaceRuntime: nextConfig.workspaceRuntime,
       desiredState: nextConfig.desiredState,
+      serviceStates: nextConfig.serviceStates ?? null,
     };
   } else {
     delete nextMetadata.config;
