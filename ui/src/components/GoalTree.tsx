@@ -4,6 +4,7 @@ import { StatusBadge } from "./StatusBadge";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
+import { useLocale } from "../context/LocaleContext";
 
 interface GoalTreeProps {
   goals: Goal[];
@@ -92,11 +93,12 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
 }
 
 export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
+  const { t } = useLocale();
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
   if (goals.length === 0) {
-    return <p className="text-sm text-muted-foreground">No goals.</p>;
+    return <p className="text-sm text-muted-foreground">{t("goalTree.empty")}</p>;
   }
 
   return (
