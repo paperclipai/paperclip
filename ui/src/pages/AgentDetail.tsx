@@ -2922,32 +2922,28 @@ function RunsTab({
   isFetchingNextPage?: boolean;
 }) {
   const { isMobile } = useSidebar();
-  const observerTarget = useRef<HTMLDivElement>(null);
   
   const isFetchingRef = useRef(isFetchingNextPage);
   isFetchingRef.current = isFetchingNextPage;
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
-  useEffect(() => {
-    if (!observerTarget.current || !hasNextPage || !fetchNextPage) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && !isFetchingRef.current) {
-          fetchNextPage();
-        }
-      },
-      { threshold: 0.1, rootMargin: "100px" }
-    );
-
-    const currentTarget = observerTarget.current;
-    observer.observe(currentTarget);
-    
-    return () => {
-      if (currentTarget) {
-        observer.unobserve(currentTarget);
-      }
-    };
-  }, [hasNextPage, fetchNextPage, isMobile]);
+  const observerTarget = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (node && hasNextPage && fetchNextPage) {
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0]?.isIntersecting && !isFetchingRef.current) {
+            fetchNextPage();
+          }
+        },
+        { threshold: 0.1, rootMargin: "100px" }
+      );
+      observerRef.current.observe(node);
+    }
+  }, [hasNextPage, fetchNextPage]);
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
