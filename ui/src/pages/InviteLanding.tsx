@@ -17,7 +17,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
 
 function dateTime(value: string) {
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function readNestedString(value: unknown, path: string[]): string | null {

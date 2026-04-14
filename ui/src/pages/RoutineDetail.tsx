@@ -175,7 +175,7 @@ function TriggerEditor({
         </div>
         <span className="text-xs text-muted-foreground">
           {trigger.kind === "schedule" && trigger.nextRunAt
-            ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
+            ? `Next: ${new Date(trigger.nextRunAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
             : trigger.kind === "webhook"
               ? "Webhook"
               : "API"}

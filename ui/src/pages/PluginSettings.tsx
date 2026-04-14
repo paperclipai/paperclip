@@ -790,7 +790,7 @@ function formatRelativeTime(isoString: string): string {
  * Format a unix timestamp (ms since epoch) to a locale string.
  */
 function formatTimestamp(epochMs: number): string {
-  return new Date(epochMs).toLocaleString();
+  return new Date(epochMs).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 /**
