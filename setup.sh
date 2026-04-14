@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# setup.sh — Instalador interativo da Toca da IA
+# Uso: ./setup.sh
+set -euo pipefail
+
+BOLD="\033[1m"
+GREEN="\033[0;32m"
+YELLOW="\033[0;33m"
+RED="\033[0;31m"
+RESET="\033[0m"
+
+info()    { echo -e "${GREEN}✔${RESET} $*"; }
+warn()    { echo -e "${YELLOW}⚠${RESET}  $*"; }
+error()   { echo -e "${RED}✘${RESET} $*" >&2; }
+heading() { echo -e "\n${BOLD}$*${RESET}"; }
+
+# ─── Verificações de dependências ────────────────────────────────────────────
+
+heading "Verificando dependências..."
+MISSING=()
+command -v docker  >/dev/null 2>&1 || MISSING+=("docker")
+command -v curl    >/dev/null 2>&1 || MISSING+=("curl")
+command -v openssl >/dev/null 2>&1 || MISSING+=("openssl")
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  error "Dependências ausentes: ${MISSING[*]}"
+  echo "Instale-as antes de continuar."
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  error "Docker não está rodando. Inicie o Docker e tente novamente."
+  exit 1
+fi
+info "Docker disponível"
+
+# ─── Coleta de configuração ──────────────────────────────────────────────────
+
+heading "Configuração da instância"
+
+if [[ -f .env ]]; then
+  warn ".env já existe. Pressione Enter para mantê-lo ou 's' para recriar."
+  read -r RECREATE
+  if [[ "$RECREATE" != "s" && "$RECREATE" != "S" ]]; then
+    info "Usando .env existente."
+    ENV_READY=true
+  fi
+fi
+
+if [[ "${ENV_READY:-false}" != "true" ]]; then
+  echo ""
+  read -rp "URL pública da instância (ex: https://tocadaia.exemplo.com.br): " PUBLIC_URL
+  if [[ -z "$PUBLIC_URL" ]]; then
+    warn "URL não informada — usando http://localhost:3100"
+    PUBLIC_URL="http://localhost:3100"
+  fi
+
+  AUTH_SECRET=$(openssl rand -hex 32)
+  DB_PASSWORD=$(openssl rand -hex 16)
+  info "Segredos gerados automaticamente."
+
+  echo ""
+  echo "Chaves de API de IA (ao menos uma é necessária para os agentes funcionarem):"
+  read -rp "  ANTHROPIC_API_KEY (Enter para pular): " ANTHROPIC_KEY
+  read -rp "  OPENAI_API_KEY    (Enter para pular): " OPENAI_KEY
+
+  if [[ -z "$ANTHROPIC_KEY" && -z "$OPENAI_KEY" ]]; then
+    warn "Nenhuma chave de IA informada. Agentes não funcionarão sem ao menos uma."
+  fi
+
+  cat > .env <<EOF
+PAPERCLIP_PUBLIC_URL=${PUBLIC_URL}
+BETTER_AUTH_SECRET=${AUTH_SECRET}
+DB_PASSWORD=${DB_PASSWORD}
+ANTHROPIC_API_KEY=${ANTHROPIC_KEY:-}
+OPENAI_API_KEY=${OPENAI_KEY:-}
+PAPERCLIP_DEPLOYMENT_MODE=authenticated
+PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+EOF
+  info ".env criado com sucesso."
+fi
+
+# ─── Subir serviços ──────────────────────────────────────────────────────────
+
+heading "Iniciando serviços..."
+docker compose -f docker/docker-compose.prod.yml --env-file .env pull --quiet 2>/dev/null || true
+docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+
+# ─── Aguardar app ficar saudável ─────────────────────────────────────────────
+
+heading "Aguardando a aplicação ficar pronta..."
+APP_URL="${PUBLIC_URL:-http://localhost:3100}"
+# Se usar nginx na porta padrão, testar pelo nginx; senão, diretamente no 3100
+HEALTH_URL="${APP_URL%/}/health"
+
+RETRIES=30
+for i in $(seq 1 $RETRIES); do
+  if curl -sf "$HEALTH_URL" | grep -q '"status":"ok"'; then
+    info "Aplicação pronta!"
+    break
+  fi
+  if [[ $i -eq $RETRIES ]]; then
+    error "Timeout aguardando a aplicação. Verifique os logs:"
+    echo "  docker compose -f docker/docker-compose.prod.yml logs app"
+    exit 1
+  fi
+  echo -n "."
+  sleep 3
+done
+
+# ─── Resumo ──────────────────────────────────────────────────────────────────
+
+heading "Instalação concluída!"
+echo ""
+echo -e "  ${BOLD}URL:${RESET}    ${APP_URL}"
+echo -e "  ${BOLD}Health:${RESET} ${HEALTH_URL}"
+echo ""
+echo "Para verificar os logs:"
+echo "  docker compose -f docker/docker-compose.prod.yml logs -f"
+echo ""
+echo "Para parar:"
+echo "  docker compose -f docker/docker-compose.prod.yml down"
+echo ""
+echo "Para backup do banco:"
+echo "  ./scripts/backup-docker.sh"
+echo ""
