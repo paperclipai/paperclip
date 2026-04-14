@@ -1835,6 +1835,167 @@ export function agentRoutes(db: Db) {
     res.json(result.bundle);
   });
 
+  router.post("/agents/:id/instructions/generate", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanManageInstructionsPath(req, existing);
+
+    const baseUrl = process.env.ANTHROPIC_BASE_URL?.replace(/\/+$/, "");
+    if (!baseUrl) {
+      res.status(503).json({ error: "ANTHROPIC_BASE_URL is not configured on this server" });
+      return;
+    }
+    const apiKey = process.env.ANTHROPIC_API_KEY || "not-needed";
+    const adapterConfig = (existing.adapterConfig ?? {}) as Record<string, unknown>;
+    const model = typeof adapterConfig.model === "string" && adapterConfig.model.trim().length > 0
+      ? adapterConfig.model.trim()
+      : "claude-sonnet-4-6";
+
+    const prompt = `You are generating a starter instruction bundle for a Paperclip AI agent.
+
+Agent role: ${existing.role}
+Agent name: ${existing.name}
+Agent title: ${existing.title ?? ""}
+Reports to agent: ${existing.reportsTo ?? "(the board)"}
+
+Produce markdown-formatted instruction content for 4 files that guide this agent on every wake.
+
+Requirements:
+- Use second-person voice ("You are the ${existing.role}...").
+- If this is a management role (CEO, CTO, VP, lead, manager, director, head), include explicit delegation rules: break work into subtasks, assign engineers, do NOT write production code yourself.
+- If this is an IC role (developer, engineer, QA, reviewer, writer), include execution rules: read the issue description in full before acting, write code/tests to acceptance criteria, open a PR and request review.
+- Reference these environment variables that every agent has:
+  - $PAPERCLIP_API_URL (e.g. http://localhost:3100)
+  - $PAPERCLIP_API_KEY (bearer token)
+  - $PAPERCLIP_RUN_ID (must be sent as X-Paperclip-Run-Id header on mutating calls)
+  - $PAPERCLIP_TASK_ID (current issue id on assignment wakes)
+  - $GITHUB_TOKEN (for git/gh)
+- Include these critical rules in AGENTS.md:
+  - never invent UUIDs; only use IDs returned from API calls
+  - goalId is optional on issue creation - OMIT it unless you already have a real goal UUID
+  - never edit /app inside the container (that is the live Paperclip server)
+  - never push to master or main; always use a feature branch and open a PR
+  - include X-Paperclip-Run-Id on mutating calls during a heartbeat
+- HEARTBEAT.md MUST start with a loud "ACT, DO NOT JUST PLAN" directive warning the agent not to end a wake by only describing its intended next actions.
+- Keep each file focused and actionable. No generic platitudes.
+- TOOLS.md should start mostly scaffolded with sections for Paperclip API, Git/GitHub, Workspace, Claude CLI; note the agent can append new tool notes as they discover them.
+
+Return ONLY a JSON object - no prose, no markdown fences, no leading/trailing text. The JSON must have exactly these four string keys, each a full markdown document starting with a top-level # heading:
+
+{
+  "AGENTS": "# ...",
+  "SOUL": "# SOUL.md — ${existing.role} Persona\\n\\n...",
+  "HEARTBEAT": "# HEARTBEAT.md — ${existing.role} Heartbeat Checklist\\n\\n## ⚠️ ACT, DO NOT JUST PLAN\\n\\n...",
+  "TOOLS": "# TOOLS.md — ${existing.role} Tools\\n\\n..."
+}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 8192,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: "LLM request failed", detail: message.slice(0, 500) });
+      return;
+    }
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      res.status(502).json({ error: `LLM returned ${response.status}`, detail: errText.slice(0, 500) });
+      return;
+    }
+
+    let llmResult: { content?: Array<{ type?: string; text?: string }> };
+    try {
+      llmResult = await response.json() as typeof llmResult;
+    } catch {
+      res.status(502).json({ error: "LLM response was not JSON" });
+      return;
+    }
+
+    const textContent = Array.isArray(llmResult?.content)
+      ? llmResult.content
+          .filter((c) => c.type === "text" && typeof c.text === "string")
+          .map((c) => c.text as string)
+          .join("")
+      : "";
+
+    if (!textContent.trim()) {
+      res.status(502).json({ error: "LLM response contained no text content" });
+      return;
+    }
+
+    // Strip common markdown fence wrappers if the model added them
+    const cleaned = textContent
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "")
+      .trim();
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      res.status(502).json({
+        error: "LLM did not return valid JSON",
+        sample: cleaned.slice(0, 400),
+      });
+      return;
+    }
+
+    const required = ["AGENTS", "SOUL", "HEARTBEAT", "TOOLS"] as const;
+    const missing = required.filter((k) => typeof parsed[k] !== "string" || !(parsed[k] as string).trim());
+    if (missing.length > 0) {
+      res.status(502).json({
+        error: "LLM response missing required keys",
+        missing,
+        got: Object.keys(parsed),
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.instructions_bundle_generated",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { model, role: existing.role },
+    });
+
+    res.json({
+      model,
+      files: required.map((key) => ({
+        path: `${key}.md`,
+        content: (parsed[key] as string).trim(),
+      })),
+    });
+  });
+
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);

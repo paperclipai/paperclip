@@ -1800,6 +1800,23 @@ function PromptsTab({
     onError: () => setAwaitingRefresh(false),
   });
 
+  const generateBundle = useMutation({
+    mutationFn: () => agentsApi.generateInstructionsBundle(agent.id, companyId),
+    onSuccess: async (result) => {
+      for (const file of result.files) {
+        try {
+          await agentsApi.saveInstructionsFile(agent.id, { path: file.path, content: file.content }, companyId);
+        } catch (err) {
+          // Continue writing the remaining files even if one fails; user sees partial results.
+          console.error(`Failed to save ${file.path}`, err);
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    },
+  });
+
   const deleteFile = useMutation({
     mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
     onMutate: () => setAwaitingRefresh(true),
@@ -2163,6 +2180,25 @@ function PromptsTab({
               {!showNewFileInput && (
                 <Button
                   type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={generateBundle.isPending}
+                  onClick={() => {
+                    if (window.confirm(
+                      "Generate starter AGENTS.md, SOUL.md, HEARTBEAT.md, TOOLS.md for this agent based on its role? This will overwrite any existing files with the same names.",
+                    )) {
+                      generateBundle.mutate();
+                    }
+                  }}
+                  title="Generate starter instruction bundle from agent role"
+                >
+                  {generateBundle.isPending ? "Generating..." : "Generate"}
+                </Button>
+              )}
+              {!showNewFileInput && (
+                <Button
+                  type="button"
                   size="icon"
                   variant="outline"
                   className="h-7 w-7"
@@ -2184,6 +2220,11 @@ function PromptsTab({
               )}
             </div>
           </div>
+          {generateBundle.isError && (
+            <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-300">
+              Generate failed: {(generateBundle.error as Error | undefined)?.message ?? "unknown error"}
+            </div>
+          )}
           {showNewFileInput && (
             <div className="space-y-2">
               <Input
