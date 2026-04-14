@@ -16,9 +16,21 @@ function resolveServerLogDir(): string {
 }
 
 const logDir = resolveServerLogDir();
-fs.mkdirSync(logDir, { recursive: true });
+fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
 const logFile = path.join(logDir, "server.log");
+
+// Ensure the log file is owner-only (0600) even if Pino/sonic-boom creates it
+// with a umask-dependent default (typically 0644). Request bodies on 4xx/5xx
+// responses can contain sensitive form fields, so group/other must never read.
+try {
+  if (!fs.existsSync(logFile)) {
+    fs.closeSync(fs.openSync(logFile, "a", 0o600));
+  }
+  fs.chmodSync(logFile, 0o600);
+} catch {
+  // Non-fatal: continue even if the chmod fails (e.g., read-only mount).
+}
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
