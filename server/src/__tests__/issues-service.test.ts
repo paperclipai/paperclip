@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1179,6 +1180,154 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+});
+
+describeEmbeddedPostgres("issueService checkout ownership recovery", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-ownership-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function insertOwnershipFixture(input: { lockRunStatus: "running" | "succeeded" }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const lockRunId = randomUUID();
+    const actorRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Monitor",
+      role: "sre",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: lockRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: input.lockRunStatus,
+        startedAt: now,
+        finishedAt: input.lockRunStatus === "succeeded" ? now : null,
+        exitCode: input.lockRunStatus === "succeeded" ? 0 : null,
+        contextSnapshot: { issueId },
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: now,
+        contextSnapshot: { issueId },
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Parent monitor thread",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: lockRunId,
+      executionAgentNameKey: "monitor",
+      executionLockedAt: now,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    return { agentId, actorRunId, issueId, lockRunId };
+  }
+
+  it("adopts terminal execution locks when checkout ownership is missing", async () => {
+    const { agentId, actorRunId, issueId, lockRunId } = await insertOwnershipFixture({
+      lockRunStatus: "succeeded",
+    });
+
+    const ownership = await svc.assertCheckoutOwner(issueId, agentId, actorRunId);
+
+    expect(ownership).toMatchObject({
+      id: issueId,
+      checkoutRunId: actorRunId,
+      executionRunId: actorRunId,
+      adoptedFromRunId: lockRunId,
+      adoptedReason: "stale_execution_run",
+    });
+
+    const issue = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toMatchObject({
+      checkoutRunId: actorRunId,
+      executionRunId: actorRunId,
+      executionAgentNameKey: "monitor",
+    });
+  });
+
+  it("does not adopt live execution locks when checkout ownership is missing", async () => {
+    const { agentId, actorRunId, issueId, lockRunId } = await insertOwnershipFixture({
+      lockRunStatus: "running",
+    });
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, actorRunId)).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        executionRunId: lockRunId,
+      }),
     });
   });
 });
