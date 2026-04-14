@@ -52,6 +52,11 @@ describe("server adapter registry", () => {
     ]);
   });
 
+  it("marks the built-in openclaw gateway adapter as local-jwt capable", () => {
+    const adapter = requireServerAdapter("openclaw_gateway");
+    expect(adapter.supportsLocalAgentJwt).toBe(true);
+  });
+
   it("removes external adapters when unregistered", () => {
     registerServerAdapter(externalAdapter);
 

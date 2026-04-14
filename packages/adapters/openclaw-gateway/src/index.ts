@@ -44,9 +44,11 @@ Session routing fields:
 
 Standard outbound payload additions:
 - paperclip (object): standardized Paperclip context added to every gateway agent request
+- env (object): merged runtime env passed to the gateway agent; preserves payloadTemplate.env and appends Paperclip wake vars
 - paperclip.workspace (object, optional): resolved execution workspace for this run
 - paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
 - paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+- when a short-lived run JWT is available, env also includes PAPERCLIP_API_KEY for direct /api calls during that wake
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports

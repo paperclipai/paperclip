@@ -174,6 +174,118 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  it("rejects assigning routines to paused agents", async () => {
+    const companyId = randomUUID();
+    const pausedAgentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: pausedAgentId,
+      companyId,
+      name: "PausedAgent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const svc = routineService(db, {
+      heartbeat: {
+        wakeup: async () => null,
+      },
+      issues: issueService(db),
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Paused routine",
+        status: "active",
+        assigneeAgentId: pausedAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign routines to paused agents" });
+  });
+
+  it("rejects assigning routines to overloaded agents", async () => {
+    const companyId = randomUUID();
+    const busyAgentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: busyAgentId,
+      companyId,
+      name: "BusyAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values(
+      Array.from({ length: 10 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Open issue ${index + 1}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        assigneeAgentId: busyAgentId,
+      })),
+    );
+
+    const svc = routineService(db, {
+      heartbeat: {
+        wakeup: async () => null,
+      },
+      issues: issueService(db),
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Overloaded routine",
+        status: "active",
+        assigneeAgentId: busyAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign routines to agents with 10+ open issues" });
+  });
+
+  it("allows routine updates that keep the same paused assignee", async () => {
+    const { companyId, agentId, svc, routine } = await seedFixture();
+
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+
+    const updated = await svc.update(
+      routine.id,
+      {
+        title: "paused but editable",
+        assigneeAgentId: agentId,
+      },
+      { type: "user", id: "local-board" },
+    );
+
+    expect(updated).toMatchObject({
+      id: routine.id,
+      title: "paused but editable",
+      assigneeAgentId: agentId,
+    });
+  });
+
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();

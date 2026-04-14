@@ -515,6 +515,85 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("forwards Paperclip env, including the run JWT, into the gateway payload", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              env: {
+                OPENCLAW_PROFILE: "paperclipdexter",
+              },
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            authToken: "paperclip-jwt-123",
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+
+      const payload = gateway.getAgentPayload();
+      expect(payload?.env).toMatchObject({
+        OPENCLAW_PROFILE: "paperclipdexter",
+        PAPERCLIP_AGENT_ID: "agent-123",
+        PAPERCLIP_COMPANY_ID: "company-123",
+        PAPERCLIP_RUN_ID: "run-123",
+        PAPERCLIP_API_URL: expect.stringMatching(/^http:\/\/(?:localhost|127\.0\.0\.1):3100$/),
+        PAPERCLIP_API_KEY: "paperclip-jwt-123",
+        PAPERCLIP_TASK_ID: "task-123",
+        PAPERCLIP_WAKE_REASON: "issue_assigned",
+      });
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("preserves an explicit PAPERCLIP_API_KEY from the payload template env", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              env: {
+                OPENCLAW_PROFILE: "paperclipdexter",
+                PAPERCLIP_API_KEY: "explicit-template-key",
+              },
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            authToken: "paperclip-jwt-123",
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+
+      const payload = gateway.getAgentPayload();
+      expect(payload?.env).toMatchObject({
+        OPENCLAW_PROFILE: "paperclipdexter",
+        PAPERCLIP_API_KEY: "explicit-template-key",
+      });
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("fails fast when url is missing", async () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);
