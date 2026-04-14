@@ -2128,6 +2128,9 @@ export function companySkillService(db: Db) {
                 await agents.update(fullAgent.id, { adapterConfig: updatedConfig });
               }
             }
+          }
+          await deleteSkill(companyId, skill.id);
+          if (usedByAgents.length > 0) {
             warnings.push(
               `Skill "${skill.slug}" was removed from ${sourceLocator} and detached from ${usedByAgents.map((a) => a.name).join(", ")}.`,
             );
@@ -2136,7 +2139,6 @@ export function companySkillService(db: Db) {
               `Skill "${skill.slug}" was removed from ${sourceLocator} and deleted.`,
             );
           }
-          await deleteSkill(companyId, skill.id);
           const pruneIdx = acceptedSkills.findIndex((s) => s.id === skill.id);
           if (pruneIdx >= 0) acceptedSkills.splice(pruneIdx, 1);
           acceptedByKey.delete(skill.key);
