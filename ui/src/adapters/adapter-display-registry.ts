@@ -58,6 +58,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Sparkles,
     recommended: true,
   },
+  anvil_local: {
+    label: "Anvil",
+    description: "Local Anvil agent (Claude via Anvil)",
+    icon: Cpu,
+  },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",

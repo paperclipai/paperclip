@@ -1,0 +1,124 @@
+name: Benchmark Score
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: benchmark-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run benchmark
+        id: benchmark
+        run: |
+          EXIT_CODE=0
+          pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-score.ts \
+            -- --json \
+            --output ../benchmarks/latest.json \
+            --markdown-summary "$GITHUB_STEP_SUMMARY" \
+            --threshold 55 \
+            || EXIT_CODE=$?
+
+          # Extract score for PR comment (even if below threshold)
+          if [ -f benchmarks/latest.json ]; then
+            SCORE=$(node -e "console.log(require('./benchmarks/latest.json').composite)")
+            PASS=$(node -e "console.log(require('./benchmarks/latest.json').pass)")
+            echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+            echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload benchmark scorecard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-scorecard-${{ github.sha }}
+          path: benchmarks/
+          retention-days: 90
+
+      - name: Comment on PR with score
+        if: github.event_name == 'pull_request' && steps.benchmark.outputs.score
+        uses: actions/github-script@v7
+        env:
+          BENCH_SCORE: ${{ steps.benchmark.outputs.score }}
+          BENCH_PASS: ${{ steps.benchmark.outputs.pass }}
+          BENCH_FILE: benchmarks/latest.json
+        with:
+          script: |
+            const fs = require('fs');
+            const score = process.env.BENCH_SCORE;
+            const pass = process.env.BENCH_PASS === 'true';
+            const emoji = pass ? '✅' : '⚠️';
+
+            let breakdown = '';
+            try {
+              const data = JSON.parse(fs.readFileSync(process.env.BENCH_FILE, 'utf8'));
+              const s = data.scores;
+              breakdown = [
+                `| Dimension | Score | Weight |`,
+                `|-----------|-------|--------|`,
+                ...Object.entries(s).map(([k, v]) =>
+                  `| ${k} | ${v.score.toFixed(1)} | ${(v.weight * 100).toFixed(0)}% |`
+                ),
+              ].join('\n');
+            } catch {}
+
+            const body = `${emoji} **Benchmark Score: ${score}/100** ${pass ? '(passing)' : '(below threshold)'}\n\n${breakdown}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.includes('Benchmark Score:'));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Enforce threshold
+        if: steps.benchmark.outputs.exit_code != '0'
+        run: |
+          echo "::error::Benchmark score below threshold"
+          exit 1

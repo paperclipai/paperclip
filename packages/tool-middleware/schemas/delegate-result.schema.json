@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclipai.dev/schemas/delegate-result.schema.json",
+  "title": "DelegateResult",
+  "description": "Result returned from a delegated sub-agent task.",
+  "type": "object",
+  "required": ["delegateId", "agentId", "status", "completedAt"],
+  "additionalProperties": true,
+  "properties": {
+    "delegateId": {
+      "type": "string",
+      "description": "Unique ID for this delegation."
+    },
+    "agentId": {
+      "type": "string",
+      "description": "ID of the agent that executed the delegate task."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "error", "timeout", "cancelled"],
+      "description": "Outcome of the delegated task."
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 completion timestamp."
+    },
+    "output": {
+      "type": "string",
+      "description": "Summary of delegate output (not raw — must be pruned)."
+    },
+    "artifactRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^artifact://[0-9a-f]{64}$"
+      },
+      "description": "Artifact references for full delegate output."
+    }
+  }
+}

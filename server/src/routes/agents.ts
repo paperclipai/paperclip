@@ -58,6 +58,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -73,6 +74,7 @@ import { getTelemetryClient } from "../telemetry.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
+    anvil_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
@@ -489,6 +491,10 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "claude_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_CLAUDE_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
@@ -2177,6 +2183,70 @@ export function agentRoutes(db: Db) {
       agentId: actor.agentId,
       runId: actor.runId,
       action: "heartbeat.invoked",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { agentId: id },
+    });
+
+    res.status(202).json(run);
+  });
+
+  router.post("/agents/:id/heartbeat/trigger", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    // Board users can always trigger any agent's heartbeat.
+    // Agent callers must be a manager of the target (in its chainOfCommand).
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== agent.companyId) {
+        res.status(403).json({ error: "Agent key cannot access another company" });
+        return;
+      }
+      const chainOfCommand = await svc.getChainOfCommand(agent.id);
+      const isManager = chainOfCommand.some((m) => m.id === actorAgent.id);
+      if (!isManager) {
+        res.status(403).json({ error: "Only a manager or board user can trigger a report's heartbeat" });
+        return;
+      }
+    }
+
+    const run = await heartbeat.invoke(
+      id,
+      "on_demand",
+      {
+        triggeredBy: req.actor.type,
+        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+      },
+      "manual",
+      {
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      },
+    );
+
+    if (!run) {
+      res.status(202).json({ status: "skipped", runId: null });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "heartbeat.triggered",
       entityType: "heartbeat_run",
       entityId: run.id,
       details: { agentId: id },

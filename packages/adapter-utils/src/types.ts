@@ -21,6 +21,59 @@ export interface AdapterRuntime {
 }
 
 // ---------------------------------------------------------------------------
+// Canonical adapter failure taxonomy
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider-agnostic failure categories emitted by all local adapters.
+ * Adapters MUST map their provider-specific failures to these codes so the
+ * heartbeat runner can apply a uniform fallback / retry policy.
+ *
+ * | Category             | When to use                                              |
+ * |----------------------|----------------------------------------------------------|
+ * | auth_required        | CLI requires re-login / credentials missing              |
+ * | rate_limited         | Provider quota or rate-limit hit (retry later)           |
+ * | session_invalid      | Saved session is stale and cannot be resumed             |
+ * | startup_failed       | Process exited early with no usable output               |
+ * | timeout              | Execution wall-clock limit reached                      |
+ * | provider_unavailable | Provider binary missing or service unreachable           |
+ * | process_lost         | Process disappeared mid-run (DETACHED_PROCESS_ERROR)     |
+ * | crash_no_output      | Process crashed before producing any structured output   |
+ * | parse_error          | Output could not be parsed as expected format            |
+ * | cancelled            | Run was cancelled by the orchestrator                    |
+ * | nonzero_exit         | Process exited with non-zero code, no specific category  |
+ * | unknown              | Failure reason could not be determined                   |
+ */
+export type AdapterFailureCategory =
+  | "auth_required"
+  | "rate_limited"
+  | "session_invalid"
+  | "startup_failed"
+  | "timeout"
+  | "provider_unavailable"
+  | "process_lost"
+  | "crash_no_output"
+  | "parse_error"
+  | "cancelled"
+  | "nonzero_exit"
+  | "unknown";
+
+/**
+ * A single entry in the adapter fallback chain stored in `adapterConfig`.
+ * When the primary adapter fails with a category listed in `triggerOn`
+ * (or any category when `triggerOn` is omitted), the heartbeat runner
+ * retries the run using the fallback adapter configuration.
+ */
+export interface AdapterFallbackEntry {
+  adapterType: string;
+  adapterConfig?: Record<string, unknown>;
+  /** Limit this fallback to specific failure categories. Omit to match any failure. */
+  triggerOn?: AdapterFailureCategory[];
+  /** Maximum attempts for this fallback entry. Defaults to 1. */
+  maxAttempts?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Execution types (moved from server/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
 
@@ -61,6 +114,14 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export interface SkillInvocationReport {
+  skillName: string;
+  status: "success" | "error";
+  durationMs?: number;
+  tokenEstimate?: number;
+  version?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -84,6 +145,7 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  skillInvocations?: SkillInvocationReport[];
   question?: {
     prompt: string;
     choices: Array<{
@@ -291,6 +353,7 @@ export interface AdapterConfigSchema {
 
 export interface ServerAdapterModule {
   type: string;
+  label?: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
@@ -352,7 +415,6 @@ export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 // ---------------------------------------------------------------------------
 // CLI types (moved from cli/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
-
 export interface CLIAdapterModule {
   type: string;
   formatStdoutEvent: (line: string, debug: boolean) => void;
@@ -361,6 +423,13 @@ export interface CLIAdapterModule {
 // ---------------------------------------------------------------------------
 // UI config form values (moved from ui/src/components/AgentConfigForm.tsx)
 // ---------------------------------------------------------------------------
+
+export interface AdapterFallbackChainEntryConfig {
+  adapterType: string;
+  model?: string;
+  adapterConfig?: Record<string, unknown>;
+  enabled?: boolean;
+}
 
 export interface CreateConfigValues {
   adapterType: string;
@@ -387,6 +456,10 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  /** @deprecated Use adapterFallbackChain instead */
+  fallbackToCodexOnRateLimit?: boolean;
+  /** Ordered list of fallback adapters tried on rate-limit errors */
+  adapterFallbackChain?: AdapterFallbackChainEntryConfig[];
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

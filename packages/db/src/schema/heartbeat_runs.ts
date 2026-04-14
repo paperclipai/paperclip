@@ -38,6 +38,8 @@ export const heartbeatRuns = pgTable(
       onDelete: "set null",
     }),
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
+    lowMemoryRetryCount: integer("low_memory_retry_count").notNull().default(0),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
     issueCommentStatus: text("issue_comment_status").notNull().default("not_applicable"),
     issueCommentSatisfiedByCommentId: uuid("issue_comment_satisfied_by_comment_id"),
     issueCommentRetryQueuedAt: timestamp("issue_comment_retry_queued_at", { withTimezone: true }),

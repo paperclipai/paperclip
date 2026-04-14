@@ -36,10 +36,13 @@ import {
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { startTelegramEventBridge } from "./services/telegram-event-bridge.js";
+import { telegramNotify } from "./services/telegram-notify.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { initTracing } from "./observability/index.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
 type BetterAuthSessionUser = {
@@ -80,6 +83,9 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Initialize OTel tracing early (no-op if PAPERCLIP_OTEL_ENDPOINT is unset)
+  initTracing();
+
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -207,6 +213,7 @@ export async function startServer(): Promise<StartedServer> {
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
+        clerkId: "local-board-clerk-id",
         name: LOCAL_BOARD_USER_NAME,
         email: LOCAL_BOARD_USER_EMAIL,
         emailVerified: true,
@@ -502,8 +509,9 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  if (listenPort !== requestedListenPort) {
     config.port = listenPort;
   }
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -543,8 +551,8 @@ export async function startServer(): Promise<StartedServer> {
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
@@ -560,6 +568,8 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
+
+  startTelegramEventBridge();
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
@@ -579,9 +589,11 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
+    // clear any stale executionRunId/checkoutRunId locks left over from a crash,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reapStaleExecutionRunLocks())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -608,11 +620,12 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+
+      // Periodically reap orphaned runs (5-min staleness threshold), clear any
+      // stale executionRunId locks, and drive queued work forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reapStaleExecutionRunLocks())
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
@@ -740,8 +753,19 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
+  // Send a recovery / "back online" Telegram notification after a short delay.
+  // The delay debounces rapid restart flapping — if the server crashes within
+  // this window the notification is never sent.
+  const startupNotifyTimer = setTimeout(() => {
+    void telegramNotify.serverOnline({
+      url: process.env.PAPERCLIP_PUBLIC_URL || undefined,
+    });
+  }, 10_000);
+  startupNotifyTimer.unref();
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      clearTimeout(startupNotifyTimer);
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

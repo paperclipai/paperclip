@@ -16,6 +16,7 @@ Before making changes, read in this order:
 3. `doc/SPEC-implementation.md`
 4. `doc/DEVELOPING.md`
 5. `doc/DATABASE.md`
+6. `doc/AGENT-GIT-WORKFLOW.md` — **required for all agents committing to this repo**
 
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
@@ -59,7 +60,37 @@ rm -rf data/pglite
 pnpm dev
 ```
 
-## 5. Core Engineering Rules
+## 4a. Enabling Prometheus Metrics
+
+The server exposes a `/metrics` endpoint for Prometheus scraping when metrics are enabled.
+
+**Enable via environment variable (set one of):**
+
+```sh
+PAPERCLIP_METRICS_ENABLED=true    # explicit enable
+PAPERCLIP_OTEL_ENDPOINT=...       # also enables metrics as a side effect
+```
+
+When enabled:
+- `GET /metrics` returns Prometheus exposition format (no auth required)
+- Default Node.js process metrics are collected (CPU, memory, event loop lag)
+- HTTP request metrics: `paperclip_http_request_duration_seconds`, `paperclip_http_requests_total`
+- Domain metrics: `paperclip_heartbeat_runs_total`, `paperclip_tokens_used_total`, `paperclip_agent_budget_used_percent`, etc.
+
+Implementation: `server/src/observability/metrics.ts` (registry + metrics), `server/src/routes/metrics.ts` (endpoint).
+
+## 5. Git and Code Review Protocol (Agents)
+
+All agent commits to this repo must follow `doc/AGENT-GIT-WORKFLOW.md`. Key rules:
+
+- **Branch naming:** `feature/anga-{N}-{slug}` / `fix/anga-{N}-{slug}` / `chore/anga-{N}-{slug}`
+- **Commit format:** `type(scope): description (ANGA-N)` with `Co-Authored-By: Paperclip <noreply@paperclip.ing>` trailer
+- **No direct pushes to `master`** — all changes go through a PR reviewed by the CTO
+- **Every commit must reference a Paperclip issue** — no orphan commits
+
+See `doc/AGENT-GIT-WORKFLOW.md` for branch lifecycle, PR requirements, periodic review cadence, and rollback runbook.
+
+## 6. Core Engineering Rules
 
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
@@ -84,7 +115,7 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
-## 6. Database Change Workflow
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -106,7 +137,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
 
@@ -118,7 +149,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -132,7 +163,7 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
@@ -148,6 +179,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Risks** — what could go wrong
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
+
 
 ## 11. Definition of Done
 

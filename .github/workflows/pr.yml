@@ -81,12 +81,25 @@ jobs:
           fi
 
       - name: Validate dependency resolution when manifests change
+        id: resolve
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            echo "manifests_changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Upload resolved lockfile
+        if: steps.resolve.outputs.manifests_changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+
+    outputs:
+      manifests_changed: ${{ steps.resolve.outputs.manifests_changed }}
 
   verify:
     needs: [policy]
@@ -108,14 +121,43 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Download resolved lockfile
+        if: needs.policy.outputs.manifests_changed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm -r typecheck
 
-      - name: Run tests
-        run: pnpm test:run
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const r = require('./coverage/coverage-summary.json').total;
+              console.log('## Coverage Summary');
+              console.log('| Metric | Covered | Total | % |');
+              console.log('|--------|---------|-------|---|');
+              for (const [k,v] of Object.entries(r)) {
+                if (v.pct !== undefined) console.log('| ' + k + ' | ' + v.covered + ' | ' + v.total + ' | ' + v.pct + '% |');
+              }
+            " >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Build
         run: pnpm build
@@ -145,6 +187,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Download resolved lockfile
+        if: needs.policy.outputs.manifests_changed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -38,6 +38,8 @@ export interface HeartbeatRun {
   processStartedAt: Date | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
+  lowMemoryRetryCount: number;
+  scheduledAt: Date | null;
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

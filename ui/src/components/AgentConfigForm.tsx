@@ -14,6 +14,7 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import {
@@ -46,6 +47,8 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { AdapterFallbackChainEditor } from "./AdapterFallbackChainEditor";
+import type { AdapterFallbackChainEntryConfig } from "@paperclipai/adapter-utils";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
@@ -415,6 +418,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       heartbeat: mergedHeartbeat,
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
+
+  const currentFallbackChain = isCreate
+    ? (val!.adapterFallbackChain ?? [])
+    : eff("adapterConfig", "adapterFallbackChain", Array.isArray(config.adapterFallbackChain) ? config.adapterFallbackChain : (config.rateLimitFallback ? [config.rateLimitFallback] : []) as AdapterFallbackChainEntryConfig[]);
+
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -546,6 +554,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                    } else if (t === "claude_local") {
+                      nextValues.model = DEFAULT_CLAUDE_LOCAL_MODEL;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "cursor") {
@@ -562,7 +572,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       adapterType: t,
                       adapterConfig: {
                         model:
-                          t === "codex_local"
+                          t === "claude_local"
+                            ? DEFAULT_CLAUDE_LOCAL_MODEL
+                            : t === "codex_local"
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
@@ -715,6 +727,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ? fetchedModelsError.message
                     : "Failed to load adapter models."}
                 </p>
+              )}
+
+              {isLocal && (
+                <div className="pt-2 pb-2">
+                  <AdapterFallbackChainEditor
+                    companyId={selectedCompanyId!}
+                    primaryAdapterType={adapterType}
+                    chain={currentFallbackChain}
+                    onChange={(newChain) => {
+                      if (isCreate) {
+                        set!({ adapterFallbackChain: newChain });
+                        return;
+                      }
+                      mark("adapterConfig", "adapterFallbackChain", newChain.length > 0 ? newChain : []);
+                      mark("adapterConfig", "rateLimitFallback", null);
+                    }}
+                  />
+                </div>
               )}
 
               {showThinkingEffort && (

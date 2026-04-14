@@ -5,6 +5,7 @@ dist/
 drizzle/meta/
 .vite/
 coverage/
+benchmarks/
 .DS_Store
 data/
 .paperclip/
@@ -51,3 +52,9 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+cowork-inbox/
+
+# Temporal scratch / agent session logs
+docs/scratch/
+logs/
+server/logs/

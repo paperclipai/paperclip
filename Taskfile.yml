@@ -1,0 +1,19 @@
+version: "3"
+
+tasks:
+  dev:ui-watch:
+    desc: Watch ui/src/ and auto-rebuild @paperclipai/ui on changes
+    cmds:
+      - pnpm exec tsx scripts/watch-ui.ts
+
+  dev:server:
+    desc: Run the Paperclip dev server
+    cmds:
+      - pnpm dev
+
+  dev:all:
+    desc: Run dev server + UI watch watcher in parallel
+    cmds:
+      - task: dev:ui-watch
+        background: true
+      - task: dev:server

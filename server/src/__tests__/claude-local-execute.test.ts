@@ -2,7 +2,32 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-claude-local/server";
+import { execute, describeClaudeFailure } from "@paperclipai/adapter-claude-local/server";
+import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+
+function normalizeResolvedCommandForAssert(value: string | null): string | null {
+  if (value == null) return null;
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+async function rmWithRetry(target: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        attempt === 9 ||
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        (error as NodeJS.ErrnoException).code !== "EBUSY"
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -117,6 +142,25 @@ async function setupExecuteEnv(
       else process.env.PATH = previousPath;
     },
   };
+}
+
+async function writeWindowsCommandShim(commandPath: string): Promise<string> {
+  const shimPath = `${commandPath}.cmd`;
+  const escapedCommandPath = commandPath.replaceAll('"', '""');
+  const shim = `@echo off\r\nnode "${escapedCommandPath}" %*\r\n`;
+  await fs.writeFile(shimPath, shim, 'utf8');
+  return shimPath;
+}
+
+async function writeFakeClaudeRateLimitedCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1775260800, rateLimitType: "seven_day_sonnet", overageStatus: "rejected", overageDisabledReason: "out_of_credits", isUsingOverage: false }, uuid: "4895ab2a-02cc-47a9-b54e-2cbd794731da", session_id: "claude-session-1" }));
+console.log("You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, 'utf8');
+  await fs.chmod(commandPath, 0o755);
 }
 
 describe("claude execute", () => {
@@ -387,6 +431,56 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("classifies rate-limit failures with a dedicated error code", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeClaudeRateLimitedCommand(commandPath);
+    if (process.platform === "win32") {
+      await writeWindowsCommandShim(commandPath);
+    }
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    try {
+      const result: AdapterExecutionResult = await execute({
+        runId: "run-rate-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(describeClaudeFailure(result.resultJson?.stdout ?? "", result.resultJson?.stderr ?? "")?.errorCode).toBe("claude_rate_limited");
+      expect(result.errorMessage).toContain("Claude exited with code 1");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rmWithRetry(root);
+    }
+  }, 15000);
 
   it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));

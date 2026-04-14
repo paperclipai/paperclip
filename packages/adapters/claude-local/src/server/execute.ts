@@ -27,10 +27,12 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeRateLimited,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "../index.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
@@ -222,8 +224,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     if (typeof value === "string") env[key] = value;
   }
 
-  if (!hasExplicitApiKey && authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+  if (!hasExplicitApiKey) {
+    if (authToken) {
+      env.PAPERCLIP_API_KEY = authToken;
+    } else {
+      // runChildProcess merges { ...process.env, ...env }. If we leave
+      // PAPERCLIP_API_KEY absent from env, the Paperclip server process's
+      // board-user token leaks into the agent subprocess and the agent
+      // authenticates as local-board instead of as the agent run.
+      // Explicitly set an empty value so the leaked token is overridden.
+      env.PAPERCLIP_API_KEY = "";
+    }
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -302,7 +313,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const model = asString(config.model, "").trim() || DEFAULT_CLAUDE_LOCAL_MODEL;
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -523,6 +534,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    const rateLimited = detectClaudeRateLimited({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
     const errorMeta =
       loginMeta.loginUrl != null
         ? {
@@ -548,7 +564,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : rateLimited
+            ? "claude_rate_limited"
+            : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -592,7 +612,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : rateLimited
+          ? "claude_rate_limited"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -606,6 +630,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      skillInvocations: parsedStream.skillInvocations.length > 0 ? parsedStream.skillInvocations : undefined,
     };
   };
 

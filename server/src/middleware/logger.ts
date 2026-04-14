@@ -21,16 +21,13 @@ fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, "server.log");
 
 const sharedOpts = {
-  translateTime: "SYS:HH:MM:ss",
+  translateTime: "HH:MM:ss",
   ignore: "pid,hostname",
   singleLine: true,
 };
 
-export const logger = pino({
-  level: "debug",
-  redact: ["req.headers.authorization"],
-}, pino.transport({
-  targets: [
+function buildTransportTargets() {
+  const targets: pino.TransportTargetOptions[] = [
     {
       target: "pino-pretty",
       options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
@@ -41,7 +38,35 @@ export const logger = pino({
       options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
       level: "debug",
     },
-  ],
+  ];
+
+  const lokiUrl = process.env.PAPERCLIP_LOKI_URL?.trim();
+  if (lokiUrl) {
+    const agentId = process.env.PAPERCLIP_AGENT_ID?.trim();
+    targets.push({
+      target: "pino-loki",
+      options: {
+        host: lokiUrl,
+        labels: {
+          job: "paperclip",
+          service: "paperclip-server",
+          ...(agentId ? { agentId } : {}),
+        },
+        propsToLabels: ["runId"],
+        replaceTimestamp: true,
+        silenceErrors: true,
+      },
+      level: "info",
+    });
+  }
+
+  return targets;
+}
+
+export const logger = pino({
+  level: "debug",
+}, pino.transport({
+  targets: buildTransportTargets(),
 }));
 
 export const httpLogger = pinoHttp({

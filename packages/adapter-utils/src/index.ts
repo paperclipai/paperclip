@@ -5,6 +5,7 @@ export type {
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
+  SkillInvocationReport,
   AdapterInvocationMeta,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
@@ -32,6 +33,9 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
+  AdapterFallbackChainEntryConfig,
+  AdapterFailureCategory,
+  AdapterFallbackEntry,
 } from "./types.js";
 export type {
   SessionCompactionPolicy,

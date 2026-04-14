@@ -11,10 +11,12 @@
     "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
+    "dev:ui:watch": "pnpm exec tsx scripts/watch-ui.ts",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "test": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && vitest run",
+    "test:coverage": "vitest run --coverage",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
@@ -36,13 +38,19 @@
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
-    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
+    "benchmark": "pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-score.ts",
+    "benchmark:json": "pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-score.ts -- --json",
+    "benchmark:ci": "pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-score.ts -- --json --output ../benchmarks/latest.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "chokidar": "^4.0.3",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3",
+    "@vitest/coverage-v8": "^3.0.5",
     "vitest": "^3.0.5"
   },
   "engines": {

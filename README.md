@@ -225,6 +225,40 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 
 <br/>
 
+## Development Philosophy (Fork)
+
+**Purpose:** This fork expands Paperclip's capabilities and suggests genuinely valuable PRs upstream. We track upstream reviewer reception to ensure contributions are high-quality and welcome.
+
+### Evolution Workflow
+
+This fork evolves through usage, not roadmaps:
+
+1. **Use** — Run Paperclip in real multi-agent companies. Observe what works and what breaks.
+2. **Journal** — Record friction, failures, and surprises as structured feedback.
+3. **Derive** — Convert feedback into concrete issues with measurable acceptance criteria.
+4. **Branch** — Implement on feature branches. One concern per branch.
+5. **Benchmark** — CI runs the benchmark suite on every PR. Scores are emitted as `benchmark-results.json` in a standard format.
+6. **Merge** — Only merge when benchmarks confirm the change improves (or at minimum does not regress) the overall score.
+
+### Branch Model
+
+This fork uses long-lived branches with benchmark-driven pruning:
+
+1. **Develop parallel branches** — Multiple approaches to the same problem can coexist.
+2. **Evaluate and compare** — The same benchmark suite runs on each branch for side-by-side comparison.
+3. **Pick winner / drop loser** — Higher benchmark score wins. The losing branch is cancelled.
+4. **Release candidate** — The winner is promoted to an RC for final validation.
+5. **Merge to main** — Only after RC passes all gates.
+
+### Benchmark-Driven Merge Decisions
+
+- PRs that regress the overall score below threshold are blocked.
+- When competing branches solve the same problem, CI compares their scores and recommends the winner.
+- Post-merge regressions trigger revert recommendations.
+- Benchmark history is tracked via CI artifacts for trend analysis.
+
+<br/>
+
 ## Development
 
 ```bash

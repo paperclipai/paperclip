@@ -9,8 +9,10 @@ async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const stdin = fs.readFileSync(0, "utf8");
 const payload = {
   argv: process.argv.slice(2),
+  stdin,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -39,8 +41,17 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeWindowsCommandShim(commandPath: string): Promise<string> {
+  const shimPath = `${commandPath}.cmd`;
+  const escapedCommandPath = commandPath.replaceAll('"', '""');
+  const shim = `@echo off\r\nnode "${escapedCommandPath}" %*\r\n`;
+  await fs.writeFile(shimPath, shim, "utf8");
+  return shimPath;
+}
+
 type CapturePayload = {
   argv: string[];
+  stdin: string;
   paperclipEnvKeys: string[];
 };
 
@@ -52,6 +63,8 @@ describe("gemini execute", () => {
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
+    const resolvedCommandPath =
+      process.platform === "win32" ? await writeWindowsCommandShim(commandPath) : commandPath;
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
@@ -75,6 +88,7 @@ describe("gemini execute", () => {
         },
         config: {
           command: commandPath,
+          ...(process.platform === "win32" ? { command: resolvedCommandPath } : {}),
           cwd: workspace,
           model: "gemini-2.5-pro",
           env: {
@@ -101,8 +115,9 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("yolo");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(promptArg).toContain("Follow the paperclip heartbeat.");
-      expect(promptArg).toContain("Paperclip runtime note:");
+      expect(["", '""']).toContain(promptArg);
+      expect(capture.stdin).toContain("Follow the paperclip heartbeat.");
+      expect(capture.stdin).toContain("Paperclip runtime note:");
       expect(capture.paperclipEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
@@ -134,6 +149,8 @@ describe("gemini execute", () => {
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeGeminiCommand(commandPath);
+    const resolvedCommandPath =
+      process.platform === "win32" ? await writeWindowsCommandShim(commandPath) : commandPath;
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
@@ -145,6 +162,7 @@ describe("gemini execute", () => {
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           command: commandPath,
+          ...(process.platform === "win32" ? { command: resolvedCommandPath } : {}),
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
         },

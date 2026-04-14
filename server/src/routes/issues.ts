@@ -57,6 +57,11 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
+  getSpecEnforceMode,
+  hasAllRequiredSections,
+  scaffoldDescription,
+} from "../issue-template-scaffold.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -1264,10 +1269,21 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId);
     }
 
+    const specMode = getSpecEnforceMode();
+    if (specMode === "strict" && !hasAllRequiredSections(req.body.description)) {
+      res.status(400).json({
+        error:
+          "Issue description must include ## Objective, ## Scope, and ## Verification sections (PAPERCLIP_SPEC_ENFORCE=strict)",
+      });
+      return;
+    }
+    const description = specMode === "scaffold" ? scaffoldDescription(req.body.description) : req.body.description;
+
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     const issue = await svc.create(companyId, {
       ...req.body,
+      description,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
