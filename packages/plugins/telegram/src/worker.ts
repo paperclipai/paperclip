@@ -153,6 +153,43 @@ function cleanIssueTitle(title: string): string {
   return cleanTelegramText(title).replace(/\s+/g, " ").trim();
 }
 
+function splitTelegramText(text: string, maxChars = 3600): string[] {
+  if (!text) return [""];
+  if (text.length <= maxChars) return [text];
+
+  const chunks: string[] = [];
+  let rest = text;
+
+  while (rest.length > maxChars) {
+    let cutAt = Math.max(
+      rest.lastIndexOf("\n\n", maxChars),
+      rest.lastIndexOf("\n", maxChars),
+      rest.lastIndexOf(". ", maxChars),
+      rest.lastIndexOf("? ", maxChars),
+      rest.lastIndexOf("! ", maxChars),
+      rest.lastIndexOf("。", maxChars),
+      rest.lastIndexOf(" ", maxChars),
+    );
+
+    if (cutAt < Math.floor(maxChars * 0.55)) {
+      cutAt = maxChars;
+    } else if (rest[cutAt] === "\n" || rest[cutAt] === " ") {
+      cutAt += 1;
+    }
+
+    chunks.push(rest.slice(0, cutAt).trimEnd());
+    rest = rest.slice(cutAt).trimStart();
+  }
+
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+function labelChunks(chunks: string[]): string[] {
+  if (chunks.length <= 1) return chunks;
+  return chunks.map((chunk, index) => `(${index + 1}/${chunks.length})\n${chunk}`);
+}
+
 function issueUpdatedMs(issue: Issue): number {
   const raw = issue.updatedAt;
   if (raw instanceof Date) return raw.getTime();
@@ -171,10 +208,9 @@ async function sendMsg(
   html: string,
   extra: Record<string, unknown> = {},
 ): Promise<void> {
-  // Telegram limit: 4096 chars per message
-  const MAX = 4000;
-  const chunks: string[] = [];
-  for (let i = 0; i < html.length; i += MAX) chunks.push(html.slice(i, i + MAX));
+  // Telegram limit is 4096 chars per message. Keep margin for chunk labels and
+  // split on natural boundaries so long agent replies arrive complete.
+  const chunks = labelChunks(splitTelegramText(html));
 
   for (const chunk of chunks) {
     await tgApi(ctx, token, "sendMessage", {
@@ -199,9 +235,7 @@ async function sendPlainMsg(
   chatId: string | number,
   text: string,
 ): Promise<void> {
-  const MAX = 4000;
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += MAX) chunks.push(text.slice(i, i + MAX));
+  const chunks = labelChunks(splitTelegramText(text));
 
   for (const chunk of chunks) {
     await tgApi(ctx, token, "sendMessage", {
@@ -762,6 +796,23 @@ function normalizeTelegramReply(response: string): string {
   return cleaned;
 }
 
+function chooseTelegramReply(streamResponse: string, terminalResultText: string): string {
+  const streamReply = normalizeTelegramReply(streamResponse);
+  const terminalReply = terminalResultText.trim() ? normalizeTelegramReply(terminalResultText) : "";
+
+  if (!terminalReply) return streamReply;
+  if (!streamReply) return terminalReply;
+
+  const streamLooksIncomplete =
+    /[:—-]\s*$/.test(streamReply.trim()) ||
+    streamReply.length < terminalReply.length * 0.75;
+  if (terminalReply.length > streamReply.length + 200 && streamLooksIncomplete) {
+    return terminalReply;
+  }
+
+  return streamReply;
+}
+
 function extractTerminalResultText(event: AgentSessionEvent): string {
   const payload = event.payload;
   if (!payload || typeof payload !== "object") return "";
@@ -872,16 +923,18 @@ async function askAgent(
   await ctx.agents.sessions.close(session.sessionId, companyId).catch(() => {});
 
   const streamResponse = streamChunks.join("");
-  const response = streamResponse.trim() ? streamResponse : terminalResultText;
+  const response = chooseTelegramReply(streamResponse, terminalResultText);
   ctx.logger.info("Agent response collected", {
     eventCount,
     streamChunks: streamChunks.length,
     fallbackChars: terminalResultText.length,
+    streamChars: streamResponse.length,
     responseChars: response.length,
+    usedFallback: terminalResultText.trim().length > 0 && response === normalizeTelegramReply(terminalResultText),
     preview: response.slice(0, 120),
   });
 
-  return normalizeTelegramReply(response);
+  return response;
 }
 
 // ─── Voice Transcription (Groq Whisper) ──────────────────────────────────────
