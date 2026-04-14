@@ -1,3 +1,4 @@
+import type { SupportedLocale } from "../constants.js";
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
@@ -19,6 +20,7 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
+  defaultLocale: SupportedLocale;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
 }

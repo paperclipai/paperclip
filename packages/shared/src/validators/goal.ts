@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { GOAL_LEVELS, GOAL_STATUSES } from "../constants.js";
 
 export const createGoalSchema = z.object({

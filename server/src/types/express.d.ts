@@ -1,3 +1,5 @@
+import type { SupportedLocale } from "@paperclipai/shared";
+
 export {};
 
 declare global {
@@ -14,6 +16,7 @@ declare global {
         runId?: string;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "none";
       };
+      locale: SupportedLocale;
     }
   }
 }

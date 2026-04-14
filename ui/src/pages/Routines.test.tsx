@@ -4,8 +4,10 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups } from "./Routines";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+let Routines: typeof import("./Routines").Routines;
+let buildRoutineGroups: typeof import("./Routines").buildRoutineGroups;
 
 let currentSearch = "";
 
@@ -17,9 +19,22 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
 ));
 
 vi.mock("@/lib/router", () => ({
+  Link: ({
+    children,
+    to,
+    ...props
+  }: {
+    children?: React.ReactNode;
+    to?: string | { pathname?: string };
+  } & Record<string, unknown>) => (
+    <a href={typeof to === "string" ? to : to?.pathname ?? "#"} {...props}>
+      {children}
+    </a>
+  ),
   useNavigate: () => navigateMock,
   useLocation: () => ({ pathname: "/routines", search: currentSearch ? `?${currentSearch}` : "", hash: "" }),
   useSearchParams: () => [new URLSearchParams(currentSearch), vi.fn()],
+  useParams: () => ({}),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -170,6 +185,29 @@ vi.mock("../api/heartbeats", () => ({
   },
 }));
 
+vi.mock("@mdxeditor/editor", async () => {
+  const React = await import("react");
+  return {
+    MDXEditor: React.forwardRef(function MockMdxEditor(_props, _ref) {
+      return <div data-testid="mdx-editor" />;
+    }),
+    CodeMirrorEditor: () => null,
+    codeBlockPlugin: () => ({}),
+    codeMirrorPlugin: () => ({}),
+    headingsPlugin: () => ({}),
+    imagePlugin: () => ({}),
+    linkDialogPlugin: () => ({}),
+    linkPlugin: () => ({}),
+    listsPlugin: () => ({}),
+    markdownShortcutPlugin: () => ({}),
+    quotePlugin: () => ({}),
+    tablePlugin: () => ({}),
+    thematicBreakPlugin: () => ({}),
+    createRootEditorSubscription$: () => ({}),
+    realmPlugin: (plugin: unknown) => () => plugin ?? ({}),
+  };
+});
+
 vi.mock("../components/IssuesList", () => ({
   IssuesList: (props: { issues: Issue[] }) => issuesListRenderMock(props),
 }));
@@ -182,6 +220,8 @@ vi.mock("../components/PageTabBar", () => ({
 
 vi.mock("@/components/ui/tabs", () => ({
   Tabs: ({ children }: { children: unknown }) => <div>{children as never}</div>,
+  TabsList: ({ children }: { children: unknown }) => <div>{children as never}</div>,
+  TabsTrigger: ({ children }: { children: unknown }) => <button type="button">{children as never}</button>,
   TabsContent: ({ children }: { children: unknown }) => <div>{children as never}</div>,
 }));
 
@@ -209,6 +249,52 @@ vi.mock("../components/AgentIconPicker", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof globalThis.localStorage?.getItem === "function"
+    && typeof globalThis.localStorage?.setItem === "function"
+    && typeof globalThis.localStorage?.removeItem === "function"
+    && typeof globalThis.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
+
+type TestGlobals = typeof globalThis & {
+  __PAPERCLIP_TEST_COMPANY_CONTEXT__?: {
+    selectedCompanyId?: string;
+  };
+};
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(status === 204 ? null : JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+beforeAll(async () => {
+  ({ Routines, buildRoutineGroups } = await import("./Routines"));
+});
 
 function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
   return {
@@ -293,10 +379,162 @@ async function flush() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await flush();
+      });
+    }
+  }
+
+  throw lastError;
+}
+
 describe("Routines page", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    ensureLocalStorageMock();
+    const testGlobals = globalThis as TestGlobals;
+    testGlobals.__PAPERCLIP_TEST_COMPANY_CONTEXT__ = {
+      selectedCompanyId: "company-1",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? "GET";
+      const parsedUrl = new URL(url, "http://localhost");
+
+      if (parsedUrl.pathname === "/api/companies/company-1/routines") {
+        return jsonResponse(await routinesListMock("company-1"));
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/issues") {
+        return jsonResponse(await issuesListMock("company-1", {
+          originKind: parsedUrl.searchParams.get("originKind") ?? undefined,
+        }));
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/agents") {
+        return jsonResponse([
+          {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "Agent One",
+            role: "engineer",
+            title: null,
+            status: "active",
+            reportsTo: null,
+            capabilities: null,
+            adapterType: "process",
+            adapterConfig: {},
+            contextMode: "thin",
+            budgetMonthlyCents: 0,
+            spentMonthlyCents: 0,
+            lastHeartbeatAt: null,
+            icon: "code",
+            metadata: null,
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+            urlKey: "agent-one",
+            pauseReason: null,
+            pausedAt: null,
+            permissions: null,
+          },
+          {
+            id: "agent-2",
+            companyId: "company-1",
+            name: "Agent Two",
+            role: "engineer",
+            title: null,
+            status: "active",
+            reportsTo: null,
+            capabilities: null,
+            adapterType: "process",
+            adapterConfig: {},
+            contextMode: "thin",
+            budgetMonthlyCents: 0,
+            spentMonthlyCents: 0,
+            lastHeartbeatAt: null,
+            icon: "code",
+            metadata: null,
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+            urlKey: "agent-two",
+            pauseReason: null,
+            pausedAt: null,
+            permissions: null,
+          },
+        ]);
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/projects") {
+        return jsonResponse([
+          {
+            id: "project-1",
+            companyId: "company-1",
+            urlKey: "project-alpha",
+            goalId: null,
+            goalIds: [],
+            goals: [],
+            name: "Project Alpha",
+            description: null,
+            status: "in_progress",
+            leadAgentId: null,
+            targetDate: null,
+            color: "#22c55e",
+            pauseReason: null,
+            pausedAt: null,
+            archivedAt: null,
+            executionWorkspacePolicy: null,
+            codebase: null,
+            workspaces: [],
+            primaryWorkspace: null,
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          },
+          {
+            id: "project-2",
+            companyId: "company-1",
+            urlKey: "project-beta",
+            goalId: null,
+            goalIds: [],
+            goals: [],
+            name: "Project Beta",
+            description: null,
+            status: "in_progress",
+            leadAgentId: null,
+            targetDate: null,
+            color: "#38bdf8",
+            pauseReason: null,
+            pausedAt: null,
+            archivedAt: null,
+            executionWorkspacePolicy: null,
+            codebase: null,
+            workspaces: [],
+            primaryWorkspace: null,
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+          },
+        ]);
+      }
+
+      if (parsedUrl.pathname === "/api/instance/settings/experimental") {
+        return jsonResponse({ enableIsolatedWorkspaces: false });
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/live-runs") {
+        return jsonResponse([]);
+      }
+
+      throw new Error(`Unhandled fetch in Routines.test.tsx: ${method} ${parsedUrl.pathname}${parsedUrl.search}`);
+    }));
     container = document.createElement("div");
     document.body.appendChild(container);
     currentSearch = "";
@@ -308,6 +546,9 @@ describe("Routines page", () => {
   });
 
   afterEach(() => {
+    const testGlobals = globalThis as TestGlobals;
+    delete testGlobals.__PAPERCLIP_TEST_COMPANY_CONTEXT__;
+    vi.unstubAllGlobals();
     container.remove();
     document.body.innerHTML = "";
   });
@@ -358,7 +599,9 @@ describe("Routines page", () => {
       await flush();
     });
 
-    expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+    await waitForAssertion(() => {
+      expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+    });
 
     await act(async () => {
       root.unmount();

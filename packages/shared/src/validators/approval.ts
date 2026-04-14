@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { APPROVAL_TYPES } from "../constants.js";
 
 export const createApprovalSchema = z.object({

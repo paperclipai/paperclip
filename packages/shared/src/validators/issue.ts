@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,

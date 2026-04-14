@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { COMPANY_STATUSES } from "../constants.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();

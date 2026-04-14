@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
+import { createTranslator } from "../../../packages/shared/src/i18n.js";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -11,6 +12,7 @@ import { useToast } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
+import { getCurrentLocale } from "../lib/locale-store";
 import { useLocation } from "../lib/router";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
@@ -63,14 +65,15 @@ function resolveActorLabel(
   actorType: string | null,
   actorId: string | null,
 ): string {
+  const { t } = createTranslator(getCurrentLocale());
   if (actorType === "agent" && actorId) {
     return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
   }
-  if (actorType === "system") return "System";
+  if (actorType === "system") return t("common.system");
   if (actorType === "user" && actorId) {
-    return "Board";
+    return t("common.board");
   }
-  return "Someone";
+  return t("common.unknown");
 }
 
 interface IssueToastContext {

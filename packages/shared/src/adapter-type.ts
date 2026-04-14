@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { AGENT_ADAPTER_TYPES } from "./constants.js";
 
 export const agentAdapterTypeSchema = z
