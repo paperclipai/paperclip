@@ -7460,7 +7460,6 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-<<<<<<< HEAD
     list: async (companyId: string, agentId?: string, limit: number = 200, offset?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
