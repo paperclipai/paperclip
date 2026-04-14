@@ -124,19 +124,26 @@ function buildToolDefs(skillsDir: string): ToolDef[] {
       type: "function",
       function: {
         name: "hire_agent",
-        description: "Hire (create) a new agent for the company. Always use adapterType openrouter_local. Set a clear systemPrompt describing the agent's role and responsibilities, and set promptTemplate to include their reporting structure.",
+        description: [
+          "Hire (create) a new agent. You MUST provide systemPrompt and promptTemplate — never omit them.",
+          "systemPrompt: full identity + role + responsibilities + behavioral rules (multi-paragraph, detailed).",
+          "promptTemplate: heartbeat instructions telling the agent what to do each run, who to report to, and how to communicate results. Must reference {{agent.name}} and include 'Report progress by posting a comment on your assigned issue.'",
+          "reportsTo: UUID of the manager agent this agent reports to (default: your own agent ID).",
+          "Always set title and capabilities so the org chart is meaningful.",
+        ].join(" "),
         parameters: {
           type: "object",
           properties: {
             name: { type: "string", description: "Agent's full name" },
             role: { type: "string", enum: ["ceo", "cto", "cmo", "coo", "engineer", "designer", "qa", "researcher", "general"] },
             title: { type: "string", description: "Job title, e.g. 'Lead Engineer'" },
-            capabilities: { type: "string", description: "What this agent specializes in" },
-            systemPrompt: { type: "string", description: "The agent's core identity, responsibilities and behavioral guidelines" },
-            promptTemplate: { type: "string", description: "The heartbeat prompt template. Include reporting instructions and task approach." },
+            capabilities: { type: "string", description: "Comma-separated list of specializations" },
+            systemPrompt: { type: "string", description: "REQUIRED. Full identity, responsibilities, behavioral rules and operating principles for this agent. Be thorough." },
+            promptTemplate: { type: "string", description: "REQUIRED. What the agent does on each heartbeat run. Include: task approach, reporting instructions (post_comment on assigned issue), escalation path." },
+            reportsTo: { type: "string", description: "UUID of the manager this agent reports to. Defaults to the creating agent." },
             budgetMonthlyCents: { type: "integer", description: "Monthly budget in cents, e.g. 500 = $5", default: 500 },
           },
-          required: ["name", "role"],
+          required: ["name", "role", "systemPrompt", "promptTemplate"],
         },
       },
     },
@@ -245,6 +252,7 @@ async function executeTool(
   name: string,
   args: Record<string, unknown>,
   companyId: string,
+  agentId: string,
   token: string,
   serverUrl: string,
   skillsDir: string,
@@ -275,14 +283,18 @@ async function executeTool(
       const adapterConfig: Record<string, unknown> = {};
       if (args.systemPrompt) adapterConfig.systemPrompt = args.systemPrompt;
       if (args.promptTemplate) adapterConfig.promptTemplate = args.promptTemplate;
+      const managerRoles = new Set(["ceo", "cto", "cmo", "coo"]);
+      const isManager = managerRoles.has(String(args.role ?? ""));
       const result = await pcFetch(serverUrl, `/companies/${companyId}/agent-hires`, "POST", token, {
         name: args.name,
         role: args.role,
         title: args.title ?? null,
         capabilities: args.capabilities ?? null,
+        reportsTo: args.reportsTo ?? agentId,
         adapterType: "openrouter_local",
         adapterConfig,
         budgetMonthlyCents: args.budgetMonthlyCents ?? 500,
+        permissions: { canCreateAgents: isManager },
       });
       return JSON.stringify(result, null, 2);
     }
@@ -448,7 +460,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* keep empty */ }
         const result = await executeTool(
-          tc.function.name, args, agent.companyId,
+          tc.function.name, args, agent.companyId, agent.id,
           authToken ?? "", serverUrl, skillsDir, onLog, messages,
         );
         messages.push({ role: "tool", content: result, tool_call_id: tc.id });
