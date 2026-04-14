@@ -89,6 +89,7 @@ describe("issue dependency wakeups in issue routes", () => {
       totalComments: 0,
       latestCommentId: null,
       latestCommentAt: null,
+      hasNewActivitySinceLastAgentComment: null,
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);

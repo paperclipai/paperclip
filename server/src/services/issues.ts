@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -2118,8 +2118,20 @@ export function issueService(db: Db) {
       return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
-    getCommentCursor: async (issueId: string) => {
-      const [latest, countRow] = await Promise.all([
+    getCommentCursor: async (issueId: string, requestingAgentId?: string | null) => {
+      // GH #3: When requestingAgentId is provided, compute hasNewActivitySinceLastAgentComment
+      // so agents can skip the comment-thread fetch for blocked tasks with no new activity.
+      const agentLastCommentQuery = requestingAgentId
+        ? db
+            .select({ createdAt: issueComments.createdAt })
+            .from(issueComments)
+            .where(and(eq(issueComments.issueId, issueId), eq(issueComments.authorAgentId, requestingAgentId)))
+            .orderBy(desc(issueComments.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null);
+
+      const [latest, countRow, agentLastComment] = await Promise.all([
         db
           .select({
             latestCommentId: issueComments.id,
@@ -2137,12 +2149,32 @@ export function issueService(db: Db) {
           .from(issueComments)
           .where(eq(issueComments.issueId, issueId))
           .then((rows) => rows[0] ?? null),
+        agentLastCommentQuery,
       ]);
+
+      // hasNewActivitySinceLastAgentComment: true when there are comments after the agent's
+      // last comment (from any actor), meaning there is new context to process.
+      // null when requestingAgentId is not provided (caller did not opt in).
+      let hasNewActivitySinceLastAgentComment: boolean | null = null;
+      if (requestingAgentId !== undefined && requestingAgentId !== null) {
+        if (!agentLastComment) {
+          // Agent has never commented — treat as "has new activity" so agent reads the thread
+          hasNewActivitySinceLastAgentComment = (Number(countRow?.totalComments ?? 0)) > 0;
+        } else {
+          // Check if any comments exist after the agent's last comment
+          const [newActivityRow] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(issueComments)
+            .where(and(eq(issueComments.issueId, issueId), gt(issueComments.createdAt, agentLastComment.createdAt)));
+          hasNewActivitySinceLastAgentComment = Number(newActivityRow?.count ?? 0) > 0;
+        }
+      }
 
       return {
         totalComments: Number(countRow?.totalComments ?? 0),
         latestCommentId: latest?.latestCommentId ?? null,
         latestCommentAt: latest?.latestCommentAt ?? null,
+        hasNewActivitySinceLastAgentComment,
       };
     },
 

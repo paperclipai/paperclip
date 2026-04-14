@@ -131,6 +131,7 @@ describe("issue goal context routes", () => {
       totalComments: 0,
       latestCommentId: null,
       latestCommentAt: null,
+      hasNewActivitySinceLastAgentComment: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);

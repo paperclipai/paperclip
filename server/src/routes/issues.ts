@@ -705,11 +705,15 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
+    // For blocked-task dedup: surface whether there's new activity since the requesting
+    // agent's last comment, so agents can skip the comment-thread fetch for idle issues.
+    const requestingAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+
     const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
       await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      svc.getCommentCursor(issue.id),
+      svc.getCommentCursor(issue.id, requestingAgentId),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
       svc.getRelationSummaries(issue.id),
       svc.listAttachments(issue.id),
@@ -730,6 +734,11 @@ export function issueRoutes(
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        // Additional fields for checkout continuity and workspace-linked follow-ups (GH #4)
+        checkoutRunId: issue.checkoutRunId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        startedAt: issue.startedAt,
+        completedAt: issue.completedAt,
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
