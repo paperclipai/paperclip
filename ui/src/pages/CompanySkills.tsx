@@ -52,6 +52,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Trash2,
 } from "lucide-react";
 
 type SkillTreeNode = {
@@ -503,6 +504,8 @@ function SkillPane({
   checkUpdatesPending,
   onInstallUpdate,
   installUpdatePending,
+  onDelete,
+  deletePending,
   onSave,
   savePending,
 }: {
@@ -522,6 +525,8 @@ function SkillPane({
   checkUpdatesPending: boolean;
   onInstallUpdate: () => void;
   installUpdatePending: boolean;
+  onDelete: () => void;
+  deletePending: boolean;
   onSave: () => void;
   savePending: boolean;
 }) {
@@ -545,6 +550,10 @@ function SkillPane({
   const body = file?.markdown ? stripFrontmatter(file.content) : file?.content ?? "";
   const currentPin = shortRef(detail.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
+  const removeBlocked = usedBy.length > 0;
+  const removeDisabledReason = removeBlocked
+    ? "Detach this skill from all agents before removing it."
+    : null;
 
   return (
     <div className="min-w-0">
@@ -559,17 +568,29 @@ function SkillPane({
               <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{detail.description}</p>
             )}
           </div>
-          {detail.editable ? (
-            <button
-              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-              onClick={() => setEditMode(!editMode)}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDelete}
+              disabled={deletePending}
+              title={removeDisabledReason ?? undefined}
             >
-              <Pencil className="h-3.5 w-3.5" />
-              {editMode ? "Stop editing" : "Edit"}
-            </button>
-          ) : (
-            <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
-          )}
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              {deletePending ? "Removing..." : "Remove"}
+            </Button>
+            {detail.editable ? (
+              <button
+                className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+                onClick={() => setEditMode(!editMode)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                {editMode ? "Stop editing" : "Edit"}
+              </button>
+            ) : (
+              <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
+            )}
+          </div>
         </div>
 
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
@@ -721,9 +742,9 @@ function SkillPane({
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
-          <MarkdownBody>{body}</MarkdownBody>
+          <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
             <code>{file.content}</code>
           </pre>
         )}
@@ -751,6 +772,9 @@ export function CompanySkills() {
   const [displayedDetail, setDisplayedDetail] = useState<CompanySkillDetail | null>(null);
   const [displayedFile, setDisplayedFile] = useState<CompanySkillFileDetail | null>(null);
   const [scanStatusMessage, setScanStatusMessage] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTargetSkillId, setDeleteTargetSkillId] = useState<string | null>(null);
+  const [deleteTargetDetail, setDeleteTargetDetail] = useState<CompanySkillDetail | null>(null);
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
   const routeSkillId = parsedRoute.skillId;
   const selectedPath = parsedRoute.filePath;
@@ -847,6 +871,20 @@ export function CompanySkills() {
 
   const activeDetail = detailQuery.data ?? displayedDetail;
   const activeFile = fileQuery.data ?? displayedFile;
+
+  function openDeleteDialog() {
+    setDeleteTargetSkillId(selectedSkillId);
+    setDeleteTargetDetail(activeDetail ?? null);
+    setDeleteOpen(true);
+  }
+
+  function closeDeleteDialog(open: boolean) {
+    setDeleteOpen(open);
+    if (!open) {
+      setDeleteTargetSkillId(null);
+      setDeleteTargetDetail(null);
+    }
+  }
 
   const importSkill = useMutation({
     mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
@@ -987,6 +1025,44 @@ export function CompanySkills() {
     },
   });
 
+  const deleteSkill = useMutation({
+    mutationFn: () => companySkillsApi.delete(selectedCompanyId!, deleteTargetSkillId!),
+    onSuccess: async (skill) => {
+      closeDeleteDialog(false);
+      setDisplayedDetail(null);
+      setDisplayedFile(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        ...(deleteTargetSkillId ? [
+          queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, deleteTargetSkillId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId!, deleteTargetSkillId) }),
+        ] : []),
+        ...(deleteTargetSkillId ? [
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.companySkills.file(selectedCompanyId!, deleteTargetSkillId, selectedPath),
+          }),
+        ] : []),
+      ]);
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+        type: "active",
+      });
+      navigate("/skills", { replace: true });
+      pushToast({
+        tone: "success",
+        title: "Skill removed",
+        body: `${skill.name} was removed from the company skill library.`,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Remove failed",
+        body: error instanceof Error ? error.message : "Failed to remove skill.",
+      });
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
   }
@@ -1002,6 +1078,54 @@ export function CompanySkills() {
 
   return (
     <>
+      <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove skill</DialogTitle>
+            <DialogDescription>
+              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p>
+              {deleteTargetDetail
+                ? `You are about to remove ${deleteTargetDetail.name}.`
+                : "You are about to remove this skill."}
+            </p>
+            {deleteTargetDetail?.usedByAgents?.length ? (
+              <div className="rounded-md border border-border px-3 py-3 text-muted-foreground">
+                Currently used by {deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ")}.
+              </div>
+            ) : null}
+            {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
+              <p className="text-muted-foreground">
+                Detach this skill from all agents to enable removal.
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
+              <Button variant="ghost" onClick={() => closeDeleteDialog(false)}>
+                Close
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" onClick={() => closeDeleteDialog(false)} disabled={deleteSkill.isPending}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => deleteSkill.mutate()}
+                  disabled={deleteSkill.isPending || !deleteTargetSkillId}
+                >
+                  {deleteSkill.isPending ? "Removing..." : "Remove skill"}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1160,6 +1284,8 @@ export function CompanySkills() {
             checkUpdatesPending={updateStatusQuery.isFetching}
             onInstallUpdate={() => installUpdate.mutate()}
             installUpdatePending={installUpdate.isPending}
+            onDelete={openDeleteDialog}
+            deletePending={deleteSkill.isPending}
             onSave={() => saveFile.mutate()}
             savePending={saveFile.isPending}
           />

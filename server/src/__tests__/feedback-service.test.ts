@@ -187,7 +187,11 @@ describe("feedbackService.saveIssueVote", () => {
     const targetCommentId = randomUUID();
     const earlierCommentId = randomUUID();
     const laterCommentId = randomUUID();
-    const runId = randomUUID();
+    // Use a deterministic UUID whose hyphen-separated segments cannot be
+    // mistaken for a phone number by the PII redactor's phone regex.
+    // Random UUIDs occasionally produce digit pairs like "4880-8614" that
+    // cross segment boundaries and match the phone pattern.
+    const runId = "abcde123-face-beef-cafe-abcdef654321";
     const instructionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-instructions-"));
     tempDirs.push(instructionsDir);
     const instructionsPath = path.join(instructionsDir, "AGENTS.md");
@@ -1065,6 +1069,73 @@ describe("feedbackService.saveIssueVote", () => {
     });
   });
 
+  it("can flush a single shared trace immediately by trace id", async () => {
+    const { companyId, issueId, commentId: firstCommentId } = await seedIssueWithAgentComment();
+    const secondCommentId = randomUUID();
+    const agentId = await db
+      .select({ authorAgentId: issueComments.authorAgentId })
+      .from(issueComments)
+      .where(eq(issueComments.id, firstCommentId))
+      .then((rows) => rows[0]?.authorAgentId ?? null);
+
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Second AI generated update",
+    });
+
+    const uploadTraceBundle = vi.fn().mockResolvedValue({
+      objectKey: `feedback-traces/${companyId}/2026/04/01/test-trace.json`,
+    });
+    const flushingSvc = feedbackService(db, {
+      shareClient: {
+        uploadTraceBundle,
+      },
+    });
+
+    const first = await flushingSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: firstCommentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+    await flushingSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: secondCommentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const flushResult = await flushingSvc.flushPendingFeedbackTraces({
+      companyId,
+      traceId: first.traceId ?? undefined,
+      limit: 1,
+    });
+
+    expect(flushResult).toMatchObject({
+      attempted: 1,
+      sent: 1,
+      failed: 0,
+    });
+    expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+
+    const traces = await flushingSvc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    const firstTrace = traces.find((trace) => trace.targetId === firstCommentId);
+    const secondTrace = traces.find((trace) => trace.targetId === secondCommentId);
+    expect(firstTrace?.status).toBe("sent");
+    expect(secondTrace?.status).toBe("pending");
+  });
+
   it("marks pending shared traces as failed when remote export upload fails", async () => {
     const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
     const uploadTraceBundle = vi.fn().mockRejectedValue(new Error("telemetry unavailable"));
@@ -1101,5 +1172,40 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toContain("telemetry unavailable");
     expect(traces[0]?.exportedAt).toBeNull();
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks pending shared traces as failed when no feedback export backend is configured", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const flushResult = await svc.flushPendingFeedbackTraces({
+      companyId,
+      traceId: result.traceId ?? undefined,
+      limit: 1,
+    });
+
+    expect(flushResult).toMatchObject({
+      attempted: 1,
+      sent: 0,
+      failed: 1,
+    });
+
+    const traces = await svc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    expect(traces[0]?.status).toBe("failed");
+    expect(traces[0]?.attemptCount).toBe(1);
+    expect(traces[0]?.failureReason).toBe("Feedback export backend is not configured");
+    expect(traces[0]?.exportedAt).toBeNull();
   });
 });

@@ -32,6 +32,7 @@ export interface DetectedAdapterModel {
   model: string;
   provider: string;
   source: string;
+  candidates?: string[];
 }
 
 export interface ClaudeLoginResult {

@@ -237,6 +237,8 @@ async function main() {
     server: {
       deploymentMode: sourceConfig?.server?.deploymentMode ?? "local_trusted",
       exposure: sourceConfig?.server?.exposure ?? "private",
+      ...(sourceConfig?.server?.bind ? { bind: sourceConfig.server.bind } : {}),
+      ...(sourceConfig?.server?.customBindHost ? { customBindHost: sourceConfig.server.customBindHost } : {}),
       host: sourceConfig?.server?.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: sourceConfig?.server?.allowedHostnames ?? [],
@@ -321,19 +323,80 @@ if ! run_isolated_worktree_init; then
   write_fallback_worktree_config
 fi
 
-disable_seeded_routines() {
-  local company_id="${PAPERCLIP_COMPANY_ID:-}"
-  if [[ -z "$company_id" ]]; then
-    echo "PAPERCLIP_COMPANY_ID not set; skipping routine disable post-step." >&2
-    return 0
-  fi
-
-  if ! run_paperclipai_command routines disable-all --config "$worktree_config_path" --company-id "$company_id"; then
-    echo "paperclipai CLI not available in this workspace; skipping routine disable post-step." >&2
-  fi
+list_base_node_modules_paths() {
+  cd "$base_cwd" &&
+    find . \
+      -mindepth 1 \
+      -maxdepth 4 \
+      -type d \
+      -name node_modules \
+      ! -path './.git/*' \
+      ! -path './.paperclip/*' \
+      | sed 's#^\./##'
 }
+if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
+  needs_install=0
 
-disable_seeded_routines
+  while IFS= read -r relative_path; do
+    [[ -n "$relative_path" ]] || continue
+    target_path="$worktree_cwd/$relative_path"
+
+    if [[ -L "$target_path" || ! -e "$target_path" ]]; then
+      needs_install=1
+      break
+    fi
+  done < <(list_base_node_modules_paths)
+
+  if [[ "$needs_install" -eq 1 ]]; then
+    backup_suffix=".paperclip-backup-${BASHPID:-$$}"
+    moved_symlink_paths=()
+
+    while IFS= read -r relative_path; do
+      [[ -n "$relative_path" ]] || continue
+      target_path="$worktree_cwd/$relative_path"
+      if [[ -L "$target_path" ]]; then
+        backup_path="${target_path}${backup_suffix}"
+        rm -rf "$backup_path"
+        mv "$target_path" "$backup_path"
+        moved_symlink_paths+=("$relative_path")
+      fi
+    done < <(list_base_node_modules_paths)
+
+    restore_moved_symlinks() {
+      local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
+      for relative_path in "${moved_symlink_paths[@]}"; do
+        target_path="$worktree_cwd/$relative_path"
+        backup_path="${target_path}${backup_suffix}"
+        [[ -L "$backup_path" ]] || continue
+        rm -rf "$target_path"
+        mv "$backup_path" "$target_path"
+      done
+    }
+
+    cleanup_moved_symlinks() {
+      local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
+      for relative_path in "${moved_symlink_paths[@]}"; do
+        target_path="$worktree_cwd/$relative_path"
+        backup_path="${target_path}${backup_suffix}"
+        [[ -L "$backup_path" ]] && rm "$backup_path"
+      done
+    }
+
+    (
+      cd "$worktree_cwd"
+      pnpm install --frozen-lockfile
+    ) || {
+      restore_moved_symlinks
+      exit 1
+    }
+
+    cleanup_moved_symlinks
+  fi
+
+  exit 0
+fi
 
 while IFS= read -r relative_path; do
   [[ -n "$relative_path" ]] || continue
@@ -346,13 +409,5 @@ while IFS= read -r relative_path; do
   mkdir -p "$(dirname "$target_path")"
   ln -s "$source_path" "$target_path"
 done < <(
-  cd "$base_cwd" &&
-    find . \
-      -mindepth 1 \
-      -maxdepth 3 \
-      -type d \
-      -name node_modules \
-      ! -path './.git/*' \
-      ! -path './.paperclip/*' \
-      | sed 's#^\./##'
+  list_base_node_modules_paths
 )

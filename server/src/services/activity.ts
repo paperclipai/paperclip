@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
 
 export interface ActivityFilters {
   companyId: string;
@@ -66,14 +66,23 @@ export function activityService(db: Db) {
           runId: heartbeatRuns.id,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
+          adapterType: agents.adapterType,
           startedAt: heartbeatRuns.startedAt,
           finishedAt: heartbeatRuns.finishedAt,
           createdAt: heartbeatRuns.createdAt,
           invocationSource: heartbeatRuns.invocationSource,
           usageJson: heartbeatRuns.usageJson,
           resultJson: heartbeatRuns.resultJson,
+          logBytes: heartbeatRuns.logBytes,
         })
         .from(heartbeatRuns)
+        .innerJoin(
+          agents,
+          and(
+            eq(agents.id, heartbeatRuns.agentId),
+            eq(agents.companyId, heartbeatRuns.companyId),
+          ),
+        )
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),

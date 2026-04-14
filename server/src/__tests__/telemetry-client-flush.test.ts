@@ -33,6 +33,25 @@ describe("TelemetryClient periodic flush", () => {
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetch).toHaveBeenCalledTimes(1);
+    const lastCall = vi.mocked(fetch).mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("http://localhost:9999/ingest");
+    const requestInit = lastCall?.[1] as RequestInit | undefined;
+    expect(requestInit?.method).toBe("POST");
+    expect(requestInit?.headers).toEqual({ "Content-Type": "application/json" });
+    const body = JSON.parse(String(requestInit?.body ?? "{}"));
+    expect(body).toMatchObject({
+      app: "paperclip",
+      schemaVersion: "1",
+      installId: "test-install",
+      version: "0.0.0-test",
+      events: [
+        {
+          name: "install.started",
+          dimensions: {},
+        },
+      ],
+    });
+    expect(body.events[0]?.occurredAt).toEqual(expect.any(String));
 
     // Second tick with no new events — no additional call
     await vi.advanceTimersByTimeAsync(1000);
@@ -55,6 +74,21 @@ describe("TelemetryClient periodic flush", () => {
 
     await vi.advanceTimersByTimeAsync(2000);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the api gateway ingest url when the default hostname fails", async () => {
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new TypeError("getaddrinfo ENOTFOUND telemetry.paperclip.ing"))
+      .mockResolvedValueOnce({ ok: true });
+
+    const client = makeClient({ endpoint: undefined });
+    client.track("install.started");
+
+    await client.flush();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://telemetry.paperclip.ing/ingest");
+    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe("https://rusqrrg391.execute-api.us-east-1.amazonaws.com/ingest");
   });
 
   it("startPeriodicFlush is idempotent", () => {

@@ -31,6 +31,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -240,10 +241,10 @@ function ImportPreviewPane({
         {parsed ? (
           <>
             <FrontmatterCard data={parsed.data} />
-            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc}>{parsed.body}</MarkdownBody>}
+            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{parsed.body}</MarkdownBody>}
           </>
         ) : isMarkdown ? (
-          <MarkdownBody resolveImageSrc={resolveImageSrc}>{textContent ?? ""}</MarkdownBody>
+          <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
           <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
             <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
@@ -514,7 +515,7 @@ function ConflictResolutionList({
 
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
   value: adapter.type,
-  label: adapterLabels[adapter.type] ?? adapter.label,
+  label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
 }));
 
 // ── Adapter picker for imported agents ───────────────────────────────

@@ -1,8 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { routineRoutes } from "../routes/routines.js";
 import { errorHandler } from "../middleware/index.js";
+import { routineRoutes } from "../routes/routines.js";
 
 const companyId = "22222222-2222-4222-8222-222222222222";
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -82,6 +82,17 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackRoutineCreated: mockTrackRoutineCreated,
+  trackErrorHandlerCrash: vi.fn(),
+}));
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -103,7 +114,8 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("routine routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -267,5 +279,6 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
 });

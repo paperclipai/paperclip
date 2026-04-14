@@ -56,6 +56,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     myLastTouchAt: null,
     lastExternalCommentAt: null,
+    lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
   };
@@ -98,6 +99,7 @@ describe("FailedRunInboxRow", () => {
       errorCode: null,
       externalRunId: null,
       processPid: null,
+      processGroupId: null,
       processStartedAt: null,
       retryOfRunId: null,
       processLossRetryCount: 0,
@@ -204,6 +206,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
@@ -228,6 +232,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
