@@ -11,6 +11,8 @@ import {
   agentWakeupRequests,
   issues,
   issueComments,
+  reviewedArtifactItems,
+  reviewedArtifactSets,
   projects,
   goals,
   heartbeatRuns,
@@ -271,6 +273,8 @@ export function companyService(db: Db) {
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
+        await tx.delete(reviewedArtifactItems).where(eq(reviewedArtifactItems.companyId, id));
+        await tx.delete(reviewedArtifactSets).where(eq(reviewedArtifactSets.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));

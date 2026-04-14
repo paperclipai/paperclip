@@ -95,6 +95,20 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  ReviewedArtifactApprovalContext,
+  ReviewedArtifactApprovalPayloadSource,
+  ReviewedArtifactContext,
+  ReviewedArtifactExternalUrlSource,
+  ReviewedArtifactIssueAttachmentSource,
+  ReviewedArtifactIssueDocumentSource,
+  ReviewedArtifactIssueReviewContext,
+  ReviewedArtifactIssueWorkProductSource,
+  ReviewedArtifactItem,
+  ReviewedArtifactSet,
+  ReviewedArtifactSource,
+  ReviewedArtifactWorkspaceFileSource,
+} from "./reviewed-artifact.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

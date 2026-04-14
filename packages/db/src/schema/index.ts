@@ -28,6 +28,7 @@ export { issues } from "./issues.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
+export { reviewedArtifactItems, reviewedArtifactSets } from "./reviewed_artifacts.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";

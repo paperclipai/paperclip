@@ -363,6 +363,38 @@ Operational policy:
   - `document_id` uuid fk not null
   - `key` text not null (`plan`, `design`, `notes`, etc.)
 
+## 7.16 `reviewed_artifact_sets` + `reviewed_artifact_items`
+
+- `reviewed_artifact_sets` stores the canonical review/approval artifact context:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `context_type` text not null (`issue_review | approval`)
+  - `context_issue_id` uuid fk `issues.id` null
+  - `approval_id` uuid fk `approvals.id` null
+  - `selection_mode` text not null (`explicit | suggested`)
+  - `title` text null
+  - `description` text null
+  - `superseded_by_set_id` uuid fk `reviewed_artifact_sets.id` null
+  - `superseded_at` timestamptz null
+  - `created_by_agent_id`, `created_by_user_id`, `created_by_run_id`
+- `reviewed_artifact_items` stores stable ordered artifact refs inside a set:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `set_id` uuid fk `reviewed_artifact_sets.id` not null
+  - `order_index` int not null
+  - `source_type` text not null (`issue_document | issue_attachment | issue_work_product | external_url | approval_payload | workspace_file`)
+  - structured source columns for issue/document/attachment/work product/external URL/approval payload/workspace file refs
+  - `title`, `description`, `display_hint`
+  - `is_primary`, `required`, `selected_explicitly`
+  - `metadata` jsonb null
+
+Invariants:
+
+- use this dedicated store for selected review artifacts; do not overload `approval.payload`, `issues.execution_state`, or `issue_work_products`
+- new explicit sets supersede the prior active explicit set for the same review/approval context instead of mutating historical rows
+- existing issues and approvals are not backfilled into explicit artifact sets; readers may resolve suggested artifacts separately and must label them as not explicitly selected
+- nullable source FKs may become unresolved after referenced rows are deleted; readers must keep the item row stable and surface an explicit unresolved source state instead of throwing
+
 ## 8. State Machines
 
 ## 8.1 Agent Status

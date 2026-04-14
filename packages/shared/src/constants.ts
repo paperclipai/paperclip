@@ -153,6 +153,32 @@ export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
+export const REVIEWED_ARTIFACT_CONTEXT_TYPES = ["issue_review", "approval"] as const;
+export type ReviewedArtifactContextType = (typeof REVIEWED_ARTIFACT_CONTEXT_TYPES)[number];
+
+export const REVIEWED_ARTIFACT_SELECTION_MODES = ["explicit", "suggested"] as const;
+export type ReviewedArtifactSelectionMode = (typeof REVIEWED_ARTIFACT_SELECTION_MODES)[number];
+
+export const REVIEWED_ARTIFACT_SOURCE_TYPES = [
+  "issue_document",
+  "issue_attachment",
+  "issue_work_product",
+  "external_url",
+  "approval_payload",
+  "workspace_file",
+] as const;
+export type ReviewedArtifactSourceType = (typeof REVIEWED_ARTIFACT_SOURCE_TYPES)[number];
+
+export const REVIEWED_ARTIFACT_DISPLAY_HINTS = [
+  "markdown",
+  "image",
+  "link",
+  "download",
+  "json",
+  "unsupported",
+] as const;
+export type ReviewedArtifactDisplayHint = (typeof REVIEWED_ARTIFACT_DISPLAY_HINTS)[number];
+
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 

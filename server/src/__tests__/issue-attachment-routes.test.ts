@@ -183,6 +183,30 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  it("serves svg attachments as downloads with sandboxing headers", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/svg+xml", "diagram.svg"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="diagram.svg"');
+    expect(res.headers["content-security-policy"]).toContain("sandbox");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("serves binary attachments as downloads", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/octet-stream", "bundle.bin"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="bundle.bin"');
+  });
+
   it("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));
@@ -195,5 +219,27 @@ describe("issue attachment routes", () => {
       undefined,
       'inline; filename="preview.png"',
     ]).toContain(res.headers["content-disposition"]);
+  });
+
+  it("forces image attachments to download with download=1", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content?download=1");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="preview.png"');
+  });
+
+  it("sanitizes unsafe attachment download filenames", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/html", "evil\r\n/..\\report\".html"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="evil_.._report_.html"');
   });
 });

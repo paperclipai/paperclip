@@ -166,6 +166,20 @@ export {
 } from "./work-product.js";
 
 export {
+  createReviewedArtifactItemSchema,
+  createReviewedArtifactSetSchema,
+  reviewedArtifactContextSchema,
+  reviewedArtifactContextTypeSchema,
+  reviewedArtifactDisplayHintSchema,
+  reviewedArtifactSelectionModeSchema,
+  reviewedArtifactSourceSchema,
+  reviewedArtifactSourceTypeSchema,
+  writableReviewedArtifactSourceSchema,
+  type CreateReviewedArtifactItem,
+  type CreateReviewedArtifactSet,
+} from "./reviewed-artifact.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,
