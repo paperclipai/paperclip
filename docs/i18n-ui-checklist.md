@@ -46,8 +46,21 @@ Next Batches:
   `ui/src/components/ui/sheet.tsx`
   `ui/src/components/ui/command.tsx`
   `ui/src/components/ui/breadcrumb.tsx`
-  Remaining production sweep:
   `ui/src/components/transcript/RunTranscriptView.tsx`
+  Remaining production sweep:
+  `ui/src/components/JsonSchemaForm.tsx`
+  `ui/src/components/InlineEditor.tsx`
+  `ui/src/components/CopyText.tsx`
+  `ui/src/components/EnvVarEditor.tsx`
+  `ui/src/components/ExecutionParticipantPicker.tsx`
+  `ui/src/components/ScheduleEditor.tsx`
+  `ui/src/components/LiveRunWidget.tsx`
+  `ui/src/components/RunChatSurface.tsx`
+  `ui/src/components/MarkdownBody.tsx`
+  `ui/src/components/BillerSpendCard.tsx`
+  `ui/src/components/ProviderQuotaCard.tsx`
+  `ui/src/pages/Routines.tsx`
+  `ui/src/pages/RoutineDetail.tsx`
 - [ ] Decide whether lab/demo/design pages should be localized in this rollout or tracked separately
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
 
@@ -55,7 +68,7 @@ Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2587` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2630` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:
@@ -103,4 +116,21 @@ Verification Notes:
   `ui/src/components/ui/sheet.tsx`
   `ui/src/components/ui/command.tsx`
   `ui/src/components/ui/breadcrumb.tsx`
-  Targeted `pnpm --filter @paperclipai/ui typecheck` output still reports existing `t` signature mismatches in `ui/src/components/ProjectProperties.tsx`; no matching errors were surfaced for the shared primitive files or `packages/i18n/src/index.ts`, so this batch is not claimed as fully typecheck-clean.
+  Transcript rendering chrome and summaries are now localized:
+  `ui/src/components/transcript/RunTranscriptView.tsx`
+  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "RunTranscriptView|packages/i18n/src/index"` produced no matches after the transcript batch.
+  Earlier targeted `pnpm --filter @paperclipai/ui typecheck` output still reports existing `t` signature mismatches in `ui/src/components/ProjectProperties.tsx`; the shared primitive batch was therefore not claimed as fully typecheck-clean.
+  Fresh residual scan found remaining production i18n scope in:
+  `ui/src/components/JsonSchemaForm.tsx`
+  `ui/src/components/InlineEditor.tsx`
+  `ui/src/components/CopyText.tsx`
+  `ui/src/components/EnvVarEditor.tsx`
+  `ui/src/components/ExecutionParticipantPicker.tsx`
+  `ui/src/components/ScheduleEditor.tsx`
+  `ui/src/components/LiveRunWidget.tsx`
+  `ui/src/components/RunChatSurface.tsx`
+  `ui/src/components/MarkdownBody.tsx`
+  `ui/src/components/BillerSpendCard.tsx`
+  `ui/src/components/ProviderQuotaCard.tsx`
+  `ui/src/pages/Routines.tsx`
+  `ui/src/pages/RoutineDetail.tsx`
