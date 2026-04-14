@@ -2,8 +2,10 @@ import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useLocale } from "../context/LocaleContext";
 
 export function PropertiesPanel() {
+  const { t } = useLocale();
   const { panelContent, panelVisible, setPanelVisible } = usePanel();
 
   if (!panelContent) return null;
@@ -15,8 +17,13 @@ export function PropertiesPanel() {
     >
       <div className="w-80 flex-1 flex flex-col min-w-[320px] min-h-0">
         <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <span className="text-sm font-medium">Properties</span>
-          <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
+          <span className="text-sm font-medium">{t("propertiesPanel.title")}</span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setPanelVisible(false)}
+            aria-label={t("common.close")}
+          >
             <X className="h-4 w-4" />
           </Button>
         </div>
