@@ -61,6 +61,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     messages.push({ role: "system", content: `## Your Recent Documents\n${recentDocuments}` });
   }
 
+  // Playbook RAG guidance — top-K relevant playbook chunks for this task.
+  // Replaces the need to load full playbooks; see heartbeat-context.injectPlaybookGuidance.
+  const playbookGuidance = strVal(context.ironworksPlaybookGuidance);
+  if (playbookGuidance) {
+    messages.push({ role: "system", content: playbookGuidance });
+  }
+
   // Channel messages — show the agent what's happening in their channels
   const channelContextKeys = [
     "ironworksCompanyChannelUpdates",

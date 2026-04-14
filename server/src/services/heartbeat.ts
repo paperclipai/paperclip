@@ -151,6 +151,7 @@ import {
   injectDeadlineUrgency,
   injectDependencyContext,
   injectGoalContext,
+  injectPlaybookGuidance,
   injectPlatformAwareness,
 } from "./heartbeat-context.js";
 import {
@@ -2302,6 +2303,21 @@ export function heartbeatService(db: Db) {
     await injectDeadlineUrgency(db, context, agent.id, agent.companyId);
     await injectDependencyContext(db, context);
     await injectGoalContext(db, context, issueContext?.goalId ?? null);
+
+    // Playbook RAG: retrieve top-3 relevant playbook chunks for this task.
+    // Gated on IRONWORKS_PLAYBOOK_RAG (default on). Per-agent 1hr cache.
+    await injectPlaybookGuidance(
+      db,
+      context,
+      {
+        id: agent.id,
+        companyId: agent.companyId,
+        role: agent.role,
+        department: agent.department,
+      },
+      issueContext?.title ?? null,
+      typeof context.issueContext === "string" ? context.issueContext : null,
+    );
 
     context.ironworksWorkspace = {
       cwd: executionWorkspace.cwd,

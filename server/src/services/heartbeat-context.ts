@@ -38,6 +38,7 @@ import {
 import { webSearch, isResearchTask, extractSearchQuery } from "./web-search.js";
 import { getQualityExamples } from "./quality-gate.js";
 import { sanitizeForPrompt, PROMPT_MAX_LENGTHS } from "../lib/prompt-security.js";
+import { lookupPlaybook } from "./playbook-rag.js";
 import { CONFIDENCE_TAGGING_PROMPT } from "./confidence-tags.js";
 import {
   classifyContextTier,
@@ -763,5 +764,102 @@ export async function injectGoalContext(
     }
   } catch (err) {
     logger.debug({ err }, "goal context injection failed, skipping");
+  }
+}
+
+// ── Playbook RAG: inject top-K relevant chunks based on task context ──────
+
+/**
+ * Auto-retrieve relevant playbook chunks via RAG and inject them into the
+ * agent's system context. Transparent to the agent — it just sees the
+ * relevant guidance in its prompt instead of the full 50k-token playbook.
+ *
+ * Query strategy:
+ *   - If there's an active issue: use "<issue title>. <description>"
+ *   - If there's a latest channel message: use that
+ *   - If routine check-in: skip (no meaningful query, agent already has
+ *     playbook overview in its instructions)
+ *
+ * Filters: department (from agent), owner_role (agent's role), documentType=playbook.
+ * topK=3 keeps the injection ~2-4k tokens (well within budget).
+ *
+ * Per-agent session cache (1hr TTL) means subsequent heartbeats with the
+ * same task don't re-embed or re-query.
+ *
+ * Feature flag: IRONWORKS_PLAYBOOK_RAG=false disables (default is on).
+ */
+export async function injectPlaybookGuidance(
+  db: Db,
+  context: Record<string, unknown>,
+  agent: { id: string; companyId: string; role: string; department: string | null },
+  issueTitle: string | null,
+  issueDescription: string | null,
+): Promise<void> {
+  if (process.env.IRONWORKS_PLAYBOOK_RAG === "false") return;
+
+  try {
+    // Build query from the most specific context available
+    let query = "";
+    if (issueTitle) {
+      query = issueTitle;
+      if (issueDescription) {
+        query += ". " + issueDescription.slice(0, 500);
+      }
+    } else {
+      // Fall back to latest comment if present
+      const latestComment = typeof context.latestComment === "string" ? context.latestComment : "";
+      if (latestComment.length >= 20) {
+        query = latestComment.slice(0, 500);
+      }
+    }
+
+    // No meaningful query -> don't run lookup (spam prevention).
+    // Agent still has playbook section overview via instructions + scanning KB.
+    if (!query || query.trim().length < 10) return;
+
+    const chunks = await lookupPlaybook(db, {
+      companyId: agent.companyId,
+      query,
+      department: agent.department ?? undefined,
+      ownerRole: agent.role,
+      documentType: "playbook",
+      topK: 3,
+      agentId: agent.id,
+    });
+
+    if (chunks.length === 0) return;
+
+    // Format chunks as a compact system message. Each chunk stays ≤ 1200 chars
+    // so the total stays under ~4k tokens even with 3 chunks.
+    const lines: string[] = [];
+    lines.push("## Relevant Playbook Guidance");
+    lines.push("");
+    lines.push(
+      `The following sections from your playbook library best match the current task. ` +
+        `Apply their discipline; they are retrieval-augmented context, not suggestions.`,
+    );
+    lines.push("");
+
+    for (const chunk of chunks) {
+      const body = chunk.body.length > 1200 ? chunk.body.slice(0, 1200) + "..." : chunk.body;
+      lines.push(`### ${chunk.headingPath}`);
+      lines.push("");
+      lines.push(body);
+      lines.push("");
+    }
+
+    context.ironworksPlaybookGuidance = lines.join("\n");
+    logger.info(
+      {
+        agentId: agent.id,
+        chunks: chunks.length,
+        mode: chunks[0].mode,
+        queryPrefix: query.slice(0, 60),
+      },
+      "playbook RAG: injected guidance chunks",
+    );
+  } catch (err) {
+    // Never break the heartbeat run because of a lookup failure
+    logger.debug({ err: (err as Error).message, agentId: agent.id }, "playbook RAG injection failed, skipping");
   }
 }
