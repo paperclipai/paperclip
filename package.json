@@ -56,5 +56,8 @@
     "overrides": {
       "rollup": ">=4.59.0"
     }
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2"
   }
 }
