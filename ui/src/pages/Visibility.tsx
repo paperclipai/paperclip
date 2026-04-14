@@ -43,9 +43,11 @@ export function Visibility() {
     setBreadcrumbs([{ label: "Visibility" }]);
   }, [setBreadcrumbs]);
 
+  // minCount=4 ensures we see recently-finished runs too (not just queued/running),
+  // so cards don't vanish the instant a run completes.
   const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "visibility"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!, 4),
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
@@ -138,17 +140,21 @@ export function Visibility() {
     );
   }
 
-  const hasAnyRuns = agentFiles.size > 0;
+  // Only show runs that have file events or are still active
+  const visibleRuns = Array.from(agentFiles.entries()).filter(([, { run, files }]) => {
+    if (files.size > 0) return true;
+    return run?.status === "running" || run?.status === "queued";
+  });
 
   return (
     <div className="p-6 space-y-6">
-      {!hasAnyRuns ? (
+      {visibleRuns.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-[60vh] text-muted-foreground">
           <Eye className="h-10 w-10 mb-2 opacity-40" />
           <p className="text-sm">No active runs</p>
         </div>
       ) : (
-        Array.from(agentFiles.entries()).map(([runId, { run, files }]) => (
+        visibleRuns.map(([runId, { run, files }]) => (
           <AgentFileRow
             key={runId}
             agentName={run?.agentName ?? "Unknown Agent"}
