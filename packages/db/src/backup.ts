@@ -85,7 +85,7 @@ function resolveBackupDir(config: PartialConfig | null): string {
 }
 
 function resolveRetentionDays(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.backup?.retentionDays) ?? 30;
+  return asPositiveInt(config?.database?.backup?.retentionDays) ?? 7;
 }
 
 async function main() {
@@ -103,7 +103,7 @@ async function main() {
     const result = await runDatabaseBackup({
       connectionString,
       backupDir,
-      retentionDays,
+      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: "paperclip",
     });
 

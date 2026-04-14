@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
 
@@ -33,6 +33,25 @@ vi.mock("./InlineEntitySelector", () => ({
   InlineEntitySelector: () => null,
 }));
 
+vi.mock("./ApprovalCard", () => ({
+  ApprovalCard: ({
+    approval,
+    onApprove,
+    onReject,
+  }: {
+    approval: Approval;
+    onApprove?: () => void;
+    onReject?: () => void;
+  }) => (
+    <div>
+      <div>{approval.type}</div>
+      <div>{String(approval.payload.title ?? "")}</div>
+      {onApprove ? <button type="button" onClick={onApprove}>Approve</button> : null}
+      {onReject ? <button type="button" onClick={onReject}>Reject</button> : null}
+    </div>
+  ),
+}));
+
 vi.mock("@/plugins/slots", () => ({
   PluginSlotOutlet: () => null,
 }));
@@ -42,12 +61,26 @@ vi.mock("@/plugins/slots", () => ({
 
 describe("CommentThread", () => {
   let container: HTMLDivElement;
+  let writeTextMock: ReturnType<typeof vi.fn>;
+  let execCommandMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-11T12:00:00.000Z"));
+    writeTextMock = vi.fn(async () => {});
+    execCommandMock = vi.fn(() => true);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
+    document.execCommand = execCommandMock;
   });
 
   afterEach(() => {
@@ -115,6 +148,156 @@ describe("CommentThread", () => {
     expect(runLink?.textContent).toContain("run-1234");
     expect(runLink?.className).toContain("rounded-md");
     expect(runLink?.className).toContain("px-2");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("replaces the composer with a warning when comments are disabled", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            composerDisabledReason="Workspace is closed."
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Workspace is closed.");
+    expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
+    expect(container.textContent).not.toContain("Comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders linked approvals inline in the timeline", () => {
+    const root = createRoot(container);
+    const agent: Agent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "CodexCoder",
+      urlKey: "codexcoder",
+      role: "engineer",
+      title: null,
+      icon: "code",
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    };
+    const approval: Approval = {
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        title: "Approve hosting spend",
+        text: "Estimated monthly cost is $42.",
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-03-11T09:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T09:00:00.000Z"),
+    };
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            linkedApprovals={[approval]}
+            agentMap={new Map([["agent-1", agent]])}
+            onAdd={async () => {}}
+            onApproveApproval={async () => {}}
+            onRejectApproval={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const approvalRow = container.querySelector("#approval-approval-1") as HTMLDivElement | null;
+    expect(approvalRow).not.toBeNull();
+    expect(container.textContent).toContain("request_board_approval");
+    expect(container.textContent).toContain("Approve hosting spend");
+    expect(container.textContent).toContain("Approve");
+    expect(container.textContent).toContain("Reject");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses a larger copy control with feedback and a clipboard fallback", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "Hello from the comment body",
+              createdAt: new Date("2026-03-11T11:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T11:00:00.000Z"),
+            }]}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const copyButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.getAttribute("aria-label") === "Copy comment as markdown",
+    ) as HTMLButtonElement | undefined;
+
+    expect(copyButton).toBeDefined();
+    expect(copyButton?.className).toContain("min-h-8");
+    expect(copyButton?.textContent).toContain("Copy");
+
+    Object.defineProperty(window, "isSecureContext", {
+      value: false,
+      configurable: true,
+    });
+
+    await act(async () => {
+      copyButton?.click();
+    });
+
+    expect(writeTextMock).not.toHaveBeenCalled();
+    expect(execCommandMock).toHaveBeenCalledWith("copy");
+    expect(copyButton?.textContent).toContain("Copied");
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(copyButton?.textContent).toContain("Copy");
 
     act(() => {
       root.unmount();

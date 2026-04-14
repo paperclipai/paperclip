@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -12,11 +12,12 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -31,7 +32,11 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import {
+  buildHeartbeatRunIssueComment,
+  mergeHeartbeatRunResultJson,
+  summarizeHeartbeatRunResultJson,
+} from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -46,6 +51,7 @@ import {
 import { issueService } from "./issues.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -66,10 +72,16 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_INLINE_WAKE_COMMENTS = 8;
+const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
+const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -79,6 +91,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+type RuntimeConfigSecretResolver = Pick<
+  ReturnType<typeof secretService>,
+  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+>;
+
+export async function resolveExecutionRunAdapterConfig(input: {
+  companyId: string;
+  executionRunConfig: Record<string, unknown>;
+  projectEnv: unknown;
+  secretsSvc: RuntimeConfigSecretResolver;
+}) {
+  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+    input.companyId,
+    input.executionRunConfig,
+  );
+  const projectEnvResolution = input.projectEnv
+    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
+    : { env: {}, secretKeys: new Set<string>() };
+  if (Object.keys(projectEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...projectEnvResolution.env,
+    };
+    for (const key of projectEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
+  return { resolvedConfig, secretKeys };
+}
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
@@ -225,6 +267,9 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
+const heartbeatRunProcessGroupIdColumn =
+  heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -252,12 +297,25 @@ const heartbeatRunListColumns = {
   errorCode: heartbeatRuns.errorCode,
   externalRunId: heartbeatRuns.externalRunId,
   processPid: heartbeatRuns.processPid,
+  processGroupId: heartbeatRunProcessGroupIdColumn,
   processStartedAt: heartbeatRuns.processStartedAt,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
   contextSnapshot: heartbeatRuns.contextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const heartbeatRunIssueSummaryColumns = {
+  id: heartbeatRuns.id,
+  status: heartbeatRuns.status,
+  invocationSource: heartbeatRuns.invocationSource,
+  triggerDetail: heartbeatRuns.triggerDetail,
+  startedAt: heartbeatRuns.startedAt,
+  finishedAt: heartbeatRuns.finishedAt,
+  createdAt: heartbeatRuns.createdAt,
+  agentId: heartbeatRuns.agentId,
+  issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -660,8 +718,27 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return true;
+  if (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  ) {
+    return true;
+  }
   return false;
+}
+
+function shouldRequireIssueCommentForWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  return (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  );
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -678,19 +755,98 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
+  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   return null;
+}
+
+function shouldAutoCheckoutIssueForWake(input: {
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  issueStatus: string | null;
+  issueAssigneeAgentId: string | null;
+  agentId: string;
+}) {
+  if (input.issueAssigneeAgentId !== input.agentId) return false;
+
+  const issueStatus = readNonEmptyString(input.issueStatus);
+  if (
+    issueStatus !== "todo" &&
+    issueStatus !== "backlog" &&
+    issueStatus !== "blocked" &&
+    issueStatus !== "in_progress"
+  ) {
+    return false;
+  }
+
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  if (!wakeReason) return false;
+  if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason.startsWith("execution_")) return false;
+
+  return true;
+}
+
+function isCheckoutConflictError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
 
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
+  const batchedCommentId = extractWakeCommentIds(contextSnapshot).at(-1);
   return (
+    batchedCommentId ??
     readNonEmptyString(contextSnapshot?.wakeCommentId) ??
     readNonEmptyString(contextSnapshot?.commentId) ??
     readNonEmptyString(payload?.commentId) ??
     null
   );
+}
+
+export function extractWakeCommentIds(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): string[] {
+  const raw = contextSnapshot?.[WAKE_COMMENT_IDS_KEY];
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    const value = readNonEmptyString(entry);
+    if (!value || out.includes(value)) continue;
+    out.push(value);
+  }
+  return out;
+}
+
+function mergeWakeCommentIds(...values: Array<unknown>): string[] {
+  const merged: string[] = [];
+  const append = (value: unknown) => {
+    const normalized = readNonEmptyString(value);
+    if (!normalized || merged.includes(normalized)) return;
+    merged.push(normalized);
+  };
+
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const entry of value) append(entry);
+      continue;
+    }
+    if (typeof value === "object" && value !== null) {
+      const candidate = value as Record<string, unknown>;
+      const batched = extractWakeCommentIds(candidate);
+      if (batched.length > 0) {
+        for (const entry of batched) append(entry);
+        continue;
+      }
+      append(candidate.wakeCommentId);
+      append(candidate.commentId);
+      continue;
+    }
+    append(value);
+  }
+
+  return merged;
 }
 
 function enrichWakeContextSnapshot(input: {
@@ -705,6 +861,7 @@ function enrichWakeContextSnapshot(input: {
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
+  const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
     contextSnapshot.wakeReason = reason;
@@ -721,7 +878,15 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["commentId"]) && commentIdFromPayload) {
     contextSnapshot.commentId = commentIdFromPayload;
   }
-  if (!readNonEmptyString(contextSnapshot["wakeCommentId"]) && wakeCommentId) {
+  if (wakeCommentIds.length > 0) {
+    const latestCommentId = wakeCommentIds[wakeCommentIds.length - 1];
+    contextSnapshot[WAKE_COMMENT_IDS_KEY] = wakeCommentIds;
+    contextSnapshot.commentId = latestCommentId;
+    contextSnapshot.wakeCommentId = latestCommentId;
+    // Once comment ids are normalized into the snapshot, rebuild the structured
+    // wake payload from those ids later instead of carrying forward stale data.
+    delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  } else if (!readNonEmptyString(contextSnapshot["wakeCommentId"]) && wakeCommentId) {
     contextSnapshot.wakeCommentId = wakeCommentId;
   }
   if (!readNonEmptyString(contextSnapshot["wakeSource"]) && source) {
@@ -740,7 +905,7 @@ function enrichWakeContextSnapshot(input: {
   };
 }
 
-function mergeCoalescedContextSnapshot(
+export function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
 ) {
@@ -749,12 +914,141 @@ function mergeCoalescedContextSnapshot(
     ...existing,
     ...incoming,
   };
-  const commentId = deriveCommentId(incoming, null);
-  if (commentId) {
-    merged.commentId = commentId;
-    merged.wakeCommentId = commentId;
+  const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
+  if (mergedCommentIds.length > 0) {
+    const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
+    merged[WAKE_COMMENT_IDS_KEY] = mergedCommentIds;
+    merged.commentId = latestCommentId;
+    merged.wakeCommentId = latestCommentId;
+    // The merged context should carry canonical comment ids; the next wake will
+    // regenerate any structured payload from those ids.
+    delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
   return merged;
+}
+
+async function buildPaperclipWakePayload(input: {
+  db: Db;
+  companyId: string;
+  contextSnapshot: Record<string, unknown>;
+  issueSummary?:
+    | {
+        id: string;
+        identifier: string | null;
+        title: string;
+        status: string;
+        priority: string;
+      }
+    | null;
+}) {
+  const executionStage = parseObject(input.contextSnapshot.executionStage);
+  const commentIds = extractWakeCommentIds(input.contextSnapshot);
+  const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const issueSummary =
+    input.issueSummary ??
+    (issueId
+      ? await input.db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null);
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+
+  const commentRows =
+    commentIds.length === 0
+      ? []
+      : await input.db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, input.companyId),
+              inArray(issueComments.id, commentIds),
+            ),
+          );
+
+  const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const comments: Array<Record<string, unknown>> = [];
+  let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
+  let truncated = false;
+  let missingCommentCount = 0;
+
+  for (const commentId of commentIds) {
+    const row = commentsById.get(commentId);
+    if (!row) {
+      truncated = true;
+      missingCommentCount += 1;
+      continue;
+    }
+    if (comments.length >= MAX_INLINE_WAKE_COMMENTS) {
+      truncated = true;
+      break;
+    }
+
+    const fullBody = row.body;
+    const allowedBodyChars = Math.min(MAX_INLINE_WAKE_COMMENT_BODY_CHARS, remainingBodyChars);
+    if (allowedBodyChars <= 0) {
+      truncated = true;
+      break;
+    }
+
+    const body = fullBody.length > allowedBodyChars ? fullBody.slice(0, allowedBodyChars) : fullBody;
+    const bodyTruncated = body.length < fullBody.length;
+    if (bodyTruncated) truncated = true;
+    remainingBodyChars -= body.length;
+
+    comments.push({
+      id: row.id,
+      issueId: row.issueId,
+      body,
+      bodyTruncated,
+      createdAt: row.createdAt.toISOString(),
+      author: row.authorAgentId
+        ? { type: "agent", id: row.authorAgentId }
+        : row.authorUserId
+          ? { type: "user", id: row.authorUserId }
+          : { type: "system", id: null },
+    });
+  }
+
+  return {
+    reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    issue: issueSummary
+      ? {
+          id: issueSummary.id,
+          identifier: issueSummary.identifier,
+          title: issueSummary.title,
+          status: issueSummary.status,
+          priority: issueSummary.priority,
+        }
+      : null,
+    checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
+    executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
+    commentIds,
+    latestCommentId: commentIds[commentIds.length - 1] ?? null,
+    comments,
+    commentWindow: {
+      requestedCount: commentIds.length,
+      includedCount: comments.length,
+      missingCount: missingCommentCount,
+    },
+    truncated,
+    fallbackFetchNeeded: truncated || missingCommentCount > 0,
+  };
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -783,6 +1077,46 @@ function isProcessAlive(pid: number | null | undefined) {
     if (code === "ESRCH") return false;
     return false;
   }
+}
+
+async function terminateHeartbeatRunProcess(input: {
+  pid: number | null | undefined;
+  processGroupId: number | null | undefined;
+  graceMs?: number;
+}) {
+  const pid = input.pid ?? null;
+  const processGroupId = input.processGroupId ?? null;
+  if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+
+  await terminateLocalService(
+    {
+      pid:
+        typeof pid === "number" && Number.isInteger(pid) && pid > 0
+          ? pid
+          : (processGroupId ?? 0),
+      processGroupId:
+        typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+          ? processGroupId
+          : null,
+    },
+    input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
+  );
+}
+
+function buildProcessLossMessage(run: {
+  processPid: number | null;
+  processGroupId: number | null;
+}, options?: { descendantOnly?: boolean }) {
+  if (options?.descendantOnly && run.processGroupId) {
+    return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
+  }
+  if (run.processPid) {
+    return `Process lost -- child pid ${run.processPid} is no longer running`;
+  }
+  if (run.processGroupId) {
+    return `Process lost -- process group ${run.processGroupId} is no longer running`;
+  }
+  return "Process lost -- server may have restarted";
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -911,6 +1245,27 @@ export function heartbeatService(db: Db) {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getIssueExecutionContext(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
   }
 
@@ -1583,13 +1938,14 @@ export function heartbeatService(db: Db) {
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; startedAt: string },
+    meta: { pid: number; processGroupId: number | null; startedAt: string },
   ) {
     const startedAt = new Date(meta.startedAt);
     return db
       .update(heartbeatRuns)
       .set({
         processPid: meta.pid,
+        processGroupId: meta.processGroupId,
         processStartedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
         updatedAt: new Date(),
       })
@@ -1618,6 +1974,221 @@ export function heartbeatService(db: Db) {
       message: "Detached child process reported activity; cleared detached warning",
     });
     return updated;
+  }
+
+  async function patchRunIssueCommentStatus(
+    runId: string,
+    patch: Partial<Pick<typeof heartbeatRuns.$inferInsert, "issueCommentStatus" | "issueCommentSatisfiedByCommentId" | "issueCommentRetryQueuedAt">>,
+  ) {
+    return db
+      .update(heartbeatRuns)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findRunIssueComment(runId: string, companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.createdByRunId, runId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function enqueueMissingIssueCommentRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    issueId: string,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "missing_issue_comment",
+      retryReason: "missing_issue_comment",
+      missingIssueCommentForRunId: run.id,
+    };
+    const now = new Date();
+
+    const retryRun = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+      );
+
+      const issue = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "missing_issue_comment",
+          payload: {
+            issueId,
+            retryOfRunId: run.id,
+            retryReason: "missing_issue_comment",
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const queuedRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          issueCommentStatus: "not_applicable",
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: queuedRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: queuedRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issue.id));
+
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          issueCommentStatus: "retry_queued",
+          issueCommentRetryQueuedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+
+      return queuedRun;
+    });
+
+    if (!retryRun) return null;
+
+    publishLiveEvent({
+      companyId: retryRun.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: retryRun.id,
+        agentId: retryRun.agentId,
+        invocationSource: retryRun.invocationSource,
+        triggerDetail: retryRun.triggerDetail,
+        wakeupRequestId: retryRun.wakeupRequestId,
+      },
+    });
+
+    return retryRun;
+  }
+
+  async function finalizeIssueCommentPolicy(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
+    const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
+    if (postedComment) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "satisfied",
+        issueCommentSatisfiedByCommentId: postedComment.id,
+        issueCommentRetryQueuedAt: null,
+      });
+      return { outcome: "satisfied" as const, queuedRun: null };
+    }
+
+    if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "retry_exhausted",
+        issueCommentSatisfiedByCommentId: null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+      });
+      return { outcome: "retry_exhausted" as const, queuedRun: null };
+    }
+
+    if (!shouldRequireIssueCommentForWake(contextSnapshot)) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
+    const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
+    if (queuedRun) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run ended without an issue comment; queued one follow-up wake to require a comment",
+      });
+      return { outcome: "retry_queued" as const, queuedRun };
+    }
+
+    await patchRunIssueCommentStatus(run.id, {
+      issueCommentStatus: "retry_exhausted",
+      issueCommentSatisfiedByCommentId: null,
+    });
+    return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
 
   async function enqueueProcessLossRetry(
@@ -1728,7 +2299,7 @@ export function heartbeatService(db: Db) {
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
     return {
-      enabled: asBoolean(heartbeat.enabled, true),
+      enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
@@ -1795,6 +2366,29 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+
+    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
+    // not at queue time. Guard is idempotent — safe if called more than once.
+    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+    if (claimedIssueId) {
+      const claimedAgent = await getAgent(claimed.agentId);
+      await db
+        .update(issues)
+        .set({
+          executionRunId: claimed.id,
+          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+          executionLockedAt: claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(
+          and(
+            eq(issues.id, claimedIssueId),
+            eq(issues.companyId, claimed.companyId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+          ),
+        );
+    }
+
     return claimed;
   }
 
@@ -1877,7 +2471,9 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
+      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -1899,10 +2495,17 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = run.processPid
-        ? `Process lost -- child pid ${run.processPid} is no longer running`
-        : "Process lost -- server may have restarted";
+      let descendantOnlyCleanup = false;
+      if (processGroupAlive) {
+        descendantOnlyCleanup = true;
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+
+      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -1935,6 +2538,8 @@ export function heartbeatService(db: Db) {
           : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -2092,24 +2697,26 @@ export function heartbeatService(db: Db) {
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
-    const issueContext = issueId
-      ? await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            projectId: issues.projectId,
-            projectWorkspaceId: issues.projectWorkspaceId,
-            executionWorkspaceId: issues.executionWorkspaceId,
-            executionWorkspacePreference: issues.executionWorkspacePreference,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-            executionWorkspaceSettings: issues.executionWorkspaceSettings,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
+    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (
+      issueId &&
+      issueContext &&
+      shouldAutoCheckoutIssueForWake({
+        contextSnapshot: context,
+        issueStatus: issueContext.status,
+        issueAssigneeAgentId: issueContext.assigneeAgentId,
+        agentId: agent.id,
+      })
+    ) {
+      try {
+        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+      } catch (error) {
+        if (!isCheckoutConflictError(error)) throw error;
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+      }
+      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+    }
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
@@ -2122,17 +2729,20 @@ export function heartbeatService(db: Db) {
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectContext = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            env: projects.env,
+          })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) =>
-            gateProjectExecutionWorkspacePolicy(
-              parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
-              isolatedWorkspacesEnabled,
-            ))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
+      parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
+      isolatedWorkspacesEnabled,
+    );
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -2168,12 +2778,33 @@ export function heartbeatService(db: Db) {
           id: issueContext.id,
           identifier: issueContext.identifier,
           title: issueContext.title,
+          status: issueContext.status,
+          priority: issueContext.priority,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
+    const paperclipWakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId: agent.companyId,
+      contextSnapshot: context,
+      issueSummary: issueRef
+        ? {
+            id: issueRef.id,
+            identifier: issueRef.identifier,
+            title: issueRef.title,
+            status: issueRef.status,
+            priority: issueRef.priority,
+          }
+        : null,
+    });
+    if (paperclipWakePayload) {
+      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
+    } else {
+      delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
+    }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
     const shouldReuseExisting =
@@ -2208,10 +2839,12 @@ export function heartbeatService(db: Db) {
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
+    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+      companyId: agent.companyId,
       executionRunConfig,
-    );
+      projectEnv: projectContext?.env ?? null,
+      secretsSvc,
+    });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...resolvedConfig,
@@ -2672,7 +3305,14 @@ export function heartbeatService(db: Db) {
         onLog,
         onMeta: onAdapterMeta,
         onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
+          await persistRunProcessMetadata(run.id, {
+            pid: meta.pid,
+            processGroupId:
+              "processGroupId" in meta && typeof meta.processGroupId === "number"
+                ? meta.processGroupId
+                : null,
+            startedAt: meta.startedAt,
+          });
         },
         authToken: authToken ?? undefined,
       });
@@ -2792,6 +3432,11 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      const persistedResultJson = mergeHeartbeatRunResultJson(
+        adapterResult.resultJson ?? null,
+        adapterResult.summary ?? null,
+      );
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error:
@@ -2812,7 +3457,7 @@ export function heartbeatService(db: Db) {
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson: persistedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
@@ -2838,6 +3483,20 @@ export function heartbeatService(db: Db) {
             exitCode: adapterResult.exitCode,
           },
         });
+        if (issueId && outcome === "succeeded") {
+          try {
+            const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
+            if (issueComment) {
+              await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: finalizedRun.id });
+            }
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
+        await finalizeIssueCommentPolicy(finalizedRun, agent);
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -2904,6 +3563,7 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
+        await finalizeIssueCommentPolicy(failedRun, agent);
         await releaseIssueExecutionAndPromote(failedRun);
 
         await updateRuntimeState(agent, failedRun, {
@@ -2955,6 +3615,10 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
+            const failedAgent = await getAgent(run.agentId).catch(() => null);
+            if (failedAgent) {
+              await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
+            }
             await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
@@ -3474,15 +4138,9 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: agentNameKey,
-            executionLockedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
+        // executionRunId is NOT stamped here (enqueueWakeup queues the run but
+        // doesn't start it). It will be stamped in claimQueuedRun() once the run
+        // transitions to "running" — Fix A (lazy locking).
 
         return { kind: "queued" as const, run: newRun };
       });
@@ -3722,13 +4380,16 @@ export function heartbeatService(db: Db) {
 
     const running = runningProcesses.get(run.id);
     if (running) {
-      running.child.kill("SIGTERM");
-      const graceMs = Math.max(1, running.graceSec) * 1000;
-      setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
-        }
-      }, graceMs);
+      await terminateHeartbeatRunProcess({
+        pid: running.child.pid ?? run.processPid,
+        processGroupId: running.processGroupId ?? run.processGroupId,
+        graceMs: Math.max(1, running.graceSec) * 1000,
+      });
+    } else if (run.processPid || run.processGroupId) {
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
     }
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
@@ -3778,8 +4439,17 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
         runningProcesses.delete(run.id);
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
       }
       await releaseIssueExecutionAndPromote(run);
     }
@@ -3995,9 +4665,33 @@ export function heartbeatService(db: Db) {
 
     cancelBudgetScopeWork,
 
+    getRunIssueSummary: async (runId: string) => {
+      const [run] = await db
+        .select(heartbeatRunIssueSummaryColumns)
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1);
+      return run ?? null;
+    },
+
     getActiveRunForAgent: async (agentId: string) => {
       const [run] = await db
         .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(1);
+      return run ?? null;
+    },
+
+    getActiveRunIssueSummaryForAgent: async (agentId: string) => {
+      const [run] = await db
+        .select(heartbeatRunIssueSummaryColumns)
         .from(heartbeatRuns)
         .where(
           and(

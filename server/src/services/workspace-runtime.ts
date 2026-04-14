@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -101,6 +102,18 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
+const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+
+type ProcessOutputCapture = {
+  text: string;
+  truncated: boolean;
+  totalBytes: number;
+};
+
+type ProcessOutputAccumulator = {
+  append(chunk: string): void;
+  finish(): ProcessOutputCapture;
+};
 
 export async function resetRuntimeServicesForTests() {
   for (const record of runtimeServicesById.values()) {
@@ -120,6 +133,139 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+type WorkspaceLinkMismatch = {
+  packageName: string;
+  expectedPath: string;
+  actualPath: string | null;
+};
+
+function readJsonFile(filePath: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+}
+
+function findWorkspaceRoot(startCwd: string) {
+  let current = path.resolve(startCwd);
+  while (true) {
+    if (existsSync(path.join(current, "pnpm-workspace.yaml"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function isLinkedGitWorktreeCheckout(rootDir: string) {
+  const gitMetadataPath = path.join(rootDir, ".git");
+  if (!existsSync(gitMetadataPath)) return false;
+
+  const stat = lstatSync(gitMetadataPath);
+  if (!stat.isFile()) return false;
+
+  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
+}
+
+function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
+  const packagePaths = new Map<string, string>();
+  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+
+  function visit(dirPath: string) {
+    if (!existsSync(dirPath)) return;
+
+    const packageJsonPath = path.join(dirPath, "package.json");
+    if (existsSync(packageJsonPath)) {
+      const packageJson = readJsonFile(packageJsonPath);
+      if (typeof packageJson.name === "string" && packageJson.name.length > 0) {
+        packagePaths.set(packageJson.name, dirPath);
+      }
+    }
+
+    for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (ignoredDirNames.has(entry.name)) continue;
+      visit(path.join(dirPath, entry.name));
+    }
+  }
+
+  visit(path.join(rootDir, "packages"));
+  visit(path.join(rootDir, "server"));
+  visit(path.join(rootDir, "ui"));
+  visit(path.join(rootDir, "cli"));
+
+  return packagePaths;
+}
+
+function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismatch[] {
+  const serverPackageJsonPath = path.join(rootDir, "server", "package.json");
+  if (!existsSync(serverPackageJsonPath)) return [];
+
+  const serverPackageJson = readJsonFile(serverPackageJsonPath);
+  const dependencies = {
+    ...(serverPackageJson.dependencies as Record<string, unknown> | undefined),
+    ...(serverPackageJson.devDependencies as Record<string, unknown> | undefined),
+  };
+  const workspacePackagePaths = discoverWorkspacePackagePaths(rootDir);
+  const mismatches: WorkspaceLinkMismatch[] = [];
+
+  for (const [packageName, version] of Object.entries(dependencies)) {
+    if (typeof version !== "string" || !version.startsWith("workspace:")) continue;
+
+    const expectedPath = workspacePackagePaths.get(packageName);
+    if (!expectedPath) continue;
+    const normalizedExpectedPath = existsSync(expectedPath) ? path.resolve(realpathSync(expectedPath)) : path.resolve(expectedPath);
+
+    const linkPath = path.join(rootDir, "server", "node_modules", ...packageName.split("/"));
+    const actualPath = existsSync(linkPath) ? path.resolve(realpathSync(linkPath)) : null;
+    if (actualPath === normalizedExpectedPath) continue;
+
+    mismatches.push({
+      packageName,
+      expectedPath: normalizedExpectedPath,
+      actualPath,
+    });
+  }
+
+  return mismatches;
+}
+
+export async function ensureServerWorkspaceLinksCurrent(
+  startCwd: string,
+  opts?: {
+    onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  },
+) {
+  const workspaceRoot = findWorkspaceRoot(startCwd);
+  if (!workspaceRoot) return;
+  if (!isLinkedGitWorktreeCheckout(workspaceRoot)) return;
+
+  const mismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (mismatches.length === 0) return;
+
+  if (opts?.onLog) {
+    await opts.onLog("stdout", "[runtime] detected stale workspace package links for server; relinking dependencies...\n");
+    for (const mismatch of mismatches) {
+      await opts.onLog(
+        "stdout",
+        `[runtime]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}\n`,
+      );
+    }
+  }
+
+  for (const mismatch of mismatches) {
+    const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.symlink(mismatch.expectedPath, linkPath);
+  }
+
+  const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (remainingMismatches.length === 0) return;
+
+  throw new Error(
+    `Workspace relink did not repair all server package links: ${remainingMismatches.map((item) => item.packageName).join(", ")}`,
+  );
 }
 
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -258,30 +404,96 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
+  const limit = Math.max(1, Math.trunc(maxBytes));
+  let chunks: string[] = [];
+  let truncated = false;
+  let totalBytes = 0;
+
+  return {
+    append(chunk: string) {
+      if (!chunk) return;
+      chunks.push(chunk);
+      totalBytes += Buffer.byteLength(chunk, "utf8");
+
+      let currentBytes = chunks.reduce((sum, value) => sum + Buffer.byteLength(value, "utf8"), 0);
+      if (currentBytes <= limit) return;
+
+      const combined = Buffer.from(chunks.join(""), "utf8");
+      const tail = combined.subarray(Math.max(0, combined.length - limit)).toString("utf8");
+      chunks = [tail];
+      truncated = true;
+      currentBytes = Buffer.byteLength(tail, "utf8");
+      if (currentBytes > limit) {
+        chunks = [Buffer.from(tail, "utf8").subarray(Math.max(0, currentBytes - limit)).toString("utf8")];
+      }
+    },
+    finish(): ProcessOutputCapture {
+      const text = chunks.join("");
+      if (!truncated) {
+        return {
+          text,
+          truncated: false,
+          totalBytes,
+        };
+      }
+      return {
+        text: `[output truncated to last ${limit} bytes; total ${totalBytes} bytes]\n${text}`,
+        truncated: true,
+        totalBytes,
+      };
+    },
+  };
+}
+
 async function executeProcess(input: {
   command: string;
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+  maxStdoutBytes?: number;
+  maxStderrBytes?: number;
+}): Promise<{
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  stdoutBytes: number;
+  stderrBytes: number;
+}> {
+  const proc = await new Promise<{
+    stdout: ProcessOutputAccumulator;
+    stderr: ProcessOutputAccumulator;
+    code: number | null;
+  }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
+      stdout.append(String(chunk));
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
+      stderr.append(String(chunk));
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ stdout, stderr, code }));
   });
-  return proc;
+  const stdout = proc.stdout.finish();
+  const stderr = proc.stderr.finish();
+  return {
+    stdout: stdout.text,
+    stderr: stderr.text,
+    code: proc.code,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    stdoutBytes: stdout.totalBytes,
+    stderrBytes: stderr.totalBytes,
+  };
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -299,6 +511,67 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 function gitErrorIncludes(error: unknown, needle: string) {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes(needle.toLowerCase());
+}
+
+type GitWorktreeListEntry = {
+  worktree: string;
+  branch: string | null;
+};
+
+function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
+  const entries: GitWorktreeListEntry[] = [];
+  let current: Partial<GitWorktreeListEntry> = {};
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      current = { worktree: line.slice("worktree ".length) };
+      continue;
+    }
+    if (line.startsWith("branch ")) {
+      current.branch = line.slice("branch ".length);
+      continue;
+    }
+    if (line === "" && current.worktree) {
+      entries.push({
+        worktree: current.worktree,
+        branch: current.branch ?? null,
+      });
+      current = {};
+    }
+  }
+
+  if (current.worktree) {
+    entries.push({
+      worktree: current.worktree,
+      branch: current.branch ?? null,
+    });
+  }
+
+  return entries;
+}
+
+async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
+  const checkoutRoot = path.resolve(await runGit(["rev-parse", "--show-toplevel"], cwd));
+  const commonDir = await runGit(["rev-parse", "--git-common-dir"], checkoutRoot).catch(() => null);
+  if (!commonDir) return checkoutRoot;
+  return path.dirname(path.resolve(checkoutRoot, commonDir));
+}
+
+async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return null;
+
+  const expectedBranchRef = `refs/heads/${branchName}`;
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (entry.branch !== expectedBranchRef) continue;
+    return path.resolve(entry.worktree);
+  }
+
+  return null;
+}
+
+async function isGitCheckout(cwd: string): Promise<boolean> {
+  return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
@@ -377,8 +650,35 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+function quoteShellArg(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+  const patterns = [
+    /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+    /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+  ];
+
+  for (const pattern of patterns) {
+    const match = command.match(pattern);
+    if (!match?.groups) continue;
+
+    const relativePath = match.groups.relative;
+    const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
+    if (!existsSync(repoManagedPath)) continue;
+
+    const prefix = match.groups.prefix ?? "";
+    const suffix = match.groups.suffix ?? "";
+    return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
+  }
+
+  return command;
+}
+
 async function runWorkspaceCommand(input: {
   command: string;
+  resolvedCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
@@ -386,7 +686,7 @@ async function runWorkspaceCommand(input: {
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
-    args: ["-c", input.command],
+    args: ["-c", input.resolvedCommand ?? input.command],
     cwd: input.cwd,
     env: input.env,
   });
@@ -438,6 +738,15 @@ async function recordGitOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
@@ -458,6 +767,7 @@ async function recordWorkspaceCommandOperation(
   input: {
     phase: "workspace_provision" | "workspace_teardown";
     command: string;
+    resolvedCommand?: string;
     cwd: string;
     env: NodeJS.ProcessEnv;
     label: string;
@@ -482,7 +792,7 @@ async function recordWorkspaceCommandOperation(
       const shell = resolveShell();
       const result = await executeProcess({
         command: shell,
-        args: ["-c", input.command],
+        args: ["-c", input.resolvedCommand ?? input.command],
         cwd: input.cwd,
         env: input.env,
       });
@@ -495,6 +805,15 @@ async function recordWorkspaceCommandOperation(
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
+        metadata:
+          result.stdoutTruncated || result.stderrTruncated
+            ? {
+                stdoutTruncated: result.stdoutTruncated,
+                stderrTruncated: result.stderrTruncated,
+                stdoutBytes: result.stdoutBytes,
+                stderrBytes: result.stderrBytes,
+              }
+            : null,
       };
     },
   });
@@ -522,10 +841,12 @@ async function provisionExecutionWorktree(input: {
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
+  const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: provisionCommand,
+    resolvedCommand: resolvedProvisionCommand,
     cwd: input.worktreePath,
     env: buildWorkspaceCommandEnv({
       base: input.base,
@@ -542,6 +863,7 @@ async function provisionExecutionWorktree(input: {
       worktreePath: input.worktreePath,
       branchName: input.branchName,
       created: input.created,
+      resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
   });
@@ -617,7 +939,7 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,
@@ -640,50 +962,59 @@ export async function realizeExecutionWorkspace(input: {
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
-  const existingWorktree = await directoryExists(worktreePath);
-  if (existingWorktree) {
-    const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
-    if (existingGitDir) {
-      if (input.recorder) {
-        await input.recorder.recordOperation({
-          phase: "worktree_prepare",
-          cwd: repoRoot,
-          metadata: {
-            repoRoot,
-            worktreePath,
-            branchName,
-            baseRef,
-            created: false,
-            reused: true,
-          },
-          run: async () => ({
-            status: "succeeded",
-            exitCode: 0,
-            system: `Reused existing git worktree at ${worktreePath}\n`,
-          }),
-        });
-      }
-      await provisionExecutionWorktree({
-        strategy: rawStrategy,
-        base: input.base,
-        repoRoot,
-        worktreePath,
-        branchName,
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
+  async function reuseExistingWorktree(reusablePath: string) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "worktree_prepare",
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath: reusablePath,
+          branchName,
+          baseRef,
+          created: false,
+          reused: true,
+        },
+        run: async () => ({
+          status: "succeeded",
+          exitCode: 0,
+          system: `Reused existing git worktree at ${reusablePath}\n`,
+        }),
       });
-      return {
-        ...input.base,
-        strategy: "git_worktree",
-        cwd: worktreePath,
-        branchName,
-        worktreePath,
-        warnings: [],
-        created: false,
-      };
     }
+    await provisionExecutionWorktree({
+      strategy: rawStrategy,
+      base: input.base,
+      repoRoot,
+      worktreePath: reusablePath,
+      branchName,
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
+    return {
+      ...input.base,
+      strategy: "git_worktree" as const,
+      cwd: reusablePath,
+      branchName,
+      worktreePath: reusablePath,
+      warnings: [],
+      created: false,
+    };
+  }
+
+  const existingWorktree = await directoryExists(worktreePath);
+  if (existingWorktree && await isGitCheckout(worktreePath)) {
+    return await reuseExistingWorktree(worktreePath);
+  }
+
+  const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+  if (registeredBranchWorktree && await isGitCheckout(registeredBranchWorktree)) {
+    return await reuseExistingWorktree(registeredBranchWorktree);
+  }
+
+  if (existingWorktree) {
     throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a git worktree.`);
   }
 
@@ -706,21 +1037,32 @@ export async function realizeExecutionWorkspace(input: {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
     }
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
-      cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        created: false,
-        reusedExistingBranch: true,
-      },
-      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
-    });
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: false,
+          reusedExistingBranch: true,
+        },
+        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (attachError) {
+      if (!gitErrorIncludes(attachError, "already checked out")) {
+        throw attachError;
+      }
+      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+      if (!reusablePath || !await isGitCheckout(reusablePath)) {
+        throw attachError;
+      }
+      return await reuseExistingWorktree(reusablePath);
+    }
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
@@ -769,6 +1111,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
+  const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
+    ? await resolveGitRepoRootForWorkspaceCleanup(
+      workspacePath,
+      input.projectWorkspace?.cwd ?? null,
+    )
+    : null;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
@@ -784,9 +1132,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   for (const command of cleanupCommands) {
     try {
+      const resolvedCommand = repoRoot
+        ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
+        : command;
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
         command,
+        resolvedCommand,
         cwd: workspacePath ?? input.projectWorkspace?.cwd ?? process.cwd(),
         env: cleanupEnv,
         label: `Execution workspace cleanup command "${command}"`,
@@ -795,6 +1147,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           workspacePath,
           branchName: input.workspace.branchName,
           providerType: input.workspace.providerType,
+          resolvedCommand: resolvedCommand === command ? null : resolvedCommand,
         },
         successMessage: `Completed cleanup command "${command}"\n`,
       });
@@ -804,10 +1157,6 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    const repoRoot = await resolveGitRepoRootForWorkspaceCleanup(
-      workspacePath,
-      input.projectWorkspace?.cwd ?? null,
-    );
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
@@ -1079,6 +1428,16 @@ async function waitForReadiness(input: {
     await delay(intervalMs);
   }
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
+}
+
+async function isRuntimeServiceUrlHealthy(url: string | null) {
+  if (!url) return true;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeof workspaceRuntimeServices.$inferInsert {
@@ -1364,7 +1723,11 @@ async function startLocalRuntimeService(input: {
       );
     }
   }
-  
+
+  await ensureServerWorkspaceLinksCurrent(serviceCwd, {
+    onLog: input.onLog,
+  });
+
   const shell = resolveShell();
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
@@ -1847,50 +2210,55 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       profileKind: "workspace-runtime",
     });
     if (adoptedRecord) {
-      const record: RuntimeServiceRecord = {
-        id: row.id,
-        companyId: row.companyId,
-        projectId: row.projectId ?? null,
-        projectWorkspaceId: row.projectWorkspaceId ?? null,
-        executionWorkspaceId: row.executionWorkspaceId ?? null,
-        issueId: row.issueId ?? null,
-        serviceName: row.serviceName,
-        status: "running",
-        lifecycle: row.lifecycle as RuntimeServiceRecord["lifecycle"],
-        scopeType: row.scopeType as RuntimeServiceRecord["scopeType"],
-        scopeId: row.scopeId ?? null,
-        reuseKey: row.reuseKey ?? null,
-        command: row.command ?? null,
-        cwd: row.cwd ?? null,
-        port: adoptedRecord.port ?? row.port ?? null,
-        url: adoptedRecord.url ?? row.url ?? null,
-        provider: "local_process",
-        providerRef: String(adoptedRecord.pid),
-        ownerAgentId: row.ownerAgentId ?? null,
-        startedByRunId: row.startedByRunId ?? null,
-        lastUsedAt: new Date().toISOString(),
-        startedAt: row.startedAt.toISOString(),
-        stoppedAt: null,
-        stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
-        healthStatus: "healthy",
-        reused: true,
-        db,
-        child: null,
-        leaseRunIds: new Set(),
-        idleTimer: null,
-        envFingerprint: row.reuseKey ?? "",
-        serviceKey: adoptedRecord.serviceKey,
-        profileKind: "workspace-runtime",
-        processGroupId: adoptedRecord.processGroupId ?? null,
-      };
-      registerRuntimeService(db, record);
-      await touchLocalServiceRegistryRecord(adoptedRecord.serviceKey, {
-        runtimeServiceId: row.id,
-        lastSeenAt: record.lastUsedAt,
-      });
-      await persistRuntimeServiceRecord(db, record);
-      adopted += 1;
-      continue;
+      const adoptedUrl = adoptedRecord.url ?? row.url ?? null;
+      if (!(await isRuntimeServiceUrlHealthy(adoptedUrl))) {
+        await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
+      } else {
+        const record: RuntimeServiceRecord = {
+          id: row.id,
+          companyId: row.companyId,
+          projectId: row.projectId ?? null,
+          projectWorkspaceId: row.projectWorkspaceId ?? null,
+          executionWorkspaceId: row.executionWorkspaceId ?? null,
+          issueId: row.issueId ?? null,
+          serviceName: row.serviceName,
+          status: "running",
+          lifecycle: row.lifecycle as RuntimeServiceRecord["lifecycle"],
+          scopeType: row.scopeType as RuntimeServiceRecord["scopeType"],
+          scopeId: row.scopeId ?? null,
+          reuseKey: row.reuseKey ?? null,
+          command: row.command ?? null,
+          cwd: row.cwd ?? null,
+          port: adoptedRecord.port ?? row.port ?? null,
+          url: adoptedRecord.url ?? row.url ?? null,
+          provider: "local_process",
+          providerRef: String(adoptedRecord.pid),
+          ownerAgentId: row.ownerAgentId ?? null,
+          startedByRunId: row.startedByRunId ?? null,
+          lastUsedAt: new Date().toISOString(),
+          startedAt: row.startedAt.toISOString(),
+          stoppedAt: null,
+          stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
+          healthStatus: "healthy",
+          reused: true,
+          db,
+          child: null,
+          leaseRunIds: new Set(),
+          idleTimer: null,
+          envFingerprint: row.reuseKey ?? "",
+          serviceKey: adoptedRecord.serviceKey,
+          profileKind: "workspace-runtime",
+          processGroupId: adoptedRecord.processGroupId ?? null,
+        };
+        registerRuntimeService(db, record);
+        await touchLocalServiceRegistryRecord(adoptedRecord.serviceKey, {
+          runtimeServiceId: row.id,
+          lastSeenAt: record.lastUsedAt,
+        });
+        await persistRuntimeServiceRecord(db, record);
+        adopted += 1;
+        continue;
+      }
     }
 
     const now = new Date();

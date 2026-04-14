@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -19,8 +20,39 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+
+function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch { /* noop */ }
+  }, [value]);
+
+  return (
+    <div className="flex items-start gap-1.5 min-w-0 flex-1">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+      <span className="text-sm font-mono min-w-0 break-all">
+        {value}
+      </span>
+      <button
+        type="button"
+        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+        onClick={handleCopy}
+        title={copied ? "Copied!" : "Copy"}
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
 
 function defaultProjectWorkspaceIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
@@ -42,15 +74,17 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
 
 interface IssuePropertiesProps {
   issue: Issue;
+  childIssues?: Issue[];
+  onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0 flex-1">{children}</div>
+    <div className="flex items-start gap-3 py-1.5">
+      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
+      <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
   );
 }
@@ -80,7 +114,7 @@ function PropertyPicker({
   children: React.ReactNode;
 }) {
   const btnCn = cn(
-    "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+    "inline-flex items-start gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors min-w-0 max-w-full text-left",
     triggerClassName,
   );
 
@@ -117,7 +151,13 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({
+  issue,
+  childIssues = [],
+  onAddSubIssue,
+  onUpdate,
+  inline,
+}: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -125,6 +165,14 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [blockedByOpen, setBlockedByOpen] = useState(false);
+  const [blockedBySearch, setBlockedBySearch] = useState("");
+  const [parentOpen, setParentOpen] = useState(false);
+  const [parentSearch, setParentSearch] = useState("");
+  const [reviewersOpen, setReviewersOpen] = useState(false);
+  const [reviewerSearch, setReviewerSearch] = useState("");
+  const [approversOpen, setApproversOpen] = useState(false);
+  const [approverSearch, setApproverSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -163,21 +211,18 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     enabled: !!companyId,
   });
 
+  const { data: allIssues } = useQuery({
+    queryKey: queryKeys.issues.list(companyId!),
+    queryFn: () => issuesApi.list(companyId!),
+    enabled: !!companyId && (blockedByOpen || parentOpen),
+  });
+
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       setNewLabelName("");
-    },
-  });
-
-  const deleteLabel = useMutation({
-    mutationFn: (labelId: string) => issuesApi.deleteLabel(labelId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
     },
   });
 
@@ -218,9 +263,79 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
+  const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+    onUpdate({
+      executionPolicy: buildExecutionPolicy({
+        existingPolicy: issue.executionPolicy ?? null,
+        reviewerValues: nextReviewers,
+        approverValues: nextApprovers,
+      }),
+    });
+  };
+  const toggleExecutionParticipant = (stageType: "review" | "approval", value: string) => {
+    const currentValues = stageType === "review" ? reviewerValues : approverValues;
+    const nextValues = currentValues.includes(value)
+      ? currentValues.filter((candidate) => candidate !== value)
+      : [...currentValues, value];
+    updateExecutionPolicy(
+      stageType === "review" ? nextValues : reviewerValues,
+      stageType === "approval" ? nextValues : approverValues,
+    );
+  };
+  const executionParticipantLabel = (value: string) => {
+    if (value.startsWith("agent:")) {
+      return agentName(value.slice("agent:".length)) ?? value.slice("agent:".length, "agent:".length + 8);
+    }
+    if (value.startsWith("user:")) {
+      return userLabel(value.slice("user:".length)) ?? "User";
+    }
+    return value;
+  };
+  const reviewerTrigger = reviewerValues.length > 0
+    ? <span className="text-sm break-words min-w-0">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    : <span className="text-sm text-muted-foreground">None</span>;
+  const approverTrigger = approverValues.length > 0
+    ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    : <span className="text-sm text-muted-foreground">None</span>;
+  const nextRunnableExecutionStage = (() => {
+    if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
+      return issue.executionState.currentStageType;
+    }
+    if (issue.executionState) return null;
+    if (reviewerValues.length > 0) return "review";
+    if (approverValues.length > 0) return "approval";
+    return null;
+  })();
+  const runExecutionButton = (stageType: "review" | "approval") => (
+    <PropertyRow label="">
+      <button
+        type="button"
+        className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        onClick={() => onUpdate({ status: "in_review" })}
+      >
+        {stageType === "review" ? "Run review now" : "Run approval now"}
+      </button>
+    </PropertyRow>
+  );
+  const currentExecutionLabel = (() => {
+    if (!issue.executionState?.currentStageType) return null;
+    const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
+    const participant = issue.executionState.currentParticipant;
+    const participantLabel = participant
+      ? (participant.type === "agent"
+        ? agentName(participant.agentId ?? null)
+        : userLabel(participant.userId ?? null))
+      : null;
+    if (issue.executionState.status === "changes_requested") {
+      return `${stageLabel} requested changes${participantLabel ? ` by ${participantLabel}` : ""}`;
+    }
+    return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
+  })();
 
   const labelsTrigger = (issue.labels ?? []).length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
@@ -247,6 +362,17 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       <span className="text-sm text-muted-foreground">No labels</span>
     </>
   );
+  const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
+    <button
+      type="button"
+      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+      onClick={() => setLabelsOpen(true)}
+      aria-label="Add label"
+      title="Add label"
+    >
+      <Plus className="h-3 w-3" />
+    </button>
+  ) : undefined;
 
   const labelsContent = (
     <>
@@ -266,26 +392,17 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           .map((label) => {
             const selected = (issue.labelIds ?? []).includes(label.id);
             return (
-              <div key={label.id} className="flex items-center gap-1">
-                <button
-                  className={cn(
-                    "flex items-center gap-2 flex-1 px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                    selected && "bg-accent"
-                  )}
-                  onClick={() => toggleLabel(label.id)}
-                >
-                  <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                  <span className="truncate">{label.name}</span>
-                </button>
-                <button
-                  type="button"
-                  className="p-1 text-muted-foreground hover:text-destructive rounded"
-                  onClick={() => deleteLabel.mutate(label.id)}
-                  title={`Delete ${label.name}`}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
+              <button
+                key={label.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                  selected && "bg-accent"
+                )}
+                onClick={() => toggleLabel(label.id)}
+              >
+                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                <span className="truncate">{label.name}</span>
+              </button>
             );
           })}
       </div>
@@ -407,13 +524,87 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     </>
   );
 
+  const executionParticipantsContent = (
+    stageType: "review" | "approval",
+    values: string[],
+    search: string,
+    setSearch: (value: string) => void,
+    onClear: () => void,
+  ) => (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            values.length === 0 && "bg-accent",
+          )}
+          onClick={onClear}
+        >
+          No {stageType === "review" ? "reviewers" : "approvers"}
+        </button>
+        {currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              values.includes(`user:${currentUserId}`) && "bg-accent",
+            )}
+            onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Assign to me
+          </button>
+        )}
+        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              values.includes(`user:${issue.createdByUserId}`) && "bg-accent",
+            )}
+            onClick={() => toggleExecutionParticipant(stageType, `user:${issue.createdByUserId}`)}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            {creatorUserLabel ? creatorUserLabel : "Requester"}
+          </button>
+        )}
+        {sortedAgents
+          .filter((agent) => {
+            if (!search.trim()) return true;
+            return agent.name.toLowerCase().includes(search.toLowerCase());
+          })
+          .map((agent) => {
+            const encoded = `agent:${agent.id}`;
+            return (
+              <button
+                key={`${stageType}:${agent.id}`}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  values.includes(encoded) && "bg-accent",
+                )}
+                onClick={() => toggleExecutionParticipant(stageType, encoded)}
+              >
+                <AgentIcon icon={agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                {agent.name}
+              </button>
+            );
+          })}
+      </div>
+    </>
+  );
+
   const projectTrigger = issue.projectId ? (
     <>
       <span
         className="shrink-0 h-3 w-3 rounded-sm"
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
-      <span className="text-sm truncate">{projectName(issue.projectId)}</span>
+      <span className="text-sm break-words min-w-0">{projectName(issue.projectId)}</span>
     </>
   ) : (
     <>
@@ -488,6 +679,182 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     </>
   );
 
+  const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const descendantIssueIds = useMemo(() => {
+    if (!allIssues?.length) return new Set<string>();
+    const childrenByParentId = new Map<string, string[]>();
+    for (const candidate of allIssues) {
+      if (!candidate.parentId) continue;
+      const children = childrenByParentId.get(candidate.parentId) ?? [];
+      children.push(candidate.id);
+      childrenByParentId.set(candidate.parentId, children);
+    }
+
+    const descendants = new Set<string>();
+    const stack = [...(childrenByParentId.get(issue.id) ?? [])];
+    while (stack.length > 0) {
+      const candidateId = stack.pop();
+      if (!candidateId || descendants.has(candidateId)) continue;
+      descendants.add(candidateId);
+      stack.push(...(childrenByParentId.get(candidateId) ?? []));
+    }
+    return descendants;
+  }, [allIssues, issue.id]);
+  const currentParentIssue = useMemo(() => {
+    if (!issue.parentId) return null;
+    return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
+  }, [allIssues, issue.parentId]);
+  const parentTrigger = issue.parentId ? (
+    <span className="text-sm break-words min-w-0">
+      {issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier
+        ? `${issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier} `
+        : ""}
+      {issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId.slice(0, 8)}
+    </span>
+  ) : (
+    <span className="text-sm text-muted-foreground">No parent</span>
+  );
+  const parentOptions = (allIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id)
+    .filter((candidate) => !descendantIssueIds.has(candidate.id))
+    .filter((candidate) => {
+      if (!parentSearch.trim()) return true;
+      const query = parentSearch.toLowerCase();
+      return (
+        (candidate.identifier ?? "").toLowerCase().includes(query) ||
+        candidate.title.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
+      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
+      return aLabel.localeCompare(bLabel);
+    });
+  const parentContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search issues..."
+        value={parentSearch}
+        onChange={(e) => setParentSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !issue.parentId && "bg-accent",
+          )}
+          onClick={() => {
+            onUpdate({ parentId: null });
+            setParentOpen(false);
+          }}
+        >
+          No parent
+        </button>
+        {parentOptions.map((candidate) => (
+          <button
+            key={candidate.id}
+            className={cn(
+              "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+              candidate.id === issue.parentId && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ parentId: candidate.id });
+              setParentOpen(false);
+            }}
+          >
+            <StatusIcon status={candidate.status} />
+            <span className="truncate">
+              {candidate.identifier ? `${candidate.identifier} ` : ""}
+              {candidate.title}
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+  const blockedByTrigger = blockedByIds.length > 0 ? (
+    <div className="flex items-center gap-1 flex-wrap min-w-0">
+      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
+        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
+          <span className="truncate">{relation.identifier ?? relation.title}</span>
+        </span>
+      ))}
+      {(issue.blockedBy ?? []).length > 2 && (
+        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
+      )}
+    </div>
+  ) : (
+    <span className="text-sm text-muted-foreground">No blockers</span>
+  );
+
+  const blockingIssues = issue.blocks ?? [];
+  const blockerOptions = (allIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id)
+    .filter((candidate) => {
+      if (!blockedBySearch.trim()) return true;
+      const query = blockedBySearch.toLowerCase();
+      return (
+        (candidate.identifier ?? "").toLowerCase().includes(query) ||
+        candidate.title.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
+      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
+      return aLabel.localeCompare(bLabel);
+    });
+
+  const toggleBlockedBy = (blockedByIssueId: string) => {
+    const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
+      ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
+      : [...blockedByIds, blockedByIssueId];
+    onUpdate({ blockedByIssueIds: nextBlockedByIds });
+  };
+
+  const blockedByContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search issues..."
+        value={blockedBySearch}
+        onChange={(e) => setBlockedBySearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            blockedByIds.length === 0 && "bg-accent",
+          )}
+          onClick={() => onUpdate({ blockedByIssueIds: [] })}
+        >
+          No blockers
+        </button>
+        {blockerOptions.map((candidate) => {
+          const selected = blockedByIds.includes(candidate.id);
+          return (
+            <button
+              key={candidate.id}
+              className={cn(
+                "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+                selected && "bg-accent",
+              )}
+              onClick={() => toggleBlockedBy(candidate.id)}
+            >
+              <StatusIcon status={candidate.status} />
+              <span className="truncate">
+                {candidate.identifier ? `${candidate.identifier} ` : ""}
+                {candidate.title}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -515,6 +882,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           triggerContent={labelsTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName="w-64"
+          extra={labelsExtra}
         >
           {labelsContent}
         </PropertyPicker>
@@ -560,14 +928,128 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
-        {issue.parentId && (
-          <PropertyRow label="Parent">
+        <PropertyPicker
+          inline={inline}
+          label="Parent"
+          open={parentOpen}
+          onOpenChange={(open) => {
+            setParentOpen(open);
+            if (!open) setParentSearch("");
+          }}
+          triggerContent={parentTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+          extra={issue.parentId ? (
             <Link
-              to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
-              className="text-sm hover:underline"
+              to={`/issues/${issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier ?? issue.parentId}`}
+              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+              onClick={(e) => e.stopPropagation()}
             >
-              {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
+              <ArrowUpRight className="h-3 w-3" />
             </Link>
+          ) : undefined}
+        >
+          {parentContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Blocked by"
+          open={blockedByOpen}
+          onOpenChange={(open) => {
+            setBlockedByOpen(open);
+            if (!open) setBlockedBySearch("");
+          }}
+          triggerContent={blockedByTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+        >
+          {blockedByContent}
+        </PropertyPicker>
+
+        <PropertyRow label="Blocking">
+          {blockingIssues.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {blockingIssues.map((relation) => (
+                <Link
+                  key={relation.id}
+                  to={`/issues/${relation.identifier ?? relation.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {relation.identifier ?? relation.title}
+                </Link>
+              ))}
+            </div>
+          ) : null}
+        </PropertyRow>
+
+        <PropertyRow label="Sub-issues">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {childIssues.length > 0
+              ? childIssues.map((child) => (
+                <Link
+                  key={child.id}
+                  to={`/issues/${child.identifier ?? child.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {child.identifier ?? child.title}
+                </Link>
+              ))
+              : null}
+            {onAddSubIssue ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={onAddSubIssue}
+              >
+                <Plus className="h-3 w-3" />
+                Add sub-issue
+              </button>
+            ) : null}
+          </div>
+        </PropertyRow>
+
+        <PropertyPicker
+          inline={inline}
+          label="Reviewers"
+          open={reviewersOpen}
+          onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
+          triggerContent={reviewerTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "review",
+            reviewerValues,
+            reviewerSearch,
+            setReviewerSearch,
+            () => updateExecutionPolicy([], approverValues),
+          )}
+        </PropertyPicker>
+        {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
+
+        <PropertyPicker
+          inline={inline}
+          label="Approvers"
+          open={approversOpen}
+          onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
+          triggerContent={approverTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "approval",
+            approverValues,
+            approverSearch,
+            setApproverSearch,
+            () => updateExecutionPolicy(reviewerValues, []),
+          )}
+        </PropertyPicker>
+        {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+
+        {currentExecutionLabel && (
+          <PropertyRow label="Execution">
+            <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
 
@@ -577,6 +1059,30 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           </PropertyRow>
         )}
       </div>
+
+      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            {issue.currentExecutionWorkspace?.branchName && (
+              <PropertyRow label="Branch">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.branchName}
+                  icon={GitBranch}
+                />
+              </PropertyRow>
+            )}
+            {issue.currentExecutionWorkspace?.cwd && (
+              <PropertyRow label="Folder">
+                <TruncatedCopyable
+                  value={issue.currentExecutionWorkspace.cwd}
+                  icon={FolderOpen}
+                />
+              </PropertyRow>
+            )}
+          </div>
+        </>
+      ) : null}
 
       <Separator />
 

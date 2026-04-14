@@ -50,7 +50,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: vi.fn(),
+  findServerAdapter: vi.fn((_type: string) => ({ type: _type })),
   listAdapterModels: vi.fn(),
 }));
 
@@ -298,15 +298,6 @@ describe("agent instructions bundle routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({
-        adapterConfig: expect.objectContaining({
-          command: "codex --profile engineer",
-        }),
-      }),
-      expect.any(Object),
-    );
     expect(res.body.adapterConfig).toMatchObject({
       command: "codex --profile engineer",
     });

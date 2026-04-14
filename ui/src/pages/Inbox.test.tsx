@@ -99,6 +99,7 @@ describe("FailedRunInboxRow", () => {
       errorCode: null,
       externalRunId: null,
       processPid: null,
+      processGroupId: null,
       processStartedAt: null,
       retryOfRunId: null,
       processLossRetryCount: 0,
@@ -205,6 +206,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });
@@ -229,6 +232,8 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          parentIdentifier={null}
+          parentTitle={null}
         />,
       );
     });

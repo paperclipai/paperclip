@@ -177,6 +177,14 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
+That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+
+```bash
+npx paperclipai onboard --yes --bind lan
+# or:
+npx paperclipai onboard --yes --bind tailnet
+```
+
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
 
 Or manually:
@@ -243,11 +251,18 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Skills Manager
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
-- ⚪ Artifacts & Deployments
-- ⚪ CEO Chat
-- ⚪ MAXIMIZER MODE
+- ✅ Agent Reviews and Approvals
 - ⚪ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Artifacts & Work Products
+- ⚪ Memory & Knowledge
+- ⚪ Enforced Outcomes
+- ⚪ MAXIMIZER MODE
+- ⚪ Deep Planning
+- ⚪ Work Queues
+- ⚪ Self-Organization
+- ⚪ Automatic Organizational Learning
+- ⚪ CEO Chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 
@@ -263,12 +278,12 @@ Paperclip collects anonymous usage telemetry to help us understand how the produ
 
 Telemetry is **enabled by default** and can be disabled with any of the following:
 
-| Method | How |
-|---|---|
-| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1` |
-| Standard convention | `DO_NOT_TRACK=1` |
-| CI environments | Automatically disabled when `CI=true` |
-| Config file | Set `telemetry.enabled: false` in your Paperclip config |
+| Method               | How                                                     |
+| -------------------- | ------------------------------------------------------- |
+| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
+| Standard convention  | `DO_NOT_TRACK=1`                                        |
+| CI environments      | Automatically disabled when `CI=true`                   |
+| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
 
 ## Contributing
 
