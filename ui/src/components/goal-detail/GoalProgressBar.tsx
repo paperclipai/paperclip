@@ -17,7 +17,7 @@ export function GoalProgressBar({ progress }: { progress: GoalProgressStats }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground">Progress</span>
-        <span className="font-medium">{progress.completedIssues}/{progress.totalIssues} issues done ({progress.progressPercent}%)</span>
+        <span className="font-medium">{progress.completedIssues}/{progress.totalIssues} missions done ({progress.progressPercent}%)</span>
       </div>
       <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div

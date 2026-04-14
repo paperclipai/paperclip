@@ -369,7 +369,7 @@ export function SLASettings() {
         <div className="rounded-lg border border-border p-6 text-center">
           <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto mb-2" />
           <p className="text-sm font-medium">No SLA Breaches</p>
-          <p className="text-xs text-muted-foreground mt-1">All issues are within their SLA targets.</p>
+          <p className="text-xs text-muted-foreground mt-1">All missions are within their SLA targets.</p>
         </div>
       )}
     </div>

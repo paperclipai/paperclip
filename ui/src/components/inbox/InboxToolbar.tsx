@@ -93,7 +93,7 @@ export function InboxToolbar({
               <Checkbox
                 checked={allSelected}
                 onCheckedChange={onSelectAll}
-                aria-label="Select all issues"
+                aria-label="Select all missions"
                 className="h-3.5 w-3.5"
               />
               Select all
@@ -138,7 +138,7 @@ export function InboxToolbar({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+              <SelectItem value="issues_i_touched">My recent missions</SelectItem>
               <SelectItem value="join_requests">Join requests</SelectItem>
               <SelectItem value="approvals">Approvals</SelectItem>
               <SelectItem value="failed_runs">Failed runs</SelectItem>

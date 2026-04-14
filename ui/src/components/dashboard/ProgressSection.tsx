@@ -67,11 +67,11 @@ export function ProgressSection({
 
       {/* Issues Overview */}
       <div className="rounded-xl border border-border p-4 space-y-4">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Issues Overview</h4>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Missions Overview</h4>
+        <ChartCard title="Missions by Priority" subtitle="Last 14 days">
           <PriorityChart issues={issues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title="Missions by Status" subtitle="Last 14 days">
           <IssueStatusChart issues={issues} />
         </ChartCard>
       </div>

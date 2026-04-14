@@ -398,7 +398,7 @@ export function WorkflowSettings() {
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Issue Statuses</h2>
+            <h2 className="text-sm font-semibold">Mission Statuses</h2>
             <span className="text-[10px] text-muted-foreground">
               {openCount} open, {closedCount} closed
             </span>

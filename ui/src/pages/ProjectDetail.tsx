@@ -810,7 +810,7 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
+            { value: "list", label: "Missions" },
             { value: "overview", label: "Overview" },
             { value: "activity", label: "Activity" },
             { value: "configuration", label: "Configuration" },

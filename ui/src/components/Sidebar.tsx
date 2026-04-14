@@ -314,7 +314,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Operations">
-          {matchLabel("Issues") && <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} data-tour="issues" />}
+          {matchLabel("Issues") && <SidebarNavItem to="/issues" label="Missions" icon={CircleDot} data-tour="issues" />}
           {matchLabel("Goals") && <SidebarNavItem to="/goals" label="Goals" icon={Target} data-tour="goals" />}
           {matchLabel("Routines") && <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />}
           {matchLabel("Playbooks") && <SidebarNavItem to="/playbooks" label="Playbooks" icon={BookTemplate} featureDot={shouldShowDot("/playbooks")} />}

@@ -96,7 +96,7 @@ export function WeeklyBarChart({
       <svg
         viewBox={`0 0 ${CHART_W} ${CHART_H + 20}`}
         className="w-full"
-        aria-label="Weekly issues completed bar chart"
+        aria-label="Weekly missions completed bar chart"
       >
         {data.map((d, i) => {
           const barH =

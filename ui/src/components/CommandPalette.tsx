@@ -53,13 +53,13 @@ interface NLMapping {
 
 const NL_MAPPINGS: NLMapping[] = [
   { patterns: [/show\s*(me\s+)?all\s+failed\s+tasks/i, /failed\s+tasks/i, /failed\s+issues/i], url: "/issues?q=&status=blocked", label: "Show failed/blocked tasks" },
-  { patterns: [/blocked\s+issues/i, /blocked\s+tasks/i, /what.*blocked/i], url: "/issues?q=&status=blocked", label: "Show blocked issues" },
-  { patterns: [/overdue\s+issues/i, /overdue\s+tasks/i, /what.*overdue/i], url: "/issues?q=&status=in_progress", label: "Show in-progress issues (check for overdue)" },
-  { patterns: [/active\s+(issues|tasks)/i, /in\s*progress/i, /what.*working\s+on/i], url: "/issues?q=&status=in_progress", label: "Show active issues" },
-  { patterns: [/unassigned\s+(issues|tasks)/i, /no\s+assignee/i], url: "/issues?assignee=__unassigned", label: "Show unassigned issues" },
-  { patterns: [/high\s*priority/i, /urgent\s+(issues|tasks)/i, /critical\s+(issues|tasks)/i], url: "/issues?q=&priority=critical,high", label: "Show high priority issues" },
+  { patterns: [/blocked\s+issues/i, /blocked\s+tasks/i, /what.*blocked/i], url: "/issues?q=&status=blocked", label: "Show blocked missions" },
+  { patterns: [/overdue\s+issues/i, /overdue\s+tasks/i, /what.*overdue/i], url: "/issues?q=&status=in_progress", label: "Show in-progress missions (check for overdue)" },
+  { patterns: [/active\s+(issues|tasks)/i, /in\s*progress/i, /what.*working\s+on/i], url: "/issues?q=&status=in_progress", label: "Show active missions" },
+  { patterns: [/unassigned\s+(issues|tasks)/i, /no\s+assignee/i], url: "/issues?assignee=__unassigned", label: "Show unassigned missions" },
+  { patterns: [/high\s*priority/i, /urgent\s+(issues|tasks)/i, /critical\s+(issues|tasks)/i], url: "/issues?q=&priority=critical,high", label: "Show high priority missions" },
   { patterns: [/backlog/i, /backlog\s+(issues|tasks)/i], url: "/issues?q=&status=backlog", label: "Show backlog" },
-  { patterns: [/done\s+(issues|tasks)/i, /completed\s+(issues|tasks)/i, /finished/i], url: "/issues?q=&status=done", label: "Show completed issues" },
+  { patterns: [/done\s+(issues|tasks)/i, /completed\s+(issues|tasks)/i, /finished/i], url: "/issues?q=&status=done", label: "Show completed missions" },
   { patterns: [/all\s+agents/i, /show\s*(me\s+)?agents/i, /who\s+works\s+here/i], url: "/agents", label: "Show all agents" },
   { patterns: [/paused\s+agents/i, /idle\s+agents/i], url: "/agents", label: "Show agents (filter for paused)" },
   { patterns: [/all\s+projects/i, /show\s*(me\s+)?projects/i], url: "/projects", label: "Show all projects" },
@@ -197,7 +197,7 @@ export function CommandPalette() {
       }}
       data-tour="command-palette"
     >
-      <CommandInput placeholder="Search issues, agents, projects..." value={query} onValueChange={setQuery} />
+      <CommandInput placeholder="Search missions, agents, projects..." value={query} onValueChange={setQuery} />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
@@ -248,7 +248,7 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            Create new mission
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           <CommandItem
@@ -290,7 +290,7 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            Missions
             <span className="ml-auto text-xs text-muted-foreground">g i</span>
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
@@ -359,7 +359,7 @@ export function CommandPalette() {
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading="Missions">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}

@@ -911,7 +911,7 @@ function SuccessionWarning({ agentName, issues }: { agentName: string; issues: {
       <div className="text-sm">
         <p className="font-medium text-amber-600 dark:text-amber-400">Succession Impact</p>
         <p className="text-muted-foreground mt-0.5">
-          If {agentName} is removed, <strong>{openIssues.length}</strong> open issue{openIssues.length !== 1 ? "s" : ""} would be
+          If {agentName} is removed, <strong>{openIssues.length}</strong> open mission{openIssues.length !== 1 ? "s" : ""} would be
           unassigned.
         </p>
       </div>
@@ -974,10 +974,10 @@ export function AgentDashboard({
         <ChartCard title="Run Activity" subtitle="Last 14 days">
           <RunActivityChart runs={runs} />
         </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <ChartCard title="Missions by Priority" subtitle="Last 14 days">
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title="Missions by Status" subtitle="Last 14 days">
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
         <ChartCard title="Success Rate" subtitle="Last 14 days">
@@ -988,7 +988,7 @@ export function AgentDashboard({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Issues</h3>
+          <h3 className="text-sm font-medium">Recent Missions</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -997,7 +997,7 @@ export function AgentDashboard({
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent issues.</p>
+          <p className="text-sm text-muted-foreground">No recent missions.</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (

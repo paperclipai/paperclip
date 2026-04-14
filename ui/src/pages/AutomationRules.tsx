@@ -275,7 +275,7 @@ export function AutomationRules() {
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:border-primary"
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              placeholder="e.g. Auto-assign triage agent on new issues"
+              placeholder="e.g. Auto-assign triage agent on new missions"
             />
           </div>
 
