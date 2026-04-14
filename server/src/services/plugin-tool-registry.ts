@@ -468,6 +468,9 @@ export function createPluginToolRegistry(
               agentId: runContext.agentId,
               runId: runContext.runId,
               projectId: runContext.projectId,
+              success: false,
+              hasContent: false,
+              hasError: true,
               error: err instanceof Error ? err.message : String(err),
             },
           }).catch((e) => log.warn({ err: e, toolName }, "failed to emit agent.tool.post_execute"));
@@ -492,6 +495,7 @@ export function createPluginToolRegistry(
             agentId: runContext.agentId,
             runId: runContext.runId,
             projectId: runContext.projectId,
+            success: true,
             hasContent: !!result.content,
             hasError: !!result.error,
           },
