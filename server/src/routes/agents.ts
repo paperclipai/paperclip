@@ -2282,6 +2282,14 @@ export function agentRoutes(db: Db) {
     res.json(liveRuns);
   });
 
+  router.get("/companies/:companyId/heartbeat-runs/active/file-events", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const result = await heartbeat.listFileEventsForActiveRuns(companyId);
+    res.json({ runs: result });
+  });
+
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);

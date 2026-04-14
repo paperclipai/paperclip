@@ -4722,5 +4722,43 @@ export function heartbeatService(db: Db) {
       await appendRunEvent(run, seq, event);
       return { seq };
     },
+
+    listFileEventsForActiveRuns: async (companyId: string) => {
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        );
+
+      if (activeRuns.length === 0) return {};
+
+      const runIds = activeRuns.map((r) => r.id);
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            inArray(heartbeatRunEvents.runId, runIds),
+            eq(heartbeatRunEvents.eventType, "file.edit"),
+          ),
+        )
+        .orderBy(asc(heartbeatRunEvents.seq));
+
+      const grouped: Record<string, { agentId: string; events: typeof events }> = {};
+      const agentByRun = Object.fromEntries(activeRuns.map((r) => [r.id, r.agentId]));
+
+      for (const event of events) {
+        if (!grouped[event.runId]) {
+          grouped[event.runId] = { agentId: agentByRun[event.runId]!, events: [] };
+        }
+        grouped[event.runId].events.push(event);
+      }
+
+      return grouped;
+    },
   };
 }
