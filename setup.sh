@@ -55,7 +55,7 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
   if [[ -z "$PUBLIC_URL" ]]; then
     warn "URL não informada — usando http://localhost:3100"
     PUBLIC_URL="http://localhost:3100"
-  elif [[ "$PUBLIC_URL" != http://* && "$PUBLIC_URL" != https://* ]]; then
+  elif [[ ! "$PUBLIC_URL" =~ ^https?://[^[:space:]]+$ ]]; then
     error "URL inválida (deve começar com http:// ou https://): $PUBLIC_URL"
     exit 1
   fi

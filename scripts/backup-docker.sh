@@ -62,6 +62,7 @@ fi
 
 trap - EXIT INT TERM
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
+chmod 600 "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)
 echo "✔ Backup salvo em: $OUTPUT_FILE ($SIZE)"

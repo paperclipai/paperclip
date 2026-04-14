@@ -7,6 +7,7 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
+backups/
 .paperclip/
 .gstack/
 .pnpm-store/
