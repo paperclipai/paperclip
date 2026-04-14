@@ -125,9 +125,9 @@ export async function startEmbeddedPostgresTestDatabase(
     await instance.initialise();
     await instance.start();
 
-    const adminConnectionString = `postgres://paperclip:***@127.0.0.1:${port}/postgres`;
+    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
     await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    const connectionString = `postgres://paperclip:***@127.0.0.1:${port}/paperclip`;
+    const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
     await applyPendingMigrations(connectionString);
 
     return {
