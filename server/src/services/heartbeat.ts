@@ -83,6 +83,24 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
+
+// ---------------------------------------------------------------------------
+// Wakeup debounce — batches rapid assignment wakeups for the same agent
+// ---------------------------------------------------------------------------
+const WAKEUP_DEBOUNCE_MS = 3000;
+
+interface DebouncedWakeupEntry {
+  timer: ReturnType<typeof setTimeout>;
+  contexts: Array<{ issueId: string; wakeReason: string | null; payload: Record<string, unknown> | null }>;
+  // First-write-wins: opts (including actor info) are captured from the first
+  // enqueueWakeup call in the debounce window. Subsequent callers' attribution
+  // is aggregated into contexts but the top-level actor fields reflect the
+  // original trigger.
+  opts: WakeupOptions;
+}
+
+const wakeupDebounceMap = new Map<string, DebouncedWakeupEntry>();
+
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -354,6 +372,8 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /** Internal flag — skip debounce logic (used by flushDebouncedWakeups to avoid re-entering the debounce path). */
+  _skipDebounce?: boolean;
 }
 
 type UsageTotals = {
@@ -3530,7 +3550,15 @@ export function heartbeatService(db: Db) {
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
-      logger.error({ err, runId }, "heartbeat execution failed");
+      const isAuthError = /\b(401|403|Unauthorized|Forbidden)\b/i.test(message)
+        || (err instanceof Error && "statusCode" in err && ((err as any).statusCode === 401 || (err as any).statusCode === 403))
+        || (err instanceof Error && "status" in err && ((err as any).status === 401 || (err as any).status === 403));
+      const errorCode = isAuthError ? "auth_failed" : "adapter_failed";
+      if (isAuthError) {
+        logger.error({ runId, agentId: agent.id }, `heartbeat execution failed with auth error (non-retryable): ${message}`);
+      } else {
+        logger.error({ err, runId }, "heartbeat execution failed");
+      }
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -3542,8 +3570,8 @@ export function heartbeatService(db: Db) {
       }
 
       const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
+        error: isAuthError ? `Authentication failed (non-retryable): ${message}` : message,
+        errorCode,
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,
@@ -3785,6 +3813,36 @@ export function heartbeatService(db: Db) {
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function flushDebouncedWakeups(agentId: string) {
+    const entry = wakeupDebounceMap.get(agentId);
+    wakeupDebounceMap.delete(agentId);
+    if (!entry || entry.contexts.length === 0) return;
+
+    // Create one wakeup with the primary issue context; include all issue IDs
+    // so the agent knows about the batch. The agent's inbox fetch (Step 3) will
+    // return all assigned issues, so a single run naturally handles them all.
+    const issueIds = entry.contexts.map((c) => c.issueId);
+    const primaryIssueId = issueIds[0];
+    const batchedContextSnapshot = {
+      ...(entry.opts.contextSnapshot ?? {}),
+      issueId: primaryIssueId,
+      taskId: primaryIssueId,
+      issueIds,
+    };
+
+    try {
+      await enqueueWakeup(agentId, {
+        ...entry.opts,
+        contextSnapshot: batchedContextSnapshot,
+        reason: `batch_assignment (${issueIds.length} issues)`,
+        payload: { ...(entry.opts.payload ?? {}), issueId: primaryIssueId, issueIds },
+        _skipDebounce: true,
+      });
+    } catch (err) {
+      logger.error({ err, agentId, issueIds }, "Failed to flush debounced wakeups");
+    }
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -3804,6 +3862,36 @@ export function heartbeatService(db: Db) {
       payload,
     });
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+
+    // Debounce rapid assignment wakeups for the same agent.
+    // Skip debounce for comment mentions (need immediate response), manual triggers,
+    // and timer-based wakes.
+    const shouldDebounce =
+      !wakeCommentId &&
+      source !== "timer" &&
+      triggerDetail !== "manual" &&
+      issueId;
+
+    if (shouldDebounce && !opts._skipDebounce) {
+      const existing = wakeupDebounceMap.get(agentId);
+      if (existing) {
+        existing.contexts.push({
+          issueId: issueId!,
+          wakeReason: reason,
+          payload: payload ?? {},
+        });
+        // Return null — no run created yet, will be flushed when timer fires
+        return null;
+      }
+      // Start debounce window
+      const entry: DebouncedWakeupEntry = {
+        timer: setTimeout(() => flushDebouncedWakeups(agentId), WAKEUP_DEBOUNCE_MS),
+        contexts: [{ issueId: issueId!, wakeReason: reason, payload: payload ?? {} }],
+        opts,
+      };
+      wakeupDebounceMap.set(agentId, entry);
+      return null;
+    }
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
