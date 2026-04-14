@@ -24,7 +24,8 @@ Next Batches:
 - [x] Project detail and project workspace pages
 - [x] Workspace close dialog and budget/finance shared components
 - [x] Active agent and activity chart shared utility components
-- [ ] Remaining high-value shared dialogs and utility components
+- [x] Shared navigation, filter, banner, and picker utility components
+- [ ] Copy-heavy setup dialogs and platform instruction modals
 - [ ] Repo-wide deep scan across `ui/src/pages` and `ui/src/components`
 - [x] Re-check `origin/master` UI changes for newly introduced i18n scope
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
@@ -33,7 +34,7 @@ Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2011` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2169` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:
@@ -49,4 +50,13 @@ Verification Notes:
   `ui/src/components/ActiveAgentsPanel.tsx`
   `ui/src/components/ActivityCharts.tsx`
   `ui/src/lib/utils.ts`
+  Shared navigation/filter/banner utility components are now localized:
+  `ui/src/lib/issue-filters.ts`
+  `ui/src/components/IssueFiltersPopover.tsx`
+  `ui/src/components/CompanySwitcher.tsx`
+  `ui/src/components/SidebarProjects.tsx`
+  `ui/src/components/WorktreeBanner.tsx`
+  `ui/src/components/DevRestartBanner.tsx`
+  `ui/src/components/IssueLinkQuicklook.tsx`
+  `ui/src/components/AgentIconPicker.tsx`
   `pnpm --filter @paperclipai/ui typecheck` still hangs at `tsc -b` in this environment; the process was confirmed alive at the `tsc -b` stage and then terminated, so this batch is not claimed as freshly typecheck-clean.

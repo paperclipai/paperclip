@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react";
+import { useLocale } from "../context/LocaleContext";
 import { getWorktreeUiBranding } from "../lib/worktree-branding";
 
 export function WorktreeBanner() {
+  const { t } = useLocale();
   const branding = getWorktreeUiBranding();
   const [copied, setCopied] = useState(false);
 
@@ -27,15 +29,15 @@ export function WorktreeBanner() {
       }}
     >
       <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
-        <span className="shrink-0 opacity-70">Worktree</span>
+        <span className="shrink-0 opacity-70">{t("worktreeBanner.title")}</span>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden="true" />
         <button
           type="button"
           onClick={handleCopyName}
-          title="Click to copy worktree name"
+          title={t("worktreeBanner.copyName")}
           className="truncate font-semibold tracking-[0.12em] cursor-pointer hover:opacity-80 transition-opacity bg-transparent border-none p-0 text-current uppercase text-[11px]"
         >
-          {copied ? "Copied!" : branding.name}
+          {copied ? t("common.copied") : branding.name}
         </button>
       </div>
     </div>
