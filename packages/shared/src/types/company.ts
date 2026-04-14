@@ -17,6 +17,11 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
+  /**
+   * Integer percent where 100 => 1.0x. Used to proportionally scale scheduled
+   * heartbeat intervals for all agents in the company.
+   */
+  heartbeatTimeScalePercent: number;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;

@@ -25,6 +25,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    heartbeatTimeScalePercent: z.number().int().min(10).max(1000).optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

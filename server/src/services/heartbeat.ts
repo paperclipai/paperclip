@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   companySkills as companySkillsTable,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -1323,6 +1324,11 @@ function resolveNextSessionState(input: {
     displayId,
     legacySessionId,
   };
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 export function heartbeatService(db: Db) {
@@ -5079,7 +5085,15 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const [allAgents, allCompanies] = await Promise.all([
+        db.select().from(agents),
+        db
+          .select({ id: companies.id, heartbeatTimeScalePercent: companies.heartbeatTimeScalePercent })
+          .from(companies),
+      ]);
+      const companyScaleById = new Map(
+        allCompanies.map((row) => [row.id, row.heartbeatTimeScalePercent ?? 100] as const),
+      );
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -5090,9 +5104,12 @@ export function heartbeatService(db: Db) {
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
+        const scalePercent = companyScaleById.get(agent.companyId) ?? 100;
+        const scale = clamp(scalePercent / 100, 0.1, 10);
+        const effectiveIntervalSec = policy.intervalSec / scale;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (elapsedMs < effectiveIntervalSec * 1000) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

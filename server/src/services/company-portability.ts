@@ -1750,6 +1750,7 @@ const YAML_KEY_PRIORITY = [
   "capabilities",
   "brandColor",
   "logoPath",
+  "heartbeatTimeScalePercent",
   "adapter",
   "runtime",
   "permissions",
@@ -2429,6 +2430,10 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingConsentByUserId),
       feedbackDataSharingTermsVersion:
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
+      heartbeatTimeScalePercent:
+        typeof paperclipCompany.heartbeatTimeScalePercent === "number" && Number.isInteger(paperclipCompany.heartbeatTimeScalePercent)
+          ? paperclipCompany.heartbeatTimeScalePercent
+          : 100,
     },
     sidebar: paperclipSidebar,
     agents: [],
@@ -3364,6 +3369,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           logoPath: companyLogoPath,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
+          heartbeatTimeScalePercent: company.heartbeatTimeScalePercent !== 100 ? company.heartbeatTimeScalePercent : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
           feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
           feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
@@ -3884,6 +3890,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingEnabled: include.company
           ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
           : false,
+        heartbeatTimeScalePercent: include.company
+          ? (sourceManifest.company?.heartbeatTimeScalePercent ?? 100)
+          : 100,
         feedbackDataSharingConsentAt: include.company && sourceManifest.company?.feedbackDataSharingConsentAt
           ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)
           : null,
@@ -3911,6 +3920,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           brandColor: sourceManifest.company.brandColor,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
+          heartbeatTimeScalePercent: sourceManifest.company.heartbeatTimeScalePercent,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
             ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)
             : null,

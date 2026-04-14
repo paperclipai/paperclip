@@ -39,6 +39,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  heartbeatTimeScalePercent: number;
 }
 
 export interface CompanyPortabilitySidebarOrder {

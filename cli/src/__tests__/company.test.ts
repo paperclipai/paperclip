@@ -167,6 +167,7 @@ describe("renderCompanyImportPreview", () => {
           feedbackDataSharingConsentAt: null,
           feedbackDataSharingConsentByUserId: null,
           feedbackDataSharingTermsVersion: null,
+          heartbeatTimeScalePercent: 100,
         },
         sidebar: {
           agents: ["ceo"],
@@ -382,6 +383,7 @@ describe("import selection catalog", () => {
           feedbackDataSharingConsentAt: null,
           feedbackDataSharingConsentByUserId: null,
           feedbackDataSharingTermsVersion: null,
+          heartbeatTimeScalePercent: 100,
         },
         sidebar: {
           agents: ["ceo"],
