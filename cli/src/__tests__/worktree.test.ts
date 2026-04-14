@@ -2,13 +2,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  agents,
+  companies,
+  createDb,
+  projects,
+  routines,
+  routineTriggers,
+} from "@paperclipai/db";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  pauseSeededScheduledRoutines,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
+  resolveWorktreeReseedSource,
+  resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
   resolveWorktreeMakeTargetPath,
   worktreeInitCommand,
@@ -26,9 +38,21 @@ import {
   sanitizeWorktreeInstanceId,
 } from "../commands/worktree-lib.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_ENV = { ...process.env };
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres worktree CLI tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);
@@ -482,27 +506,69 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("requires an explicit source for worktree reseed", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-source-"));
-    const repoRoot = path.join(tempRoot, "repo");
-    const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+  it("requires an explicit reseed source", () => {
+    expect(() => resolveWorktreeReseedSource({})).toThrow(
+      "Pass --from <worktree> or --from-config/--from-instance explicitly so the reseed source is unambiguous.",
+    );
+  });
+
+  it("rejects mixed reseed source selectors", () => {
+    expect(() => resolveWorktreeReseedSource({
+      from: "current",
+      fromInstance: "default",
+    })).toThrow(
+      "Use either --from <worktree> or --from-config/--from-data-dir/--from-instance, not both.",
+    );
+  });
+
+  it("derives worktree reseed target paths from the adjacent env file", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-"));
+    const worktreeRoot = path.join(tempRoot, "repo");
+    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+    const envPath = path.join(worktreeRoot, ".paperclip", ".env");
 
     try {
-      fs.mkdirSync(repoRoot, { recursive: true });
-      delete process.env.PAPERCLIP_CONFIG;
-      process.chdir(repoRoot);
-
-      await expect(worktreeReseedCommand({ seed: false, yes: true })).rejects.toThrow(
-        "Reseed requires an explicit source.",
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
+      fs.writeFileSync(
+        envPath,
+        [
+          "PAPERCLIP_HOME=/tmp/paperclip-worktrees",
+          "PAPERCLIP_INSTANCE_ID=pap-1132-chat",
+        ].join("\n"),
+        "utf8",
       );
+      expect(
+        resolveWorktreeReseedTargetPaths({
+          configPath,
+          rootPath: worktreeRoot,
+        }),
+      ).toMatchObject({
+        cwd: worktreeRoot,
+        homeDir: "/tmp/paperclip-worktrees",
+        instanceId: "pap-1132-chat",
+      });
     } finally {
-      process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
-      } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
-      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reseed targets without worktree env metadata", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-missing-"));
+    const worktreeRoot = path.join(tempRoot, "repo");
+    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+
+    try {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
+      fs.writeFileSync(path.join(worktreeRoot, ".paperclip", ".env"), "", "utf8");
+
+      expect(() =>
+        resolveWorktreeReseedTargetPaths({
+          configPath,
+          rootPath: worktreeRoot,
+        })).toThrow("does not look like a worktree-local Paperclip instance");
+    } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -529,6 +595,7 @@ describe("worktree helpers", () => {
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
       fs.mkdirSync(path.dirname(sourcePaths.configPath), { recursive: true });
+      fs.mkdirSync(path.dirname(sourcePaths.secretsKeyFilePath), { recursive: true });
       fs.mkdirSync(repoRoot, { recursive: true });
       fs.mkdirSync(sourceRoot, { recursive: true });
 
@@ -546,6 +613,7 @@ describe("worktree helpers", () => {
       });
       fs.writeFileSync(currentPaths.configPath, JSON.stringify(currentConfig, null, 2), "utf8");
       fs.writeFileSync(sourcePaths.configPath, JSON.stringify(sourceConfig, null, 2), "utf8");
+      fs.writeFileSync(sourcePaths.secretsKeyFilePath, "source-secret", "utf8");
       fs.writeFileSync(
         currentPaths.envPath,
         [
@@ -562,7 +630,6 @@ describe("worktree helpers", () => {
 
       await worktreeReseedCommand({
         fromConfig: sourcePaths.configPath,
-        seed: false,
         yes: true,
       });
 
@@ -584,7 +651,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
@@ -775,6 +842,141 @@ describe("worktree helpers", () => {
       process.chdir(originalCwd);
       homedirSpy.mockRestore();
       fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
+  it("pauses only routines with enabled schedule triggers", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-routines-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const agentId = randomUUID();
+    const activeScheduledRoutineId = randomUUID();
+    const activeApiRoutineId = randomUUID();
+    const pausedScheduledRoutineId = randomUUID();
+    const archivedScheduledRoutineId = randomUUID();
+    const disabledScheduleRoutineId = randomUUID();
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Coder",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Project",
+        status: "in_progress",
+      });
+      await db.insert(routines).values([
+        {
+          id: activeScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Active scheduled",
+          status: "active",
+        },
+        {
+          id: activeApiRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Active API",
+          status: "active",
+        },
+        {
+          id: pausedScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Paused scheduled",
+          status: "paused",
+        },
+        {
+          id: archivedScheduledRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Archived scheduled",
+          status: "archived",
+        },
+        {
+          id: disabledScheduleRoutineId,
+          companyId,
+          projectId,
+          assigneeAgentId: agentId,
+          title: "Disabled schedule",
+          status: "active",
+        },
+      ]);
+      await db.insert(routineTriggers).values([
+        {
+          companyId,
+          routineId: activeScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 9 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: activeApiRoutineId,
+          kind: "api",
+          enabled: true,
+        },
+        {
+          companyId,
+          routineId: pausedScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 10 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: archivedScheduledRoutineId,
+          kind: "schedule",
+          enabled: true,
+          cronExpression: "0 11 * * *",
+          timezone: "UTC",
+        },
+        {
+          companyId,
+          routineId: disabledScheduleRoutineId,
+          kind: "schedule",
+          enabled: false,
+          cronExpression: "0 12 * * *",
+          timezone: "UTC",
+        },
+      ]);
+
+      const pausedCount = await pauseSeededScheduledRoutines(tempDb.connectionString);
+      expect(pausedCount).toBe(1);
+
+      const rows = await db.select({ id: routines.id, status: routines.status }).from(routines);
+      const statusById = new Map(rows.map((row) => [row.id, row.status]));
+      expect(statusById.get(activeScheduledRoutineId)).toBe("paused");
+      expect(statusById.get(activeApiRoutineId)).toBe("active");
+      expect(statusById.get(pausedScheduledRoutineId)).toBe("paused");
+      expect(statusById.get(archivedScheduledRoutineId)).toBe("archived");
+      expect(statusById.get(disabledScheduleRoutineId)).toBe("active");
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
     }
   }, 20_000);
 });

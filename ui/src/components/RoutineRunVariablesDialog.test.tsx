@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Agent, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
@@ -85,6 +85,33 @@ function createProject(): Project {
   };
 }
 
+function createAgent(): Agent {
+  return {
+    id: "agent-1",
+    companyId: "company-1",
+    name: "Routine Agent",
+    role: "engineer",
+    title: null,
+    status: "active",
+    reportsTo: null,
+    capabilities: null,
+    adapterType: "process",
+    adapterConfig: {},
+    runtimeConfig: {},
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    lastHeartbeatAt: null,
+    icon: "code",
+    metadata: null,
+    createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+    urlKey: "routine-agent",
+    pauseReason: null,
+    pausedAt: null,
+    permissions: { canCreateAgents: false },
+  };
+}
+
 describe("RoutineRunVariablesDialog", () => {
   let container: HTMLDivElement;
 
@@ -116,7 +143,10 @@ describe("RoutineRunVariablesDialog", () => {
             open
             onOpenChange={() => {}}
             companyId="company-1"
-            project={createProject()}
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
             variables={[]}
             isPending={false}
             onSubmit={() => {}}
@@ -129,6 +159,8 @@ describe("RoutineRunVariablesDialog", () => {
 
     expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
     expect(document.body.textContent).toContain("Run routine");
+    expect(document.body.textContent).not.toContain("Search agents...");
+    expect(document.body.textContent).not.toContain("Search projects...");
 
     await act(async () => {
       root.unmount();

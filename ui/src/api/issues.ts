@@ -24,6 +24,7 @@ export const issuesApi = {
     filters?: {
       status?: string;
       projectId?: string;
+      parentId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
       assigneeUserId?: string;
@@ -42,6 +43,7 @@ export const issuesApi = {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.parentId) params.set("parentId", filters.parentId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
@@ -80,7 +82,21 @@ export const issuesApi = {
       expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
-  listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
+  listComments: (
+    id: string,
+    filters?: {
+      after?: string;
+      order?: "asc" | "desc";
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.after) params.set("after", filters.after);
+    if (filters?.order) params.set("order", filters.order);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const qs = params.toString();
+    return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
+  },
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();

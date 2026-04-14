@@ -200,6 +200,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.mkdir(expectedPackageDir, { recursive: true });
     await fs.mkdir(stalePackageDir, { recursive: true });
     await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links\n", "utf8");
     await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
     await fs.writeFile(
       path.join(repoRoot, "server", "package.json"),
@@ -235,6 +236,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
     await fs.mkdir(expectedPackageDir, { recursive: true });
     await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links-current\n", "utf8");
     await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
     await fs.writeFile(
       path.join(repoRoot, "server", "package.json"),
@@ -254,6 +256,45 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
 
     await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+  });
+
+  it("skips relinking outside linked git worktrees", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-stale-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+    const stalePackageDir = path.join(staleRoot, "db");
+
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(stalePackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(stalePackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+    expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(stalePackageDir));
   });
 });
 
@@ -324,6 +365,99 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.created).toBe(false);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1355-worktree-reuse";
+    const currentWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+
+    await fs.mkdir(path.dirname(currentWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, currentWorktree, "HEAD"], { cwd: repoRoot });
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: currentWorktree,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1355",
+        title: "worktree reuse",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const expectedWorktreePath = await fs.realpath(currentWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+    await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
+  });
+
+  it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1355-worktree-reuse";
+    const existingWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await fs.mkdir(path.dirname(existingWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, existingWorktree, "HEAD"], { cwd: repoRoot });
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: existingWorktree,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          worktreeParentDir: ".paperclip/other-worktrees",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1355",
+        title: "worktree reuse",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    const expectedWorktreePath = await fs.realpath(existingWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+    expect(operations).toHaveLength(1);
+    expect(operations[0]?.phase).toBe("worktree_prepare");
+    expect(operations[0]?.command).toBeNull();
+    expect(operations[0]?.metadata).toMatchObject({
+      branchName,
+      created: false,
+      reused: true,
+      worktreePath: expectedWorktreePath,
+    });
   });
 
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {

@@ -5,7 +5,7 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
-  it("refreshes touched inbox queries for issue activity", () => {
+  it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
       invalidateQueries: (input: unknown) => {
@@ -20,8 +20,10 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       {
         entityType: "issue",
         entityId: "issue-1",
+        action: "issue.updated",
         details: null,
       },
+      { userId: null, agentId: null },
     );
 
     expect(invalidations).toContainEqual({
@@ -32,6 +34,133 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.activity("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.runs("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.documents("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.attachments("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.approvals("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.liveRuns("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.activeRun("issue-1"),
+    });
+  });
+
+  it("still refreshes comments when a comment activity event arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.comment_added",
+        details: null,
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+    });
+  });
+
+  it("keeps self-authored comment events from refetching the active issue tree", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.comment_added",
+        actorType: "user",
+        actorId: "user-1",
+        details: null,
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.activity("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+      refetchType: "inactive",
+    });
+  });
+
+  it("treats self-authored comment-driven issue updates as inactive-only refreshes", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.updated",
+        actorType: "user",
+        actorId: "user-1",
+        details: { source: "comment" },
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.activity("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+      refetchType: "inactive",
     });
   });
 });
