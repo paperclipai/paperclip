@@ -85,6 +85,7 @@ import {
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
   getLatestFailedRunsByAgent,
+  getNeedsActionWorkItems,
   getRecentTouchedIssues,
   isMineInboxTab,
   loadInboxIssueColumns,
@@ -921,19 +922,6 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-  } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(selectedCompanyId!),
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        touchedByUserId: "me",
-        inboxArchivedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
-      }),
-    enabled: !!selectedCompanyId,
-  });
-  const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
   } = useQuery({
@@ -952,19 +940,18 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
+  const actionQueue = dashboard?.brief.needsAttention ?? [];
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
     [touchedIssues],
   );
-  const issuesToRender = useMemo(
+  const updateIssuesToRender = useMemo(
     () => {
-      if (tab === "mine") return mineIssues;
       if (tab === "unread") return unreadTouchedIssues;
       return touchedIssues;
     },
-    [tab, mineIssues, touchedIssues, unreadTouchedIssues],
+    [tab, touchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {
@@ -1036,6 +1023,10 @@ export function Inbox() {
     () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
     [heartbeatRuns, dismissed],
   );
+  const visibleActionQueue = useMemo(
+    () => actionQueue.filter((item) => item.kind === "issue" || !dismissed.has(item.key)),
+    [actionQueue, dismissed],
+  );
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of heartbeatRuns ?? []) {
@@ -1072,16 +1063,29 @@ export function Inbox() {
     if (tab === "mine") return joinRequests.filter((jr) => !dismissed.has(`join:${jr.id}`));
     return joinRequests;
   }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
+  const needsActionItems = useMemo(
+    () =>
+      getNeedsActionWorkItems({
+        actionQueue: visibleActionQueue,
+        issues: issues ?? [],
+        approvals: approvals ?? [],
+        failedRuns,
+        joinRequests,
+      }),
+    [visibleActionQueue, issues, approvals, failedRuns, joinRequests],
+  );
 
   const workItemsToRender = useMemo(
-    () =>
-      getInboxWorkItems({
-        issues: tab === "all" && !showTouchedCategory ? [] : issuesToRender,
+    () => {
+      if (tab === "mine") return needsActionItems;
+      return getInboxWorkItems({
+        issues: tab === "all" && !showTouchedCategory ? [] : updateIssuesToRender,
         approvals: tab === "all" && !showApprovalsCategory ? [] : approvalsToRender,
         failedRuns: failedRunsForTab,
         joinRequests: joinRequestsForTab,
-      }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
+      });
+    },
+    [approvalsToRender, failedRunsForTab, joinRequestsForTab, needsActionItems, showApprovalsCategory, showTouchedCategory, tab, updateIssuesToRender],
   );
 
   const filteredWorkItems = useMemo(() => {
@@ -1593,8 +1597,8 @@ export function Inbox() {
   });
 
   const visibleSections = [
-    showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
+    showAlertsSection ? "alerts" : null,
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
@@ -1602,12 +1606,11 @@ export function Inbox() {
     !isApprovalsLoading &&
     !isDashboardLoading &&
     !isIssuesLoading &&
-    !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
-  const markAllReadIssues = (tab === "mine" ? mineIssues : unreadTouchedIssues)
+  const markAllReadIssues = (tab === "recent" ? touchedIssues : tab === "unread" ? unreadTouchedIssues : [])
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
@@ -1632,11 +1635,11 @@ export function Inbox() {
             items={[
               {
                 value: "mine",
-                label: "Mine",
+                label: "Needs Action",
               },
               {
                 value: "recent",
-                label: "Recent",
+                label: "Updates",
               },
               { value: "unread", label: "Unread" },
               { value: "all", label: "All" },
@@ -1757,12 +1760,12 @@ export function Inbox() {
             <SelectTrigger className="h-8 w-[170px] text-xs">
               <SelectValue placeholder="Category" />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
+              <SelectContent>
+                <SelectItem value="everything">All categories</SelectItem>
+                <SelectItem value="issues_i_touched">Issue updates</SelectItem>
+                <SelectItem value="join_requests">Join requests</SelectItem>
+                <SelectItem value="approvals">Approvals</SelectItem>
+                <SelectItem value="failed_runs">Failed runs</SelectItem>
               <SelectItem value="alerts">Alerts</SelectItem>
             </SelectContent>
           </Select>
@@ -1799,11 +1802,11 @@ export function Inbox() {
             searchQuery.trim()
               ? "No inbox items match your search."
               : tab === "mine"
-              ? "Inbox zero."
+              ? "No board actions waiting."
               : tab === "unread"
-              ? "No new inbox items."
+              ? "No unread updates."
               : tab === "recent"
-                ? "No recent inbox items."
+                ? "No recent updates."
                 : "No inbox items match these filters."
           }
         />
@@ -1827,6 +1830,7 @@ export function Inbox() {
                 );
                 const todayCutoff = Date.now() - 24 * 60 * 60 * 1000;
                 const showTodayDivider =
+                  tab !== "mine" &&
                   index > 0 &&
                   item.timestamp > 0 &&
                   item.timestamp < todayCutoff &&

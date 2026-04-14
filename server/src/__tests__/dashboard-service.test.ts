@@ -270,15 +270,45 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
       ]),
     );
 
-    const attentionKinds = new Set(((summary as any).brief.needsAttention as Array<{ kind: string }>).map((item) => item.kind));
+    const attentionItems = (summary as any).brief.needsAttention as Array<{
+      kind: string;
+      title: string;
+      entityId: string;
+      ctaLabel: string;
+    }>;
+    const attentionKinds = new Set(attentionItems.map((item) => item.kind));
     expect(attentionKinds).toEqual(new Set(["approval", "join_request", "run", "issue"]));
-    const orderedKinds = ((summary as any).brief.needsAttention as Array<{ kind: string }>).map((item) => item.kind);
+    const orderedKinds = attentionItems.map((item) => item.kind);
     expect(orderedKinds.indexOf("approval")).toBeLessThan(orderedKinds.indexOf("run"));
     expect(orderedKinds.indexOf("join_request")).toBeLessThan(orderedKinds.indexOf("run"));
     expect(orderedKinds.indexOf("run")).toBeLessThan(orderedKinds.indexOf("issue"));
-    expect(((summary as any).brief.needsAttention as Array<{ title: string }>).some((item) =>
+    expect(attentionItems.some((item) =>
       item.title.includes("Minor copy cleanups")
     )).toBe(false);
+    expect(attentionItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "approval",
+          entityId: expect.any(String),
+          ctaLabel: "Review approval",
+        }),
+        expect.objectContaining({
+          kind: "join_request",
+          entityId: expect.any(String),
+          ctaLabel: "Review request",
+        }),
+        expect.objectContaining({
+          kind: "run",
+          entityId: failedRunId,
+          ctaLabel: "Inspect failure",
+        }),
+        expect.objectContaining({
+          kind: "issue",
+          entityId: blockedChildId,
+          ctaLabel: "Open issue",
+        }),
+      ]),
+    );
   });
 
   it("returns a healthy empty brief when the company has no active work", async () => {

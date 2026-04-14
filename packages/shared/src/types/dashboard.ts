@@ -23,11 +23,13 @@ export interface DashboardFocusArea {
 export interface DashboardAttentionItem {
   key: string;
   kind: "issue" | "run" | "approval" | "join_request";
+  entityId: string;
   title: string;
   reason: string;
   severity: "low" | "medium" | "high" | "critical";
   timestamp: Date;
   href: string;
+  ctaLabel: string;
 }
 
 export interface DashboardBrief {

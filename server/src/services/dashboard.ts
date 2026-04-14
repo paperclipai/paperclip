@@ -548,17 +548,20 @@ export function dashboardService(db: Db) {
         issueAttentionItems.push({
           key: `issue:${issue.id}`,
           kind: "issue",
+          entityId: issue.id,
           title: issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title,
           reason,
           severity,
           timestamp: lastActivityAt,
           href: `/issues/${issue.identifier ?? issue.id}`,
+          ctaLabel: "Open issue",
         });
       }
 
       const approvalAttentionItems: DashboardAttentionItem[] = actionableApprovalRows.map((approval) => ({
         key: `approval:${approval.id}`,
         kind: "approval",
+        entityId: approval.id,
         title: approvalTitle(approval),
         reason:
           approval.status === "revision_requested"
@@ -570,16 +573,19 @@ export function dashboardService(db: Db) {
             : "medium",
         timestamp: approval.updatedAt,
         href: `/approvals/${approval.id}`,
+        ctaLabel: "Review approval",
       }));
 
       const joinRequestAttentionItems: DashboardAttentionItem[] = joinRequestRows.map((joinRequest) => ({
         key: `join_request:${joinRequest.id}`,
         kind: "join_request",
+        entityId: joinRequest.id,
         title: joinRequestTitle(joinRequest),
         reason: "Pending join request",
         severity: "medium",
         timestamp: joinRequest.updatedAt,
         href: "/inbox/unread",
+        ctaLabel: "Review request",
       }));
 
       const failedRunAttentionItems: DashboardAttentionItem[] = failedRuns.map((run) => {
@@ -589,6 +595,7 @@ export function dashboardService(db: Db) {
         return {
           key: `run:${run.id}`,
           kind: "run",
+          entityId: run.id,
           title: issueRef
             ? `${run.agentName} failed on ${issueRef} ${linkedIssue?.title ?? ""}`.trim()
             : `${run.agentName} ${run.status.replace("_", " ")}`,
@@ -596,6 +603,7 @@ export function dashboardService(db: Db) {
           severity: "high",
           timestamp: run.createdAt,
           href: `/agents/${run.agentId}/runs/${run.id}`,
+          ctaLabel: "Inspect failure",
         };
       });
 

@@ -222,11 +222,13 @@ describe("Dashboard executive brief", () => {
           {
             key: "run:1",
             kind: "run",
+            entityId: "run-1",
             title: "QA Runner failed on COMA-1063 Merge branches",
             reason: "Failed active run",
             severity: "high",
             timestamp: new Date("2026-04-14T10:00:00.000Z"),
             href: "/agents/agent-1/runs/run-1",
+            ctaLabel: "Inspect failure",
           },
         ],
       },
@@ -268,10 +270,11 @@ describe("Dashboard executive brief", () => {
       expect(container.textContent).toContain("Company State");
       expect(container.textContent).toContain("Snapshot");
       expect(container.textContent).toContain("Focus Areas");
-      expect(container.textContent).toContain("Needs Attention");
+      expect(container.textContent).toContain("Do These Next");
       expect(container.textContent).toContain("Operational Detail");
       expect(container.textContent).toContain("Checkout trust");
       expect(container.textContent).toContain("QA Runner failed on COMA-1063 Merge branches");
+      expect(container.textContent).toContain("Inspect failure");
     });
 
     const text = container.textContent ?? "";
@@ -309,7 +312,7 @@ describe("Dashboard executive brief", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("There is no active company work in flight right now.");
       expect(container.textContent).toContain("No material workstream movement right now.");
-      expect(container.textContent).toContain("Nothing urgent is waiting on the board.");
+      expect(container.textContent).toContain("No board actions are waiting right now.");
     });
 
     act(() => {

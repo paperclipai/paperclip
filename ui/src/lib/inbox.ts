@@ -1,4 +1,11 @@
-import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type {
+  Approval,
+  DashboardAttentionItem,
+  DashboardSummary,
+  HeartbeatRun,
+  Issue,
+  JoinRequest,
+} from "@paperclipai/shared";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -314,6 +321,75 @@ export function getInboxWorkItems({
   });
 }
 
+export function getNeedsActionWorkItems({
+  actionQueue,
+  issues,
+  approvals,
+  failedRuns = [],
+  joinRequests = [],
+}: {
+  actionQueue: DashboardAttentionItem[];
+  issues: Issue[];
+  approvals: Approval[];
+  failedRuns?: HeartbeatRun[];
+  joinRequests?: JoinRequest[];
+}): InboxWorkItem[] {
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const approvalById = new Map(approvals.map((approval) => [approval.id, approval]));
+  const failedRunById = new Map(failedRuns.map((run) => [run.id, run]));
+  const joinRequestById = new Map(joinRequests.map((joinRequest) => [joinRequest.id, joinRequest]));
+  const items: InboxWorkItem[] = [];
+
+  for (const item of actionQueue) {
+    if (item.kind === "issue") {
+      const issue = issueById.get(item.entityId);
+      if (issue) {
+        items.push({
+          kind: "issue",
+          timestamp: issueLastActivityTimestamp(issue),
+          issue,
+        });
+      }
+      continue;
+    }
+
+    if (item.kind === "approval") {
+      const approval = approvalById.get(item.entityId);
+      if (approval) {
+        items.push({
+          kind: "approval",
+          timestamp: approvalActivityTimestamp(approval),
+          approval,
+        });
+      }
+      continue;
+    }
+
+    if (item.kind === "run") {
+      const run = failedRunById.get(item.entityId);
+      if (run) {
+        items.push({
+          kind: "failed_run",
+          timestamp: normalizeTimestamp(run.createdAt),
+          run,
+        });
+      }
+      continue;
+    }
+
+    const joinRequest = joinRequestById.get(item.entityId);
+    if (joinRequest) {
+      items.push({
+        kind: "join_request",
+        timestamp: normalizeTimestamp(joinRequest.createdAt),
+        joinRequest,
+      });
+    }
+  }
+
+  return items;
+}
+
 export function shouldShowInboxSection({
   tab,
   hasItems,
@@ -362,7 +438,10 @@ export function computeInboxBadgeData({
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !dismissed.has(`join:${jr.id}`),
   ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const visibleActionQueue = dashboard?.brief.needsAttention.filter(
+    (item) => item.kind === "issue" || !dismissed.has(item.key),
+  ).length
+    ?? mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
@@ -377,11 +456,11 @@ export function computeInboxBadgeData({
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
 
   return {
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + alerts,
+    inbox: visibleActionQueue + alerts,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
-    mineIssues: visibleMineIssues,
+    mineIssues: visibleActionQueue,
     alerts,
   };
 }

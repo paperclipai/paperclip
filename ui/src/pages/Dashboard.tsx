@@ -212,7 +212,10 @@ function AttentionRow({ item }: { item: DashboardAttentionItem }) {
         <p className="mt-2 text-sm font-medium">{item.title}</p>
         <p className="mt-1 text-xs text-muted-foreground">{item.reason}</p>
       </div>
-      <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(item.timestamp)}</span>
+      <div className="shrink-0 text-right">
+        <div className="text-xs font-medium text-foreground">{item.ctaLabel}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{timeAgo(item.timestamp)}</div>
+      </div>
     </Link>
   );
 }
@@ -462,7 +465,7 @@ export function Dashboard() {
                   })}
                 </p>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  {data.brief.needsAttention.length} items need attention across {data.brief.focusAreas.length} focus area{data.brief.focusAreas.length === 1 ? "" : "s"}.
+                  {data.brief.needsAttention.length} board action item{data.brief.needsAttention.length === 1 ? "" : "s"} queued across {data.brief.focusAreas.length} focus area{data.brief.focusAreas.length === 1 ? "" : "s"}.
                 </p>
               </div>
               <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${briefToneClasses(data.brief.health).badge}`}>
@@ -513,15 +516,15 @@ export function Dashboard() {
           <section className="space-y-3">
             <div>
               <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                Needs Attention
+                Do These Next
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Actionable approvals, failures, and board-level exceptions only.
+                Highest-leverage board actions, ordered before the lower-level detail below.
               </p>
             </div>
             {data.brief.needsAttention.length === 0 ? (
               <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-                Nothing urgent is waiting on the board.
+                No board actions are waiting right now.
               </div>
             ) : (
               <div className="space-y-2">

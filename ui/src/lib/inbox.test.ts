@@ -17,6 +17,7 @@ import {
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
+  getNeedsActionWorkItems,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   isMineInboxTab,
@@ -310,7 +311,30 @@ const dashboard: DashboardSummary = {
       },
     },
     focusAreas: [],
-    needsAttention: [],
+    needsAttention: [
+      {
+        key: "approval:approval-pending",
+        kind: "approval",
+        entityId: "approval-pending",
+        title: "Hire agent",
+        reason: "Pending board approval",
+        severity: "high",
+        timestamp: new Date("2026-03-11T05:00:00.000Z"),
+        href: "/approvals/approval-pending",
+        ctaLabel: "Review approval",
+      },
+      {
+        key: "run:run-latest",
+        kind: "run",
+        entityId: "run-latest",
+        title: "Latest failed run",
+        reason: "Failed active run",
+        severity: "high",
+        timestamp: new Date("2026-03-11T04:00:00.000Z"),
+        href: "/agents/agent-1/runs/run-latest",
+        ctaLabel: "Inspect failure",
+      },
+    ],
   },
 };
 
@@ -334,11 +358,11 @@ describe("inbox helpers", () => {
     });
 
     expect(result).toEqual({
-      inbox: 6,
+      inbox: 3,
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
-      mineIssues: 1,
+      mineIssues: 2,
       alerts: 1,
     });
   });
@@ -348,9 +372,14 @@ describe("inbox helpers", () => {
       approvals: [],
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
+      heartbeatRuns: [makeRun("run-latest", "failed", "2026-03-11T00:00:00.000Z")],
       mineIssues: [],
-      dismissed: new Set<string>(["run:run-1", "alert:budget", "alert:agent-errors"]),
+      dismissed: new Set<string>([
+        "approval:approval-pending",
+        "run:run-latest",
+        "alert:budget",
+        "alert:agent-errors",
+      ]),
     });
 
     expect(result).toEqual({
@@ -373,9 +402,87 @@ describe("inbox helpers", () => {
       dismissed: new Set<string>(),
     });
 
-    expect(result.mineIssues).toBe(1);
-    // inbox = mineIssues(1) + agent-error alert(1) + budget alert(1)
-    expect(result.inbox).toBe(3);
+    expect(result.mineIssues).toBe(2);
+    // inbox = action queue(2) + agent-error alert(1) + budget alert(1)
+    expect(result.inbox).toBe(4);
+  });
+
+  it("preserves the server action-queue order instead of re-sorting by recency", () => {
+    const issue = makeIssue("issue-1", false);
+    issue.lastActivityAt = new Date("2026-03-11T06:00:00.000Z");
+    const approval = makeApprovalWithTimestamps(
+      "approval-pending",
+      "pending",
+      "2026-03-11T02:00:00.000Z",
+    );
+    const joinRequest = makeJoinRequest("join-1");
+    joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
+    const run = makeRun("run-latest", "failed", "2026-03-11T04:00:00.000Z");
+
+    const items = getNeedsActionWorkItems({
+      actionQueue: [
+        {
+          key: "join_request:join-1",
+          kind: "join_request",
+          entityId: "join-1",
+          title: "Human join request",
+          reason: "Pending join request",
+          severity: "medium",
+          timestamp: new Date("2026-03-11T03:00:00.000Z"),
+          href: "/inbox/unread",
+          ctaLabel: "Review request",
+        },
+        {
+          key: "approval:approval-pending",
+          kind: "approval",
+          entityId: "approval-pending",
+          title: "Hire agent",
+          reason: "Pending board approval",
+          severity: "high",
+          timestamp: new Date("2026-03-11T02:00:00.000Z"),
+          href: "/approvals/approval-pending",
+          ctaLabel: "Review approval",
+        },
+        {
+          key: "run:run-latest",
+          kind: "run",
+          entityId: "run-latest",
+          title: "Latest failed run",
+          reason: "Failed active run",
+          severity: "high",
+          timestamp: new Date("2026-03-11T04:00:00.000Z"),
+          href: "/agents/agent-1/runs/run-latest",
+          ctaLabel: "Inspect failure",
+        },
+        {
+          key: "issue:issue-1",
+          kind: "issue",
+          entityId: "issue-1",
+          title: "PAP-issue-1 Issue issue-1",
+          reason: "Waiting on board action",
+          severity: "high",
+          timestamp: new Date("2026-03-11T06:00:00.000Z"),
+          href: "/issues/PAP-issue-1",
+          ctaLabel: "Open issue",
+        },
+      ],
+      issues: [issue],
+      approvals: [approval],
+      failedRuns: [run],
+      joinRequests: [joinRequest],
+    });
+
+    expect(items.map((item) => {
+      if (item.kind === "approval") return `approval:${item.approval.id}`;
+      if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+      if (item.kind === "failed_run") return `run:${item.run.id}`;
+      return `issue:${item.issue.id}`;
+    })).toEqual([
+      "join:join-1",
+      "approval:approval-pending",
+      "run:run-latest",
+      "issue:issue-1",
+    ]);
   });
 
   it("keeps read issues in the touched list but excludes them from unread counts", () => {
