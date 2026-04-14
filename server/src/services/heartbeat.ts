@@ -4988,7 +4988,54 @@ export function heartbeatService(db: Db) {
       // Note: DISTINCT ON is a PostgreSQL-specific feature.
       const raw = await db.execute(sql`
         SELECT DISTINCT ON (agent_id)
-          *
+          id,
+          company_id,
+          agent_id,
+          invocation_source,
+          trigger_detail,
+          status,
+          started_at,
+          finished_at,
+          error,
+          wakeup_request_id,
+          exit_code,
+          signal,
+          usage_json,
+          CASE
+            WHEN result_json IS NULL THEN NULL
+            WHEN jsonb_typeof(result_json) != 'object' THEN NULL
+            ELSE
+              jsonb_strip_nulls(
+                jsonb_build_object(
+                  'summary', substring(result_json->>'summary', 1, 1024),
+                  'result', substring(result_json->>'result', 1, 1024),
+                  'message', substring(result_json->>'message', 1, 1024),
+                  'error', substring(result_json->>'error', 1, 1024),
+                  'total_cost_usd', result_json->'total_cost_usd',
+                  'cost_usd', result_json->'cost_usd',
+                  'costUsd', result_json->'costUsd'
+                )
+              )
+          END as result_json,
+          session_id_before,
+          session_id_after,
+          log_store,
+          log_ref,
+          log_bytes,
+          log_sha256,
+          log_compressed,
+          stdout_excerpt,
+          stderr_excerpt,
+          error_code,
+          external_run_id,
+          process_pid,
+          process_group_id,
+          process_started_at,
+          retry_of_run_id,
+          process_loss_retry_count,
+          context_snapshot,
+          created_at,
+          updated_at
         FROM heartbeat_runs
         WHERE company_id = ${companyId}
         ORDER BY agent_id, created_at DESC
