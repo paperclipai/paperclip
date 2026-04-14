@@ -46,7 +46,10 @@ function buildChainableQuery(defaultResult: unknown = []) {
 }
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-const mockCreateAgentDocument = vi.hoisted(() => vi.fn().mockResolvedValue(randomUUID()));
+const mockCreateAgentDocument = vi.hoisted(() => {
+  // Inline UUID to avoid referencing `randomUUID` before import is available during hoisting.
+  return vi.fn().mockResolvedValue("00000000-0000-0000-0000-000000000000");
+});
 
 vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,

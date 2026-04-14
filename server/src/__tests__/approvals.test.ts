@@ -49,7 +49,7 @@ const mockApprovalService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn().mockResolvedValue({ id: randomUUID() }),
+  wakeup: vi.fn().mockResolvedValue({ id: "00000000-0000-0000-0000-000000000000" }),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({

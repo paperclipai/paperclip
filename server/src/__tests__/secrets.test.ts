@@ -71,14 +71,18 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  const fakeDb = {
-    select: vi.fn().mockReturnThis(),
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    then: vi.fn().mockResolvedValue([{ membershipRole: "owner" }]),
-    update: vi.fn().mockReturnThis(),
-    set: vi.fn().mockReturnThis(),
-  } as any;
+  // Chainable that's also awaitable via a proper thenable contract.
+  const chainable: any = {};
+  chainable.select = vi.fn().mockReturnValue(chainable);
+  chainable.from = vi.fn().mockReturnValue(chainable);
+  chainable.where = vi.fn().mockReturnValue(chainable);
+  chainable.update = vi.fn().mockReturnValue(chainable);
+  chainable.set = vi.fn().mockReturnValue(chainable);
+  chainable.limit = vi.fn().mockReturnValue(chainable);
+  chainable.then = vi.fn().mockImplementation((resolve: any) =>
+    resolve([{ membershipRole: "owner" }]),
+  );
+  const fakeDb = chainable as any;
   app.use("/api", secretRoutes(fakeDb));
   app.use(errorHandler);
   return app;

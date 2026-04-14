@@ -30,6 +30,9 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  terminate: vi.fn(),
   getChainOfCommand: vi.fn().mockResolvedValue([]),
   getAccessState: vi.fn().mockResolvedValue({ permissions: [], membership: null }),
   listKeys: vi.fn().mockResolvedValue([]),
@@ -57,7 +60,7 @@ vi.mock("../services/index.js", () => ({
   approvalService: () => ({ list: vi.fn().mockResolvedValue([]) }),
   budgetService: () => ({ upsertPolicy: vi.fn(), getPolicy: vi.fn(), listPolicies: vi.fn().mockResolvedValue([]), listIncidents: vi.fn().mockResolvedValue([]), resolveIncident: vi.fn() }),
   companySkillService: () => ({ list: vi.fn().mockResolvedValue([]), scan: vi.fn() }),
-  heartbeatService: () => ({ cancelBudgetScopeWork: vi.fn(), wakeup: vi.fn(), getActiveRun: vi.fn(), listRuns: vi.fn().mockResolvedValue([]) }),
+  heartbeatService: () => ({ cancelBudgetScopeWork: vi.fn(), cancelActiveForAgent: vi.fn(), wakeup: vi.fn(), getActiveRun: vi.fn(), listRuns: vi.fn().mockResolvedValue([]) }),
   issueApprovalService: () => ({ list: vi.fn().mockResolvedValue([]) }),
   issueService: () => ({ list: vi.fn().mockResolvedValue([]) }),
   logActivity: mockLogActivity,
@@ -232,18 +235,20 @@ describe("agent routes", () => {
 
   describe("POST /api/agents/:id/pause", () => {
     it("pauses an active agent", async () => {
-      mockAgentService.update.mockResolvedValue({ ...MOCK_AGENT, status: "paused" });
+      mockAgentService.pause.mockResolvedValue({ ...MOCK_AGENT, status: "paused" });
       const app = await createApp(boardUser(USER_ID, [COMPANY_ID]));
       const res = await request(app).post(`/api/agents/${AGENT_ID}/pause`);
 
       expect(res.status).toBe(200);
-      expect(mockAgentService.update).toHaveBeenCalled();
+      expect(mockAgentService.pause).toHaveBeenCalled();
     });
 
-    it("rejects unauthenticated pause request with 401", async () => {
+    it("rejects unauthenticated pause request with 403", async () => {
+      // Route uses assertBoard which throws forbidden (403) for non-board actors
+      // (including no-actor "none" type).
       const app = await createApp(noActor());
       const res = await request(app).post(`/api/agents/${AGENT_ID}/pause`);
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
     });
   });
 });

@@ -38,7 +38,7 @@ const MOCK_POSTED_MESSAGE = {
 
 // ── Service mocks ───────────────────────────────────────────────────────────
 
-const mockEnsureCompanyChannel = vi.hoisted(() => vi.fn().mockResolvedValue(CHANNEL_ID));
+const mockEnsureCompanyChannel = vi.hoisted(() => vi.fn().mockResolvedValue("00000000-0000-0000-0000-000000000000"));
 const mockListChannels = vi.hoisted(() => vi.fn());
 const mockGetMessages = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());

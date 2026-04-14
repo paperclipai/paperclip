@@ -38,7 +38,9 @@ test.describe("Onboarding wizard", () => {
 
     await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
 
-    const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
+    // Use substring match — wizard placeholder is "e.g., Acme Corp" (StepCompany.tsx)
+    // but legacy Setup.tsx flow used exact "Acme Corp". Match either.
+    const companyNameInput = page.locator('input[placeholder*="Acme Corp"]');
     await companyNameInput.fill(COMPANY_NAME);
 
     const nextButton = page.getByRole("button", { name: "Next" });

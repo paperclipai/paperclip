@@ -42,15 +42,16 @@ vi.mock("../middleware/logger.js", () => ({
 // ── Fake db for war-room queries ────────────────────────────────────────────
 
 function createFakeDb() {
-  const chainable: any = {
-    select: vi.fn().mockReturnThis(),
-    from: vi.fn().mockReturnThis(),
-    leftJoin: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    groupBy: vi.fn().mockReturnThis(),
-    orderBy: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockResolvedValue([]),
-  };
+  // Chainable that's also awaitable (resolves to []).
+  const chainable: any = {};
+  chainable.select = vi.fn().mockReturnValue(chainable);
+  chainable.from = vi.fn().mockReturnValue(chainable);
+  chainable.leftJoin = vi.fn().mockReturnValue(chainable);
+  chainable.where = vi.fn().mockReturnValue(chainable);
+  chainable.groupBy = vi.fn().mockReturnValue(chainable);
+  chainable.orderBy = vi.fn().mockReturnValue(chainable);
+  chainable.limit = vi.fn().mockReturnValue(chainable);
+  chainable.then = vi.fn().mockImplementation((resolve: any) => resolve([]));
   // Make db itself callable as select()
   const db = vi.fn().mockReturnValue(chainable);
   Object.assign(db, chainable);

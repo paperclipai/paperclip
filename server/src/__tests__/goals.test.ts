@@ -82,7 +82,18 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  const fakeDb = {} as any;
+  // Fake DB chainable for assertCanWrite membership queries.
+  const chainable: any = {};
+  chainable.select = vi.fn().mockReturnValue(chainable);
+  chainable.from = vi.fn().mockReturnValue(chainable);
+  chainable.where = vi.fn().mockReturnValue(chainable);
+  chainable.orderBy = vi.fn().mockReturnValue(chainable);
+  chainable.limit = vi.fn().mockReturnValue(chainable);
+  // Treat board user with non-viewer role by returning empty rows (membership undefined → not viewer).
+  chainable.then = vi.fn().mockImplementation((resolve: any) => resolve([]));
+  const fakeDb: any = {
+    select: vi.fn().mockReturnValue(chainable),
+  };
   app.use("/api", goalRoutes(fakeDb));
   app.use(errorHandler);
   return app;

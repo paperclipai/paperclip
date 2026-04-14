@@ -30,9 +30,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          # Allow lockfile edits when accompanied by a package.json change in the
+          # same PR (legitimate dep update). Block lockfile-only edits.
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
-            exit 1
+            if printf '%s\n' "$changed" | grep -qE '(^|/)package\.json$'; then
+              echo "Lockfile edited alongside package.json change(s) — accepting."
+            else
+              echo "Do not commit pnpm-lock.yaml without an accompanying package.json change."
+              echo "If this PR intentionally bumps deps, edit the relevant package.json too."
+              echo "If this is an accidental lockfile diff, drop it from the PR."
+              exit 1
+            fi
           fi
 
       - name: Setup pnpm

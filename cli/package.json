@@ -48,7 +48,7 @@
     "@ironworksai/db": "workspace:*",
     "@ironworksai/server": "workspace:*",
     "@ironworksai/shared": "workspace:*",
-    "drizzle-orm": "0.38.4",
+    "drizzle-orm": "^0.45.2",
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",
     "embedded-postgres": "^18.1.0-beta.16",

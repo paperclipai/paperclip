@@ -33,13 +33,23 @@ EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'Could not upgrade knowledge_chunks.embedding: %', SQLERRM;
 END $$;
 
--- Restore agent_memory_entries.embedding if it was dropped during a prior
--- pgvector reset (CASCADE drops vector columns when DROP EXTENSION runs)
+-- Restore agent_memory_entries.embedding to vector(1536):
+--   - If column missing entirely (CASCADE-dropped during pgvector reset), add it
+--   - If column exists as text (added by 0084 fallback when pgvector was missing),
+--     drop it and re-add as vector
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'agent_memory_entries' AND column_name = 'embedding'
   ) THEN
+    ALTER TABLE agent_memory_entries ADD COLUMN embedding vector(1536);
+  ELSIF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'agent_memory_entries'
+      AND column_name = 'embedding'
+      AND data_type = 'text'
+  ) THEN
+    ALTER TABLE agent_memory_entries DROP COLUMN embedding;
     ALTER TABLE agent_memory_entries ADD COLUMN embedding vector(1536);
   END IF;
 EXCEPTION WHEN OTHERS THEN
