@@ -1479,9 +1479,11 @@ function isInviteTokenHashCollisionError(error: unknown) {
         ? candidate.message
         : "";
     const constraint =
-      "constraint" in candidate && typeof candidate.constraint === "string"
-        ? candidate.constraint
-        : null;
+      "constraint_name" in candidate && typeof candidate.constraint_name === "string"
+        ? candidate.constraint_name
+        : "constraint" in candidate && typeof candidate.constraint === "string"
+          ? candidate.constraint
+          : null;
     if (code !== "23505") continue;
     if (constraint === "invites_token_hash_unique_idx") return true;
     if (message.includes("invites_token_hash_unique_idx")) return true;

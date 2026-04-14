@@ -790,13 +790,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
+          const err = error as { code?: string; constraint?: string; constraint_name?: string } | null;
+          const constraint = err?.constraint ?? err?.constraint_name;
           const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+            !!err &&
+            err.code === "23505" &&
+            constraint === "issues_open_routine_execution_uq";
           if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
