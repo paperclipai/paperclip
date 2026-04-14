@@ -2,12 +2,30 @@ import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
+type HeartbeatCompletionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+type HeartbeatIssueStatus = "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled";
+type HeartbeatIssuePriority = "critical" | "high" | "medium" | "low";
 
 type IssueAssignmentWakeupOnComplete = Partial<{
-  silent: boolean;
-  statuses: Record<string, string>;
-  commentTemplate: string;
-  createIssue: Record<string, unknown>;
+  agentId: string | null;
+  source: WakeupSource | null;
+  triggerDetail: WakeupTriggerDetail | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown> | null;
+  commentBody: string | null;
+  issueStatus: HeartbeatIssueStatus | null;
+  createIssue:
+    | {
+        title: string | null;
+        description: string | null;
+        status: HeartbeatIssueStatus | null;
+        priority: HeartbeatIssuePriority | null;
+        assignToAgentId: string | null;
+        commentBody: string | null;
+      }
+    | null;
+  onlyOn: HeartbeatCompletionOutcome[] | null;
 }>;
 
 export interface IssueAssignmentWakeupDeps {
