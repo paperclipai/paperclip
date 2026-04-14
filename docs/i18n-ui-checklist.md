@@ -27,16 +27,18 @@ Next Batches:
 - [x] Shared navigation, filter, banner, and picker utility components
 - [x] Copy-heavy setup dialogs and platform instruction modals
 - [x] Company import/export pages and org chart surfaces
-- [ ] Company skill library surfaces
-- [ ] Repo-wide deep scan across `ui/src/pages` and `ui/src/components` (remaining sweep: `CompanySkills`, `Agents`, `Projects`, `Companies`, `Issues`, `MyIssues`)
+- [x] Company skill library surfaces
+- [x] Repo-wide page sweep across `ui/src/pages` for `CompanySkills`, `Agents`, `Projects`, `Companies`, `Issues`, and `MyIssues`
 - [x] Re-check `origin/master` UI changes for newly introduced i18n scope
+- [ ] Repo-wide production component sweep across `ui/src/components` and shared UI primitives
+- [ ] Decide whether lab/demo/design pages should be localized in this rollout or tracked separately
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
 
 Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2214` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2481` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:
@@ -70,4 +72,13 @@ Verification Notes:
   `ui/src/pages/CompanyExport.tsx`
   `ui/src/pages/OrgChart.tsx`
   `ui/src/pages/Org.tsx`
+  Company skills and top-level operational list pages are now localized:
+  `ui/src/pages/CompanySkills.tsx`
+  `ui/src/pages/Agents.tsx`
+  `ui/src/pages/Projects.tsx`
+  `ui/src/pages/Companies.tsx`
+  `ui/src/pages/Issues.tsx`
+  `ui/src/pages/MyIssues.tsx`
+  Centralized status label rendering is now localized:
+  `ui/src/components/StatusBadge.tsx`
   `pnpm --filter @paperclipai/ui typecheck` still hangs at `tsc -b` in this environment; the process was confirmed alive at the `tsc -b` stage and then terminated, so this batch is not claimed as freshly typecheck-clean.
