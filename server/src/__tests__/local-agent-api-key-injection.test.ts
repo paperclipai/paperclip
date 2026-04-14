@@ -448,6 +448,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     });
 
     let issueId: string | null = null;
+    let wakeCommentId: string | null = null;
     let projectId: string | null = null;
     let projectWorkspaceId: string | null = null;
     if (input.projectWorkspace) {
@@ -511,6 +512,9 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         projectWorkspaceId,
         useServiceCreate: input.issue?.useServiceCreate,
       });
+      if (input.wake.reason === "issue_comment_mentioned") {
+        wakeCommentId = randomUUID();
+      }
     }
 
     try {
@@ -533,7 +537,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
                   source: "automation",
                   triggerDetail: "system",
                   reason: "issue_comment_mentioned",
-                  payload: { issueId, commentId: "comment-1" },
+                  payload: { issueId, commentId: wakeCommentId },
                   contextSnapshot: { issueId, source: "comment.mention" },
                 });
 
@@ -545,6 +549,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
           capture,
           run,
           issueId,
+          wakeCommentId,
           projectId,
           projectWorkspaceId,
           mentionedProjectId,
@@ -597,7 +602,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       });
 
       it("injects PAPERCLIP_API_KEY and comment wake context on mention wakes", async () => {
-        const { capture, run, issueId } = await runWakeCase({
+        const { capture, run, issueId, wakeCommentId } = await runWakeCase({
           adapterType,
           wake: {
             source: "automation",
@@ -610,7 +615,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         expect(capture.env.PAPERCLIP_API_KEY).toMatch(/\S+/);
         expect(capture.env.PAPERCLIP_TASK_ID).toBe(issueId);
         expect(capture.env.PAPERCLIP_WAKE_REASON).toBe("issue_comment_mentioned");
-        expect(capture.env.PAPERCLIP_WAKE_COMMENT_ID).toBe("comment-1");
+        expect(capture.env.PAPERCLIP_WAKE_COMMENT_ID).toBe(wakeCommentId);
       });
 
       it("captures observed git provenance for shared project workspaces", async () => {
