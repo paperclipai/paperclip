@@ -31,6 +31,20 @@ Next Batches:
 - [x] Repo-wide page sweep across `ui/src/pages` for `CompanySkills`, `Agents`, `Projects`, `Companies`, `Issues`, and `MyIssues`
 - [x] Re-check `origin/master` UI changes for newly introduced i18n scope
 - [ ] Repo-wide production component sweep across `ui/src/components` and shared UI primitives
+  Completed component batch:
+  `ui/src/components/IssueWorkspaceCard.tsx`
+  `ui/src/components/FinanceBillerCard.tsx`
+  `ui/src/components/RoutineVariablesEditor.tsx`
+  `ui/src/components/DocumentDiffModal.tsx`
+  `ui/src/components/KeyboardShortcutsCheatsheet.tsx`
+  `ui/src/components/RoutineRunVariablesDialog.tsx`
+  `ui/src/components/OutputFeedbackButtons.tsx`
+  `ui/src/components/SidebarAgents.tsx`
+  `ui/src/components/ReportsToPicker.tsx`
+  Remaining production sweep:
+  `ui/src/components/transcript/RunTranscriptView.tsx`
+  `ui/src/components/ProjectProperties.tsx`
+  shared `ui/src/components/ui/*` primitives with built-in English chrome
 - [ ] Decide whether lab/demo/design pages should be localized in this rollout or tracked separately
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
 
@@ -38,7 +52,7 @@ Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2481` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2577` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:

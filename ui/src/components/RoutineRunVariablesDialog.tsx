@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Agent, IssueExecutionWorkspaceSettings, Project, RoutineVariable } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 import { AgentIcon } from "./AgentIconPicker";
@@ -150,6 +151,7 @@ export function RoutineRunVariablesDialog({
   isPending: boolean;
   onSubmit: (data: RoutineRunDialogSubmitData) => void;
 }) {
+  const { t } = useLocale();
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [selection, setSelection] = useState(() => buildInitialRunSelection({
     defaultAssigneeAgentId,
@@ -253,23 +255,23 @@ export function RoutineRunVariablesDialog({
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Run routine</DialogTitle>
+          <DialogTitle>{t("routineRunDialog.title")}</DialogTitle>
           <DialogDescription>
-            Choose the agent and optional project for this one run. Routine defaults are prefilled and won&apos;t be changed.
+            {t("routineRunDialog.description")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
-              <Label className="text-xs">Agent *</Label>
+              <Label className="text-xs">{t("routineRunDialog.agentLabel")}</Label>
               <InlineEntitySelector
                 value={selection.assigneeAgentId}
                 options={assigneeOptions}
-                placeholder="Agent"
-                noneLabel="Select an agent"
-                searchPlaceholder="Search agents..."
-                emptyMessage="No agents found."
+                placeholder={t("routineRunDialog.agentPlaceholder")}
+                noneLabel={t("routineRunDialog.selectAgent")}
+                searchPlaceholder={t("routineDetail.searchAssignees")}
+                emptyMessage={t("routineDetail.noAssigneesFound")}
                 disablePortal
                 openOnFocus={false}
                 onChange={(assigneeAgentId) => {
@@ -287,7 +289,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Select an agent</span>
+                    <span className="text-muted-foreground">{t("routineRunDialog.selectAgent")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -303,14 +305,14 @@ export function RoutineRunVariablesDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Project</Label>
+              <Label className="text-xs">{t("routineRunDialog.projectLabel")}</Label>
               <InlineEntitySelector
                 value={selection.projectId}
                 options={projectOptions}
-                placeholder="Project"
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                placeholder={t("routineRunDialog.projectPlaceholder")}
+                noneLabel={t("routineDetail.noProject")}
+                searchPlaceholder={t("routineDetail.searchProjects")}
+                emptyMessage={t("routineDetail.noProjectsFound")}
                 disablePortal
                 openOnFocus={false}
                 onChange={(projectId) => {
@@ -329,7 +331,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">No project</span>
+                    <span className="text-muted-foreground">{t("routineDetail.noProject")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -369,30 +371,30 @@ export function RoutineRunVariablesDialog({
                     [variable.name]: next === "__unset__" ? "" : next === "true",
                   }))}
                 >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
-                    <SelectItem value="true">True</SelectItem>
-                    <SelectItem value="false">False</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : variable.type === "select" ? (
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">{t("routineRunDialog.noValue")}</SelectItem>
+                      <SelectItem value="true">{t("routineVariables.true")}</SelectItem>
+                      <SelectItem value="false">{t("routineVariables.false")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : variable.type === "select" ? (
                 <Select
                   value={typeof values[variable.name] === "string" && values[variable.name] ? values[variable.name] as string : "__unset__"}
                   onValueChange={(next) => setValues((current) => ({
                     ...current,
                     [variable.name]: next === "__unset__" ? "" : next,
                   }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a value" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
-                    {variable.options.map((option) => (
-                      <SelectItem key={option} value={option}>{option}</SelectItem>
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={t("routineRunDialog.chooseValue")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">{t("routineRunDialog.noValue")}</SelectItem>
+                      {variable.options.map((option) => (
+                        <SelectItem key={option} value={option}>{option}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -421,14 +423,14 @@ export function RoutineRunVariablesDialog({
 
         <DialogFooter showCloseButton={false}>
           {!selection.assigneeAgentId ? (
-            <p className="mr-auto text-xs text-amber-600">Default agent required for this run.</p>
+            <p className="mr-auto text-xs text-amber-600">{t("routineRunDialog.defaultAgentRequired")}</p>
           ) : missingRequired.length > 0 ? (
             <p className="mr-auto text-xs text-amber-600">
-              Missing: {missingRequired.join(", ")}
+              {t("routineRunDialog.missing", { values: missingRequired.join(", ") })}
             </p>
           ) : workspaceSelectionEnabled && !workspaceConfigValid ? (
             <p className="mr-auto text-xs text-amber-600">
-              Choose an existing workspace before running.
+              {t("routineRunDialog.chooseExistingWorkspace")}
             </p>
           ) : (
             <span className="mr-auto" />
@@ -465,7 +467,7 @@ export function RoutineRunVariablesDialog({
             }}
             disabled={isPending || !canSubmit}
           >
-            {isPending ? "Running..." : "Run routine"}
+            {isPending ? t("routineRunDialog.running") : t("routineRunDialog.runRoutine")}
           </Button>
         </DialogFooter>
       </DialogContent>
