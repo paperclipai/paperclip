@@ -1,3 +1,4 @@
+# Node.js and build artifacts
 node_modules/
 dist/
 .env
@@ -5,7 +6,11 @@ dist/
 drizzle/meta/
 .vite/
 coverage/
+
+# System files
 .DS_Store
+
+# Local configuration and data
 data/
 .paperclip/
 .pnpm-store/
@@ -33,7 +38,7 @@ server/src/**/*.d.ts.map
 tmp/
 feedback-export-*
 
-# Editor / tool temp files
+# Editor and IDE temporary files
 *.tmp
 .vscode/
 .claude/settings.local.json
