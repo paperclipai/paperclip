@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { parseFailoverModelList, type CreateConfigValues } from "@paperclipai/adapter-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
@@ -64,6 +64,8 @@ export function buildCursorLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_CURSOR_LOCAL_MODEL;
+  const failoverModels = parseFailoverModelList(v.failoverModelsText);
+  if (failoverModels.length > 0) ac.failoverModels = failoverModels;
   const mode = normalizeMode(v.thinkingEffort);
   if (mode) ac.mode = mode;
   ac.timeoutSec = 0;

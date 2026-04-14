@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { parseFailoverModelList, type CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -73,6 +73,8 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;
+  const failoverModels = parseFailoverModelList(v.failoverModelsText);
+  if (failoverModels.length > 0) ac.failoverModels = failoverModels;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
   ac.timeoutSec = 0;
   ac.graceSec = 15;

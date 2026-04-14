@@ -33,6 +33,7 @@ import {
   ToggleWithNumber,
   CollapsibleSection,
   DraftInput,
+  DraftTextarea,
   DraftNumberInput,
   help,
   adapterLabels,
@@ -56,7 +57,11 @@ import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-con
 // Canonical type lives in @paperclipai/adapter-utils; re-exported here
 // so existing imports from this file keep working.
 export type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import {
+  parseFailoverModelList,
+  serializeFailoverModelList,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
 
 /* ---- Props ---- */
 
@@ -716,6 +721,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     : "Failed to load adapter models."}
                 </p>
               )}
+
+              <Field label="Failover models" hint={help.failoverModels}>
+                <DraftTextarea
+                  value={
+                    isCreate
+                      ? val!.failoverModelsText
+                      : serializeFailoverModelList(
+                          eff("adapterConfig", "failoverModels", config.failoverModels),
+                        )
+                  }
+                  onCommit={(value) => {
+                    const failoverModels = parseFailoverModelList(value);
+                    if (isCreate) {
+                      set!({ failoverModelsText: value });
+                    } else {
+                      mark(
+                        "adapterConfig",
+                        "failoverModels",
+                        failoverModels.length > 0 ? failoverModels : undefined,
+                      );
+                    }
+                  }}
+                  placeholder={"claude-sonnet-4-6\ngpt-5.4\ngemini-2.5-pro"}
+                  minRows={3}
+                />
+              </Field>
 
               {showThinkingEffort && (
                 <>

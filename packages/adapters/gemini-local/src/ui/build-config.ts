@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { parseFailoverModelList, type CreateConfigValues } from "@paperclipai/adapter-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
@@ -58,6 +58,8 @@ export function buildGeminiLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_GEMINI_LOCAL_MODEL;
+  const failoverModels = parseFailoverModelList(v.failoverModelsText);
+  if (failoverModels.length > 0) ac.failoverModels = failoverModels;
   ac.timeoutSec = 0;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
