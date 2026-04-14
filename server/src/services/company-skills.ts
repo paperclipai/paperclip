@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySkills } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
   CompanySkill,
@@ -1004,13 +1004,18 @@ async function readUrlSkillImports(
     const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, authToken);
     let ref = pinnedRef;
     const gheHost = isGitHubDotCom(parsed.hostname) ? undefined : parsed.hostname;
-    const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
+    const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }>; truncated?: boolean }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
       authToken,
       gheHost,
     ).catch(() => {
       throw unprocessable(`Failed to read GitHub tree for ${url}`);
     });
+    if (tree.truncated) {
+      throw unprocessable(
+        `GitHub tree response for ${url} was truncated — cannot safely import or prune skills from a partial manifest.`,
+      );
+    }
     const allPaths = (tree.tree ?? [])
       .filter((entry) => entry.type === "blob")
       .map((entry) => entry.path)
@@ -2020,6 +2025,69 @@ export function companySkillService(db: Db) {
         if (!persisted) continue;
         imported.push(persisted);
         upsertAcceptedSkill(persisted);
+      }
+    }
+
+    // Re-scan GitHub/sks_sh sources to pick up newly added skills and prune removed ones
+    const sourceLocators = new Set<string>();
+    for (const skill of acceptedSkills) {
+      if (skill.sourceType !== "github" && skill.sourceType !== "skills_sh") continue;
+      const locator = skill.sourceLocator ?? "";
+      if (locator) sourceLocators.add(locator);
+    }
+    for (const sourceLocator of sourceLocators) {
+      try {
+        const result = await readUrlSkillImports(companyId, sourceLocator, null);
+        const currentSlugs = new Set(result.skills.map((s) => s.slug));
+
+        // Upsert any new skills found in the source
+        for (const nextSkill of result.skills) {
+          if (acceptedSkills.some((s) => s.slug === nextSkill.slug)) continue;
+          const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
+          if (persisted) {
+            imported.push(persisted);
+            upsertAcceptedSkill(persisted);
+          }
+        }
+
+        // Prune skills that are no longer in the source
+        const skillsAtSource = acceptedSkills.filter((s) => s.sourceLocator === sourceLocator);
+        for (const skill of skillsAtSource) {
+          if (currentSlugs.has(skill.slug)) continue;
+          const usedByAgents = await usage(companyId, skill.key);
+          if (usedByAgents.length > 0) {
+            // Detach the skill from all agents that have it, then delete
+            for (const agent of usedByAgents) {
+              const fullAgent = await agents.getById(agent.id);
+              if (!fullAgent) continue;
+              const currentConfig = (fullAgent.adapterConfig ?? {}) as Record<string, unknown>;
+              const preference = readPaperclipSkillSyncPreference(currentConfig);
+              if (preference.desiredSkills.includes(skill.key)) {
+                const updatedConfig = writePaperclipSkillSyncPreference(
+                  currentConfig,
+                  preference.desiredSkills.filter((k) => k !== skill.key),
+                );
+                await agents.update(fullAgent.id, { adapterConfig: updatedConfig });
+              }
+            }
+          }
+          await deleteSkill(companyId, skill.id);
+          if (usedByAgents.length > 0) {
+            warnings.push(
+              `Skill "${skill.slug}" was removed from ${sourceLocator} and detached from ${usedByAgents.map((a) => a.name).join(", ")}.`,
+            );
+          } else {
+            warnings.push(
+              `Skill "${skill.slug}" was removed from ${sourceLocator} and deleted.`,
+            );
+          }
+          const pruneIdx = acceptedSkills.findIndex((s) => s.id === skill.id);
+          if (pruneIdx >= 0) acceptedSkills.splice(pruneIdx, 1);
+          acceptedByKey.delete(skill.key);
+        }
+      } catch {
+        // Best-effort: don't fail the whole scan if one source fails
+        warnings.push(`Could not re-scan source ${sourceLocator} — skipping.`);
       }
     }
 
