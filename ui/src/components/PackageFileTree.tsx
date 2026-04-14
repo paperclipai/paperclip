@@ -251,7 +251,7 @@ export function PackageFileTree({
                     <Folder className="h-3.5 w-3.5" />
                   )}
                 </span>
-                <span className="truncate">{node.name}</span>
+                <span className="truncate" title={node.name}>{node.name}</span>
               </button>
               <button
                 type="button"
@@ -326,7 +326,7 @@ export function PackageFileTree({
               <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                 <FileIcon className="h-3.5 w-3.5" />
               </span>
-              <span className="truncate">{node.name}</span>
+              <span className="truncate" title={node.name}>{node.name}</span>
             </button>
             {renderFileExtra?.(node, checked)}
           </div>

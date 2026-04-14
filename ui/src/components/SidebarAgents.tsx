@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { Bot, ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -24,7 +24,7 @@ export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, isCollapsed, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
   const { data: agents } = useQuery({
@@ -73,18 +73,24 @@ export function SidebarAgents() {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
-              )}
-            />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Agents
-            </span>
-          </CollapsibleTrigger>
+        <div className={cn("flex items-center py-1.5", isCollapsed ? "px-2 justify-center" : "px-3")}>
+          {isCollapsed ? (
+            <div className="flex items-center justify-center h-6 w-6 text-muted-foreground/60" title="Agents">
+              <Bot className="h-3.5 w-3.5" />
+            </div>
+          ) : (
+            <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                  open && "rotate-90"
+                )}
+              />
+              <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+                Agents
+              </span>
+            </CollapsibleTrigger>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -112,14 +118,17 @@ export function SidebarAgents() {
                 }}
                 className={cn(
                   "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+                  isCollapsed && "justify-center px-2",
                   activeAgentId === agentRouteRef(agent)
                     ? "bg-accent text-foreground"
                     : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
                 )}
+                title={agent.name}
+                aria-label={agent.name}
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-                <span className="flex-1 truncate">{agent.name}</span>
-                {(agent.pauseReason === "budget" || runCount > 0) && (
+                {!isCollapsed && <span className="flex-1 truncate">{agent.name}</span>}
+                {!isCollapsed && (agent.pauseReason === "budget" || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
                     {agent.pauseReason === "budget" ? (
                       <BudgetSidebarMarker title="Agent paused by budget" />

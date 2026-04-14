@@ -57,7 +57,7 @@ function readRememberedInstanceSettingsPath(): string {
 }
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isCollapsed, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
@@ -346,16 +346,18 @@ export function Layout() {
             </div>
             <div className="border-t border-r border-border px-3 py-2 bg-background">
               <div className="flex items-center gap-1">
-                <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
-                >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
-                </a>
-                {health?.version && (
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                  <a
+                    href="https://docs.paperclip.ing/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Documentation"
+                    title="Documentation"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </a>
+                </Button>
+                {health?.version && !isCollapsed && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
@@ -397,7 +399,7 @@ export function Layout() {
               <div
                 className={cn(
                   "overflow-hidden transition-[width] duration-100 ease-out",
-                  sidebarOpen ? "w-60" : "w-0"
+                  sidebarOpen ? (isCollapsed ? "w-16" : "w-60") : "w-0"
                 )}
               >
                 {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
@@ -405,16 +407,18 @@ export function Layout() {
             </div>
             <div className="border-t border-r border-border px-3 py-2">
               <div className="flex items-center gap-1">
-                <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
-                >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
-                </a>
-                {health?.version && (
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                  <a
+                    href="https://docs.paperclip.ing/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Documentation"
+                    title="Documentation"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </a>
+                </Button>
+                {health?.version && !isCollapsed && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>

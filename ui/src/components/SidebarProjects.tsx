@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, FolderKanban, Plus } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -37,6 +37,7 @@ function SortableProjectItem({
   companyId,
   companyPrefix,
   isMobile,
+  isCollapsed,
   project,
   projectSidebarSlots,
   setSidebarOpen,
@@ -45,6 +46,7 @@ function SortableProjectItem({
   companyId: string | null;
   companyPrefix: string | null;
   isMobile: boolean;
+  isCollapsed: boolean;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
@@ -81,19 +83,22 @@ function SortableProjectItem({
           }}
           className={cn(
             "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+            isCollapsed && "justify-center px-2",
             activeProjectRef === routeRef || activeProjectRef === project.id
               ? "bg-accent text-foreground"
               : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           )}
+          title={project.name}
+          aria-label={project.name}
         >
           <span
             className="shrink-0 h-3.5 w-3.5 rounded-sm"
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
-          <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          {!isCollapsed && <span className="flex-1 truncate">{project.name}</span>}
+          {!isCollapsed && project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
         </NavLink>
-        {projectSidebarSlots.length > 0 && (
+        {!isCollapsed && projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
             {projectSidebarSlots.map((slot) => (
               <PluginSlotMount
@@ -121,7 +126,7 @@ export function SidebarProjects() {
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, isCollapsed, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
   const { data: projects } = useQuery({
@@ -179,18 +184,24 @@ export function SidebarProjects() {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
-              )}
-            />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
-            </span>
-          </CollapsibleTrigger>
+        <div className={cn("flex items-center py-1.5", isCollapsed ? "px-2 justify-center" : "px-3")}>
+          {isCollapsed ? (
+            <div className="flex items-center justify-center h-6 w-6 text-muted-foreground/60" title="Projects">
+              <FolderKanban className="h-3.5 w-3.5" />
+            </div>
+          ) : (
+            <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                  open && "rotate-90"
+                )}
+              />
+              <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+                Projects
+              </span>
+            </CollapsibleTrigger>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -222,6 +233,7 @@ export function SidebarProjects() {
                   companyId={selectedCompanyId}
                   companyPrefix={selectedCompany?.issuePrefix ?? null}
                   isMobile={isMobile}
+                  isCollapsed={isCollapsed}
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}
                   setSidebarOpen={setSidebarOpen}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { ProjectFileDetail, ProjectFilesBranch, ProjectFilesTreeEntry } from "@paperclipai/shared";
-import { AlertCircle, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, RefreshCw, Save, Search, Trash2 } from "lucide-react";
+import { AlertCircle, ChevronLeft, ChevronRight, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, RefreshCw, Save, Search } from "lucide-react";
 import { projectsApi } from "../api/projects";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
@@ -11,13 +11,13 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PackageFileTree, type FileTreeNode } from "./PackageFileTree";
 import { MarkdownBody } from "./MarkdownBody";
 import { PageSkeleton } from "./PageSkeleton";
 import { CopyText } from "./CopyText";
 import { useToast } from "../context/ToastContext";
-import { useTheme } from "../context/ThemeContext";
+import { ProjectCodeEditor } from "./ProjectCodeEditor";
 
 type TreeCache = Record<string, ProjectFilesTreeEntry[]>;
 
@@ -49,32 +49,6 @@ function treeSignature(entries: ProjectFilesTreeEntry[]) {
     .join("|");
 }
 
-function ProjectTextEditor({
-  value,
-  readOnly,
-  onChange,
-}: {
-  value: string;
-  readOnly: boolean;
-  onChange: (value: string) => void;
-}) {
-  const { theme } = useTheme();
-  return (
-    <div className="min-h-[420px] rounded-lg border border-border overflow-hidden bg-card">
-      <Textarea
-        value={value}
-        readOnly={readOnly}
-        spellCheck={false}
-        onChange={(event) => onChange(event.target.value)}
-        className="min-h-[420px] resize-none rounded-none border-0 bg-transparent px-4 py-3 font-mono text-sm leading-6 shadow-none focus-visible:ring-0"
-        style={{
-          colorScheme: theme,
-        }}
-      />
-    </div>
-  );
-}
-
 export function ProjectFilesTab({
   projectId,
   companyId,
@@ -98,6 +72,8 @@ export function ProjectFilesTab({
   const [dirtyBranchTarget, setDirtyBranchTarget] = useState<string | null>(null);
   const [showReloadHint, setShowReloadHint] = useState(false);
   const [editorValue, setEditorValue] = useState("");
+  const [markdownViewMode, setMarkdownViewMode] = useState<"preview" | "source">("preview");
+  const [compactTreePane, setCompactTreePane] = useState(false);
   const entriesByDirRef = useRef<TreeCache>({});
   const selectedPathRef = useRef<string | null>(null);
   const loadingDirKeysRef = useRef<Set<string>>(new Set());
@@ -122,6 +98,14 @@ export function ProjectFilesTab({
       setEditorValue(selectedFileQuery.data.textContent);
     }
   }, [selectedFileQuery.data?.path, selectedFileQuery.data?.textContent]);
+
+  useEffect(() => {
+    if (selectedFileQuery.data?.previewType === "markdown") {
+      setMarkdownViewMode("preview");
+      return;
+    }
+    setMarkdownViewMode("source");
+  }, [selectedFileQuery.data?.path, selectedFileQuery.data?.previewType]);
 
   useEffect(() => {
     entriesByDirRef.current = entriesByDir;
@@ -325,6 +309,10 @@ export function ProjectFilesTab({
 
   const selectedFile = selectedFileQuery.data ?? null;
   const fileDirty = selectedFile?.textContent != null && editorValue !== selectedFile.textContent;
+  const canEditSelectedFile = selectedFile?.textContent != null && selectedFile.previewType !== "json";
+  const treePaneColumns = compactTreePane
+    ? "lg:grid-cols-[128px_minmax(0,1fr)]"
+    : "lg:grid-cols-[320px_minmax(0,1fr)]";
 
   const toggleDir = async (dirPath: string) => {
     const nextExpanded = new Set(expandedDirs);
@@ -354,21 +342,39 @@ export function ProjectFilesTab({
       <ContextMenuContent>
         {node.kind === "dir" ? (
           <>
-            <ContextMenuItem onSelect={() => openPathDialog("file", node.path, "dir")}>
+            <ContextMenuItem
+              onSelect={(event) => {
+                event.stopPropagation();
+                openPathDialog("file", node.path, "dir");
+              }}
+            >
               New file
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => openPathDialog("folder", node.path, "dir")}>
+            <ContextMenuItem
+              onSelect={(event) => {
+                event.stopPropagation();
+                openPathDialog("folder", node.path, "dir");
+              }}
+            >
               New folder
             </ContextMenuItem>
           </>
         ) : null}
-        <ContextMenuItem onSelect={() => void navigator.clipboard.writeText(node.path)}>
-          Copy path
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => openPathDialog("rename", node.path, node.kind)}>
+        <ContextMenuItem
+          onSelect={(event) => {
+            event.stopPropagation();
+            openPathDialog("rename", node.path, node.kind);
+          }}
+        >
           Rename
         </ContextMenuItem>
-        <ContextMenuItem variant="destructive" onSelect={() => openPathDialog("delete", node.path, node.kind)}>
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={(event) => {
+            event.stopPropagation();
+            openPathDialog("delete", node.path, node.kind);
+          }}
+        >
           Delete
         </ContextMenuItem>
       </ContextMenuContent>
@@ -410,45 +416,77 @@ export function ProjectFilesTab({
           <RefreshCw className={`h-4 w-4 ${syncRepo.isPending ? "animate-spin" : ""}`} />
           Git Sync
         </Button>
-        <Button variant="outline" size="sm" onClick={() => void refreshAll()}>
-          <FolderTree className="h-4 w-4" />
-          Refresh tree
-        </Button>
-        <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={showIgnored}
-            onChange={(event) => {
-              setShowIgnored(event.target.checked);
-              setEntriesByDir({});
-              entriesByDirRef.current = {};
-              setShowReloadHint(false);
-            }}
-          />
-          Show ignored folders
-        </label>
-        {summary.rootPath ? (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-mono truncate max-w-[28rem]" title={summary.rootPath}>{summary.rootPath}</span>
-            <CopyText text={summary.rootPath} copiedLabel="Path copied">
-              <Copy className="h-3.5 w-3.5" />
-            </CopyText>
-          </div>
-        ) : null}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className={`grid gap-4 ${treePaneColumns}`}>
         <div className="rounded-lg border border-border p-3 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium">Files</h3>
-            <div className="flex items-center gap-1">
-              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("file")}>
-                <FilePlus2 className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("folder")}>
-                <FolderPlus className="h-4 w-4" />
+          <div className="flex items-center gap-1">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2" onClick={() => void refreshAll()}>
+                    <FolderTree className="h-4 w-4" />
+                    Files
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent sideOffset={4}>
+                  Refresh tree
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <div className="ml-auto flex items-center gap-1">
+              {!compactTreePane ? (
+                <>
+                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("file")}>
+                    <FilePlus2 className="h-4 w-4" />
+                  </Button>
+                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("folder")}>
+                    <FolderPlus className="h-4 w-4" />
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                onClick={() => setCompactTreePane((current) => !current)}
+                title={compactTreePane ? "Expand tree pane" : "Compact tree pane"}
+              >
+                {compactTreePane ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
               </Button>
             </div>
+          </div>
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground px-2">
+            <label className="flex items-center gap-2 cursor-pointer" title="Show ignored folders">
+              <input
+                type="checkbox"
+                checked={showIgnored}
+                onChange={(event) => {
+                  setShowIgnored(event.target.checked);
+                  setEntriesByDir({});
+                  entriesByDirRef.current = {};
+                  setShowReloadHint(false);
+                }}
+              />
+              {!compactTreePane ? "Show ignored folders" : null}
+            </label>
+            {summary.rootPath ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-1">
+                      {!compactTreePane ? <span className="cursor-default">Folder path</span> : null}
+                      <CopyText text={summary.rootPath} copiedLabel="Path copied">
+                        <Copy className="h-3.5 w-3.5" />
+                      </CopyText>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent sideOffset={4} className="max-w-md break-all font-mono">
+                    {summary.rootPath}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : null}
           </div>
           <div className="max-h-[70vh] overflow-auto">
             <PackageFileTree
@@ -476,19 +514,34 @@ export function ProjectFilesTab({
                   </p>
                 ) : null}
               </div>
-              <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(selectedPath)}>
-                <Copy className="h-4 w-4" />
-                Copy path
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => openPathDialog("rename", selectedPath, "file")} disabled={!selectedPath}>
-                Rename
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => openPathDialog("delete", selectedPath, "file")} disabled={!selectedPath}>
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </Button>
-              {selectedFile?.textContent != null && selectedFile.previewType !== "json" ? (
-                <Button size="sm" onClick={() => saveFile.mutate({ path: selectedFile.path, content: editorValue })} disabled={!fileDirty || saveFile.isPending}>
+              {selectedFile?.previewType === "markdown" ? (
+                <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
+                  <Button
+                    size="sm"
+                    variant={markdownViewMode === "preview" ? "secondary" : "ghost"}
+                    className="h-8"
+                    onClick={() => setMarkdownViewMode("preview")}
+                  >
+                    Preview
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={markdownViewMode === "source" ? "secondary" : "ghost"}
+                    className="h-8"
+                    onClick={() => setMarkdownViewMode("source")}
+                  >
+                    Source
+                  </Button>
+                </div>
+              ) : null}
+              {canEditSelectedFile ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => saveFile.mutate({ path: selectedFile.path, content: editorValue })}
+                  disabled={!fileDirty || saveFile.isPending}
+                >
                   <Save className="h-4 w-4" />
                   Save
                 </Button>
@@ -508,18 +561,19 @@ export function ProjectFilesTab({
               alt={selectedFile.name}
               className="max-h-[70vh] max-w-full object-contain rounded-lg border border-border"
             />
-          ) : selectedFile?.previewType === "markdown" ? (
+          ) : selectedFile?.previewType === "markdown" && markdownViewMode === "preview" ? (
             <div className="rounded-lg border border-border p-4">
-              <MarkdownBody>{selectedFile.textContent ?? ""}</MarkdownBody>
+              <MarkdownBody>{editorValue}</MarkdownBody>
             </div>
           ) : selectedFile?.previewType === "binary" ? (
             <div className="rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
               Binary files are not previewable yet.
             </div>
           ) : selectedFile?.textContent != null ? (
-            <ProjectTextEditor
+            <ProjectCodeEditor
               value={editorValue}
               readOnly={selectedFile.previewType === "json"}
+              language={selectedFile.language}
               onChange={setEditorValue}
             />
           ) : (
