@@ -928,37 +928,19 @@ export function issueService(db: Db) {
         return { ...current, adoptedFromRunId: null as string | null };
       }
 
+      // Assignee override: if the actor IS the assigned agent and the issue is
+      // in_progress, unconditionally adopt the lock to the current run.
+      // The agent is the source of truth; the run is audit trail only.
+      // This prevents permanent lock-out when a prior run dies (process_lost,
+      // OOM, container restart) and the heartbeat_runs record is in an
+      // ambiguous state.  See MUL-5511 for the full incident history.
       if (
         actorRunId &&
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
-        current.checkoutRunId &&
-        current.checkoutRunId !== actorRunId
+        !sameRunLock(current.checkoutRunId, actorRunId)
       ) {
-        const adopted = await adoptStaleCheckoutRun({
-          issueId: id,
-          actorAgentId,
-          actorRunId,
-          expectedCheckoutRunId: current.checkoutRunId,
-        });
-
-        if (adopted) {
-          return {
-            ...adopted,
-            adoptedFromRunId: current.checkoutRunId,
-          };
-        }
-      }
-
-      // State E: checkoutRunId was cleared (e.g. by releaseIssueExecutionAndPromote
-      // after a process_lost reap) but the issue is still in_progress with the same
-      // assignee.  The agent on a fresh run should reclaim the lock.
-      if (
-        actorRunId &&
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        current.checkoutRunId == null
-      ) {
+        const previousCheckoutRunId = current.checkoutRunId;
         const now = new Date();
         const reclaimed = await db
           .update(issues)
@@ -973,7 +955,6 @@ export function issueService(db: Db) {
               eq(issues.id, id),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, actorAgentId),
-              isNull(issues.checkoutRunId),
             ),
           )
           .returning({
@@ -985,7 +966,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (reclaimed) {
-          return { ...reclaimed, adoptedFromRunId: null as string | null };
+          return { ...reclaimed, adoptedFromRunId: previousCheckoutRunId };
         }
       }
 
@@ -1007,29 +988,10 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!existing) return null;
+      // Only the assignee (or non-agent callers) can release. Run ID is not
+      // checked — the agent is the source of truth, not the run.  See MUL-5511.
       if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
         throw conflict("Only assignee can release issue");
-      }
-      if (
-        actorAgentId &&
-        existing.status === "in_progress" &&
-        existing.assigneeAgentId === actorAgentId &&
-        existing.checkoutRunId &&
-        !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
-      ) {
-        // Allow release if the old checkout run is terminal, stale, or from the same agent.
-        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
-        const sameAgent = actorRunId
-          ? await isSameAgentRun(existing.checkoutRunId, actorAgentId)
-          : false;
-        if (!stale && !sameAgent) {
-          throw conflict("Only checkout run can release issue", {
-            issueId: existing.id,
-            assigneeAgentId: existing.assigneeAgentId,
-            checkoutRunId: existing.checkoutRunId,
-            actorRunId: actorRunId ?? null,
-          });
-        }
       }
 
       const updated = await db
