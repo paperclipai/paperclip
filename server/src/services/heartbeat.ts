@@ -2793,7 +2793,7 @@ export function heartbeatService(db: Db) {
           triggerDetail: "system",
           reason: "process_lost_retry",
           payload: {
-            ...retryContext.payload,
+            ...retryContextSnapshot,
             retryOfRunId: run.id,
           },
           status: "queued",
