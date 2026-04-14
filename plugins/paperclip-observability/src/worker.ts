@@ -133,6 +133,8 @@ const agentIssueMap = new Map<string, { issueId: string; issueIdentifier: string
 const issueContextMap = new Map<string, { projectId: string; identifier: string; title: string; parentId?: string }>();
 // agentId → active runId (populated on run.started, cleaned on run.finished/failed/cancelled)
 const agentActiveRunId = new Map<string, string>();
+// agentId → agentName (refreshed by collect-metrics job, also populated on run.started)
+const agentNameMap = new Map<string, string>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
@@ -337,6 +339,7 @@ const plugin: PaperclipPlugin = definePlugin({
           agentIssueMap,
           issueContextMap,
           agentActiveRunId,
+          agentNameMap,
         }
       : null;
 
@@ -584,6 +587,12 @@ const plugin: PaperclipPlugin = definePlugin({
         }
 
         agentSnapshots = snapshots;
+
+        // Refresh agentNameMap so cost/comment spans can resolve agent names
+        for (const snap of snapshots) {
+          agentNameMap.set(snap.agentId, snap.agentName);
+        }
+
         ctx.logger.info("Agent health snapshots updated", {
           agentCount: snapshots.length,
           companyCount: companies.length,

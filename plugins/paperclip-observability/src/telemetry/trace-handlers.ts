@@ -239,8 +239,8 @@ function resolveParentContext(
 }
 
 /**
- * Resolve parent context from persisted execution-span state (plugin state),
- * falling back to server-propagated trace context. Used when the execution
+ * Resolve parent context from server-propagated trace context, falling back
+ * to persisted execution-span state (plugin state). Used when the execution
  * span was ended immediately and is not in activeIssueSpans.
  */
 async function resolvePersistedParentCtx(
@@ -888,28 +888,7 @@ export async function handleIssueCommentCreatedTraces(
   // Fallback: the execution span was ended immediately (not in activeIssueSpans).
   // Create a short-lived child span linked to the persisted execution-span context
   // so comment activity still appears in the trace tree.
-  let parentCtx = parentCtxFromServerTrace(event);
-
-  if (!parentCtx) {
-    const stored = await ctx.state
-      .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
-      .catch(() => null);
-    if (
-      stored &&
-      typeof stored === "object" &&
-      "traceId" in (stored as Record<string, unknown>) &&
-      "spanId" in (stored as Record<string, unknown>)
-    ) {
-      const s = stored as { traceId: string; spanId: string; traceFlags: number };
-      parentCtx = trace.setSpanContext(context.active(), {
-        traceId: s.traceId,
-        spanId: s.spanId,
-        traceFlags: s.traceFlags ?? 1,
-        isRemote: true,
-      });
-    }
-  }
-
+  const parentCtx = await resolvePersistedParentCtx(ctx, issueId, event);
   if (!parentCtx) return;
 
   const tracer = authorAgentId
@@ -1064,13 +1043,13 @@ export async function handleIssueUpdatedTraces(
 
     const issueSpan = ctx.activeIssueSpans.get(issueId);
     if (issueSpan) {
-      issueSpan.addEvent("issue.status_transition", transitionAttrs);
+      issueSpan.addEvent("issue.status_change", transitionAttrs);
     } else {
       // Create a child span from persisted execution-span context
       const parentCtx = await resolvePersistedParentCtx(ctx, issueId, event);
       if (parentCtx) {
         const span = tracer.startSpan(
-          "paperclip.issue.status_transition",
+          "paperclip.issue.status_change",
           { kind: SpanKind.INTERNAL, attributes: transitionAttrs },
           parentCtx,
         );

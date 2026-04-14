@@ -69,6 +69,9 @@ export interface TelemetryContext {
 
   /** agentId → active runId (populated on run.started, cleaned on run.finished/failed/cancelled). */
   agentActiveRunId: Map<string, string>;
+
+  /** agentId → agentName (refreshed by collect-metrics job, also populated on run.started). */
+  agentNameMap: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------
