@@ -26,8 +26,9 @@ Next Batches:
 - [x] Active agent and activity chart shared utility components
 - [x] Shared navigation, filter, banner, and picker utility components
 - [x] Copy-heavy setup dialogs and platform instruction modals
-- [ ] Company import/export, org chart, and skill library surfaces
-- [ ] Repo-wide deep scan across `ui/src/pages` and `ui/src/components`
+- [x] Company import/export pages and org chart surfaces
+- [ ] Company skill library surfaces
+- [ ] Repo-wide deep scan across `ui/src/pages` and `ui/src/components` (remaining sweep: `CompanySkills`, `Agents`, `Projects`, `Companies`, `Issues`, `MyIssues`)
 - [x] Re-check `origin/master` UI changes for newly introduced i18n scope
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
 
@@ -64,4 +65,9 @@ Verification Notes:
   `ui/src/components/NewAgentDialog.tsx`
   `ui/src/components/PathInstructionsModal.tsx`
   `ui/src/components/agent-config-primitives.tsx`
+  Company package import/export and org chart pages are now localized:
+  `ui/src/pages/CompanyImport.tsx`
+  `ui/src/pages/CompanyExport.tsx`
+  `ui/src/pages/OrgChart.tsx`
+  `ui/src/pages/Org.tsx`
   `pnpm --filter @paperclipai/ui typecheck` still hangs at `tsc -b` in this environment; the process was confirmed alive at the `tsc -b` stage and then terminated, so this batch is not claimed as freshly typecheck-clean.
