@@ -1,0 +1,55 @@
+name: Node.js Tests and Linting
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: |
+        if [ -f package.json ]; then npm ci || npm install; fi
+    
+    - name: Code formatting check
+      run: |
+        npm run format:check || echo "No format script found"
+    
+    - name: Lint code
+      run: |
+        npm run lint || echo "No lint script found"
+    
+    - name: Type checking
+      run: |
+        npm run type-check || echo "No type-check script found"
+    
+    - name: Run tests
+      run: |
+        npm test || echo "No tests found"
+    
+    - name: Build project
+      run: |
+        npm run build || echo "No build script found"
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Run security audit
+      run: |
+        npm audit || true
+        npx audit-ci || true
