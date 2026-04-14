@@ -73,6 +73,14 @@ POST /api/companies/{companyId}/archive
 
 Archives a company. Archived companies are hidden from default listings.
 
+## Delete Company
+
+```
+DELETE /api/companies/{companyId}
+```
+
+Permanently deletes a company and all its data. Requires board authentication. This action cannot be undone.
+
 ## Company Fields
 
 | Field | Type | Description |
