@@ -17,7 +17,7 @@ COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.prod.yml"
 OUTPUT_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --output|-o) OUTPUT_FILE="$2"; shift 2 ;;
+    --output|-o) OUTPUT_FILE="$2"; mkdir -p "$(dirname "$OUTPUT_FILE")"; shift 2 ;;
     *) echo "Uso: $0 [--output arquivo.sql.gz]" >&2; exit 1 ;;
   esac
 done
@@ -37,12 +37,19 @@ fi
 
 echo "→ Realizando backup do banco..."
 TMP_BACKUP=$(mktemp "${BACKUP_DIR}/.backup_tmp_XXXXXXXX.sql.gz")
+trap 'rm -f "$TMP_BACKUP"' EXIT INT TERM
+
 docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \
   | gzip > "$TMP_BACKUP"
+PGDUMP_EXIT=${PIPESTATUS[0]}
+
+if [[ $PGDUMP_EXIT -ne 0 ]]; then
+  echo "Erro: pg_dump falhou (exit $PGDUMP_EXIT)." >&2
+  exit 1
+fi
 
 if [[ ! -s "$TMP_BACKUP" ]]; then
-  rm -f "$TMP_BACKUP"
   echo "Erro: backup vazio ou falha no pg_dump." >&2
   exit 1
 fi
@@ -53,6 +60,7 @@ if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
   exit 1
 fi
 
+trap - EXIT INT TERM
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)

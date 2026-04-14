@@ -55,6 +55,9 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
   if [[ -z "$PUBLIC_URL" ]]; then
     warn "URL não informada — usando http://localhost:3100"
     PUBLIC_URL="http://localhost:3100"
+  elif [[ "$PUBLIC_URL" != http://* && "$PUBLIC_URL" != https://* ]]; then
+    error "URL inválida (deve começar com http:// ou https://): $PUBLIC_URL"
+    exit 1
   fi
 
   AUTH_SECRET=$(openssl rand -hex 32)
@@ -70,15 +73,8 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
     warn "Nenhuma chave de IA informada. Agentes não funcionarão sem ao menos uma."
   fi
 
-  cat > .env <<EOF
-PAPERCLIP_PUBLIC_URL=${PUBLIC_URL}
-BETTER_AUTH_SECRET=${AUTH_SECRET}
-DB_PASSWORD=${DB_PASSWORD}
-ANTHROPIC_API_KEY=${ANTHROPIC_KEY:-}
-OPENAI_API_KEY=${OPENAI_KEY:-}
-PAPERCLIP_DEPLOYMENT_MODE=authenticated
-PAPERCLIP_DEPLOYMENT_EXPOSURE=private
-EOF
+  printf 'PAPERCLIP_PUBLIC_URL=%s\nBETTER_AUTH_SECRET=%s\nDB_PASSWORD=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nPAPERCLIP_DEPLOYMENT_MODE=authenticated\nPAPERCLIP_DEPLOYMENT_EXPOSURE=private\n' \
+    "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > .env
   chmod 600 .env
   info ".env criado com sucesso."
 fi
@@ -86,15 +82,16 @@ fi
 # ─── Subir serviços ──────────────────────────────────────────────────────────
 
 heading "Iniciando serviços..."
-docker compose -f docker/docker-compose.prod.yml --env-file .env pull --quiet
+docker compose -f docker/docker-compose.prod.yml --env-file .env pull
 docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 
 # ─── Aguardar app ficar saudável ─────────────────────────────────────────────
 
 heading "Aguardando a aplicação ficar pronta..."
 APP_URL="${PUBLIC_URL:-http://localhost:3100}"
-# Se usar nginx na porta padrão, testar pelo nginx; senão, diretamente no 3100
-HEALTH_URL="${APP_URL%/}/health"
+# Always poll locally via nginx (avoids DNS/TLS dependency during first-time setup)
+HTTP_PORT_LOCAL="${HTTP_PORT:-80}"
+HEALTH_URL="http://localhost:${HTTP_PORT_LOCAL}/health"
 
 RETRIES=30
 for i in $(seq 1 $RETRIES); do
@@ -118,7 +115,7 @@ done
 heading "Instalação concluída!"
 echo ""
 echo -e "  ${BOLD}URL:${RESET}    ${APP_URL}"
-echo -e "  ${BOLD}Health:${RESET} ${HEALTH_URL}"
+echo -e "  ${BOLD}Health:${RESET} ${APP_URL%/}/health"
 echo ""
 echo "Para verificar os logs:"
 echo "  docker compose -f docker/docker-compose.prod.yml logs -f"
