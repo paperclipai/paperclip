@@ -1,5 +1,6 @@
 ---
 name: paperclip-create-plugin
+model: claude-sonnet-4-6
 description: >
   Create new Paperclip plugins with the current alpha SDK/runtime. Use when
   scaffolding a plugin package, adding a new example plugin, or updating plugin
@@ -99,3 +100,12 @@ When authoring or updating plugin docs:
 - be explicit about the trusted-code model
 - do not promise host UI components or asset APIs
 - prefer npm-package deployment guidance over repo-local workflows for production
+
+---
+
+## NEVER
+
+- **NEVER** promise host UI components or asset APIs that don't exist in the current alpha SDK — the Paperclip plugin runtime is in active development; documenting or scaffolding against planned-but-unimplemented APIs creates plugins that look valid but fail at runtime when the missing host component isn't available
+- **NEVER** mix current implementation details with future spec ideas in plugin docs — future features belong in a clearly marked "Roadmap" section; mixing them misleads consumers about what works today vs. what requires a platform update
+- **NEVER** use repo-local plugin workflows in production guidance — plugins deployed via repo-local paths break when the repo moves or CI changes; always document npm-package deployment for production use cases
+- **NEVER** skip the verification steps (run integration tests, check worker surface) after scaffolding — plugin scaffolding generates boilerplate that may not match the current SDK version; running verification catches template/version mismatches before they reach a PR
