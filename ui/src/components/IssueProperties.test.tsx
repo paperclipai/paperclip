@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
+import { I18nProvider } from "../context/I18nContext";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -178,9 +179,11 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
   const root = createRoot(container);
   act(() => {
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <IssueProperties {...props} />
-      </QueryClientProvider>,
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <IssueProperties {...props} />
+        </QueryClientProvider>
+      </I18nProvider>,
     );
   });
   return root;

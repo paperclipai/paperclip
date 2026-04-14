@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import { useI18n } from "../context/I18nContext";
 
 interface ImageGalleryModalProps {
   images: IssueAttachment[];
@@ -18,6 +19,7 @@ export function ImageGalleryModal({
 }: ImageGalleryModalProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const imageRef = useRef<HTMLImageElement>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     if (open) setCurrentIndex(initialIndex);
@@ -84,7 +86,7 @@ export function ImageGalleryModal({
                 href={current.contentPath}
                 download={current.originalFilename ?? "image"}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Download"
+                title={t("image.download")}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Download className="h-4.5 w-4.5" />
@@ -93,7 +95,7 @@ export function ImageGalleryModal({
                 type="button"
                 onClick={() => onOpenChange(false)}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Close"
+                title={t("image.close")}
               >
                 <X className="h-5 w-5" />
               </button>
@@ -109,7 +111,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goPrev}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Previous"
+                  title={t("image.previous")}
                 >
                   <ChevronLeft className="h-7 w-7" />
                 </button>
@@ -134,7 +136,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goNext}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Next"
+                  title={t("image.next")}
                 >
                   <ChevronRight className="h-7 w-7" />
                 </button>

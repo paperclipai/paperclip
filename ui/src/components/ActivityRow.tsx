@@ -1,6 +1,6 @@
 import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
-import { timeAgo } from "../lib/timeAgo";
+import { useI18n } from "../context/I18nContext";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
@@ -25,6 +25,7 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
+  const { formatRelativeTime } = useI18n();
   const verb = formatActivityVerb(event.action, event.details, { agentMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
@@ -57,7 +58,7 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
         {name && <span className="font-medium">{name}</span>}
         {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
       </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{formatRelativeTime(event.createdAt)}</span>
     </div>
   );
 

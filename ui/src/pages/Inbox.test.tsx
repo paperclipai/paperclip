@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
+import { I18nProvider } from "../context/I18nContext";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -114,16 +115,18 @@ describe("FailedRunInboxRow", () => {
 
     act(() => {
       root.render(
-        <FailedRunInboxRow
-          run={run}
-          issueById={new Map()}
-          agentName="Agent"
-          issueLinkState={null}
-          onDismiss={() => {}}
-          onRetry={() => {}}
-          isRetrying={false}
-          selected
-        />,
+        <I18nProvider>
+          <FailedRunInboxRow
+            run={run}
+            issueById={new Map()}
+            agentName="Agent"
+            issueLinkState={null}
+            onDismiss={() => {}}
+            onRetry={() => {}}
+            isRetrying={false}
+            selected
+          />
+        </I18nProvider>,
       );
     });
 
@@ -154,7 +157,11 @@ describe("InboxIssueMetaLeading", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(<InboxIssueMetaLeading issue={createIssue()} isLive />);
+      root.render(
+        <I18nProvider>
+          <InboxIssueMetaLeading issue={createIssue()} isLive />
+        </I18nProvider>,
+      );
     });
 
     const statusIcon = container.querySelector('span[class*="border-blue-600"]');
@@ -198,17 +205,19 @@ describe("InboxIssueTrailingColumns", () => {
 
     act(() => {
       root.render(
-        <InboxIssueTrailingColumns
-          issue={createIssue({ labels: [], labelIds: [] })}
-          columns={["labels"]}
-          projectName={null}
-          projectColor={null}
-          workspaceName={null}
-          assigneeName={null}
-          currentUserId={null}
-          parentIdentifier={null}
-          parentTitle={null}
-        />,
+        <I18nProvider>
+          <InboxIssueTrailingColumns
+            issue={createIssue({ labels: [], labelIds: [] })}
+            columns={["labels"]}
+            projectName={null}
+            projectColor={null}
+            workspaceName={null}
+            assigneeName={null}
+            currentUserId={null}
+            parentIdentifier={null}
+            parentTitle={null}
+          />
+        </I18nProvider>,
       );
     });
 
@@ -224,17 +233,19 @@ describe("InboxIssueTrailingColumns", () => {
 
     act(() => {
       root.render(
-        <InboxIssueTrailingColumns
-          issue={createIssue()}
-          columns={["workspace"]}
-          projectName={null}
-          projectColor={null}
-          workspaceName={null}
-          assigneeName={null}
-          currentUserId={null}
-          parentIdentifier={null}
-          parentTitle={null}
-        />,
+        <I18nProvider>
+          <InboxIssueTrailingColumns
+            issue={createIssue()}
+            columns={["workspace"]}
+            projectName={null}
+            projectColor={null}
+            workspaceName={null}
+            assigneeName={null}
+            currentUserId={null}
+            parentIdentifier={null}
+            parentTitle={null}
+          />
+        </I18nProvider>,
       );
     });
 

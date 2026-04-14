@@ -1,4 +1,5 @@
 export {
+  instanceLocaleSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,

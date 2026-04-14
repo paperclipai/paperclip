@@ -26,7 +26,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { useI18n } from "../context/I18nContext";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -108,6 +108,7 @@ function ColorPicker({
   currentColor: string;
   onSelect: (color: string) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -128,7 +129,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={t("project_detail.change_project_color")}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -228,6 +229,7 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
+  const { formatRelativeTime } = useI18n();
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -305,7 +307,7 @@ function ProjectWorkspacesContent({
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">{timeAgo(summary.lastUpdatedAt)}</span>
+            <span className="text-xs text-muted-foreground">{formatRelativeTime(summary.lastUpdatedAt)}</span>
             {summary.hasRuntimeConfig ? (
               <Button
                 variant="ghost"

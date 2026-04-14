@@ -200,6 +200,7 @@ export type {
   AgentSkillSyncRequest,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
+  InstanceLocale,
   InstanceSettings,
   BackupRetentionPolicy,
   Agent,
@@ -396,6 +397,7 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  instanceLocaleSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,

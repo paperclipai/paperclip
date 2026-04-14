@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewIssueDialog } from "./NewIssueDialog";
+import { I18nProvider } from "../context/I18nContext";
 
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
@@ -232,9 +233,11 @@ function renderDialog(container: HTMLDivElement) {
   const root = createRoot(container);
   act(() => {
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <NewIssueDialog />
-      </QueryClientProvider>,
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>
+      </I18nProvider>,
     );
   });
   return { root, queryClient };
