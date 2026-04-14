@@ -15,6 +15,12 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+export function assertAuthenticated(req: Request) {
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   if (req.actor.type === "none") {
     throw unauthorized();
