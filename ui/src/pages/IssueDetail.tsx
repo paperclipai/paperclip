@@ -431,6 +431,13 @@ export function IssueDetail() {
         action: { label: `View ${issueRef}`, href: `/issues/${updated.identifier ?? updated.id}` },
       });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update issue",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const addComment = useMutation({
@@ -461,6 +468,13 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to reassign issue",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
