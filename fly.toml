@@ -39,5 +39,4 @@ kill_timeout = '2m0s'
 
 [[vm]]
   memory = '2048mb'
-  cpu_kind = 'shared'
-  cpus = 1
+  size = 'shared-cpu-2x'
