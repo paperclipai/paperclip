@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -1121,6 +1122,11 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        // StringDecoder buffers incomplete multi-byte UTF-8 sequences across
+        // stream chunks, preventing replacement-character (U+FFFD) corruption
+        // when a chunk boundary falls inside a multi-byte character.
+        const stdoutDecoder = new StringDecoder("utf8");
+        const stderrDecoder = new StringDecoder("utf8");
 
         const timeout =
           opts.timeoutSec > 0
@@ -1133,20 +1139,24 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
-          stdout = appendWithCap(stdout, text);
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+        child.stdout?.on("data", (chunk: Buffer) => {
+          const text = stdoutDecoder.write(chunk);
+          if (text) {
+            stdout = appendWithCap(stdout, text);
+            logChain = logChain
+              .then(() => opts.onLog("stdout", text))
+              .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+          }
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
-          stderr = appendWithCap(stderr, text);
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+        child.stderr?.on("data", (chunk: Buffer) => {
+          const text = stderrDecoder.write(chunk);
+          if (text) {
+            stderr = appendWithCap(stderr, text);
+            logChain = logChain
+              .then(() => opts.onLog("stderr", text))
+              .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+          }
         });
 
         const stdin = child.stdin;
@@ -1173,6 +1183,21 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
+          // Flush any remaining bytes buffered by the StringDecoders
+          const stdoutTail = stdoutDecoder.end();
+          const stderrTail = stderrDecoder.end();
+          if (stdoutTail) {
+            stdout = appendWithCap(stdout, stdoutTail);
+            logChain = logChain
+              .then(() => opts.onLog("stdout", stdoutTail))
+              .catch((err) => onLogError(err, runId, "failed to append stdout log tail"));
+          }
+          if (stderrTail) {
+            stderr = appendWithCap(stderr, stderrTail);
+            logChain = logChain
+              .then(() => opts.onLog("stderr", stderrTail))
+              .catch((err) => onLogError(err, runId, "failed to append stderr log tail"));
+          }
           void logChain.finally(() => {
             resolve({
               exitCode: code,
