@@ -35,14 +35,15 @@ const DEFAULT_COPILOT_LOCAL_MODEL = "claude-sonnet-4.5";
 const COPILOT_LOCAL_SKILL_ROOT_CANDIDATES = [
   path.resolve(__moduleDir, "../../../../skills"),
 ];
-const COPILOT_SHELL_APPROVAL_NOTE = [
+const COPILOT_SHELL_SAFETY_NOTE = [
   "Safety note:",
   "If a shell command is blocked because it contains dangerous shell expansion patterns",
   "(for example parameter transformation, indirect expansion, or nested command substitution),",
   "do not retry or work around the guard automatically.",
-  "Stop and respond with:",
-  "Approval needed: <brief reason>",
-  "Reply approve to allow it, or deny to block it.",
+  "Instead, rewrite the command to achieve the same goal safely — use explicit values,",
+  "simpler variable substitution, heredocs, or a different approach entirely.",
+  "If the task cannot be accomplished without dangerous patterns, explain why and choose",
+  "an alternative strategy.",
 ].join("\n");
 const COPILOT_RATE_LIMIT_RETRY_MS = 65_000;
 
@@ -299,7 +300,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
-    COPILOT_SHELL_APPROVAL_NOTE,
+    COPILOT_SHELL_SAFETY_NOTE,
     renderedPrompt,
   ]);
 
@@ -377,7 +378,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage:
         runParsed.errorMessage ??
         (runExitCode !== 0 || run.timedOut
-          ? firstNonEmptyLine(run.stderr) || firstNonEmptyLine(run.stdout) || "Copilot run failed"
+          ? runParsed.lastToolError || firstNonEmptyLine(run.stderr) || firstNonEmptyLine(run.stdout) || "Copilot run failed"
           : null),
       usage: runParsed.outputTokens > 0
         ? {
@@ -424,6 +425,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const retry = await runAttempt(parsed.sessionId ?? sessionId);
     const retryParsed = parseCopilotJsonl(retry.stdout);
     return buildResult(retry, retryParsed);
+  }
+
+  if (!proc.timedOut && parsed.isDangerousShellBlock) {
+    await onLog(
+      "stderr",
+      "[paperclip] Copilot run blocked by dangerous shell expansion patterns; retrying with rewrite instruction.\n",
+    );
+    const retry = await runAttempt(null);
+    const retryParsed = parseCopilotJsonl(retry.stdout);
+    return buildResult(retry, retryParsed, { clearSession: true });
   }
 
   return buildResult(proc, parsed);

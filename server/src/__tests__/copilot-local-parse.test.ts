@@ -29,7 +29,7 @@ describe("parseCopilotJsonl", () => {
     expect(parsed.premiumRequests).toBe(0.33);
   });
 
-  it("captures tool execution failures", () => {
+  it("captures tool execution failures as lastToolError", () => {
     const stdout = [
       JSON.stringify({
         type: "tool.execution_complete",
@@ -43,7 +43,31 @@ describe("parseCopilotJsonl", () => {
     ].join("\n");
 
     const parsed = parseCopilotJsonl(stdout);
-    expect(parsed.errorMessage).toBe("tool failed");
+    expect(parsed.lastToolError).toBe("tool failed");
+    expect(parsed.errorMessage).toBeNull();
+  });
+
+  it("does not promote tool errors to errorMessage when run succeeds", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "tool.execution_complete",
+        data: { success: false, result: { content: "Parent directory does not exist" } },
+      }),
+      JSON.stringify({
+        type: "assistant.message",
+        data: { content: "I'll create the directory first.", outputTokens: 10, phase: "final_answer" },
+      }),
+      JSON.stringify({
+        type: "result",
+        sessionId: "sess_ok",
+        exitCode: 0,
+      }),
+    ].join("\n");
+
+    const parsed = parseCopilotJsonl(stdout);
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.lastToolError).toBe("Parent directory does not exist");
+    expect(parsed.summary).toContain("create the directory");
   });
 
   it("captures session errors such as Copilot rate limits", () => {
@@ -75,7 +99,7 @@ describe("parseCopilotJsonl", () => {
     expect(parsed.errorMessage).toBe("Sorry, you've hit a rate limit. Please try again in 1 minute.");
   });
 
-  it("turns dangerous shell command refusals into approval-needed handoffs when Copilot asks for approval", () => {
+  it("sets isDangerousShellBlock when a dangerous shell command is blocked", () => {
     const stdout = [
       JSON.stringify({
         type: "tool.execution_complete",
@@ -90,24 +114,61 @@ describe("parseCopilotJsonl", () => {
       JSON.stringify({
         type: "assistant.message",
         data: {
-          content:
-            "**Approval needed:** allow execution of the blocked shell command?\n\nReply **approve** to allow it, or **deny** to block it.",
-          outputTokens: 27,
+          content: "I'll rewrite that command to avoid dangerous patterns.",
+          outputTokens: 15,
           phase: "final_answer",
         },
       }),
       JSON.stringify({
         type: "result",
-        sessionId: "sess_approval",
+        sessionId: "sess_blocked",
         exitCode: 0,
       }),
     ].join("\n");
 
     const parsed = parseCopilotJsonl(stdout);
-    expect(parsed.sessionId).toBe("sess_approval");
-    expect(parsed.approvalRequired).toBe(true);
+    expect(parsed.sessionId).toBe("sess_blocked");
+    expect(parsed.isDangerousShellBlock).toBe(true);
+    expect(parsed.errorMessage).toContain("Command blocked");
+  });
+
+  it("sets isDangerousShellBlock false when no dangerous pattern is detected", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "tool.execution_complete",
+        data: {
+          success: false,
+          result: { content: "some normal error" },
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        sessionId: "sess_normal",
+        exitCode: 1,
+      }),
+    ].join("\n");
+
+    const parsed = parseCopilotJsonl(stdout);
+    expect(parsed.isDangerousShellBlock).toBe(false);
+    expect(parsed.lastToolError).toBe("some normal error");
     expect(parsed.errorMessage).toBeNull();
-    expect(parsed.summary).toContain("Approval needed");
+  });
+
+  it("session errors take priority over tool errors", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "tool.execution_complete",
+        data: { success: false, result: { content: "tool-level failure" } },
+      }),
+      JSON.stringify({
+        type: "session.error",
+        data: { message: "session-level failure", errorType: "server_error", statusCode: 500 },
+      }),
+    ].join("\n");
+
+    const parsed = parseCopilotJsonl(stdout);
+    expect(parsed.errorMessage).toBe("session-level failure");
+    expect(parsed.lastToolError).toBe("tool-level failure");
   });
 });
 

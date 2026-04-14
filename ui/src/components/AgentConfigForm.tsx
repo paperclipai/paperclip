@@ -701,7 +701,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 groupByProvider={adapterType === "opencode_local"}
                 creatable
                 detectedModel={detectedModel}
-                detectedModelCandidates={[]}
+                detectedModelCandidates={detectedModelCandidates}
                 onDetectModel={async () => {
                   const result = await refetchDetectedModel();
                   return result.data?.model ?? null;

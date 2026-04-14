@@ -2,8 +2,6 @@ import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter
 
 const COPILOT_DANGEROUS_SHELL_BLOCK_RE =
   /command blocked: contains dangerous shell expansion patterns|dangerous shell expansion patterns|parameter transformation|indirect expansion|nested command substitution|arbitrary code execution/i;
-const COPILOT_APPROVAL_NEEDED_RE =
-  /(^|\n)\*?\*?approval needed:|\breply\s+\*?\*?approve\*?\*?\b|\bor\s+\*?\*?deny\*?\*?\b/i;
 const COPILOT_RATE_LIMIT_RE = /\brate[_ -]?limit\b|too many requests|status\s*code\s*[:=]?\s*429|\b429\b/i;
 
 function readText(value: unknown): string {
@@ -26,7 +24,8 @@ function readText(value: unknown): string {
 export function parseCopilotJsonl(stdout: string) {
   let sessionId: string | null = null;
   let model: string | null = null;
-  let errorMessage: string | null = null;
+  let sessionError: string | null = null;
+  let lastToolError: string | null = null;
   let errorType: string | null = null;
   let statusCode: number | null = null;
   let blockedDangerousShellCommand: string | null = null;
@@ -66,7 +65,7 @@ export function parseCopilotJsonl(stdout: string) {
           if (COPILOT_DANGEROUS_SHELL_BLOCK_RE.test(text)) {
             blockedDangerousShellCommand = text;
           } else {
-            errorMessage = text;
+            lastToolError = text;
           }
         }
       }
@@ -93,33 +92,30 @@ export function parseCopilotJsonl(stdout: string) {
       const nextStatusCode = asNumber(data.statusCode, NaN);
       if (nextErrorType) errorType = nextErrorType;
       if (Number.isFinite(nextStatusCode)) statusCode = nextStatusCode;
-      if (text) errorMessage = text;
+      if (text) sessionError = text;
     }
   }
 
   const summary = messages.join("\n\n").trim();
-  const approvalRequired =
-    blockedDangerousShellCommand != null && summary.length > 0 && COPILOT_APPROVAL_NEEDED_RE.test(summary);
-  if (approvalRequired) {
-    errorMessage = null;
-  } else if (!errorMessage && blockedDangerousShellCommand) {
-    errorMessage = blockedDangerousShellCommand;
-  }
+  // Session-level errors always take priority; tool errors and dangerous-shell
+  // blocks are only promoted when no session error exists.
+  const errorMessage = sessionError ?? blockedDangerousShellCommand ?? null;
 
   return {
     sessionId,
     summary,
     errorMessage,
+    lastToolError,
     errorType,
     statusCode,
     isRateLimit:
       errorType === "rate_limit" ||
       statusCode === 429 ||
-      (errorMessage ? COPILOT_RATE_LIMIT_RE.test(errorMessage) : false),
+      ((sessionError ?? lastToolError) ? COPILOT_RATE_LIMIT_RE.test(sessionError ?? lastToolError!) : false),
+    isDangerousShellBlock: blockedDangerousShellCommand != null,
     model,
     outputTokens,
     premiumRequests,
-    approvalRequired,
     finalResult,
   };
 }
