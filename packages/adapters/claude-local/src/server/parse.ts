@@ -177,3 +177,92 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
 }
+
+// Patterns the Claude CLI emits when a subscription / API / rate limit has
+// been hit. Conservative by design — the goal is to match the known phrasing
+// without being tripped by task output that happens to contain the word
+// "limit" (e.g. an engineer's run reporting on a "time limit" constant).
+const CLAUDE_USAGE_LIMIT_RE =
+  /\byou'?ve\s+hit\s+your\s+(?:\w+\s+)?limit\b|\b(?:usage|rate)\s+limit\s+(?:reached|exceeded|hit)\b/i;
+
+/**
+ * Returns true when the Claude CLI result or error messages indicate the
+ * caller has hit a subscription / rate / usage limit. Callers should treat
+ * this as a systemic failure — retrying immediately will burn API calls
+ * against the same limit and tight-loop until the reset window.
+ */
+export function isClaudeUsageLimitResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) => CLAUDE_USAGE_LIMIT_RE.test(msg));
+}
+
+// Matches a reset-time hint in the Claude CLI usage-limit error text.
+const CLAUDE_RESET_TIME_RE =
+  /resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(?(?:UTC|GMT)\)?)?/i;
+
+/**
+ * Returns the next reset time implied by a Claude CLI usage-limit error
+ * message, as an ISO 8601 string in UTC, or `null` if no parseable reset
+ * hint could be found.
+ *
+ * Absolute-time cases are interpreted in UTC — "resets 10am (UTC)" means
+ * "next time the wall clock passes 10:00 UTC". If that's later today,
+ * it's today; otherwise it's tomorrow.
+ */
+export function extractClaudeUsageLimitReset(
+  parsed: Record<string, unknown> | null | undefined,
+  now: Date = new Date(),
+): string | null {
+  if (!parsed) return null;
+
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  for (const msg of allMessages) {
+    if (!CLAUDE_USAGE_LIMIT_RE.test(msg)) continue;
+
+    const m = msg.match(CLAUDE_RESET_TIME_RE);
+    if (!m) continue;
+
+    let hour = parseInt(m[1]!, 10);
+    const minute = m[2] != null ? parseInt(m[2], 10) : 0;
+    const ampm = m[3]?.toLowerCase();
+
+    if (Number.isNaN(hour) || hour < 0 || hour > 23) continue;
+    if (Number.isNaN(minute) || minute < 0 || minute > 59) continue;
+
+    // Convert 12-hour with am/pm → 24-hour. 12am = 00:00, 12pm = 12:00.
+    if (ampm === "am") {
+      if (hour === 12) hour = 0;
+      else if (hour > 12) continue;
+    } else if (ampm === "pm") {
+      if (hour !== 12) hour += 12;
+    }
+
+    const candidate = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+        hour,
+        minute,
+        0,
+        0,
+      ),
+    );
+    if (candidate.getTime() <= now.getTime()) {
+      candidate.setUTCDate(candidate.getUTCDate() + 1);
+    }
+    return candidate.toISOString();
+  }
+
+  return null;
+}

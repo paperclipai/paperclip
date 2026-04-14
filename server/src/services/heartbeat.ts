@@ -1277,6 +1277,38 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * Returns the usage-limit reset time for an agent, or null if no active
+   * deferral applies. A deferral is "active" when the agent's most recent
+   * heartbeat run failed with `"claude_usage_limited"` AND its
+   * `errorMeta.usageLimitResetsAt` is still parseable. The caller checks
+   * whether the returned Date is in the future.
+   */
+  async function getUsageLimitDeferralUntil(agentId: string): Promise<Date | null> {
+    const runtime = await getRuntimeState(agentId);
+    if (!runtime?.lastRunId) return null;
+
+    const lastRun = await db
+      .select({
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runtime.lastRunId))
+      .then((rows) => rows[0] ?? null);
+    if (!lastRun) return null;
+    if (lastRun.errorCode !== "claude_usage_limited") return null;
+
+    const resultJson = lastRun.resultJson as Record<string, unknown> | null;
+    const errorMeta = resultJson?.errorMeta as Record<string, unknown> | undefined;
+    const resetsAt = errorMeta?.usageLimitResetsAt;
+    if (typeof resetsAt !== "string" || !resetsAt) return null;
+
+    const parsed = new Date(resetsAt);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+  }
+
   async function getTaskSession(
     companyId: string,
     agentId: string,
@@ -3432,10 +3464,15 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
+      const baseResultJson = mergeHeartbeatRunResultJson(
         adapterResult.resultJson ?? null,
         adapterResult.summary ?? null,
       );
+      // Persist errorMeta (e.g. usageLimitResetsAt) into resultJson so
+      // post-hoc queries can recover structured failure hints.
+      const persistedResultJson = adapterResult.errorMeta
+        ? { ...(baseResultJson ?? {}), errorMeta: adapterResult.errorMeta }
+        : baseResultJson;
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -3881,6 +3918,19 @@ export function heartbeatService(db: Db) {
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    // Usage-limit deferral: if this agent's most recent run failed with
+    // claude_usage_limited and carried a usageLimitResetsAt hint, skip
+    // enqueueing new wakes until the reset has passed.
+    const deferUntil = await getUsageLimitDeferralUntil(agentId);
+    if (deferUntil && deferUntil.getTime() > Date.now()) {
+      logger.info(
+        { agentId, source, reason, deferUntil: deferUntil.toISOString() },
+        "Skipping wake — Claude usage limit not yet reset",
+      );
+      await writeSkippedRequest("claude_usage_limit.deferred");
       return null;
     }
 

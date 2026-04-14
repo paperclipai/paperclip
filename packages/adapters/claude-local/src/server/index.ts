@@ -5,8 +5,10 @@ export { testEnvironment } from "./test.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
+  extractClaudeUsageLimitReset,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeUsageLimitResult,
 } from "./parse.js";
 export {
   getQuotaWindows,

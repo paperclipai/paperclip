@@ -27,8 +27,10 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  extractClaudeUsageLimitReset,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeUsageLimitResult,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -543,13 +545,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const stdoutStderr = { result: [proc.stdout, proc.stderr].join("\n") };
+      const usageLimited = isClaudeUsageLimitResult(stdoutStderr);
+      const usageLimitResetsAt = usageLimited
+        ? extractClaudeUsageLimitReset(stdoutStderr)
+        : null;
+      const mergedErrorMeta = usageLimitResetsAt
+        ? { ...(errorMeta ?? {}), usageLimitResetsAt }
+        : errorMeta;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
-        errorMeta,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : usageLimited
+            ? "claude_usage_limited"
+            : null,
+        errorMeta: mergedErrorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
@@ -583,6 +597,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const usageLimited = isClaudeUsageLimitResult(parsed);
+    const usageLimitResetsAt = usageLimited
+      ? extractClaudeUsageLimitReset(parsed)
+      : null;
+    const mergedErrorMeta = usageLimitResetsAt
+      ? { ...(errorMeta ?? {}), usageLimitResetsAt }
+      : errorMeta;
 
     return {
       exitCode: proc.exitCode,
@@ -592,8 +613,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
-      errorMeta,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : usageLimited
+          ? "claude_usage_limited"
+          : null,
+      errorMeta: mergedErrorMeta,
       usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
