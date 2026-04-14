@@ -46,8 +46,8 @@ export function queueIssueAssignmentWakeup(input: {
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
-      silentCompletion: input.silentCompletion === true,
-      onComplete: input.onComplete ?? null,
+      ...(input.silentCompletion !== undefined ? { silentCompletion: input.silentCompletion === true } : {}),
+      ...(input.onComplete !== undefined ? { onComplete: input.onComplete ?? null } : {}),
     })
     .catch((err) => {
       logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
