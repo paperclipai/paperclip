@@ -235,12 +235,39 @@ describe("Routines i18n shell", () => {
   });
 
   it("renders localized routine row copy for a non-empty list", async () => {
+    const triggeredAt = new Date("2026-04-14T01:00:00.000Z");
+    const createdAt = new Date("2026-04-14T09:00:00.000Z");
+    const localeStringSpy = vi
+      .spyOn(Date.prototype, "toLocaleString")
+      .mockImplementation(function toLocaleStringStub(this: Date) {
+        return this.toISOString();
+      });
+
     routinesListMock.mockResolvedValue([
       createRoutine({
         status: "active",
         projectId: null,
         assigneeAgentId: "agent-1",
         lastTriggeredAt: null,
+        lastRun: {
+          id: "run-1",
+          companyId: "company-1",
+          routineId: "routine-1",
+          triggerId: null,
+          source: "manual",
+          status: "in_progress",
+          triggeredAt,
+          idempotencyKey: null,
+          triggerPayload: null,
+          linkedIssueId: null,
+          coalescedIntoRunId: null,
+          failureReason: null,
+          completedAt: null,
+          createdAt,
+          updatedAt: createdAt,
+          linkedIssue: null,
+          trigger: null,
+        },
       }),
     ]);
     localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
@@ -251,12 +278,16 @@ describe("Routines i18n shell", () => {
     expect(container.textContent).toContain("Daily QA");
     expect(container.textContent).toContain("无项目");
     expect(container.textContent).toContain("未知智能体");
-    expect(container.textContent).toContain("从未运行");
+    expect(container.textContent).toContain(triggeredAt.toISOString());
+    expect(container.textContent).not.toContain(createdAt.toISOString());
+    expect(container.textContent).toContain("in progress");
     expect(container.textContent).toContain("开启");
 
     await act(async () => {
       root.unmount();
     });
+
+    localeStringSpy.mockRestore();
   });
 
   it("renders localized composer and advanced settings copy", async () => {

@@ -273,7 +273,10 @@ function RoutineListRow({
           <span>•</span>
           <span>{routine.assigneeAgentId ? (agent?.name ?? t("routines.list.assignee.unknown", "Unknown agent")) : t("routines.list.assignee.none", "No default agent")}</span>
           <span>•</span>
-          <span>{formatLastRunTimestamp(routine.lastRun?.createdAt ?? routine.lastTriggeredAt, t)}</span>
+          <span>
+            {formatLastRunTimestamp(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt, t)}
+            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
+          </span>
         </div>
       </div>
 
