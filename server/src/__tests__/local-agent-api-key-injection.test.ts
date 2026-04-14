@@ -499,7 +499,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         isPrimary: true,
       });
     }
-    if (input.wake.source !== "timer") {
+    if (input.wake.source !== "timer" || input.issue) {
       const issueDescription =
         input.issue?.description ??
         (input.issue?.mentionMentionedProject && mentionedProjectId
@@ -574,6 +574,9 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         const { capture, run } = await runWakeCase({
           adapterType,
           wake: { source: "timer", triggerDetail: "system" },
+          issue: {
+            title: "Keep timer wake eligible",
+          },
         });
 
         expect(run.status).toBe("succeeded");
