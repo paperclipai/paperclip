@@ -43,6 +43,12 @@ Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEM
 
 Every PR must include a **Model Used** section specifying which AI model produced or assisted with the change. Include the provider, exact model ID/version, context window size, and any relevant capability details (e.g., reasoning mode, tool use). If no AI was used, write "None — human-authored". This applies to all contributors — human and AI alike.
 
+**Example Model Used section:**
+```
+- Model Used: Claude 3.5 Sonnet (claude-3-5-sonnet-20241022), 200k context, reasoning mode off
+- Or: None — human-authored
+```
+
 ### Tests Must Pass
 
 All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
