@@ -1,0 +1,53 @@
+# HTTPS + HTTP→HTTPS redirect
+# To activate:
+#   1. Place fullchain.pem and privkey.pem in the nginx-certs Docker volume
+#      (docker volume inspect toca-da-ia_nginx-certs to find the host path)
+#   2. cp app-https.conf.example app-https.conf
+#   3. docker compose -f docker/docker-compose.prod.yml restart nginx
+
+# Redirect all HTTP traffic to HTTPS
+server {
+  listen 80;
+  server_name _;
+
+  location /health {
+    proxy_pass http://app:3100/health;
+    proxy_set_header Host $host;
+    access_log off;
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+# HTTPS
+server {
+  listen 443 ssl;
+  server_name _;
+
+  ssl_certificate     /etc/nginx/certs/fullchain.pem;
+  ssl_certificate_key /etc/nginx/certs/privkey.pem;
+  ssl_protocols       TLSv1.2 TLSv1.3;
+  ssl_ciphers         HIGH:!aNULL:!MD5;
+
+  # Health check endpoint (no auth required)
+  location /health {
+    proxy_pass http://app:3100/health;
+    proxy_set_header Host $host;
+    access_log off;
+  }
+
+  location / {
+    proxy_pass http://app:3100;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+  }
+}

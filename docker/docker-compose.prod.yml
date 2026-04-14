@@ -76,6 +76,12 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - nginx-certs:/etc/nginx/certs:ro
       - nginx-logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     depends_on:
       app:
         condition: service_healthy

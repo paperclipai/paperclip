@@ -36,12 +36,20 @@ if [[ -z "$DB_CONTAINER" ]]; then
 fi
 
 echo "→ Realizando backup do banco..."
+TMP_BACKUP=$(mktemp "${BACKUP_DIR}/.backup_tmp_XXXXXXXX.sql.gz")
 docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \
-  | gzip > "$OUTPUT_FILE"
+  | gzip > "$TMP_BACKUP"
+
+if [[ ! -s "$TMP_BACKUP" ]]; then
+  rm -f "$TMP_BACKUP"
+  echo "Erro: backup vazio ou falha no pg_dump." >&2
+  exit 1
+fi
+mv "$TMP_BACKUP" "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)
 echo "✔ Backup salvo em: $OUTPUT_FILE ($SIZE)"
 echo ""
 echo "Para restaurar:"
-echo "  gunzip -c \"$OUTPUT_FILE\" | docker exec -i $DB_CONTAINER psql -U paperclip -d paperclip"
+echo "  gunzip -c \"$OUTPUT_FILE\" | docker compose -f \"$COMPOSE_FILE\" exec -T db psql -U paperclip -d paperclip"

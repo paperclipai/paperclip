@@ -77,13 +77,14 @@ OPENAI_API_KEY=${OPENAI_KEY:-}
 PAPERCLIP_DEPLOYMENT_MODE=authenticated
 PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 EOF
+  chmod 600 .env
   info ".env criado com sucesso."
 fi
 
 # ─── Subir serviços ──────────────────────────────────────────────────────────
 
 heading "Iniciando serviços..."
-docker compose -f docker/docker-compose.prod.yml --env-file .env pull --quiet 2>/dev/null || true
+docker compose -f docker/docker-compose.prod.yml --env-file .env pull --quiet
 docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 
 # ─── Aguardar app ficar saudável ─────────────────────────────────────────────
@@ -95,13 +96,15 @@ HEALTH_URL="${APP_URL%/}/health"
 
 RETRIES=30
 for i in $(seq 1 $RETRIES); do
-  if curl -sf "$HEALTH_URL" | grep -q '"status":"ok"'; then
+  HEALTH_RESPONSE=$(curl -sf "$HEALTH_URL" 2>/dev/null || true)
+  if echo "$HEALTH_RESPONSE" | grep -q '"status":"ok"'; then
     info "Aplicação pronta!"
     break
   fi
   if [[ $i -eq $RETRIES ]]; then
     error "Timeout aguardando a aplicação. Verifique os logs:"
     echo "  docker compose -f docker/docker-compose.prod.yml logs app"
+    echo "  docker compose -f docker/docker-compose.prod.yml logs nginx"
     exit 1
   fi
   echo -n "."
