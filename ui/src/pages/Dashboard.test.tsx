@@ -78,6 +78,12 @@ vi.mock("../lib/queryKeys", () => ({
   },
 }));
 
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to, className }: { children: unknown; to: string; className?: string }) => (
+    <a href={to} className={className}>{children as never}</a>
+  ),
+}));
+
 vi.mock("../components/MetricCard", () => ({
   MetricCard: ({ label, description }: { label: string; description?: unknown }) => <div>{label}{description as never}</div>,
 }));
@@ -120,8 +126,8 @@ describe("Dashboard", () => {
       costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 },
       pendingApprovals: 0,
     });
-    listActivityMock.mockResolvedValue([]);
     listIssuesMock.mockResolvedValue([]);
+    listActivityMock.mockResolvedValue([]);
     listAgentsMock.mockResolvedValue([]);
     listProjectsMock.mockResolvedValue([]);
     listHeartbeatsMock.mockResolvedValue([]);
@@ -214,6 +220,65 @@ describe("Dashboard", () => {
     expect(container.textContent).toContain("进行中的任务");
     expect(container.textContent).toContain("本月支出");
     expect(container.textContent).toContain("待处理审批");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders localized dashboard charts and stable summaries", async () => {
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
+    summaryMock.mockResolvedValue({
+      budgets: { activeIncidents: 2, pausedAgents: 3, pausedProjects: 1, pendingApprovals: 4 },
+      agents: { active: 1, running: 2, paused: 1, error: 3 },
+      tasks: { inProgress: 5, open: 6, blocked: 2 },
+      costs: { monthSpendCents: 12345, monthBudgetCents: 50000, monthUtilizationPercent: 25 },
+      pendingApprovals: 1,
+    });
+    listIssuesMock.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PC-1",
+        title: "修复 Dashboard",
+        status: "open",
+        updatedAt: new Date("2026-04-12T00:00:00Z").toISOString(),
+        assigneeAgentId: null,
+      },
+    ]);
+    listActivityMock.mockResolvedValue([{ id: "evt-1" }]);
+
+    const root = await renderPage();
+
+    await waitFor(() => container.textContent?.includes("运行活动") === true && container.textContent?.includes("最近活动") === true);
+
+    expect(container.textContent).toContain("运行活动");
+    expect(container.textContent).toContain("按优先级统计事项");
+    expect(container.textContent).toContain("按状态统计事项");
+    expect(container.textContent).toContain("成功率");
+    expect(container.textContent).toContain("最近 14 天");
+    expect(container.textContent).toContain("最近活动");
+    expect(container.textContent).toContain("最近任务");
+    expect(container.textContent).toContain("运行中：2 · 已暂停：1 · 错误：3");
+    expect(container.textContent).toContain("打开：6 · 阻塞：2");
+    expect(container.textContent).toContain("已使用预算 $500.00 的 25%");
+    expect(container.textContent).toContain("等待看板审核的预算覆盖：4");
+    expect(container.textContent).toContain("活跃预算事件：2");
+    expect(container.textContent).toContain("已暂停智能体：3 · 已暂停项目：1 · 待处理预算审批：4");
+    expect(container.textContent).toContain("打开预算");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders localized empty recent tasks state", async () => {
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
+    const root = await renderPage();
+
+    await waitFor(() => container.textContent?.includes("最近任务") === true);
+
+    expect(container.textContent).toContain("最近任务");
+    expect(container.textContent).toContain("还没有任务。");
 
     await act(async () => {
       root.unmount();
