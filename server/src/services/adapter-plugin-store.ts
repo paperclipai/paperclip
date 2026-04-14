@@ -86,7 +86,12 @@ function readStore(): AdapterPluginRecord[] {
 
 function writeStore(records: AdapterPluginRecord[]): void {
   ensureDirs();
-  fs.writeFileSync(ADAPTER_PLUGINS_STORE_PATH, JSON.stringify(records, null, 2), "utf-8");
+  // Atomic write: write to a temp file in the same directory then rename.
+  // rename() is atomic on POSIX when source and target are on the same
+  // filesystem, preventing partial/corrupted reads from concurrent processes.
+  const tmpPath = `${ADAPTER_PLUGINS_STORE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(records, null, 2), "utf-8");
+  fs.renameSync(tmpPath, ADAPTER_PLUGINS_STORE_PATH);
   storeCache = records;
 }
 
@@ -106,7 +111,9 @@ function readSettings(): AdapterSettings {
 
 function writeSettings(settings: AdapterSettings): void {
   ensureDirs();
-  fs.writeFileSync(ADAPTER_SETTINGS_PATH, JSON.stringify(settings, null, 2), "utf-8");
+  const tmpPath = `${ADAPTER_SETTINGS_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2), "utf-8");
+  fs.renameSync(tmpPath, ADAPTER_SETTINGS_PATH);
   settingsCache = settings;
 }
 
