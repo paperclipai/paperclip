@@ -7561,13 +7561,13 @@ export function heartbeatService(db: Db) {
 
       const rows = await db
         .select({
-          date: sql<string>`DATE(${heartbeatRuns.createdAt})`.as("date"),
+          date: sql<string>`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`.as("date"),
           status: heartbeatRuns.status,
           count: sql<number>`count(*)`.as("count"),
         })
         .from(heartbeatRuns)
         .where(condition)
-        .groupBy(sql`DATE(${heartbeatRuns.createdAt})`, heartbeatRuns.status);
+        .groupBy(sql`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`, heartbeatRuns.status);
       
       return rows.map(r => ({ ...r, count: Number(r.count) }));
     },
