@@ -239,6 +239,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    * that would otherwise disrupt Android keyboards and dismiss them.
    */
   const isComposingRef = useRef(false);
+  /**
+   * True while the compositionend rAF flush is running. Prevents the
+   * MutationObserver from re-entering decorateProjectMentions() while
+   * the flush itself is decorating — the resulting DOM mutation cascade
+   * (clear contenteditable attr → re-set it → MutationObserver fires →
+   * repeat) dismisses Android keyboards.
+   */
+  const isFlushingCompositionRef = useRef(false);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -369,9 +377,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const link = node as HTMLAnchorElement;
       const parsed = parseMentionChipHref(link.getAttribute("href") ?? "");
       if (!parsed) {
-        clearMentionChipDecoration(link);
+        // Only clear if currently decorated — avoids unnecessary DOM mutations
+        // that trigger MutationObserver cascades and disrupt Android keyboards.
+        if (link.dataset.mentionKind) {
+          clearMentionChipDecoration(link);
+        }
         continue;
       }
+
+      // Skip if already decorated with the correct kind — the clear+re-apply
+      // cycle in applyMentionChipDecoration toggles the contenteditable attribute
+      // which Android interprets as a focus change, dismissing the keyboard.
+      if (link.dataset.mentionKind === parsed.kind) continue;
 
       if (parsed.kind === "project") {
         const option = mentionOptionByKey.get(`project:${parsed.projectId}`);
@@ -436,7 +453,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         // was cancelled by onStart — so reaching here means no new
         // composition is active. Safe to lower the guard.
         isComposingRef.current = false;
+        // Suppress MutationObserver during flush — decorateProjectMentions
+        // may still mutate the DOM for newly-inserted mentions, and we
+        // don't want the observer to re-enter and cascade.
+        isFlushingCompositionRef.current = true;
         decorateProjectMentions();
+        isFlushingCompositionRef.current = false;
         // If the external value drifted during composition, sync now
         if (ref.current && valueRef.current !== latestValueRef.current) {
           echoIgnoreMarkdownRef.current = valueRef.current;
@@ -498,7 +520,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const observer = new MutationObserver(() => {
       // Skip decoration during IME composition — DOM mutations inside the
       // contentEditable disrupt Android keyboards.
-      if (isComposingRef.current) return;
+      // Also skip during compositionend flush — the flush itself runs
+      // decorateProjectMentions, and re-entering from the observer would
+      // cause a DOM mutation cascade.
+      if (isComposingRef.current || isFlushingCompositionRef.current) return;
       decorateProjectMentions();
     });
     observer.observe(editable, {

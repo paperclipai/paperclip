@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -726,11 +726,11 @@ export function CommentThread({
     }
   }
 
-  async function handleFeedbackVote(
+  const handleFeedbackVote = useCallback(async (
     commentId: string,
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
-  ) {
+  ) => {
     if (!onVote) return;
     setVotingTargetId(commentId);
     try {
@@ -738,7 +738,7 @@ export function CommentThread({
     } finally {
       setVotingTargetId(null);
     }
-  }
+  }, [onVote]);
 
   const canSubmit = !submitting && !!body.trim();
 
