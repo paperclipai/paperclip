@@ -26,6 +26,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  restartDesiredRuntimeServicesOnStartup,
   resetRuntimeServicesForTests,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
@@ -2054,6 +2055,105 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  });
+
+  it("prewarms desired project workspace services that runs can reuse", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-prewarm-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-prewarm-${randomUUID()}`;
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const config = {
+      workspaceRuntime: {
+        services: [
+          {
+            name: "web",
+            command:
+              "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+            cwd: ".",
+            port: { type: "auto" },
+            readiness: {
+              type: "http",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+              timeoutSec: 10,
+              intervalMs: 100,
+            },
+            expose: {
+              type: "url",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+            },
+            lifecycle: "shared",
+            reuseScope: "project_workspace",
+            stopPolicy: {
+              type: "manual",
+            },
+          },
+        ],
+      },
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime prewarm test",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: workspaceRoot,
+      isPrimary: true,
+      metadata: {
+        runtimeConfig: {
+          desiredState: "running",
+          workspaceRuntime: config.workspaceRuntime,
+        },
+      },
+    });
+
+    const restarted = await restartDesiredRuntimeServicesOnStartup(db);
+    expect(restarted).toMatchObject({ restarted: 1, failed: 0 });
+
+    leasedRunIds.add(runId);
+    const services = await ensureRuntimeServicesForRun({
+      db,
+      runId,
+      agent: {
+        id: agentId,
+        name: "Codex Coder",
+        companyId,
+      },
+      issue: null,
+      workspace: {
+        ...buildWorkspace(workspaceRoot),
+        projectId,
+        workspaceId: projectWorkspaceId,
+      },
+      config,
+      adapterEnv: {},
+    });
+
+    expect(services).toHaveLength(1);
+    expect(services[0]?.reused).toBe(true);
+    await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await releaseRuntimeServicesForRun(runId);
+    leasedRunIds.delete(runId);
+    await resetRuntimeServicesForTests();
   });
 
   it("adopts a live auto-port shared service after runtime state is reset", async () => {

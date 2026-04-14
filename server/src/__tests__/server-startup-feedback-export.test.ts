@@ -7,6 +7,7 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  runtimePrewarmMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
@@ -15,6 +16,7 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const runtimePrewarmMock = vi.fn(async () => ({ restarted: 0, failed: 0 }));
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -32,6 +34,7 @@ const {
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    runtimePrewarmMock,
   };
 });
 
@@ -122,6 +125,7 @@ vi.mock("../services/index.js", () => ({
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  restartDesiredRuntimeServicesOnStartup: runtimePrewarmMock,
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   })),
@@ -137,6 +141,10 @@ vi.mock("../services/feedback-share-client.js", () => ({
 
 vi.mock("../startup-banner.js", () => ({
   printStartupBanner: vi.fn(),
+}));
+
+vi.mock("../adapters/registry.js", () => ({
+  waitForExternalAdapters: vi.fn(async () => undefined),
 }));
 
 vi.mock("../board-claim.js", () => ({
@@ -166,6 +174,7 @@ describe("startServer feedback export wiring", () => {
     expect(started.server).toBe(fakeServer);
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
     expect(createAppMock).toHaveBeenCalledTimes(1);
+    expect(runtimePrewarmMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       feedbackExportService: feedbackExportServiceMock,
       storageService: { id: "storage-service" },

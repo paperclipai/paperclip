@@ -33,6 +33,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
+  restartDesiredRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
@@ -572,6 +573,16 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void restartDesiredRuntimeServicesOnStartup(db as any)
+    .then((result) => {
+      if (result.restarted > 0 || result.failed > 0) {
+        logger.info({ ...result }, "startup desired runtime-service prewarm finished");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup desired runtime-service prewarm failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {

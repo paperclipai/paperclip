@@ -102,6 +102,7 @@ type RuntimeSkillEntryOptions = {
 };
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
+const RUNTIME_SKILL_CACHE_META_FILE = ".paperclip-runtime-meta.json";
 
 const PROJECT_SCAN_DIRECTORY_ROOTS = [
   "skills",
@@ -1295,6 +1296,56 @@ function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 
+export function runtimeSkillMaterializationVersion(
+  skill: Pick<CompanySkill, "key" | "slug" | "updatedAt" | "sourceRef" | "fileInventory">,
+) {
+  const updatedAt = skill.updatedAt instanceof Date
+    ? skill.updatedAt.toISOString()
+    : skill.updatedAt
+      ? new Date(skill.updatedAt).toISOString()
+      : null;
+  const sourceRef = skill.sourceRef ?? null;
+  const fallbackVersion = updatedAt || sourceRef
+    ? null
+    : createHash("sha256")
+        .update(JSON.stringify({
+          key: skill.key,
+          slug: skill.slug,
+          fileInventory: skill.fileInventory.map((entry) => ({
+            path: entry.path,
+            kind: entry.kind,
+          })),
+        }))
+        .digest("hex");
+  return JSON.stringify({
+    updatedAt,
+    sourceRef,
+    fallbackVersion,
+  });
+}
+
+export function resolveRuntimeSkillMaterializedPath(
+  companyId: string,
+  skill: Pick<CompanySkill, "key" | "slug">,
+) {
+  const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
+  return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+}
+
+export async function getCurrentRuntimeSkillMaterializedPath(
+  companyId: string,
+  skill: Pick<CompanySkill, "key" | "slug" | "updatedAt" | "sourceRef" | "fileInventory">,
+) {
+  const skillDir = resolveRuntimeSkillMaterializedPath(companyId, skill);
+  const [skillFile, metaFile] = await Promise.all([
+    statPath(path.join(skillDir, "SKILL.md")),
+    fs.readFile(path.join(skillDir, RUNTIME_SKILL_CACHE_META_FILE), "utf8").catch(() => null),
+  ]);
+  if (!skillFile?.isFile()) return null;
+  if (metaFile !== runtimeSkillMaterializationVersion(skill)) return null;
+  return skillDir;
+}
+
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const normalized = normalizePortablePath(relativePath);
   const skillDir = normalizeSkillDirectory(skill);
@@ -2032,8 +2083,7 @@ export function companySkillService(db: Db) {
   }
 
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
-    const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
-    const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    const skillDir = resolveRuntimeSkillMaterializedPath(companyId, skill);
     await fs.rm(skillDir, { recursive: true, force: true });
     await fs.mkdir(skillDir, { recursive: true });
 
@@ -2045,12 +2095,13 @@ export function companySkillService(db: Db) {
       await fs.writeFile(targetPath, detail.content, "utf8");
     }
 
-    return skillDir;
-  }
+    await fs.writeFile(
+      path.join(skillDir, RUNTIME_SKILL_CACHE_META_FILE),
+      runtimeSkillMaterializationVersion(skill),
+      "utf8",
+    );
 
-  function resolveRuntimeSkillMaterializedPath(companyId: string, skill: CompanySkill) {
-    const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
-    return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    return skillDir;
   }
 
   async function listRuntimeSkillEntries(
@@ -2063,6 +2114,9 @@ export function companySkillService(db: Db) {
     for (const skill of skills) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
       let source = normalizeSkillDirectory(skill);
+      if (!source) {
+        source = await getCurrentRuntimeSkillMaterializedPath(companyId, skill);
+      }
       if (!source) {
         source = options.materializeMissing === false
           ? resolveRuntimeSkillMaterializedPath(companyId, skill)
