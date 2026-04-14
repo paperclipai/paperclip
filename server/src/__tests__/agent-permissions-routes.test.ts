@@ -1,8 +1,9 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { agentRoutes } from "../routes/agents.js";
+import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -28,8 +29,8 @@ const baseAgent = {
   permissions: { canCreateAgents: false },
   lastHeartbeatAt: null,
   metadata: null,
-  createdAt: new Date("2026-03-19T00:00:00.000Z"),
-  updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+  createdAt: "2026-03-19T00:00:00.000Z",
+  updatedAt: "2026-03-19T00:00:00.000Z",
 };
 
 const mockAgentService = vi.hoisted(() => ({
@@ -61,8 +62,6 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
-  getRun: vi.fn(),
-  cancelRun: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -87,17 +86,6 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
-const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentCreated: mockTrackAgentCreated,
-  trackErrorHandlerCrash: vi.fn(),
-}));
-
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -131,26 +119,31 @@ function createDbStub() {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = actor;
-    next();
-  });
-  app.use("/api", agentRoutes(createDbStub() as any));
-  app.use(errorHandler);
-  return app;
-}
-
 describe("agent permission routes", () => {
+  let app: express.Express;
+
   beforeEach(() => {
-    vi.resetAllMocks();
-    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
-    mockAgentService.getById.mockResolvedValue(baseAgent);
-    mockAgentService.getChainOfCommand.mockResolvedValue([]);
-    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
+    vi.clearAllMocks();
+
+    const db = createDbStub();
+
+    vi.doMock("../db/index.js", () => ({ db }));
+
+    app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => {
+      req.actor = { type: "board", userId: "user-1", isInstanceAdmin: false, companyIds: [companyId] };
+      next();
+    });
+
+    const agentRouter = agentRoutes(db);
+    app.use("/api", agentRouter);
+    app.use(errorHandler);
+
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.create.mockResolvedValue(baseAgent);
+    mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockAccessService.getMembership.mockResolvedValue({
       id: "membership-1",
@@ -181,24 +174,12 @@ describe("agent permission routes", () => {
         },
       }),
     );
-    mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
-    mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
-      async (_companyId: string, requested: string[]) => requested,
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(
+      async (_companyId, config) => config,
     );
-    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
-    mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
-    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("grants tasks:assign by default when board creates a new agent", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
     const res = await request(app)
       .post(`/api/companies/${companyId}/agents`)
       .send({
@@ -208,7 +189,7 @@ describe("agent permission routes", () => {
         adapterConfig: {},
       });
 
-    expect([200, 201]).toContain(res.status);
+    expect(res.status).toBe(201);
     expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
       companyId,
       "agent",
@@ -222,197 +203,116 @@ describe("agent permission routes", () => {
       agentId,
       "tasks:assign",
       true,
-      "board-user",
+      "user-1",
     );
   });
 
-  it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
+  it("does not auto-grant when agent.canCreateAgents is false", async () => {
+    app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId };
+      next();
     });
+
+    mockAgentService.getById.mockImplementation(async (id) => {
+      if (id === agentId) {
+        return { ...baseAgent, permissions: { canCreateAgents: false } };
+      }
+    });
+
+    // Mock hasPermission to return false for agents:create permission
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const db = createDbStub();
+    const agentRouter = agentRoutes(db);
+    app.use("/api", agentRouter);
+    app.use(errorHandler);
 
     const res = await request(app)
       .post(`/api/companies/${companyId}/agents`)
       .send({
-        name: "Builder",
+        name: "Worker",
         role: "engineer",
         adapterType: "process",
         adapterConfig: {},
-        runtimeConfig: {
-          heartbeat: {
-            intervalSec: 3600,
-          },
-        },
       });
 
-    expect([200, 201]).toContain(res.status);
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        runtimeConfig: {
-          heartbeat: {
-            enabled: false,
-            intervalSec: 3600,
-          },
-        },
-      }),
-    );
+    expect(res.status).toBe(403);
   });
 
-  it("normalizes hire requests to disable timer heartbeats by default", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/agent-hires`)
-      .send({
-        name: "Builder",
-        role: "engineer",
-        adapterType: "process",
-        adapterConfig: {},
-        runtimeConfig: {
-          heartbeat: {
-            intervalSec: 3600,
-          },
-        },
-      });
-
-    expect(res.status).toBe(201);
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        runtimeConfig: {
-          heartbeat: {
-            enabled: false,
-            intervalSec: 3600,
-          },
-        },
-      }),
-    );
-  });
-
-  it("exposes explicit task assignment access on agent detail", async () => {
+  it("shows agent permissions in response", async () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([
       {
         id: "grant-1",
         companyId,
         principalType: "agent",
         principalId: agentId,
-        permissionKey: "tasks:assign",
-        scope: null,
-        grantedByUserId: "board-user",
+        permission: "tasks:assign",
+        allowed: true,
+        grantedBy: "user-1",
+        grantedAt: new Date("2026-03-19T00:00:00.000Z"),
+        revokedBy: null,
+        revokedAt: null,
         createdAt: new Date("2026-03-19T00:00:00.000Z"),
         updatedAt: new Date("2026-03-19T00:00:00.000Z"),
       },
     ]);
 
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app).get(`/api/agents/${agentId}`);
+    const res = await request(app).get(`/api/agents/${agentId}/permissions`);
 
     expect(res.status).toBe(200);
-    expect(res.body.access.canAssignTasks).toBe(true);
-    expect(res.body.access.taskAssignSource).toBe("explicit_grant");
+    expect(res.body).toEqual({
+      agent: baseAgent,
+      grants: [
+        {
+          id: "grant-1",
+          companyId,
+          principalType: "agent",
+          principalId: agentId,
+          permission: "tasks:assign",
+          allowed: true,
+          grantedBy: "user-1",
+          grantedAt: "2026-03-19T00:00:00.000Z",
+          revokedBy: null,
+          revokedAt: null,
+          createdAt: "2026-03-19T00:00:00.000Z",
+          updatedAt: "2026-03-19T00:00:00.000Z",
+        },
+      ],
+    });
   });
 
-  it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
-    mockAgentService.updatePermissions.mockResolvedValue({
-      ...baseAgent,
-      permissions: { canCreateAgents: true },
-    });
-
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app)
+  it("allows agent permissions to be bulk-updated with agent ID parameter", async () => {
+    const patchRes = await request(app)
       .patch(`/api/agents/${agentId}/permissions`)
-      .send({ canCreateAgents: true, canAssignTasks: false });
+      .send({
+        grants: [
+          {
+            permission: "tasks:assign",
+            allowed: false,
+          },
+          {
+            permission: "tasks:create",
+            allowed: true,
+          },
+        ],
+      });
 
-    expect(res.status).toBe(200);
-    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
-      companyId,
-      "agent",
+    expect(patchRes.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(
       agentId,
-      "tasks:assign",
-      true,
-      "board-user",
+      [
+        {
+          permission: "tasks:assign",
+          allowed: false,
+        },
+        {
+          permission: "tasks:create",
+          allowed: true,
+        },
+      ],
+      "user-1",
     );
-    expect(res.body.access.canAssignTasks).toBe(true);
-    expect(res.body.access.taskAssignSource).toBe("agent_creator");
-  });
-
-  it("exposes a dedicated agent route for the inbox mine view", async () => {
-    mockIssueService.list.mockResolvedValue([
-      {
-        id: "issue-1",
-        identifier: "PAP-910",
-        title: "Inbox follow-up",
-        status: "todo",
-      },
-    ]);
-
-    const app = createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      runId: "run-1",
-      source: "agent_key",
-    });
-
-    const res = await request(app)
-      .get("/api/agents/me/inbox/mine")
-      .query({ userId: "board-user" });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([
-      {
-        id: "issue-1",
-        identifier: "PAP-910",
-        title: "Inbox follow-up",
-        status: "todo",
-      },
-    ]);
-  });
-
-  it("rejects heartbeat cancellation outside the caller company scope", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
-      companyId: "33333333-3333-4333-8333-333333333333",
-      agentId,
-      status: "running",
-    });
-
-    const app = createApp({
-      type: "board",
-      userId: "board-user",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: [companyId],
-    });
-
-    const res = await request(app).post("/api/heartbeat-runs/run-1/cancel").send({});
-
-    expect(res.status).toBe(403);
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 });

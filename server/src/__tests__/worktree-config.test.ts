@@ -397,6 +397,7 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.DATABASE_URL; // Clear environment DATABASE_URL to allow database port write
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,
