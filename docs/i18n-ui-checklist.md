@@ -41,10 +41,13 @@ Next Batches:
   `ui/src/components/OutputFeedbackButtons.tsx`
   `ui/src/components/SidebarAgents.tsx`
   `ui/src/components/ReportsToPicker.tsx`
+  `ui/src/components/ProjectProperties.tsx` shared fallback copy
+  `ui/src/components/ui/dialog.tsx`
+  `ui/src/components/ui/sheet.tsx`
+  `ui/src/components/ui/command.tsx`
+  `ui/src/components/ui/breadcrumb.tsx`
   Remaining production sweep:
   `ui/src/components/transcript/RunTranscriptView.tsx`
-  `ui/src/components/ProjectProperties.tsx`
-  shared `ui/src/components/ui/*` primitives with built-in English chrome
 - [ ] Decide whether lab/demo/design pages should be localized in this rollout or tracked separately
 - [ ] Final verification pass with `scripts/check-i18n.ts` and targeted typecheck evidence
 
@@ -52,7 +55,7 @@ Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2577` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2587` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:
@@ -95,4 +98,9 @@ Verification Notes:
   `ui/src/pages/MyIssues.tsx`
   Centralized status label rendering is now localized:
   `ui/src/components/StatusBadge.tsx`
-  `pnpm --filter @paperclipai/ui typecheck` still hangs at `tsc -b` in this environment; the process was confirmed alive at the `tsc -b` stage and then terminated, so this batch is not claimed as freshly typecheck-clean.
+  Shared primitive chrome is now localized:
+  `ui/src/components/ui/dialog.tsx`
+  `ui/src/components/ui/sheet.tsx`
+  `ui/src/components/ui/command.tsx`
+  `ui/src/components/ui/breadcrumb.tsx`
+  Targeted `pnpm --filter @paperclipai/ui typecheck` output still reports existing `t` signature mismatches in `ui/src/components/ProjectProperties.tsx`; no matching errors were surfaced for the shared primitive files or `packages/i18n/src/index.ts`, so this batch is not claimed as fully typecheck-clean.
