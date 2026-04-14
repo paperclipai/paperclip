@@ -930,7 +930,9 @@ async function askAgent(
     fallbackChars: terminalResultText.length,
     streamChars: streamResponse.length,
     responseChars: response.length,
-    usedFallback: terminalResultText.trim().length > 0 && response === normalizeTelegramReply(terminalResultText),
+    usedFallback:
+      terminalResultText.trim().length > 0 &&
+      response === normalizeTelegramReply(terminalResultText),
     preview: response.slice(0, 120),
   });
 
