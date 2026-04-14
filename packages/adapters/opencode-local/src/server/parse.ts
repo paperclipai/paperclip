@@ -19,7 +19,7 @@ function errorText(value: unknown): string {
   }
 }
 
-export function parseOpenCodeJsonl(stdout: string) {
+export async function parseOpenCodeJsonl(stdoutStream: AsyncIterable<string>) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
@@ -29,51 +29,94 @@ export function parseOpenCodeJsonl(stdout: string) {
     outputTokens: 0,
   };
   let costUsd = 0;
+  let buffer = "";
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  for await (const chunk of stdoutStream) {
+    buffer += chunk;
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
 
-    const event = parseJson(line);
-    if (!event) continue;
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    const currentSessionId = asString(event.sessionID, "").trim();
-    if (currentSessionId) sessionId = currentSessionId;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    const type = asString(event.type, "");
+      const currentSessionId = asString(event.sessionID, "").trim();
+      if (currentSessionId) sessionId = currentSessionId;
 
-    if (type === "text") {
-      const part = parseObject(event.part);
-      const text = asString(part.text, "").trim();
-      if (text) messages.push(text);
-      continue;
+      const type = asString(event.type, "");
+
+      if (type === "text") {
+        const part = parseObject(event.part);
+        const text = asString(part.text, "").trim();
+        if (text) messages.push(text);
+        continue;
+      }
+
+      if (type === "step_finish") {
+        const part = parseObject(event.part);
+        const tokens = parseObject(part.tokens);
+        const cache = parseObject(tokens.cache);
+        usage.inputTokens += asNumber(tokens.input, 0);
+        usage.cachedInputTokens += asNumber(cache.read, 0);
+        usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
+        costUsd += asNumber(part.cost, 0);
+        continue;
+      }
+
+      if (type === "tool_use") {
+        const part = parseObject(event.part);
+        const state = parseObject(part.state);
+        if (asString(state.status, "") === "error") {
+          const text = asString(state.error, "").trim();
+          if (text) errors.push(text);
+        }
+        continue;
+      }
+
+      if (type === "error") {
+        const text = errorText(event.error ?? event.message).trim();
+        if (text) errors.push(text);
+        continue;
+      }
     }
+  }
 
-    if (type === "step_finish") {
-      const part = parseObject(event.part);
-      const tokens = parseObject(part.tokens);
-      const cache = parseObject(tokens.cache);
-      usage.inputTokens += asNumber(tokens.input, 0);
-      usage.cachedInputTokens += asNumber(cache.read, 0);
-      usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
-      costUsd += asNumber(part.cost, 0);
-      continue;
-    }
+  // Process any remaining data in the buffer
+  if (buffer.trim()) {
+    const event = parseJson(buffer.trim());
+    if (event) {
+      const currentSessionId = asString(event.sessionID, "").trim();
+      if (currentSessionId) sessionId = currentSessionId;
 
-    if (type === "tool_use") {
-      const part = parseObject(event.part);
-      const state = parseObject(part.state);
-      if (asString(state.status, "") === "error") {
-        const text = asString(state.error, "").trim();
+      const type = asString(event.type, "");
+
+      if (type === "text") {
+        const part = parseObject(event.part);
+        const text = asString(part.text, "").trim();
+        if (text) messages.push(text);
+      } else if (type === "step_finish") {
+        const part = parseObject(event.part);
+        const tokens = parseObject(part.tokens);
+        const cache = parseObject(tokens.cache);
+        usage.inputTokens += asNumber(tokens.input, 0);
+        usage.cachedInputTokens += asNumber(cache.read, 0);
+        usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
+        costUsd += asNumber(part.cost, 0);
+      } else if (type === "tool_use") {
+        const part = parseObject(event.part);
+        const state = parseObject(part.state);
+        if (asString(state.status, "") === "error") {
+          const text = asString(state.error, "").trim();
+          if (text) errors.push(text);
+        }
+      } else if (type === "error") {
+        const text = errorText(event.error ?? event.message).trim();
         if (text) errors.push(text);
       }
-      continue;
-    }
-
-    if (type === "error") {
-      const text = errorText(event.error ?? event.message).trim();
-      if (text) errors.push(text);
-      continue;
     }
   }
 

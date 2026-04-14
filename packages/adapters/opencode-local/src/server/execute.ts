@@ -332,10 +332,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         onLog,
       });
+      async function* asStream(text: string) { yield text; }
       return {
         proc,
         rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
+        parsed: await parseOpenCodeJsonl(asStream(proc.stdout)),
       };
     };
 
@@ -343,7 +344,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
         rawStderr: string;
-        parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        parsed: Awaited<ReturnType<typeof parseOpenCodeJsonl>>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {

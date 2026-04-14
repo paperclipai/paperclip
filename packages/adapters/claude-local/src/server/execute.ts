@@ -504,7 +504,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
     });
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
+    async function* asStream(text: string) { yield text; }
+    const parsedStream = await parseClaudeStreamJson(asStream(proc.stdout));
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
     return { proc, parsedStream, parsed };
   };
@@ -512,7 +513,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const toAdapterResult = (
     attempt: {
       proc: RunProcessResult;
-      parsedStream: ReturnType<typeof parseClaudeStreamJson>;
+      parsedStream: Awaited<ReturnType<typeof parseClaudeStreamJson>>;
       parsed: Record<string, unknown> | null;
     },
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },

@@ -4,7 +4,7 @@ import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local/ui"
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 
 describe("opencode_local parser", () => {
-  it("extracts session, summary, usage, cost, and terminal error message", () => {
+  it("extracts session, summary, usage, cost, and terminal error message", async () => {
     const stdout = [
       JSON.stringify({ type: "step_start", sessionID: "ses_123" }),
       JSON.stringify({ type: "text", part: { type: "text", text: "hello" } }),
@@ -35,7 +35,8 @@ describe("opencode_local parser", () => {
       JSON.stringify({ type: "error", message: "model access denied" }),
     ].join("\n");
 
-    const parsed = parseOpenCodeJsonl(stdout);
+    async function* asStream(text: string) { yield text; }
+    const parsed = await parseOpenCodeJsonl(asStream(stdout));
     expect(parsed.sessionId).toBe("ses_123");
     expect(parsed.summary).toBe("hello");
     expect(parsed.usage).toEqual({
