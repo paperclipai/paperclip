@@ -55,6 +55,7 @@ import {
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -225,16 +226,15 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses = [
-  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
-  { value: "blocked", label: "Blocked", color: issueStatusText.blocked ?? issueStatusTextDefault },
-  { value: "parked", label: "Parked", color: issueStatusText.parked ?? issueStatusTextDefault },
-  { value: "cancelled", label: "Cancelled", color: issueStatusText.cancelled ?? issueStatusTextDefault },
-];
+function statusLabel(s: string) {
+  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+const statuses = ISSUE_STATUSES.map((s) => ({
+  value: s,
+  label: statusLabel(s),
+  color: issueStatusText[s] ?? issueStatusTextDefault,
+}));
 
 const priorities = [
   { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },

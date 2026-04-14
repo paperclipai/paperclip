@@ -129,6 +129,7 @@ export const INBOX_MINE_ISSUE_STATUSES = [
   "in_progress",
   "in_review",
   "blocked",
+  "parked",
   "done",
 ] as const;
 export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
