@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { TranscriptEntry } from "../adapters";
 import type { LiveRunForIssue } from "../api/heartbeats";
+import { useLocale } from "../context/LocaleContext";
 import { IssueChatThread } from "./IssueChatThread";
 import type { IssueChatLinkedRun } from "../lib/issue-chat-messages";
 
@@ -21,6 +22,7 @@ export function RunChatSurface({
   hasOutput,
   companyId,
 }: RunChatSurfaceProps) {
+  const { t } = useLocale();
   const active = isRunActive(run);
   const liveRuns = active ? [run] : [];
   const linkedRuns = useMemo<IssueChatLinkedRun[]>(
@@ -54,7 +56,7 @@ export function RunChatSurface({
       showComposer={false}
       showJumpToLatest={false}
       variant="embedded"
-      emptyMessage={active ? "Waiting for run output..." : "No run output captured."}
+      emptyMessage={active ? t("runChatSurface.waitingForRunOutput") : t("runChatSurface.noRunOutputCaptured")}
       enableLiveTranscriptPolling={false}
       transcriptsByRunId={transcriptsByRunId}
       hasOutputForRun={(runId) => runId === run.id && hasOutput}
