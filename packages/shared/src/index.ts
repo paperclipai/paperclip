@@ -69,7 +69,6 @@ export {
 export type {
   Company,
   CompanySettings,
-  TelegramNotificationLevel,
   Agent,
   AgentPermissions,
   AgentKeyCreated,

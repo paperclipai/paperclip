@@ -1,5 +1,5 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -12,6 +12,8 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
+  ensureRuntimeRole,
+  buildRuntimeConnectionString,
   formatDatabaseBackupResult,
   runDatabaseBackup,
   authUsers,
@@ -28,7 +30,8 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { accessService, agentService } from "./services/index.js";
 import { heartbeatService } from "./services/index.js";
 import { AGENT_ROLE_DEFAULT_PERMISSIONS } from "@paperclipai/shared";
-import { initTelegramNotifications } from "./services/telegram.js";
+import { initTelegramNotifications, notifyOps } from "./services/telegram.js";
+import { checkSchemaIntegrity } from "./routes/health.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -104,6 +107,45 @@ async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
 type EnsureMigrationsOptions = {
   autoApply?: boolean;
 };
+
+const RUNTIME_DB_ROLE_NAME = "paperclip_runtime";
+
+/**
+ * After migrations have been applied with the migration (superuser) credentials,
+ * provision the restricted `paperclip_runtime` PostgreSQL role and return a
+ * connection string scoped to it. Subsequent application code should use the
+ * returned URL so that runtime queries cannot perform DDL (CREATE/DROP/ALTER/
+ * TRUNCATE) on the schema even if the application is exploited.
+ *
+ * Throws if `PAPERCLIP_RUNTIME_DB_PASSWORD` is not set, so misconfigured
+ * production deployments fail loudly instead of silently running as superuser.
+ */
+async function provisionRuntimeRoleAndUrl(
+  migrationConnectionString: string,
+): Promise<string> {
+  const runtimePassword = process.env.PAPERCLIP_RUNTIME_DB_PASSWORD?.trim();
+  if (!runtimePassword) {
+    throw new Error(
+      "PAPERCLIP_RUNTIME_DB_PASSWORD is not set. The Paperclip server requires a " +
+        "dedicated low-privilege PostgreSQL role for runtime queries; the migration " +
+        "credentials are only used at startup to apply schema changes. Set " +
+        "PAPERCLIP_RUNTIME_DB_PASSWORD to a strong, randomly-generated password " +
+        "(it does not need to match any existing role — the server will create or " +
+        `update the "${RUNTIME_DB_ROLE_NAME}" role on startup).`,
+    );
+  }
+
+  const { roleName, databaseName } = await ensureRuntimeRole(migrationConnectionString, {
+    roleName: RUNTIME_DB_ROLE_NAME,
+    password: runtimePassword,
+  });
+  logger.info(
+    { roleName, database: databaseName },
+    "Provisioned restricted runtime PostgreSQL role (DML-only on public schema)",
+  );
+
+  return buildRuntimeConnectionString(migrationConnectionString, roleName, runtimePassword);
+}
 
 async function ensureMigrations(
   connectionString: string,
@@ -226,17 +268,31 @@ let db;
 let embeddedPostgres: EmbeddedPostgresInstance | null = null;
 let embeddedPostgresStartedByThisProcess = false;
 let migrationSummary: MigrationSummary = "skipped";
-let activeDatabaseConnectionString: string;
+// Connection string used by privileged maintenance jobs that need full read
+// access to all schemas/sequences (e.g. database backups). Always points at
+// the migration role, never the restricted runtime role.
+let backupDatabaseConnectionString: string;
 let startupDbInfo:
   | { mode: "external-postgres"; connectionString: string }
   | { mode: "embedded-postgres"; dataDir: string; port: number };
 if (config.databaseUrl) {
   migrationSummary = await ensureMigrations(config.databaseUrl, "PostgreSQL");
 
-  db = createDb(config.databaseUrl);
-  logger.info("Using external PostgreSQL via DATABASE_URL/config");
-  activeDatabaseConnectionString = config.databaseUrl;
-  startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+  // Migrations are now applied with the migration credentials (which must be a
+  // superuser / DDL-capable role). Provision the restricted runtime role and
+  // open the application pool against it so any subsequent query — including
+  // ones built from user input — cannot perform DDL on the database.
+  const runtimeConnectionString = await provisionRuntimeRoleAndUrl(config.databaseUrl);
+  db = createDb(runtimeConnectionString);
+  logger.info(
+    { runtimeRole: RUNTIME_DB_ROLE_NAME },
+    "Using external PostgreSQL via DATABASE_URL/config (runtime queries scoped to restricted role)",
+  );
+  // Backups still use the migration role: pg_dump-style introspection needs
+  // sequence reads and other catalogs the restricted runtime role does not
+  // (and should not) have access to.
+  backupDatabaseConnectionString = config.databaseUrl;
+  startupDbInfo = { mode: "external-postgres", connectionString: runtimeConnectionString };
 } else {
   const moduleName = "embedded-postgres";
   let EmbeddedPostgres: EmbeddedPostgresCtor;
@@ -370,9 +426,17 @@ if (config.databaseUrl) {
     autoApply: shouldAutoApplyFirstRunMigrations,
   });
 
+  // Embedded PostgreSQL is local-only and is never bound to anything but
+  // 127.0.0.1, so we deliberately skip the runtime-role split here and reuse
+  // the migration credentials. Splitting them would force every dev-mode user
+  // to also configure PAPERCLIP_RUNTIME_DB_PASSWORD, which is gratuitous when
+  // the database is unreachable from outside the host. External Postgres
+  // (DATABASE_URL set) always provisions the restricted runtime role above.
   db = createDb(embeddedConnectionString);
-  logger.info("Embedded PostgreSQL ready");
-  activeDatabaseConnectionString = embeddedConnectionString;
+  logger.info(
+    "Embedded PostgreSQL ready (runtime-role split skipped: embedded mode reuses migration credentials)",
+  );
+  backupDatabaseConnectionString = embeddedConnectionString;
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
@@ -519,6 +583,79 @@ if (config.heartbeatSchedulerEnabled) {
 
 initTelegramNotifications(db);
 
+// ---------------------------------------------------------------------------
+// Schema integrity watchdog
+// ---------------------------------------------------------------------------
+// Catches the "we lost data overnight" failure mode where a critical table
+// goes missing (botched migration, restored backup with the wrong schema,
+// accidental DROP) and nobody notices until users hit broken pages.
+//
+// Runs every 60s, alerts via Telegram if a check fails, and dedupes alerts
+// so a persistent failure pages on at most a 5-minute cadence rather than
+// flooding the channel.
+{
+  const SCHEMA_CHECK_INTERVAL_MS = 60 * 1000;
+  const SCHEMA_ALERT_DEDUP_MS = 5 * 60 * 1000;
+  let lastAlertSentAt = 0;
+  let lastAlertSignature: string | null = null;
+
+  const runSchemaCheck = async () => {
+    let result;
+    try {
+      result = await checkSchemaIntegrity(db as any);
+    } catch (err) {
+      logger.error({ err }, "Schema integrity check threw unexpectedly");
+      return;
+    }
+    if (result.status !== "degraded") {
+      // Recovery: clear dedup so the next failure alerts immediately.
+      if (lastAlertSignature !== null) {
+        logger.info({ checkedAt: result.checkedAt }, "Schema integrity recovered");
+        lastAlertSignature = null;
+        lastAlertSentAt = 0;
+      }
+      return;
+    }
+
+    const signature = result.missingTables.slice().sort().join(",");
+    const now = Date.now();
+    const sameFailure = signature === lastAlertSignature;
+    const withinDedupWindow = now - lastAlertSentAt < SCHEMA_ALERT_DEDUP_MS;
+    const shouldAlert = !sameFailure || !withinDedupWindow;
+
+    logger.error(
+      {
+        missingTables: result.missingTables,
+        errors: result.errors,
+        checkedAt: result.checkedAt,
+        willAlert: shouldAlert,
+      },
+      "SCHEMA INTEGRITY CHECK FAILED",
+    );
+
+    if (!shouldAlert) return;
+
+    lastAlertSentAt = now;
+    lastAlertSignature = signature;
+    const summary = result.errors
+      .map((e) => `${e.table}: ${e.message}`)
+      .join("; ");
+    void notifyOps(
+      `Schema integrity check FAILED: missing/broken tables [${result.missingTables.join(", ")}] — ${summary}`,
+      "error",
+    ).catch((err) => {
+      logger.warn({ err }, "Failed to send schema integrity Telegram alert");
+    });
+  };
+
+  // Kick off once at startup so a broken deploy is caught immediately
+  // instead of waiting a full interval.
+  void runSchemaCheck();
+  setInterval(() => {
+    void runSchemaCheck();
+  }, SCHEMA_CHECK_INTERVAL_MS);
+}
+
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
   let backupInFlight = false;
@@ -532,11 +669,25 @@ if (config.databaseBackupEnabled) {
     backupInFlight = true;
     try {
       const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
+        connectionString: backupDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
         retentionDays: config.databaseBackupRetentionDays,
         filenamePrefix: "paperclip",
       });
+      // Refresh a stable `latest.sql` pointer next to the timestamped backup
+      // so recovery tooling (and humans) can always grab the most recent
+      // dump without having to sort by mtime. We use a file copy rather than
+      // a symlink because the backup directory is typically a host
+      // bind-mount that does not always tolerate symlinks cleanly.
+      try {
+        const latestPath = resolve(config.databaseBackupDir, "latest.sql");
+        copyFileSync(result.backupFile, latestPath);
+      } catch (latestErr) {
+        logger.warn(
+          { err: latestErr, backupDir: config.databaseBackupDir },
+          "Failed to refresh latest.sql pointer",
+        );
+      }
       logger.info(
         {
           backupFile: result.backupFile,

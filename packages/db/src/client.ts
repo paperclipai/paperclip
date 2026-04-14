@@ -733,4 +733,143 @@ export async function ensurePostgresDatabase(
   }
 }
 
+export type EnsureRuntimeRoleOptions = {
+  /** Username for the runtime role. Defaults to "paperclip_runtime". */
+  roleName?: string;
+  /** Plain-text password for the runtime role. Required. */
+  password: string;
+};
+
+/**
+ * Ensures a low-privilege "runtime" PostgreSQL role exists on the same database
+ * the migration credentials connect to. The role can SELECT/INSERT/UPDATE/DELETE
+ * on tables in the `public` schema (current and future) but cannot perform DDL
+ * (CREATE/DROP/ALTER/TRUNCATE) — so an SQL-injection or buggy code path can't
+ * wipe the schema or escalate privileges.
+ *
+ * Must be called with a connection that has sufficient privileges to CREATE
+ * ROLE / GRANT (typically the migration superuser).
+ */
+export async function ensureRuntimeRole(
+  migrationUrl: string,
+  options: EnsureRuntimeRoleOptions,
+): Promise<{ roleName: string; databaseName: string }> {
+  const roleName = options.roleName ?? "paperclip_runtime";
+  if (!isSafeIdentifier(roleName)) {
+    throw new Error(`Unsafe runtime role name: ${roleName}`);
+  }
+  if (!options.password || options.password.length === 0) {
+    throw new Error("ensureRuntimeRole requires a non-empty password");
+  }
+
+  const quotedRole = quoteIdentifier(roleName);
+  const literalRoleName = quoteLiteral(roleName);
+  const literalPassword = quoteLiteral(options.password);
+
+  const sql = postgres(migrationUrl, { max: 1 });
+  try {
+    const dbRows = await sql<{ datname: string }[]>`SELECT current_database() AS datname`;
+    const databaseName = dbRows[0]?.datname;
+    if (!databaseName || !isSafeIdentifier(databaseName)) {
+      throw new Error(`Unable to determine current database name (got: ${databaseName ?? "<null>"})`);
+    }
+    const quotedDb = quoteIdentifier(databaseName);
+
+    // Create or update the runtime role with the requested password.
+    // Using a DO block keeps creation/update idempotent in a single round-trip.
+    // The dollar-quote tag must be one that cannot appear inside the embedded
+    // password literal, so we use a long fixed tag rather than the bare `$$`
+    // form. (Postgres's lexer otherwise scans for the literal next `$$`,
+    // including inside string literals, so a `$$` inside the password would
+    // prematurely terminate the dollar-quoted block.)
+    const doTag = "$paperclip_runtime_role_setup$";
+    if (options.password.includes(doTag)) {
+      throw new Error(
+        "Runtime password contains the reserved dollar-quote tag; choose a different password",
+      );
+    }
+    await sql.unsafe(
+      `DO ${doTag}
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${literalRoleName}) THEN
+    CREATE ROLE ${quotedRole} LOGIN PASSWORD ${literalPassword};
+  ELSE
+    ALTER ROLE ${quotedRole} WITH LOGIN PASSWORD ${literalPassword};
+  END IF;
+END${doTag};`,
+    );
+
+    // Restrict the runtime role to DML on the application schema only.
+    // Order matters: revoke broad privileges first, then grant the narrow set
+    // we want, then re-revoke any DDL on the schema.
+    await sql.unsafe(`REVOKE ALL ON DATABASE ${quotedDb} FROM ${quotedRole}`);
+    await sql.unsafe(`GRANT CONNECT ON DATABASE ${quotedDb} TO ${quotedRole}`);
+    await sql.unsafe(`GRANT USAGE ON SCHEMA public TO ${quotedRole}`);
+
+    // The drizzle migration journal lives in its own schema; runtime queries
+    // never touch it but we grant USAGE so the runtime role can still resolve
+    // names without surprising errors if anything reads from it.
+    const drizzleSchemaExists = await sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.schemata WHERE schema_name = 'drizzle'
+      ) AS exists
+    `;
+    if (drizzleSchemaExists[0]?.exists) {
+      await sql.unsafe(`GRANT USAGE ON SCHEMA drizzle TO ${quotedRole}`);
+    }
+
+    // DML access for all currently-existing tables/sequences in the public schema.
+    await sql.unsafe(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${quotedRole}`,
+    );
+    await sql.unsafe(`GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${quotedRole}`);
+
+    // Default privileges only apply to objects created *by the same role* that
+    // ran ALTER DEFAULT PRIVILEGES. Apply them for the current session role so
+    // any future migrations (run as the migration superuser) automatically
+    // grant DML access to the runtime role.
+    await sql.unsafe(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${quotedRole}`,
+    );
+    await sql.unsafe(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO ${quotedRole}`,
+    );
+
+    // Belt-and-braces: explicitly revoke CREATE on the public schema so the
+    // runtime role can never add objects (and therefore can't write triggers
+    // or functions that escalate privileges).
+    await sql.unsafe(`REVOKE CREATE ON SCHEMA public FROM ${quotedRole}`);
+
+    return { roleName, databaseName };
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Returns a copy of the given PostgreSQL connection string with the user and
+ * password swapped to the runtime role. The database, host, port, search params,
+ * and any other URL components are preserved.
+ */
+export function buildRuntimeConnectionString(
+  migrationUrl: string,
+  runtimeUser: string,
+  runtimePassword: string,
+): string {
+  if (!isSafeIdentifier(runtimeUser)) {
+    throw new Error(`Unsafe runtime role name: ${runtimeUser}`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(migrationUrl);
+  } catch (err) {
+    throw new Error(
+      `Cannot parse DATABASE_URL as a URL: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  parsed.username = encodeURIComponent(runtimeUser);
+  parsed.password = encodeURIComponent(runtimePassword);
+  return parsed.toString();
+}
+
 export type Db = ReturnType<typeof createDb>;

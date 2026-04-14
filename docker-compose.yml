@@ -1,11 +1,11 @@
 services:
   paperclip-db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: paperclip
-      POSTGRES_PASSWORD: paperclip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: paperclip
-      POSTGRES_HOST_AUTH_METHOD: trust
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
       interval: 2s
@@ -14,16 +14,89 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     entrypoint:
-      - sh
+      - /bin/sh
       - -c
-      - "printf 'local all all trust\nhost all all 0.0.0.0/0 trust\nhost all all ::0/0 trust\n' > /tmp/pg_hba.conf && exec docker-entrypoint.sh postgres -c hba_file=/tmp/pg_hba.conf"
+      - |
+        set -eu
+
+        HBA_FILE=/tmp/pg_hba.conf
+
+        # Permissive pg_hba used only during the bootstrap window so we can
+        # ALTER USER over the local socket without needing the current password.
+        cat > "$$HBA_FILE" <<'EOF'
+        local all all trust
+        host  all all 0.0.0.0/0 reject
+        host  all all ::0/0     reject
+        EOF
+
+        # Launch the stock postgres entrypoint in the background. This handles
+        # first-init (initdb + /docker-entrypoint-initdb.d) and starts the
+        # server. We point it at our temp hba so we get local trust + host
+        # reject during bootstrap.
+        docker-entrypoint.sh postgres -c hba_file="$$HBA_FILE" &
+        PG_PID=$$!
+
+        # Wait for the server to accept connections on the local socket.
+        for i in $$(seq 1 60); do
+          if pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -h /var/run/postgresql >/dev/null 2>&1; then
+            break
+          fi
+          if ! kill -0 "$$PG_PID" 2>/dev/null; then
+            echo "postgres exited during bootstrap" >&2
+            wait "$$PG_PID"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        if ! pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -h /var/run/postgresql >/dev/null 2>&1; then
+          echo "postgres did not become ready in time" >&2
+          kill "$$PG_PID" 2>/dev/null || true
+          wait "$$PG_PID" 2>/dev/null || true
+          exit 1
+        fi
+
+        # Ensure the password matches the env var. Works for both fresh
+        # init (idempotent) and existing data dirs (the whole point).
+        # Use scram-sha-256 so the stored verifier is hashed accordingly.
+        # The password is passed through psql variables (:'pw') so any
+        # special chars (quotes, $, backslashes) are safely quoted by psql.
+        PGPASSWORD="" psql -v ON_ERROR_STOP=1 \
+          -U "$$POSTGRES_USER" \
+          -d "$$POSTGRES_DB" \
+          -h /var/run/postgresql \
+          --set=user="$$POSTGRES_USER" \
+          --set=pw="$$POSTGRES_PASSWORD" <<'SQL'
+        SET password_encryption = 'scram-sha-256';
+        ALTER USER :"user" WITH PASSWORD :'pw';
+        SQL
+
+        # Swap in the locked-down hba: local trust (for in-container psql
+        # debugging) but require scram-sha-256 for every host connection.
+        cat > "$$HBA_FILE" <<'EOF'
+        local all all trust
+        host  all all 0.0.0.0/0 scram-sha-256
+        host  all all ::0/0     scram-sha-256
+        EOF
+
+        # Tell the running postmaster to reload pg_hba.conf in place.
+        PGPASSWORD="" psql -v ON_ERROR_STOP=1 \
+          -U "$$POSTGRES_USER" \
+          -d "$$POSTGRES_DB" \
+          -h /var/run/postgresql \
+          -c "SELECT pg_reload_conf();"
+
+        echo "postgres: pg_hba hardened, scram-sha-256 enforced for host connections"
+
+        # Hand the container's PID 1 lifecycle over to postgres.
+        wait "$$PG_PID"
 
   server:
     build: .
+    restart: unless-stopped
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: "postgres://paperclip:paperclip@paperclip-db:5432/paperclip"
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
@@ -38,6 +111,7 @@ services:
       TELEGRAM_WEBHOOK_SECRET: "${TELEGRAM_WEBHOOK_SECRET:-}"
     volumes:
       - paperclip-data:/paperclip
+      - /home/ubuntu/paperclip-backups-internal:/paperclip/external-backups
     depends_on:
       paperclip-db:
         condition: service_healthy

@@ -51,6 +51,9 @@ jobs:
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     timeout-minutes: 5
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Deploy to dev (paper-dev.zenova.id)
         run: |
           curl -sf -X POST \
@@ -59,12 +62,51 @@ jobs:
             -d '{"composeId":"OebpXiXB663ZmdWv-2G1p"}' \
             "https://dokploy.zenova.id/api/compose.deploy"
 
+      - name: Notify Telegram on dev deploy success
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not configured; skipping notification"
+            exit 0
+          fi
+          COMMIT_SHA="${GITHUB_SHA:0:7}"
+          COMMIT_TITLE=$(git log -1 --pretty=%s)
+          MESSAGE=$(printf '\xE2\x9C\x85 Paperclip dev deploy succeeded \xE2\x80\x94 `%s` \xE2\x80\x94 `%s`' "$COMMIT_SHA" "$COMMIT_TITLE")
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat_id "$TELEGRAM_CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown", disable_web_page_preview: true}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
+      - name: Notify Telegram on dev deploy failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not configured; skipping notification"
+            exit 0
+          fi
+          COMMIT_SHA="${GITHUB_SHA:0:7}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          MESSAGE=$(printf '\xF0\x9F\x9A\xA8 Paperclip dev deploy FAILED \xE2\x80\x94 `%s` \xE2\x80\x94 check: %s' "$COMMIT_SHA" "$RUN_URL")
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat_id "$TELEGRAM_CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown", disable_web_page_preview: true}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
   deploy-prod:
     needs: verify
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     timeout-minutes: 5
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Deploy to production (paper.zenova.id)
         run: |
           curl -sf -X POST \
@@ -72,3 +114,39 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"composeId":"Gh67c1zKV7MsnPo_lZiPZ"}' \
             "https://dokploy.zenova.id/api/compose.deploy"
+
+      - name: Notify Telegram on prod deploy success
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not configured; skipping notification"
+            exit 0
+          fi
+          COMMIT_SHA="${GITHUB_SHA:0:7}"
+          COMMIT_TITLE=$(git log -1 --pretty=%s)
+          MESSAGE=$(printf '\xE2\x9C\x85 Paperclip prod deploy succeeded \xE2\x80\x94 `%s` \xE2\x80\x94 `%s`' "$COMMIT_SHA" "$COMMIT_TITLE")
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat_id "$TELEGRAM_CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown", disable_web_page_preview: true}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
+      - name: Notify Telegram on prod deploy failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not configured; skipping notification"
+            exit 0
+          fi
+          COMMIT_SHA="${GITHUB_SHA:0:7}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          MESSAGE=$(printf '\xF0\x9F\x9A\xA8 Paperclip prod deploy FAILED \xE2\x80\x94 `%s` \xE2\x80\x94 check: %s' "$COMMIT_SHA" "$RUN_URL")
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat_id "$TELEGRAM_CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown", disable_web_page_preview: true}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"

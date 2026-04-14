@@ -15,11 +15,11 @@ import {
   type StorageProvider,
 } from "@paperclipai/shared";
 import {
-  resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
+  resolvePreferredDefaultBackupDir,
 } from "./home-paths.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
@@ -189,10 +189,15 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.retentionDays ||
       30,
   );
+  // PAPERCLIP_BACKUP_DIR is the preferred env var; PAPERCLIP_DB_BACKUP_DIR
+  // is kept as a backwards-compatible alias. When neither is set, prefer
+  // the host-mounted /paperclip/external-backups directory in production
+  // Docker deployments and fall back to the in-instance path in local dev.
   const databaseBackupDir = resolveHomeAwarePath(
-    process.env.PAPERCLIP_DB_BACKUP_DIR ??
+    process.env.PAPERCLIP_BACKUP_DIR ??
+      process.env.PAPERCLIP_DB_BACKUP_DIR ??
       fileDatabaseBackup?.dir ??
-      resolveDefaultBackupDir(),
+      resolvePreferredDefaultBackupDir(),
   );
 
   return {

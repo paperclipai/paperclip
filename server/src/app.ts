@@ -26,7 +26,6 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
-import { telegramWebhookRoutes } from "./routes/webhooks-telegram.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { agentTemplateRoutes } from "./routes/agent-templates.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -92,7 +91,6 @@ export async function createApp(
     app.all("/api/auth/*authPath", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
-  app.use(telegramWebhookRoutes(db));
 
   // Mount API routes
   const api = Router();

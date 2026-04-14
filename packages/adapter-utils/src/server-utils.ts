@@ -28,6 +28,48 @@ export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 
+/**
+ * Patterns matching environment variable names that must NOT be passed to spawned
+ * agent CLI child processes. These are Paperclip-internal secrets (database
+ * credentials, internal auth secrets, Telegram bot tokens, etc.) that an agent
+ * has no legitimate reason to read and which, if leaked, would let the agent
+ * connect to production infrastructure.
+ *
+ * This list intentionally does NOT cover provider API keys (ANTHROPIC_API_KEY,
+ * OPENAI_API_KEY, CURSOR_API_KEY, etc.) because those are credentials the agent
+ * itself needs in order to call its model provider.
+ */
+const SENSITIVE_ENV_KEY_PATTERNS: RegExp[] = [
+  /^DATABASE_URL$/i,
+  /^POSTGRES_/i,
+  /^PG/i, // PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, etc.
+  /^BETTER_AUTH_/i,
+  /^PAPERCLIP_AGENT_JWT_SECRET$/i,
+  /^PAPERCLIP_.*_SECRET$/i,
+  /^TELEGRAM_BOT_TOKEN$/i,
+  /^TELEGRAM_CHAT_ID$/i,
+  /^TELEGRAM_WEBHOOK_SECRET$/i,
+];
+
+/**
+ * Returns a copy of `parentEnv` with Paperclip-internal secrets stripped out so
+ * the result is safe to pass as `env` to a spawned agent CLI child process.
+ *
+ * Use this anywhere `process.env` would otherwise be inherited by an agent
+ * (Claude Code, Codex, Cursor, OpenCode, etc.) so a misbehaving or hostile
+ * agent cannot read database credentials or other internal Paperclip secrets
+ * out of its environment.
+ */
+export function sanitizeChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (value === undefined) continue;
+    if (SENSITIVE_ENV_KEY_PATTERNS.some((re) => re.test(key))) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return {};
@@ -219,7 +261,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...opts.env });
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
