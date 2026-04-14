@@ -17,6 +17,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -41,9 +42,17 @@ interface Agent {
   name: string;
 }
 
+interface ProjectOption {
+  id: string;
+  name: string;
+  color?: string | null;
+}
+
 interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
+  projects?: ProjectOption[];
+  showProjectNames?: boolean;
   liveIssueIds?: Set<string>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -54,11 +63,15 @@ function KanbanColumn({
   status,
   issues,
   agents,
+  projects,
+  showProjectNames,
   liveIssueIds,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
+  projects?: ProjectOption[];
+  showProjectNames?: boolean;
   liveIssueIds?: Set<string>;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -95,6 +108,8 @@ function KanbanColumn({
               key={issue.id}
               issue={issue}
               agents={agents}
+              projects={projects}
+              showProjectName={showProjectNames}
               isLive={liveIssueIds?.has(issue.id)}
             />
           ))}
@@ -109,11 +124,15 @@ function KanbanColumn({
 function KanbanCard({
   issue,
   agents,
+  projects,
+  showProjectName,
   isLive,
   isOverlay,
 }: {
   issue: Issue;
   agents?: Agent[];
+  projects?: ProjectOption[];
+  showProjectName?: boolean;
   isLive?: boolean;
   isOverlay?: boolean;
 }) {
@@ -135,6 +154,9 @@ function KanbanCard({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   };
+
+  const project = issue.project ?? (issue.projectId ? projects?.find((entry) => entry.id === issue.projectId) : null);
+  const projectColor = project?.color ?? "#64748b";
 
   return (
     <div
@@ -165,6 +187,20 @@ function KanbanCard({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
           )}
+          {showProjectName && project?.name && (
+            <span
+              className="ml-auto inline-flex min-w-0 max-w-[55%] items-center gap-1 rounded-full border px-1.5 py-0 text-[10px] font-medium"
+              style={{
+                borderColor: projectColor,
+                color: pickTextColorForPillBg(projectColor, 0.12),
+                backgroundColor: `${projectColor}1f`,
+              }}
+              title={project.name}
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: projectColor }} />
+              <span className="truncate">{project.name}</span>
+            </span>
+          )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
         <div className="flex items-center gap-2">
@@ -190,6 +226,8 @@ function KanbanCard({
 export function KanbanBoard({
   issues,
   agents,
+  projects,
+  showProjectNames,
   liveIssueIds,
   onUpdateIssue,
 }: KanbanBoardProps) {
@@ -267,13 +305,21 @@ export function KanbanBoard({
             status={status}
             issues={columnIssues[status] ?? []}
             agents={agents}
+            projects={projects}
+            showProjectNames={showProjectNames}
             liveIssueIds={liveIssueIds}
           />
         ))}
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard
+            issue={activeIssue}
+            agents={agents}
+            projects={projects}
+            showProjectName={showProjectNames}
+            isOverlay
+          />
         ) : null}
       </DragOverlay>
     </DndContext>
