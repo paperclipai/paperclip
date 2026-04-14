@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { useToast } from "@/context/ToastContext";
+import { useToastActions } from "@/context/ToastContext";
 import { useI18n } from "@/i18n/runtime";
 import { cn } from "@/lib/utils";
 
@@ -65,7 +65,7 @@ export function PluginManager() {
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const { t } = useI18n();
 
   const [installPackage, setInstallPackage] = useState("");

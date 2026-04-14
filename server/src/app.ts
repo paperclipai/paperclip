@@ -24,6 +24,7 @@ import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
+import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
@@ -49,15 +50,40 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+const VITE_DEV_ASSET_PREFIXES = [
+  "/@fs/",
+  "/@id/",
+  "/@react-refresh",
+  "/@vite/",
+  "/assets/",
+  "/node_modules/",
+  "/src/",
+];
+const VITE_DEV_STATIC_PATHS = new Set([
+  "/apple-touch-icon.png",
+  "/favicon-16x16.png",
+  "/favicon-32x32.png",
+  "/favicon.ico",
+  "/favicon.svg",
+  "/site.webmanifest",
+]);
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;
   }
   return Math.max(1_024, serverPort - 10_000);
+}
+
+function shouldServeViteDevHtml(req: ExpressRequest): boolean {
+  const pathname = req.path;
+  if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
+  if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
+  return req.accepts(["html"]) === "html";
 }
 
 export async function createApp(
@@ -167,6 +193,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
@@ -193,6 +220,7 @@ export async function createApp(
     jobStore,
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
+  let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,
     { localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR },
@@ -285,18 +313,26 @@ export async function createApp(
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
+    viteHtmlRenderer = createCachedViteHtmlRenderer({
+      vite,
+      uiRoot,
+      brandHtml: applyUiBranding,
+    });
+    const renderViteHtml = viteHtmlRenderer;
 
-    app.use(vite.middlewares);
     app.get(/.*/, async (req, res, next) => {
+      if (!shouldServeViteDevHtml(req)) {
+        next();
+        return;
+      }
       try {
-        const templatePath = path.resolve(uiRoot, "index.html");
-        const template = fs.readFileSync(templatePath, "utf-8");
-        const html = applyUiBranding(await vite.transformIndexHtml(req.originalUrl, template));
+        const html = await renderViteHtml.render(req.originalUrl);
         res.status(200).set({ "Content-Type": "text/html" }).end(html);
       } catch (err) {
         next(err);
       }
     });
+    app.use(vite.middlewares);
   }
 
   app.use(errorHandler);
@@ -338,6 +374,7 @@ export async function createApp(
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
     devWatcher?.close();
+    viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
   });

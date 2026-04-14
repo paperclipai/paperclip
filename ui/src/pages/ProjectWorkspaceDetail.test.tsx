@@ -107,7 +107,7 @@ vi.mock("../api/projects", () => ({
   projectsApi: {
     get: vi.fn(),
     updateWorkspace: vi.fn(),
-    controlWorkspaceRuntimeServices: vi.fn(),
+    controlWorkspaceCommands: vi.fn(),
   },
 }));
 
@@ -240,14 +240,15 @@ describe("ProjectWorkspaceDetail", () => {
     expect(container.textContent).toContain("本地路径");
     expect(container.textContent).toContain("仓库 URL");
     expect(container.textContent).toContain("Setup 命令");
-    expect(container.textContent).toContain("运行时服务 JSON");
+    expect(container.textContent).toContain("高级运行时 JSON");
+    expect(container.textContent).toContain("工作区命令 JSON");
     expect(container.textContent).toContain("保存更改");
     expect(container.textContent).toContain("重置");
     expect(container.textContent).toContain("没有未保存的更改。");
     expect(container.textContent).toContain("工作区信息");
     expect(container.textContent).toContain("当前状态");
-    expect(container.textContent).toContain("运行时服务");
-    expect(container.textContent).toContain("已附加服务");
+    expect(container.textContent).toContain("工作区命令");
+    expect(container.textContent).toContain("服务与作业");
     expect(setBreadcrumbsMock).toHaveBeenLastCalledWith([
       { label: "项目", href: "/projects" },
       { label: "Project One", href: "/projects/project-1" },
@@ -351,9 +352,10 @@ describe("ProjectWorkspaceDetail", () => {
     localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "zh-CN");
     const root = await renderPage();
 
-    await waitFor(() => container.textContent?.includes("运行中 · 健康") === true);
+    await waitFor(() => container.textContent?.includes("服务 · 运行中") === true);
 
-    expect(container.textContent).toContain("运行中 · 健康");
+    expect(container.textContent).toContain("服务 · 运行中");
+    expect(container.textContent).toContain("健康");
     expect(container.textContent).not.toContain("running · healthy");
 
     await act(async () => {

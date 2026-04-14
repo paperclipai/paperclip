@@ -8,6 +8,11 @@ import { useI18n } from "@/i18n/runtime";
 import { Separator } from "@/components/ui/separator";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
 import { projectsApi } from "../api/projects";
+import {
+  buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeControls,
+  type WorkspaceRuntimeControlRequest,
+} from "../components/WorkspaceRuntimeControls";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -72,10 +77,6 @@ function isAbsolutePath(value: string) {
 
 function readText(value: string | null | undefined) {
   return value ?? "";
-}
-
-function hasActiveRuntimeServices(workspace: ProjectWorkspace | null | undefined) {
-  return (workspace?.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
 }
 
 function formatJson(value: Record<string, unknown> | null | undefined) {
@@ -349,22 +350,28 @@ export function ProjectWorkspaceDetail() {
   });
 
   const controlRuntimeServices = useMutation({
-    mutationFn: (action: "start" | "stop" | "restart") =>
-      projectsApi.controlWorkspaceRuntimeServices(project!.id, routeWorkspaceId, action, lookupCompanyId),
-    onSuccess: (result, action) => {
+    mutationFn: (request: WorkspaceRuntimeControlRequest) =>
+      projectsApi.controlWorkspaceCommands(project!.id, routeWorkspaceId, request.action, lookupCompanyId, request),
+    onSuccess: (result, request) => {
       invalidateProject();
       setErrorMessage(null);
       setRuntimeActionMessage(
-        action === "stop"
-          ? t("projectWorkspaceDetail.runtime.messages.stopped", "Runtime services stopped.")
-          : action === "restart"
-            ? t("projectWorkspaceDetail.runtime.messages.restarted", "Runtime services restarted.")
-            : t("projectWorkspaceDetail.runtime.messages.started", "Runtime services started."),
+        request.action === "run"
+          ? t("projectWorkspaceDetail.runtime.messages.jobCompleted", "Workspace job completed.")
+          : request.action === "stop"
+            ? t("projectWorkspaceDetail.runtime.messages.stopped", "Runtime services stopped.")
+            : request.action === "restart"
+              ? t("projectWorkspaceDetail.runtime.messages.restarted", "Runtime services restarted.")
+              : t("projectWorkspaceDetail.runtime.messages.started", "Runtime services started."),
       );
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setErrorMessage(error instanceof Error ? error.message : t("projectWorkspaceDetail.errors.controlRuntimeFailed", "Failed to control runtime services."));
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : t("projectWorkspaceDetail.errors.controlRuntimeFailed", "Failed to control runtime services."),
+      );
     },
   });
 
@@ -381,6 +388,16 @@ export function ProjectWorkspaceDetail() {
   if (!project || !workspace || !form || !initialState) {
     return <p className="text-sm text-muted-foreground">{t("projectWorkspaceDetail.empty.notFound", "Workspace not found for this project.")}</p>;
   }
+
+  const canRunWorkspaceCommands = Boolean(workspace.cwd);
+  const canStartRuntimeServices = Boolean(workspace.runtimeConfig?.workspaceRuntime) && canRunWorkspaceCommands;
+  const runtimeControlSections = buildWorkspaceRuntimeControlSections({
+    runtimeConfig: workspace.runtimeConfig?.workspaceRuntime ?? null,
+    runtimeServices: workspace.runtimeServices ?? [],
+    canStartServices: canStartRuntimeServices,
+    canRunJobs: canRunWorkspaceCommands,
+  });
+  const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
 
   const saveChanges = () => {
     const validationError = validateWorkspaceForm(form);
@@ -579,14 +596,22 @@ export function ProjectWorkspaceDetail() {
                 </Field>
               </div>
 
-              <Field label={t("projectWorkspaceDetail.fields.runtimeServicesJson.label", "Runtime services JSON")} hint={t("projectWorkspaceDetail.fields.runtimeServicesJson.hint", "Default runtime services for this workspace. Execution workspaces inherit this config unless they set an override. If you do not know the commands yet, ask your CEO to configure them for you.")}>
-                <textarea
-                  className="min-h-36 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
-                  value={form.runtimeConfig}
-                  onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
-                  placeholder={"{\n  \"services\": [\n    {\n      \"name\": \"web\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    }\n  ]\n}"}
-                />
-              </Field>
+              <details className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-3">
+                <summary className="cursor-pointer text-sm font-medium">{t("projectWorkspaceDetail.runtime.advancedJsonTitle", "Advanced runtime JSON")}</summary>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t("projectWorkspaceDetail.runtime.advancedJsonDescription", "Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.")}
+                </p>
+                <div className="mt-3">
+                  <Field label={t("projectWorkspaceDetail.fields.runtimeCommandsJson.label", "Workspace commands JSON")} hint={t("projectWorkspaceDetail.fields.runtimeCommandsJson.hint", "Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.")}>
+                    <textarea
+                      className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.runtimeConfig}
+                      onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
+                      placeholder={"{\n  \"commands\": [\n    {\n      \"id\": \"web\",\n      \"name\": \"web\",\n      \"kind\": \"service\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    },\n    {\n      \"id\": \"db-migrate\",\n      \"name\": \"db:migrate\",\n      \"kind\": \"job\",\n      \"command\": \"pnpm db:migrate\",\n      \"cwd\": \".\"\n    }\n  ]\n}"}
+                    />
+                  </Field>
+                </div>
+              </details>
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
@@ -645,77 +670,27 @@ export function ProjectWorkspaceDetail() {
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("projectWorkspaceDetail.runtime.eyebrow", "Runtime services")}</div>
-                <h2 className="text-lg font-semibold">{t("projectWorkspaceDetail.runtime.title", "Attached services")}</h2>
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("projectWorkspaceDetail.runtime.commandsEyebrow", "Workspace commands")}</div>
+                <h2 className="text-lg font-semibold">{t("projectWorkspaceDetail.runtime.commandsTitle", "Services and jobs")}</h2>
                 <p className="text-sm text-muted-foreground">
-                  {t("projectWorkspaceDetail.runtime.description", "Shared services for this project workspace. Execution workspaces inherit this config unless they override it.")}
+                  {t("projectWorkspaceDetail.runtime.commandsDescription", "Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.")}
                 </p>
               </div>
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.runtimeConfig?.workspaceRuntime || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("start")}
-                >
-                  {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                  {t("projectWorkspaceDetail.runtime.actions.start", "Start")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("restart")}
-                >
-                  {t("projectWorkspaceDetail.runtime.actions.restart", "Restart")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !hasActiveRuntimeServices(workspace)}
-                  onClick={() => controlRuntimeServices.mutate("stop")}
-                >
-                  {t("projectWorkspaceDetail.runtime.actions.stop", "Stop")}
-                </Button>
-              </div>
             </div>
-            <Separator className="my-4" />
-            {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
-              <div className="space-y-3">
-                {workspace.runtimeServices.map((service) => (
-                  <div key={service.id} className="rounded-xl border border-border/80 bg-background px-3 py-2">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="space-y-1">
-                        <div className="text-sm font-medium">{service.serviceName}</div>
-                        <div className="space-y-1 text-xs text-muted-foreground">
-                          {service.url ? (
-                            <a href={service.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
-                              {service.url}
-                              <ExternalLink className="h-3 w-3" />
-                            </a>
-                          ) : null}
-                          {service.port ? <div>{t("projectWorkspaceDetail.runtime.port", "Port {{port}}", { port: service.port })}</div> : null}
-                          <div>{service.command ?? t("projectWorkspaceDetail.runtime.noCommandRecorded", "No command recorded")}</div>
-                          {service.cwd ? <div className="break-all font-mono">{service.cwd}</div> : null}
-                        </div>
-                      </div>
-                      <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground sm:text-right">
-                        {translateProjectWorkspaceLabel(t, runtimeServiceStatusLabels, service.status)} · {translateProjectWorkspaceLabel(t, runtimeServiceHealthLabels, service.healthStatus)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {workspace.runtimeConfig?.workspaceRuntime
+            <WorkspaceRuntimeControls
+              className="mt-4"
+              sections={runtimeControlSections}
+              isPending={controlRuntimeServices.isPending}
+              pendingRequest={pendingRuntimeAction}
+              serviceEmptyMessage={
+                workspace.runtimeConfig?.workspaceRuntime
                   ? t("projectWorkspaceDetail.runtime.empty.noRunningServices", "No runtime services are currently running for this workspace.")
-                  : t("projectWorkspaceDetail.runtime.empty.noDefaultConfig", "No runtime-service default is configured for this workspace yet.")}
-              </p>
-            )}
+                  : t("projectWorkspaceDetail.runtime.empty.noDefaultConfig", "No runtime-service default is configured for this workspace yet.")
+              }
+              jobEmptyMessage={t("projectWorkspaceDetail.runtime.empty.noJobsConfigured", "No one-shot jobs are configured for this workspace yet.")}
+              disabledHint={t("projectWorkspaceDetail.runtime.disabledHint", "Project workspaces need a working directory before local commands can run, and services also need runtime config.")}
+              onAction={(request) => controlRuntimeServices.mutate(request)}
+            />
           </div>
         </div>
       </div>

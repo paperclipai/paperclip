@@ -80,7 +80,10 @@ export function IssueFiltersPopover({
           ) : null}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
+      <PopoverContent
+        align="end"
+        className="w-[min(780px,calc(100vw-2rem))] max-h-[min(80vh,42rem)] overflow-y-auto overscroll-contain p-0"
+      >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Filters</span>
@@ -120,24 +123,24 @@ export function IssueFiltersPopover({
 
           <div className="border-t border-border" />
 
-          <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <span className="text-xs text-muted-foreground">Status</span>
-              <div className="space-y-0.5">
-                {issueStatusOrder.map((status) => (
-                  <label key={status} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
-                    <Checkbox
-                      checked={state.statuses.includes(status)}
-                      onCheckedChange={() => onChange({ statuses: toggleIssueFilterValue(state.statuses, status) })}
-                    />
-                    <StatusIcon status={status} />
-                    <span className="text-sm">{issueFilterLabel(status)}</span>
-                  </label>
-                ))}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="min-w-0 space-y-3">
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Status</span>
+                <div className="space-y-0.5">
+                  {issueStatusOrder.map((status) => (
+                    <label key={status} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                      <Checkbox
+                        checked={state.statuses.includes(status)}
+                        onCheckedChange={() => onChange({ statuses: toggleIssueFilterValue(state.statuses, status) })}
+                      />
+                      <StatusIcon status={status} />
+                      <span className="text-sm">{issueFilterLabel(status)}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-3">
               <div className="space-y-1">
                 <span className="text-xs text-muted-foreground">Priority</span>
                 <div className="space-y-0.5">
@@ -153,7 +156,9 @@ export function IssueFiltersPopover({
                   ))}
                 </div>
               </div>
+            </div>
 
+            <div className="min-w-0 space-y-3">
               <div className="space-y-1">
                 <span className="text-xs text-muted-foreground">Assignee</span>
                 <div className="max-h-32 space-y-0.5 overflow-y-auto">
@@ -186,6 +191,25 @@ export function IssueFiltersPopover({
                 </div>
               </div>
 
+              {projects && projects.length > 0 ? (
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">Project</span>
+                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                    {projects.map((project) => (
+                      <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                        <Checkbox
+                          checked={state.projects.includes(project.id)}
+                          onCheckedChange={() => onChange({ projects: toggleIssueFilterValue(state.projects, project.id) })}
+                        />
+                        <span className="text-sm">{project.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="min-w-0 space-y-3">
               {labels && labels.length > 0 ? (
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">Labels</span>
@@ -198,23 +222,6 @@ export function IssueFiltersPopover({
                         />
                         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                         <span className="text-sm">{label.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {projects && projects.length > 0 ? (
-                <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Project</span>
-                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
-                    {projects.map((project) => (
-                      <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
-                        <Checkbox
-                          checked={state.projects.includes(project.id)}
-                          onCheckedChange={() => onChange({ projects: toggleIssueFilterValue(state.projects, project.id) })}
-                        />
-                        <span className="text-sm">{project.name}</span>
                       </label>
                     ))}
                   </div>

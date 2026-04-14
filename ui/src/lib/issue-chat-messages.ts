@@ -81,12 +81,52 @@ type MessageWithOrder = {
   message: ThreadMessage;
 };
 
+export interface StableThreadMessageCacheEntry {
+  fingerprint: string;
+  message: ThreadMessage;
+}
+
 function toDate(value: Date | string | null | undefined) {
   return value instanceof Date ? value : new Date(value ?? Date.now());
 }
 
 function toTimestamp(value: Date | string | null | undefined) {
   return toDate(value).getTime();
+}
+
+function fingerprintThreadMessage(message: ThreadMessage) {
+  return JSON.stringify(message);
+}
+
+export function stabilizeThreadMessages(
+  messages: readonly ThreadMessage[],
+  previousMessages: readonly ThreadMessage[],
+  previousById: ReadonlyMap<string, StableThreadMessageCacheEntry>,
+) {
+  const nextById = new Map<string, StableThreadMessageCacheEntry>();
+  let sameSequence = previousMessages.length === messages.length;
+
+  const stabilizedMessages = messages.map((message, index) => {
+    const fingerprint = fingerprintThreadMessage(message);
+    const cached = previousById.get(message.id);
+    const stableMessage =
+      cached && cached.fingerprint === fingerprint
+        ? cached.message
+        : message;
+    nextById.set(message.id, {
+      fingerprint,
+      message: stableMessage,
+    });
+    if (sameSequence && previousMessages[index] !== stableMessage) {
+      sameSequence = false;
+    }
+    return stableMessage;
+  });
+
+  return {
+    messages: sameSequence ? previousMessages : stabilizedMessages,
+    cache: nextById,
+  };
 }
 
 function sortByCreated<T extends { createdAt: Date | string; id: string }>(items: readonly T[]) {

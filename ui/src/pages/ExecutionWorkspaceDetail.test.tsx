@@ -150,7 +150,7 @@ vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: {
     get: vi.fn(),
     update: vi.fn(),
-    controlRuntimeServices: vi.fn(),
+    controlRuntimeCommands: vi.fn(),
     listWorkspaceOperations: vi.fn(),
   },
 }));
@@ -300,7 +300,7 @@ describe("ExecutionWorkspaceDetail", () => {
     expect(container.textContent).toContain("本地文件系统");
     expect(container.textContent).toContain("活跃");
     expect(container.textContent).toContain("执行工作区");
-    expect(container.textContent).toContain("配置|事项");
+    expect(container.textContent).toContain("配置|运行日志|事项");
     expect(container.textContent).toContain("工作区设置");
     expect(container.textContent).toContain("关闭工作区");
     expect(container.textContent).toContain("工作区名称");
@@ -316,12 +316,9 @@ describe("ExecutionWorkspaceDetail", () => {
     expect(container.textContent).toContain("工作区上下文");
     expect(container.textContent).toContain("路径与引用");
     expect(container.textContent).toContain("实际位置");
-    expect(container.textContent).toContain("运行时服务");
-    expect(container.textContent).toContain("已附加服务");
+    expect(container.textContent).toContain("工作区命令");
+    expect(container.textContent).toContain("服务与作业");
     expect(container.textContent).toContain("当前这个执行工作区及其项目工作区都没有定义运行时配置。");
-    expect(container.textContent).toContain("最近操作");
-    expect(container.textContent).toContain("运行时与清理日志");
-    expect(container.textContent).toContain("尚未记录任何工作区操作。");
     expect(setBreadcrumbsMock).toHaveBeenLastCalledWith([
       { label: "项目", href: "/projects" },
       { label: "Project One", href: "/projects/project-1" },
@@ -422,14 +419,27 @@ describe("ExecutionWorkspaceDetail", () => {
     ];
     const root = await renderPage();
 
-    await waitFor(() => container.textContent?.includes("已附加服务") === true && container.textContent?.includes("最近操作") === true);
+    await waitFor(() => container.textContent?.includes("工作区命令") === true);
 
-    expect(container.textContent).toContain("运行中 · 临时");
+    expect(container.textContent).toContain("服务 · 运行中 · 临时");
     expect(container.textContent).toContain("健康");
+
+    await act(async () => {
+      pathname = "/execution-workspaces/workspace-1/runtime-logs";
+      root.render(
+        <I18nProvider>
+          <ExecutionWorkspaceDetail />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => container.textContent?.includes("最近操作") === true);
+
     expect(container.textContent).toContain("清理工作区");
     expect(container.textContent).toContain("已成功");
     expect(container.textContent).not.toContain("running · ephemeral");
-    expect(container.textContent).not.toContain("healthy");
     expect(container.textContent).not.toContain("workspace_teardown");
     expect(container.textContent).not.toContain("succeeded");
 
