@@ -144,7 +144,7 @@ const openRouterLocalAdapter: ServerAdapterModule = {
   listSkills: listOpenRouterSkills,
   syncSkills: syncOpenRouterSkills,
   models: openRouterModels,
-  supportsLocalAgentJwt: false,
+  supportsLocalAgentJwt: true,
   agentConfigurationDoc: openRouterAgentConfigurationDoc,
 };
 
