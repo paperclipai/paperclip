@@ -1,0 +1,41 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/**/*.{ts,mjs,cjs}", "knip.json"],
+      "project": ["scripts/**/*.{ts,tsx}"]
+    },
+    "ui": {
+      "entry": ["src/main.tsx", "src/pages/*.tsx"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "server": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "cli": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/shared": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/db": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/adapter-utils": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  },
+  "ignore": [
+    "**/*.d.ts",
+    "dist/**",
+    "node_modules/**",
+    "**/__tests__/**",
+    "scripts/**"
+  ],
+  "ignoreDependencies": ["@types/*"]
+}
