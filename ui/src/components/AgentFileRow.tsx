@@ -1,3 +1,4 @@
+import { useRef, useCallback } from "react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { FileCard, type FileEditEvent } from "./FileCard";
 
@@ -10,6 +11,23 @@ interface AgentFileRowProps {
 
 export function AgentFileRow({ agentName, issueTitle, files, runStatus }: AgentFileRowProps) {
   const isActive = runStatus === "running" || runStatus === "queued";
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    // Only hijack vertical scroll when the target is NOT inside a DiffView
+    // (DiffView containers have overflow-y-auto and need vertical scroll)
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-diff-view]")) return;
+
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // Translate vertical wheel into horizontal scroll
+    if (e.deltaY !== 0) {
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    }
+  }, []);
 
   return (
     <div className="space-y-2">
@@ -35,8 +53,8 @@ export function AgentFileRow({ agentName, issueTitle, files, runStatus }: AgentF
           {isActive ? "Running — no file edits yet" : "Finished"}
         </p>
       ) : (
-        <ScrollArea className="w-full">
-          <div className="flex gap-3 pb-3 pl-5">
+        <ScrollArea className="w-full" onWheel={handleWheel}>
+          <div ref={scrollRef} className="flex gap-3 pb-3 pl-5">
             {Array.from(files.entries()).map(([filePath, events]) => (
               <FileCard key={filePath} filePath={filePath} events={events} />
             ))}

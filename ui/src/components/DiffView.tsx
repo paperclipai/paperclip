@@ -27,6 +27,7 @@ export function DiffView({ lines, className }: DiffViewProps) {
   return (
     <div
       ref={containerRef}
+      data-diff-view
       onScroll={handleScroll}
       className={cn("h-full overflow-y-auto", className)}
     >
