@@ -23,6 +23,10 @@ export function healthRoutes(
 ) {
   const router = Router();
 
+  router.get("/live", (_req, res) => {
+    res.json({ status: "ok", version: serverVersion });
+  });
+
   router.get("/", async (_req, res) => {
     if (!db) {
       res.json({ status: "ok", version: serverVersion });

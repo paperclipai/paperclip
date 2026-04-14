@@ -1055,6 +1055,7 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const inlinePrompt = readNonEmptyString(input.contextSnapshot.telegramPrompt);
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -1070,7 +1071,14 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0 &&
+    Object.keys(executionStage).length === 0 &&
+    !issueSummary &&
+    !inlinePrompt
+  ) {
+    return null;
+  }
 
   const commentRows =
     commentIds.length === 0
@@ -1093,7 +1101,18 @@ async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
-  const comments: Array<Record<string, unknown>> = [];
+  const comments: Array<Record<string, unknown>> = inlinePrompt
+    ? [
+        {
+          id: "telegram-message",
+          issueId: issueSummary?.id ?? null,
+          body: inlinePrompt,
+          bodyTruncated: false,
+          createdAt: new Date().toISOString(),
+          author: { type: "user", id: null },
+        },
+      ]
+    : [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
   let missingCommentCount = 0;
@@ -1153,7 +1172,7 @@ async function buildPaperclipWakePayload(input: {
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
     commentWindow: {
-      requestedCount: commentIds.length,
+      requestedCount: commentIds.length + (inlinePrompt ? 1 : 0),
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
@@ -1968,6 +1987,7 @@ export function heartbeatService(db: Db) {
           triggerDetail: updated.triggerDetail,
           error: updated.error ?? null,
           errorCode: updated.errorCode ?? null,
+          resultJson: summarizeHeartbeatRunResultJson(updated.resultJson),
           startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },

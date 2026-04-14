@@ -1,0 +1,42 @@
+# fly.toml app configuration file generated for paperclip-holding on 2026-04-12T13:57:41+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'paperclip-holding'
+primary_region = 'ams'
+kill_signal = 'SIGTERM'
+kill_timeout = '2m0s'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  HOST = '0.0.0.0'
+  NODE_ENV = 'production'
+  PAPERCLIP_AUTH_PUBLIC_BASE_URL = 'https://paperclip-holding.fly.dev'
+  PAPERCLIP_DEPLOYMENT_EXPOSURE = 'public'
+  PAPERCLIP_DEPLOYMENT_MODE = 'authenticated'
+  PORT = '3100'
+
+[http_service]
+  internal_port = 3100
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+
+  [[http_service.checks]]
+    interval = '15s'
+    timeout = '5s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/api/health/live'
+
+[[mounts]]
+  source = 'paperclip_instances'
+  destination = '/paperclip/instances'
+  initial_size = '1gb'
+
+[[vm]]
+  memory = '2048mb'
+  size = 'shared-cpu-2x'

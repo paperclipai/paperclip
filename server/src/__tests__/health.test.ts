@@ -36,6 +36,21 @@ describe("GET /health", () => {
     expect(res.body).toEqual({ status: "ok", version: serverVersion });
   });
 
+  it("returns a lightweight liveness response without probing the database", async () => {
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn(),
+    } as unknown as Db;
+    const app = express();
+    app.use("/health", healthRoutes(db));
+
+    const res = await request(app).get("/health/live");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

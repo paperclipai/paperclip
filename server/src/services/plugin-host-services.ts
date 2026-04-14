@@ -889,6 +889,11 @@ export function buildHostServices(
           triggerDetail: "system",
           reason: params.reason ?? null,
           payload: { prompt: params.prompt },
+          contextSnapshot: {
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+            telegramPrompt: params.prompt,
+          },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
@@ -1023,6 +1028,7 @@ export function buildHostServices(
             taskKey: session.taskKey,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
+            telegramPrompt: params.prompt,
           },
           requestedByActorType: "system",
           requestedByActorId: pluginId,

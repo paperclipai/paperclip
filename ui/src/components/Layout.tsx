@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { BookOpen, Moon, RefreshCw, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -161,6 +161,9 @@ export function Layout() {
       bubbles: true,
       cancelable: true,
     }));
+  }, []);
+  const refreshApp = useCallback(() => {
+    window.location.reload();
   }, []);
 
   useCompanyPageMemory();
@@ -362,6 +365,17 @@ export function Layout() {
                     <TooltipContent>v{health.version}</TooltipContent>
                   </Tooltip>
                 )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
+                  onClick={refreshApp}
+                  aria-label="Refresh Paperclip"
+                  title="Refresh Paperclip"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
                 <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
                   <Link
                     to={instanceSettingsTarget}
@@ -421,6 +435,17 @@ export function Layout() {
                     <TooltipContent>v{health.version}</TooltipContent>
                   </Tooltip>
                 )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
+                  onClick={refreshApp}
+                  aria-label="Refresh Paperclip"
+                  title="Refresh Paperclip"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
                 <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
                   <Link
                     to={instanceSettingsTarget}

@@ -2418,4 +2418,316 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
   });
+
+  it("round-trips export→preview→import preserving all agent and skill metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Paperclip",
+    });
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: `agent-${String(input.name).toLowerCase()}`,
+      name: input.name,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+    }));
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.company?.name).toBe("Paperclip");
+    expect(exported.manifest.agents).toHaveLength(2);
+    expect(exported.manifest.agents.map((a: { slug: string }) => a.slug).sort()).toEqual(["claudecoder", "cmo"]);
+
+    const preview = await portability.previewImport({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.company?.name).toBe("Paperclip");
+    expect(preview.manifest.agents).toHaveLength(2);
+    expect(preview.manifest.agents.map((a: { slug: string }) => a.slug).sort()).toEqual(["claudecoder", "cmo"]);
+
+    for (const agent of preview.manifest.agents) {
+      const original = exported.manifest.agents.find((a: { slug: string }) => a.slug === agent.slug);
+      expect(agent.name).toBe(original.name);
+      expect(agent.role).toBe(original.role);
+      expect(agent.title).toBe(original.title);
+    }
+
+    agentSvc.list.mockResolvedValue([]);
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.company.action).toBe("created");
+    expect(result.agents).toHaveLength(2);
+    expect(result.agents.every((a: { action: string }) => a.action === "created")).toBe(true);
+    expect(result.agents.map((a: { slug: string }) => a.slug).sort()).toEqual(["claudecoder", "cmo"]);
+
+    expect(companySvc.create).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Paperclip",
+      brandColor: "#5c5fff",
+    }));
+
+    const claudeCall = agentSvc.create.mock.calls.find(([, input]) => input.name === "ClaudeCoder");
+    expect(claudeCall).toBeDefined();
+    expect(claudeCall![1]).toMatchObject({
+      role: "engineer",
+      title: "Software Engineer",
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+        },
+      },
+    });
+
+    expect(companySkillSvc.importPackageFiles).toHaveBeenCalled();
+    const skillFiles = companySkillSvc.importPackageFiles.mock.calls[0][1] as Record<string, string>;
+    expect(skillFiles["skills/company/PAP/company-playbook/SKILL.md"]).toContain("# Company Playbook");
+  });
+
+  it("round-trips export→import with skip collision strategy for existing agents", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "existing-agent",
+        name: "ClaudeCoder",
+        status: "idle",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: {},
+        metadata: null,
+      },
+    ]);
+
+    const preview = await portability.previewImport({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      agents: "all",
+      collisionStrategy: "skip",
+    });
+
+    expect(preview.errors).toEqual([]);
+    const claudePlan = preview.plan.agentPlans.find((a: { slug: string }) => a.slug === "claudecoder");
+    expect(claudePlan?.action).toBe("skip");
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      agents: "all",
+      collisionStrategy: "skip",
+    }, "user-1");
+
+    const skippedAgent = result.agents.find((a: { slug: string }) => a.slug === "claudecoder");
+    expect(skippedAgent?.action).toBe("skipped");
+
+    const cmoAgent = result.agents.find((a: { slug: string }) => a.slug === "cmo");
+    expect(cmoAgent?.action).toBe("created");
+  });
+
+  it("round-trips export→import with projects and workspace metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: "Ship it",
+        leadAgentId: "agent-1",
+        targetDate: "2026-03-31",
+        color: "#123456",
+        status: "planned",
+        executionWorkspacePolicy: null,
+        archivedAt: null,
+        workspaces: [
+          {
+            id: "workspace-1",
+            companyId: "company-1",
+            projectId: "project-1",
+            name: "Main Repo",
+            sourceType: "git_repo",
+            cwd: "/Users/dotta/paperclip",
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+            defaultRef: "main",
+            visibility: "default",
+            setupCommand: "pnpm install",
+            cleanupCommand: null,
+            remoteProvider: null,
+            remoteWorkspaceRef: null,
+            sharedWorkspaceKey: null,
+            metadata: null,
+            isPrimary: true,
+            createdAt: new Date("2026-03-01T00:00:00Z"),
+            updatedAt: new Date("2026-03-01T00:00:00Z"),
+          },
+        ],
+      },
+    ]);
+    projectSvc.listWorkspaces.mockResolvedValue([
+      {
+        id: "workspace-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        name: "Main Repo",
+        sourceType: "git_repo",
+        cwd: "/Users/dotta/paperclip",
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "main",
+        defaultRef: "main",
+        visibility: "default",
+        setupCommand: "pnpm install",
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: null,
+        metadata: null,
+        isPrimary: true,
+        createdAt: new Date("2026-03-01T00:00:00Z"),
+        updatedAt: new Date("2026-03-01T00:00:00Z"),
+      },
+    ]);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Paperclip",
+    });
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: `agent-${String(input.name).toLowerCase()}`,
+      name: input.name,
+    }));
+    projectSvc.create.mockResolvedValue({
+      id: "project-imported",
+      name: "Launch",
+      urlKey: "launch",
+    });
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.projects).toHaveLength(1);
+    expect(exported.manifest.projects[0].slug).toBe("launch");
+
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.company.action).toBe("created");
+    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      name: "Launch",
+      description: "Ship it",
+      color: "#123456",
+    }));
+    expect(projectSvc.createWorkspace).toHaveBeenCalledWith("project-imported", expect.objectContaining({
+      name: "Main Repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      setupCommand: "pnpm install",
+    }));
+  });
 });
