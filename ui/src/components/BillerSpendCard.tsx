@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
+import { useLocale } from "../context/LocaleContext";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
 
 interface BillerSpendCardProps {
@@ -19,6 +20,7 @@ export function BillerSpendCard({
   totalCompanySpendCents,
   providerRows,
 }: BillerSpendCardProps) {
+  const { t } = useLocale();
   const providerBreakdown = useMemo(() => {
     const map = new Map<string, { provider: string; costCents: number; inputTokens: number; outputTokens: number }>();
     for (const entry of providerRows) {
@@ -52,6 +54,20 @@ export function BillerSpendCard({
     providerBudgetShare > 0
       ? Math.min(100, (row.costCents / providerBudgetShare) * 100)
       : 0;
+  const meteredRuns =
+    row.apiRunCount > 0
+      ? t("billerSpendCard.meteredRuns", {
+          count: row.apiRunCount,
+          suffix: row.apiRunCount === 1 ? "" : "s",
+        })
+      : t("billerSpendCard.zeroMeteredRuns");
+  const subscriptionRuns =
+    row.subscriptionRunCount > 0
+      ? t("billerSpendCard.subscriptionRuns", {
+          count: row.subscriptionRunCount,
+          suffix: row.subscriptionRunCount === 1 ? "" : "s",
+        })
+      : t("billerSpendCard.zeroSubscriptionRuns");
 
   return (
     <Card>
@@ -62,13 +78,19 @@ export function BillerSpendCard({
               {providerDisplayName(row.biller)}
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span> in
+              {t("common.input")} <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span>
               {" · "}
-              <span className="font-mono">{formatTokens(row.outputTokens)}</span> out
+              {t("common.output")} <span className="font-mono">{formatTokens(row.outputTokens)}</span>
               {" · "}
-              {row.providerCount} provider{row.providerCount === 1 ? "" : "s"}
+              {t("billerSpendCard.providerCount", {
+                count: row.providerCount,
+                suffix: row.providerCount === 1 ? "" : "s",
+              })}
               {" · "}
-              {row.modelCount} model{row.modelCount === 1 ? "" : "s"}
+              {t("billerSpendCard.modelCount", {
+                count: row.modelCount,
+                suffix: row.modelCount === 1 ? "" : "s",
+              })}
             </CardDescription>
           </div>
           <span className="text-xl font-bold tabular-nums shrink-0">
@@ -80,21 +102,19 @@ export function BillerSpendCard({
       <CardContent className="px-4 pb-4 pt-3 space-y-4">
         {budgetMonthlyCents > 0 && (
           <QuotaBar
-            label="Period spend"
+            label={t("billerSpendCard.periodSpend")}
             percentUsed={budgetPct}
             leftLabel={formatCents(row.costCents)}
-            rightLabel={`${Math.round(budgetPct)}% of allocation`}
+            rightLabel={t("billerSpendCard.allocationShare", { percent: Math.round(budgetPct) })}
           />
         )}
 
         <div className="text-xs text-muted-foreground">
-          {row.apiRunCount > 0 ? `${row.apiRunCount} metered run${row.apiRunCount === 1 ? "" : "s"}` : "0 metered runs"}
+          {meteredRuns}
           {" · "}
-          {row.subscriptionRunCount > 0
-            ? `${row.subscriptionRunCount} subscription run${row.subscriptionRunCount === 1 ? "" : "s"}`
-            : "0 subscription runs"}
+          {subscriptionRuns}
           {" · "}
-          {formatCents(weekSpendCents)} this week
+          {t("billerSpendCard.thisWeek", { amount: formatCents(weekSpendCents) })}
         </div>
 
         {billingTypeBreakdown.length > 0 && (
@@ -102,7 +122,7 @@ export function BillerSpendCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Billing types
+                {t("billerSpendCard.billingTypes")}
               </p>
               <div className="space-y-1.5">
                 {billingTypeBreakdown.map(([billingType, costCents]) => (
@@ -121,7 +141,7 @@ export function BillerSpendCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Upstream providers
+                {t("billerSpendCard.upstreamProviders")}
               </p>
               <div className="space-y-1.5">
                 {providerBreakdown.map((entry) => (
@@ -130,7 +150,9 @@ export function BillerSpendCard({
                     <div className="text-right tabular-nums">
                       <div className="font-medium">{formatCents(entry.costCents)}</div>
                       <div className="text-muted-foreground">
-                        {formatTokens(entry.inputTokens + entry.outputTokens)} tok
+                        {t("costs.tokenShort", {
+                          tokens: formatTokens(entry.inputTokens + entry.outputTokens),
+                        })}
                       </div>
                     </div>
                   </div>

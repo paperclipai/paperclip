@@ -68,10 +68,25 @@ function getConcurrencyPolicyDescriptions(t: Translate): Record<string, string> 
   };
 }
 
+function getConcurrencyPolicyLabels(t: Translate): Record<string, string> {
+  return {
+    coalesce_if_active: t("routines.concurrencyCoalesceLabel"),
+    always_enqueue: t("routines.concurrencyAlwaysEnqueueLabel"),
+    skip_if_active: t("routines.concurrencySkipLabel"),
+  };
+}
+
 function getCatchUpPolicyDescriptions(t: Translate): Record<string, string> {
   return {
     skip_missed: t("routines.catchUpSkipDescription"),
     enqueue_missed_with_cap: t("routines.catchUpEnqueueDescription"),
+  };
+}
+
+function getCatchUpPolicyLabels(t: Translate): Record<string, string> {
+  return {
+    skip_missed: t("routines.catchUpSkipLabel"),
+    enqueue_missed_with_cap: t("routines.catchUpEnqueueLabel"),
   };
 }
 
@@ -358,7 +373,9 @@ export function Routines() {
     : "paperclip:routines-view";
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
   const concurrencyPolicyDescriptions = useMemo(() => getConcurrencyPolicyDescriptions(t), [t]);
+  const concurrencyPolicyLabels = useMemo(() => getConcurrencyPolicyLabels(t), [t]);
   const catchUpPolicyDescriptions = useMemo(() => getCatchUpPolicyDescriptions(t), [t]);
+  const catchUpPolicyLabels = useMemo(() => getCatchUpPolicyLabels(t), [t]);
   const groupingLabels = useMemo(
     () => ({
       noProject: t("routines.noProject"),
@@ -886,7 +903,9 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>
+                              {concurrencyPolicyLabels[value] ?? value.replaceAll("_", " ")}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -903,7 +922,9 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {catchUpPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>
+                              {catchUpPolicyLabels[value] ?? value.replaceAll("_", " ")}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>

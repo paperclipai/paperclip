@@ -96,10 +96,25 @@ function getConcurrencyPolicyDescriptions(t: Translate): Record<string, string> 
   };
 }
 
+function getConcurrencyPolicyLabels(t: Translate): Record<string, string> {
+  return {
+    coalesce_if_active: t("routineDetail.concurrencyCoalesceLabel"),
+    always_enqueue: t("routineDetail.concurrencyAlwaysEnqueueLabel"),
+    skip_if_active: t("routineDetail.concurrencySkipLabel"),
+  };
+}
+
 function getCatchUpPolicyDescriptions(t: Translate): Record<string, string> {
   return {
     skip_missed: t("routineDetail.catchUpSkipDescription"),
     enqueue_missed_with_cap: t("routineDetail.catchUpEnqueueDescription"),
+  };
+}
+
+function getCatchUpPolicyLabels(t: Translate): Record<string, string> {
+  return {
+    skip_missed: t("routineDetail.catchUpSkipLabel"),
+    enqueue_missed_with_cap: t("routineDetail.catchUpEnqueueLabel"),
   };
 }
 
@@ -112,6 +127,15 @@ function getSigningModeDescriptions(t: Translate): Record<string, string> {
   };
 }
 
+function getSigningModeLabels(t: Translate): Record<string, string> {
+  return {
+    bearer: t("routineDetail.signingModeBearerLabel"),
+    hmac_sha256: t("routineDetail.signingModeHmacLabel"),
+    github_hmac: t("routineDetail.signingModeGithubLabel"),
+    none: t("routineDetail.signingModeNoneLabel"),
+  };
+}
+
 function getTriggerKindLabel(t: Translate, kind: string) {
   switch (kind) {
     case "schedule":
@@ -120,6 +144,22 @@ function getTriggerKindLabel(t: Translate, kind: string) {
       return t("routineDetail.triggerKindWebhook");
     default:
       return kind;
+  }
+}
+
+function formatRoutineRunSource(value: string | null | undefined, t: Translate) {
+  if (!value) return "";
+  switch (value) {
+    case "manual":
+      return t("routineDetail.runSourceManual");
+    case "api":
+      return t("routineDetail.runSourceApi");
+    case "schedule":
+      return t("routineDetail.runSourceSchedule");
+    case "webhook":
+      return t("routineDetail.runSourceWebhook");
+    default:
+      return value.replaceAll("_", " ");
   }
 }
 
@@ -141,14 +181,65 @@ function formatRoutineRunStatus(value: string | null | undefined, t: Translate) 
   }
 }
 
-function formatActivityDetailValue(value: unknown, t: Translate): string {
+function formatRoutineActivityAction(value: string, t: Translate) {
+  switch (value) {
+    case "routine.created":
+      return t("routineDetail.activityActionRoutineCreated");
+    case "routine.updated":
+      return t("routineDetail.activityActionRoutineUpdated");
+    case "routine.trigger_created":
+      return t("routineDetail.activityActionTriggerCreated");
+    case "routine.trigger_updated":
+      return t("routineDetail.activityActionTriggerUpdated");
+    case "routine.trigger_deleted":
+      return t("routineDetail.activityActionTriggerDeleted");
+    case "routine.trigger_secret_rotated":
+      return t("routineDetail.activityActionTriggerSecretRotated");
+    case "routine.run_triggered":
+      return t("routineDetail.activityActionRunTriggered");
+    default:
+      return value.replaceAll(".", " ");
+  }
+}
+
+function formatRoutineActivityDetailKey(value: string, t: Translate) {
+  switch (value) {
+    case "routineId":
+      return t("routineDetail.activityKeyRoutine");
+    case "triggerId":
+      return t("routineDetail.activityKeyTrigger");
+    case "source":
+      return t("routineDetail.activityKeySource");
+    case "status":
+      return t("routineDetail.activityKeyStatus");
+    case "kind":
+      return t("routineDetail.activityKeyKind");
+    case "assigneeAgentId":
+      return t("routineDetail.activityKeyAssignee");
+    case "title":
+      return t("routineDetail.activityKeyTitle");
+    default:
+      return value.replaceAll("_", " ");
+  }
+}
+
+function formatActivityDetailValue(
+  value: unknown,
+  t: Translate,
+  detailKey?: string,
+): string {
   if (value === null) return t("routineDetail.activityNull");
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    if (detailKey === "source") return formatRoutineRunSource(value, t);
+    if (detailKey === "status") return formatRoutineRunStatus(value, t);
+    if (detailKey === "kind") return getTriggerKindLabel(t, value);
+    return value;
+  }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
     return value.length === 0
       ? "[]"
-      : value.map((item) => formatActivityDetailValue(item, t)).join(", ");
+      : value.map((item) => formatActivityDetailValue(item, t, detailKey)).join(", ");
   }
   try {
     return JSON.stringify(value);
@@ -213,6 +304,7 @@ function TriggerEditor({
   }, [trigger]);
 
   const signingModeDescriptions = getSigningModeDescriptions(t);
+  const signingModeLabels = getSigningModeLabels(t);
 
   return (
     <div className="rounded-lg border border-border p-4 space-y-4">
@@ -260,7 +352,7 @@ function TriggerEditor({
                 </SelectTrigger>
                 <SelectContent>
                   {signingModes.map((mode) => (
-                    <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+                    <SelectItem key={mode} value={mode}>{signingModeLabels[mode] ?? mode}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -352,8 +444,11 @@ export function RoutineDetail() {
     variables: [],
   });
   const activeTab = useMemo(() => getRoutineTabFromSearch(location.search), [location.search]);
+  const concurrencyPolicyLabels = useMemo(() => getConcurrencyPolicyLabels(t), [t]);
   const concurrencyPolicyDescriptions = useMemo(() => getConcurrencyPolicyDescriptions(t), [t]);
+  const catchUpPolicyLabels = useMemo(() => getCatchUpPolicyLabels(t), [t]);
   const catchUpPolicyDescriptions = useMemo(() => getCatchUpPolicyDescriptions(t), [t]);
+  const signingModeLabels = useMemo(() => getSigningModeLabels(t), [t]);
   const signingModeDescriptions = useMemo(() => getSigningModeDescriptions(t), [t]);
 
   const { data: routine, isLoading, error } = useQuery({
@@ -960,7 +1055,7 @@ export function RoutineDetail() {
                 </SelectTrigger>
                 <SelectContent>
                   {concurrencyPolicies.map((value) => (
-                    <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                    <SelectItem key={value} value={value}>{concurrencyPolicyLabels[value] ?? value}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -977,7 +1072,7 @@ export function RoutineDetail() {
                 </SelectTrigger>
                 <SelectContent>
                   {catchUpPolicies.map((value) => (
-                    <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                    <SelectItem key={value} value={value}>{catchUpPolicyLabels[value] ?? value}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -1062,7 +1157,7 @@ export function RoutineDetail() {
                       </SelectTrigger>
                       <SelectContent>
                         {signingModes.map((mode) => (
-                          <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+                          <SelectItem key={mode} value={mode}>{signingModeLabels[mode] ?? mode}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -1114,7 +1209,7 @@ export function RoutineDetail() {
               {(routineRuns ?? []).map((run) => (
                 <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="shrink-0">{run.source}</Badge>
+                    <Badge variant="outline" className="shrink-0">{formatRoutineRunSource(run.source, t)}</Badge>
                     <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
                       {formatRoutineRunStatus(run.status, t)}
                     </Badge>
@@ -1142,14 +1237,14 @@ export function RoutineDetail() {
               {(activity ?? []).map((event) => (
                 <div key={event.id} className="flex items-center justify-between px-3 py-2 text-xs gap-4">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-medium text-foreground/90 shrink-0">{event.action.replaceAll(".", " ")}</span>
+                    <span className="font-medium text-foreground/90 shrink-0">{formatRoutineActivityAction(event.action, t)}</span>
                     {event.details && Object.keys(event.details).length > 0 && (
                       <span className="text-muted-foreground truncate">
                         {Object.entries(event.details).slice(0, 3).map(([key, value], i) => (
                           <span key={key}>
                             {i > 0 && <span className="mx-1 text-border">·</span>}
-                            <span className="text-muted-foreground/70">{key.replaceAll("_", " ")}:</span>{" "}
-                            {formatActivityDetailValue(value, t)}
+                            <span className="text-muted-foreground/70">{formatRoutineActivityDetailKey(key, t)}:</span>{" "}
+                            {formatActivityDetailValue(value, t, key)}
                           </span>
                         ))}
                       </span>
