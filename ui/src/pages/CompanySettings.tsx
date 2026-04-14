@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -36,6 +36,7 @@ export function CompanySettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -52,6 +53,7 @@ export function CompanySettings() {
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
@@ -219,6 +221,13 @@ export function CompanySettings() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
       });
+    }
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => companiesApi.remove(selectedCompany!.id),
+    onSuccess: () => {
+      navigate("/");
     }
   });
 
@@ -614,6 +623,54 @@ export function CompanySettings() {
               </span>
             )}
           </div>
+
+          <hr className="border-destructive/20" />
+
+          <p className="text-sm text-muted-foreground">
+            Permanently delete this company and all its data.
+          </p>
+          {showDeleteConfirm ? (
+            <div className="flex items-center justify-between bg-destructive/10 border border-destructive/20 rounded-md px-4 py-3">
+              <p className="text-sm text-destructive font-medium">
+                Delete this company and all its data? This cannot be undone.
+              </p>
+              <div className="flex items-center gap-2 ml-4 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(false)}
+                  disabled={deleteMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                >
+                  {deleteMutation.isPending ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setShowDeleteConfirm(true)}
+              >
+                Delete company
+              </Button>
+            </div>
+          )}
+          {deleteMutation.isError && (
+            <span className="text-xs text-destructive">
+              {deleteMutation.error instanceof Error
+                ? deleteMutation.error.message
+                : "Failed to delete company"}
+            </span>
+          )}
         </div>
       </div>
     </div>
