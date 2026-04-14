@@ -44,6 +44,14 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
  */
 const GEMINI_SYSTEM_FILENAME = "gemini-system.md";
 
+function appendTmpDirectory(includeDirectories: string): string {
+  const trimmed = includeDirectories.trim();
+  if (trimmed.length === 0) return "/tmp";
+  const entries = trimmed.split(":").map((entry) => entry.trim()).filter(Boolean);
+  if (entries.includes("/tmp")) return trimmed;
+  return `${trimmed}:/tmp`;
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -336,6 +344,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
+    const mergedExtraArgs = [...extraArgs];
+    const includeDirectoriesFlagIndex = mergedExtraArgs.findIndex((value) => value === "--include-directories");
+    const includeDirectoriesInlineIndex = mergedExtraArgs.findIndex((value) => value.startsWith("--include-directories="));
+    if (includeDirectoriesFlagIndex >= 0) {
+      const nextValue = mergedExtraArgs[includeDirectoriesFlagIndex + 1] ?? "";
+      const canPatchNextValue = nextValue.length === 0 || !nextValue.startsWith("-");
+      if (canPatchNextValue) {
+        mergedExtraArgs[includeDirectoriesFlagIndex + 1] = appendTmpDirectory(nextValue);
+      }
+    } else if (includeDirectoriesInlineIndex >= 0) {
+      const [, inlineValue = ""] = mergedExtraArgs[includeDirectoriesInlineIndex].split("=", 2);
+      mergedExtraArgs[includeDirectoriesInlineIndex] = `--include-directories=${appendTmpDirectory(inlineValue)}`;
+    } else {
+      args.push("--include-directories", `${cwd}:/tmp`);
+    }
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
     args.push("--approval-mode", "yolo");
@@ -344,9 +367,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else {
       args.push("--sandbox=none");
     }
-    // Allow agents to write intermediate results to /tmp (e.g., test output capping)
-    args.push("--include-directories", `${cwd}:/tmp`);
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (mergedExtraArgs.length > 0) args.push(...mergedExtraArgs);
     args.push("--prompt", prompt);
     return args;
   };
@@ -360,7 +381,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     renderedBootstrapPrompt,
     paperclipEnvNote,
     apiAccessNote,
-    renderedPrompt,
   ]);
   if (systemPrompt.trim().length > 0) {
     const systemFilePath = path.join(cwd, GEMINI_SYSTEM_FILENAME);
