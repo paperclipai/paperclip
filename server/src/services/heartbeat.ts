@@ -6924,13 +6924,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .orderBy(desc(heartbeatRuns.createdAt));
 
     const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) =>
+        candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeScheduledRetryRun = activeRuns.find(
       (candidate) => candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) =>
+        candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&
