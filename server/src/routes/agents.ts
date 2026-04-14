@@ -97,7 +97,8 @@ export function agentRoutes(db: Db) {
   function resolveInstructionsPathKey(adapterType: string): string | null {
     const adapter = findActiveServerAdapter(adapterType);
     if (adapter?.instructionsPathKey) return adapter.instructionsPathKey;
-    if (adapter?.supportsInstructionsBundle) return "instructionsFilePath";
+    if (adapter?.supportsInstructionsBundle === true) return "instructionsFilePath";
+    if (adapter?.supportsInstructionsBundle === false) return null;
     return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
   }
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
