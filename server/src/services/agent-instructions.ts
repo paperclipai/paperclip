@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
-import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import {
+  resolveHomeAwarePath,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -12,7 +15,11 @@ const PROMPT_KEY = "promptTemplate";
 /** @deprecated Use the managed instructions bundle system instead. */
 const BOOTSTRAP_PROMPT_KEY = "bootstrapPromptTemplate";
 const LEGACY_PROMPT_TEMPLATE_PATH = "promptTemplate.legacy.md";
-const IGNORED_INSTRUCTIONS_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "Desktop.ini"]);
+const IGNORED_INSTRUCTIONS_FILE_NAMES = new Set([
+  ".DS_Store",
+  "Thumbs.db",
+  "Desktop.ini",
+]);
 const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   ".git",
   ".nox",
@@ -77,7 +84,8 @@ type BundleState = {
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return {};
   return value as Record<string, unknown>;
 }
 
@@ -97,7 +105,12 @@ function inferLanguage(relativePath: string): string {
   if (lower.endsWith(".json")) return "json";
   if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
   if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
-  if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+  if (
+    lower.endsWith(".js") ||
+    lower.endsWith(".jsx") ||
+    lower.endsWith(".mjs") ||
+    lower.endsWith(".cjs")
+  ) {
     return "javascript";
   }
   if (lower.endsWith(".sh")) return "bash";
@@ -112,9 +125,18 @@ function isMarkdown(relativePath: string) {
 }
 
 function normalizeRelativeFilePath(candidatePath: string): string {
-  const normalized = path.posix.normalize(candidatePath.replaceAll("\\", "/")).replace(/^\/+/, "");
-  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
-    throw unprocessable("Instructions file path must stay within the bundle root");
+  const normalized = path.posix
+    .normalize(candidatePath.replaceAll("\\", "/"))
+    .replace(/^\/+/, "");
+  if (
+    !normalized ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../")
+  ) {
+    throw unprocessable(
+      "Instructions file path must stay within the bundle root",
+    );
   }
   return normalized;
 }
@@ -125,7 +147,9 @@ function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
   const absolutePath = path.resolve(absoluteRoot, normalizedRelativePath);
   const relativeToRoot = path.relative(absoluteRoot, absolutePath);
   if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${path.sep}`)) {
-    throw unprocessable("Instructions file path must stay within the bundle root");
+    throw unprocessable(
+      "Instructions file path must stay within the bundle root",
+    );
   }
   return absolutePath;
 }
@@ -141,7 +165,10 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
   );
 }
 
-function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
+function resolveLegacyInstructionsPath(
+  candidatePath: string,
+  config: Record<string, unknown>,
+): string {
   if (path.isAbsolute(candidatePath)) return candidatePath;
   const cwd = asString(config.cwd);
   if (!cwd || !path.isAbsolute(cwd)) {
@@ -156,17 +183,21 @@ async function statIfExists(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
-function shouldIgnoreInstructionsEntry(entry: { name: string; isDirectory(): boolean; isFile(): boolean }) {
+function shouldIgnoreInstructionsEntry(entry: {
+  name: string;
+  isDirectory(): boolean;
+  isFile(): boolean;
+}) {
   if (entry.name === "." || entry.name === "..") return true;
   if (entry.isDirectory()) {
     return IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name);
   }
   if (!entry.isFile()) return false;
   return (
-    IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name)
-    || entry.name.startsWith("._")
-    || entry.name.endsWith(".pyc")
-    || entry.name.endsWith(".pyo")
+    IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name) ||
+    entry.name.startsWith("._") ||
+    entry.name.endsWith(".pyc") ||
+    entry.name.endsWith(".pyo")
   );
 }
 
@@ -174,7 +205,9 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   const output: string[] = [];
 
   async function walk(currentPath: string, relativeDir: string) {
-    const entries = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+    const entries = await fs
+      .readdir(currentPath, { withFileTypes: true })
+      .catch(() => []);
     for (const entry of entries) {
       if (shouldIgnoreInstructionsEntry(entry)) continue;
       const absolutePath = path.join(currentPath, entry.name);
@@ -194,7 +227,11 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   return output.sort((left, right) => left.localeCompare(right));
 }
 
-async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
+async function readFileSummary(
+  rootPath: string,
+  relativePath: string,
+  entryFile: string,
+): Promise<AgentInstructionsFileSummary> {
   const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
   const stat = await fs.stat(absolutePath);
   return {
@@ -209,11 +246,17 @@ async function readFileSummary(rootPath: string, relativePath: string, entryFile
   };
 }
 
-async function readLegacyInstructions(agent: AgentLike, config: Record<string, unknown>): Promise<string> {
+async function readLegacyInstructions(
+  agent: AgentLike,
+  config: Record<string, unknown>,
+): Promise<string> {
   const instructionsFilePath = asString(config[FILE_KEY]);
   if (instructionsFilePath) {
     try {
-      const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, config);
+      const resolvedPath = resolveLegacyInstructionsPath(
+        instructionsFilePath,
+        config,
+      );
       return await fs.readFile(resolvedPath, "utf8");
     } catch {
       // Fall back to promptTemplate below.
@@ -229,7 +272,9 @@ function deriveBundleState(agent: AgentLike): BundleState {
   const storedRootRaw = asString(config[ROOT_KEY]);
   const legacyInstructionsPath = asString(config[FILE_KEY]);
 
-  let mode: BundleMode | null = isBundleMode(storedModeRaw) ? storedModeRaw : null;
+  let mode: BundleMode | null = isBundleMode(storedModeRaw)
+    ? storedModeRaw
+    : null;
   let rootPath = storedRootRaw ? resolveHomeAwarePath(storedRootRaw) : null;
   let entryFile = ENTRY_FILE_DEFAULT;
 
@@ -238,21 +283,32 @@ function deriveBundleState(agent: AgentLike): BundleState {
     try {
       entryFile = normalizeRelativeFilePath(storedEntryRaw);
     } catch {
-      warnings.push(`Ignored invalid instructions entry file "${storedEntryRaw}".`);
+      warnings.push(
+        `Ignored invalid instructions entry file "${storedEntryRaw}".`,
+      );
     }
   }
 
   if (!rootPath && legacyInstructionsPath) {
     try {
-      const resolvedLegacyPath = resolveLegacyInstructionsPath(legacyInstructionsPath, config);
+      const resolvedLegacyPath = resolveLegacyInstructionsPath(
+        legacyInstructionsPath,
+        config,
+      );
       rootPath = path.dirname(resolvedLegacyPath);
       entryFile = path.basename(resolvedLegacyPath);
-      mode = resolvedLegacyPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)
-        || resolvedLegacyPath === path.join(resolveManagedInstructionsRoot(agent), entryFile)
-        ? "managed"
-        : "external";
+      mode =
+        resolvedLegacyPath.startsWith(
+          `${resolveManagedInstructionsRoot(agent)}${path.sep}`,
+        ) ||
+        resolvedLegacyPath ===
+          path.join(resolveManagedInstructionsRoot(agent), entryFile)
+          ? "managed"
+          : "external";
       if (!path.isAbsolute(legacyInstructionsPath)) {
-        warnings.push("Using legacy relative instructionsFilePath; migrate this agent to a managed or absolute external bundle.");
+        warnings.push(
+          "Using legacy relative instructionsFilePath; migrate this agent to a managed or absolute external bundle.",
+        );
       }
     } catch (err) {
       warnings.push(err instanceof Error ? err.message : String(err));
@@ -269,11 +325,16 @@ function deriveBundleState(agent: AgentLike): BundleState {
     resolvedEntryPath,
     warnings,
     legacyPromptTemplateActive: Boolean(asString(config[PROMPT_KEY])),
-    legacyBootstrapPromptTemplateActive: Boolean(asString(config[BOOTSTRAP_PROMPT_KEY])),
+    legacyBootstrapPromptTemplateActive: Boolean(
+      asString(config[BOOTSTRAP_PROMPT_KEY]),
+    ),
   };
 }
 
-async function recoverManagedBundleState(agent: AgentLike, state: BundleState): Promise<BundleState> {
+async function recoverManagedBundleState(
+  agent: AgentLike,
+  state: BundleState,
+): Promise<BundleState> {
   const managedRootPath = resolveManagedInstructionsRoot(agent);
   const stat = await statIfExists(managedRootPath);
   if (!stat?.isDirectory()) return state;
@@ -300,7 +361,8 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
   if (state.mode === "external") return state;
 
   const resolvedConfiguredRoot = path.resolve(state.rootPath);
-  const configuredRootMatchesManaged = resolvedConfiguredRoot === managedRootPath;
+  const configuredRootMatchesManaged =
+    resolvedConfiguredRoot === managedRootPath;
   const hasEntryMismatch = recoveredEntryFile !== state.entryFile;
 
   if (configuredRootMatchesManaged && !hasEntryMismatch) {
@@ -329,9 +391,16 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
   };
 }
 
-function toBundle(agent: AgentLike, state: BundleState, files: AgentInstructionsFileSummary[]): AgentInstructionsBundle {
+function toBundle(
+  agent: AgentLike,
+  state: BundleState,
+  files: AgentInstructionsFileSummary[],
+): AgentInstructionsBundle {
   const nextFiles = [...files];
-  if (state.legacyPromptTemplateActive && !nextFiles.some((file) => file.path === LEGACY_PROMPT_TEMPLATE_PATH)) {
+  if (
+    state.legacyPromptTemplateActive &&
+    !nextFiles.some((file) => file.path === LEGACY_PROMPT_TEMPLATE_PATH)
+  ) {
     const legacyPromptTemplate = asString(state.config[PROMPT_KEY]) ?? "";
     nextFiles.push({
       path: LEGACY_PROMPT_TEMPLATE_PATH,
@@ -356,7 +425,8 @@ function toBundle(agent: AgentLike, state: BundleState, files: AgentInstructions
     editable: Boolean(state.rootPath),
     warnings: state.warnings,
     legacyPromptTemplateActive: state.legacyPromptTemplateActive,
-    legacyBootstrapPromptTemplateActive: state.legacyBootstrapPromptTemplateActive,
+    legacyBootstrapPromptTemplateActive:
+      state.legacyBootstrapPromptTemplateActive,
     files: nextFiles,
   };
 }
@@ -389,14 +459,18 @@ function buildPersistedBundleConfig(
   current: BundleState,
   options?: { clearLegacyPromptTemplate?: boolean },
 ): Record<string, unknown> {
-  const currentRootPath = current.rootPath ? path.resolve(current.rootPath) : null;
-  const derivedRootPath = derived.rootPath ? path.resolve(derived.rootPath) : null;
+  const currentRootPath = current.rootPath
+    ? path.resolve(current.rootPath)
+    : null;
+  const derivedRootPath = derived.rootPath
+    ? path.resolve(derived.rootPath)
+    : null;
   const configMatchesRecoveredState =
-    derived.mode === current.mode
-    && derivedRootPath !== null
-    && currentRootPath !== null
-    && derivedRootPath === currentRootPath
-    && derived.entryFile === current.entryFile;
+    derived.mode === current.mode &&
+    derivedRootPath !== null &&
+    currentRootPath !== null &&
+    derivedRootPath === currentRootPath &&
+    derived.entryFile === current.entryFile;
 
   if (configMatchesRecoveredState && !options?.clearLegacyPromptTemplate) {
     return current.config;
@@ -441,34 +515,65 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[ENTRY_KEY];
     return next;
   }
-  const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
+  const resolvedPath = resolveLegacyInstructionsPath(
+    instructionsFilePath,
+    adapterConfig,
+  );
   const rootPath = path.dirname(resolvedPath);
   const entryFile = path.basename(resolvedPath);
-  const mode: BundleMode = resolvedPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)
-    || resolvedPath === path.join(resolveManagedInstructionsRoot(agent), entryFile)
-    ? "managed"
-    : "external";
+  const mode: BundleMode =
+    resolvedPath.startsWith(
+      `${resolveManagedInstructionsRoot(agent)}${path.sep}`,
+    ) ||
+    resolvedPath === path.join(resolveManagedInstructionsRoot(agent), entryFile)
+      ? "managed"
+      : "external";
   return applyBundleConfig(next, { mode, rootPath, entryFile });
 }
 
 export function agentInstructionsService() {
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await recoverManagedBundleState(
+      agent,
+      deriveBundleState(agent),
+    );
     if (!state.rootPath) return toBundle(agent, state, []);
     const stat = await statIfExists(state.rootPath);
     if (!stat?.isDirectory()) {
-      return toBundle(agent, {
-        ...state,
-        warnings: [...state.warnings, `Instructions root does not exist: ${state.rootPath}`],
-      }, []);
+      const resolvedPath =
+        state.resolvedEntryPath ?? path.join(state.rootPath, state.entryFile);
+      throw new Error(
+        `[agent-instructions] HARD_FAIL: instruction file missing or unreadable for agent ${agent.id} ` +
+          `(company ${agent.companyId}). Expected path: ${resolvedPath}. ` +
+          `Create the file before registering this agent.`,
+      );
     }
     const files = await listFilesRecursive(state.rootPath);
-    const summaries = await Promise.all(files.map((relativePath) => readFileSummary(state.rootPath!, relativePath, state.entryFile)));
+    // Hard-fail if the primary entry file is absent from the managed bundle
+    if (!files.includes(state.entryFile)) {
+      const resolvedPath = path.join(state.rootPath, state.entryFile);
+      throw new Error(
+        `[agent-instructions] HARD_FAIL: instruction file missing or unreadable for agent ${agent.id} ` +
+          `(company ${agent.companyId}). Expected path: ${resolvedPath}. ` +
+          `Create the file before registering this agent.`,
+      );
+    }
+    const summaries = await Promise.all(
+      files.map((relativePath) =>
+        readFileSummary(state.rootPath!, relativePath, state.entryFile),
+      ),
+    );
     return toBundle(agent, state, summaries);
   }
 
-  async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+  async function readFile(
+    agent: AgentLike,
+    relativePath: string,
+  ): Promise<AgentInstructionsFileDetail> {
+    const state = await recoverManagedBundleState(
+      agent,
+      deriveBundleState(agent),
+    );
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const content = asString(state.config[PROMPT_KEY]);
       if (content === null) throw notFound("Instructions file not found");
@@ -484,13 +589,15 @@ export function agentInstructionsService() {
         content,
       };
     }
-    if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+    if (!state.rootPath)
+      throw notFound("Agent instructions bundle is not configured");
     const absolutePath = resolvePathWithinRoot(state.rootPath, relativePath);
     const [content, stat] = await Promise.all([
       fs.readFile(absolutePath, "utf8").catch(() => null),
       fs.stat(absolutePath).catch(() => null),
     ]);
-    if (content === null || !stat?.isFile()) throw notFound("Instructions file not found");
+    if (content === null || !stat?.isFile())
+      throw notFound("Instructions file not found");
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     return {
       path: normalizedPath,
@@ -512,7 +619,11 @@ export function agentInstructionsService() {
     const derived = deriveBundleState(agent);
     const current = await recoverManagedBundleState(agent, derived);
     if (current.rootPath && current.mode) {
-      const adapterConfig = buildPersistedBundleConfig(derived, current, options);
+      const adapterConfig = buildPersistedBundleConfig(
+        derived,
+        current,
+        options,
+      );
       return {
         adapterConfig,
         state: deriveBundleState({ ...agent, adapterConfig }),
@@ -532,7 +643,10 @@ export function agentInstructionsService() {
     const entryPath = resolvePathWithinRoot(managedRoot, entryFile);
     const entryStat = await statIfExists(entryPath);
     if (!entryStat?.isFile()) {
-      const legacyInstructions = await readLegacyInstructions(agent, current.config);
+      const legacyInstructions = await readLegacyInstructions(
+        agent,
+        current.config,
+      );
       if (legacyInstructions.trim().length > 0) {
         await fs.mkdir(path.dirname(entryPath), { recursive: true });
         await fs.writeFile(entryPath, legacyInstructions, "utf8");
@@ -553,10 +667,18 @@ export function agentInstructionsService() {
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
     },
-  ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown>;
+  }> {
+    const state = await recoverManagedBundleState(
+      agent,
+      deriveBundleState(agent),
+    );
     const nextMode = input.mode ?? state.mode ?? "managed";
-    const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
+    const nextEntryFile = input.entryFile
+      ? normalizeRelativeFilePath(input.entryFile)
+      : state.entryFile;
     let nextRootPath: string;
 
     if (nextMode === "managed") {
@@ -564,11 +686,15 @@ export function agentInstructionsService() {
     } else {
       const rootPath = asString(input.rootPath) ?? state.rootPath;
       if (!rootPath) {
-        throw unprocessable("External instructions bundles require an absolute rootPath");
+        throw unprocessable(
+          "External instructions bundles require an absolute rootPath",
+        );
       }
       const resolvedRoot = resolveHomeAwarePath(rootPath);
       if (!path.isAbsolute(resolvedRoot)) {
-        throw unprocessable("External instructions bundles require an absolute rootPath");
+        throw unprocessable(
+          "External instructions bundles require an absolute rootPath",
+        );
       }
       nextRootPath = resolvedRoot;
     }
@@ -580,10 +706,18 @@ export function agentInstructionsService() {
     if (existingFiles.length === 0) {
       await writeBundleFiles(nextRootPath, exported.files);
     }
-    const refreshedFiles = existingFiles.length === 0 ? await listFilesRecursive(nextRootPath) : existingFiles;
+    const refreshedFiles =
+      existingFiles.length === 0
+        ? await listFilesRecursive(nextRootPath)
+        : existingFiles;
     if (!refreshedFiles.includes(nextEntryFile)) {
-      const nextEntryContent = exported.files[nextEntryFile] ?? exported.files[exported.entryFile] ?? "";
-      await writeBundleFiles(nextRootPath, { [nextEntryFile]: nextEntryContent });
+      const nextEntryContent =
+        exported.files[nextEntryFile] ??
+        exported.files[exported.entryFile] ??
+        "";
+      await writeBundleFiles(nextRootPath, {
+        [nextEntryFile]: nextEntryContent,
+      });
     }
 
     const nextConfig = applyBundleConfig(state.config, {
@@ -621,7 +755,10 @@ export function agentInstructionsService() {
     }
 
     const prepared = await ensureWritableBundle(agent, options);
-    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    const absolutePath = resolvePathWithinRoot(
+      prepared.state.rootPath!,
+      relativePath,
+    );
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
@@ -632,16 +769,22 @@ export function agentInstructionsService() {
     return { bundle, file, adapterConfig: prepared.adapterConfig };
   }
 
-  async function deleteFile(agent: AgentLike, relativePath: string): Promise<{
+  async function deleteFile(
+    agent: AgentLike,
+    relativePath: string,
+  ): Promise<{
     bundle: AgentInstructionsBundle;
     adapterConfig: Record<string, unknown>;
   }> {
     const derived = deriveBundleState(agent);
     const state = await recoverManagedBundleState(agent, derived);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
-      throw unprocessable("Cannot delete the legacy promptTemplate pseudo-file");
+      throw unprocessable(
+        "Cannot delete the legacy promptTemplate pseudo-file",
+      );
     }
-    if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+    if (!state.rootPath)
+      throw notFound("Agent instructions bundle is not configured");
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     if (normalizedPath === state.entryFile) {
       throw unprocessable("Cannot delete the bundle entry file");
@@ -658,25 +801,43 @@ export function agentInstructionsService() {
     entryFile: string;
     warnings: string[];
   }> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await recoverManagedBundleState(
+      agent,
+      deriveBundleState(agent),
+    );
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
         const relativePaths = await listFilesRecursive(state.rootPath);
-        const files = Object.fromEntries(await Promise.all(relativePaths.map(async (relativePath) => {
-          const absolutePath = resolvePathWithinRoot(state.rootPath!, relativePath);
-          const content = await fs.readFile(absolutePath, "utf8");
-          return [relativePath, content] as const;
-        })));
+        const files = Object.fromEntries(
+          await Promise.all(
+            relativePaths.map(async (relativePath) => {
+              const absolutePath = resolvePathWithinRoot(
+                state.rootPath!,
+                relativePath,
+              );
+              const content = await fs.readFile(absolutePath, "utf8");
+              return [relativePath, content] as const;
+            }),
+          ),
+        );
         if (Object.keys(files).length > 0) {
-          return { files, entryFile: state.entryFile, warnings: state.warnings };
+          return {
+            files,
+            entryFile: state.entryFile,
+            warnings: state.warnings,
+          };
         }
       }
     }
 
     const legacyBody = await readLegacyInstructions(agent, state.config);
     return {
-      files: { [state.entryFile]: legacyBody || "_No AGENTS instructions were resolved from current agent config._" },
+      files: {
+        [state.entryFile]:
+          legacyBody ||
+          "_No AGENTS instructions were resolved from current agent config._",
+      },
       entryFile: state.entryFile,
       warnings: state.warnings,
     };
@@ -690,26 +851,37 @@ export function agentInstructionsService() {
       replaceExisting?: boolean;
       entryFile?: string;
     },
-  ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown>;
+  }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
-    const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
+    const entryFile = options?.entryFile
+      ? normalizeRelativeFilePath(options.entryFile)
+      : ENTRY_FILE_DEFAULT;
 
     if (options?.replaceExisting) {
       await fs.rm(rootPath, { recursive: true, force: true });
     }
     await fs.mkdir(rootPath, { recursive: true });
 
-    const normalizedEntries = Object.entries(files).map(([relativePath, content]) => [
-      normalizeRelativeFilePath(relativePath),
-      content,
-    ] as const);
+    const normalizedEntries = Object.entries(files).map(
+      ([relativePath, content]) =>
+        [normalizeRelativeFilePath(relativePath), content] as const,
+    );
     for (const [relativePath, content] of normalizedEntries) {
       const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await fs.writeFile(absolutePath, content, "utf8");
     }
-    if (!normalizedEntries.some(([relativePath]) => relativePath === entryFile)) {
-      await fs.writeFile(resolvePathWithinRoot(rootPath, entryFile), "", "utf8");
+    if (
+      !normalizedEntries.some(([relativePath]) => relativePath === entryFile)
+    ) {
+      await fs.writeFile(
+        resolvePathWithinRoot(rootPath, entryFile),
+        "",
+        "utf8",
+      );
     }
 
     const adapterConfig = applyBundleConfig(asRecord(agent.adapterConfig), {
