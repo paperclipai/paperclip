@@ -6,6 +6,7 @@ const {
   detectPortMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
+  createFeedbackTraceShareClientFromConfigMock,
   issueServiceFactoryMock,
   archiveClosedAcrossCompaniesMock,
   fakeServer,
@@ -67,6 +68,7 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const createFeedbackTraceShareClientFromConfigMock = vi.fn(() => ({ id: "feedback-share-client" }));
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -83,6 +85,7 @@ const {
     detectPortMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
+    createFeedbackTraceShareClientFromConfigMock,
     issueServiceFactoryMock,
     archiveClosedAcrossCompaniesMock,
     fakeServer,
@@ -153,7 +156,7 @@ vi.mock("../storage/index.js", () => ({
 }));
 
 vi.mock("../services/feedback-share-client.js", () => ({
-  createFeedbackTraceShareClientFromConfig: vi.fn(() => ({ id: "feedback-share-client" })),
+  createFeedbackTraceShareClientFromConfig: createFeedbackTraceShareClientFromConfigMock,
 }));
 
 vi.mock("../startup-banner.js", () => ({
@@ -231,7 +234,59 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+    expect(feedbackServiceFactoryMock.mock.calls[0]?.[1]).toMatchObject({
+      shareClient: { id: "feedback-share-client" },
+    });
   }, 15_000);
+
+  it("keeps feedback export opt-in by omitting the share client when no backend url is configured", async () => {
+    loadConfigMock.mockImplementation(() => ({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      host: "127.0.0.1",
+      port: 3210,
+      allowedHostnames: [],
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      authDisableSignUp: false,
+      databaseMode: "postgres",
+      databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
+      embeddedPostgresDataDir: "/tmp/paperclip-test-db",
+      embeddedPostgresPort: 54329,
+      databaseBackupEnabled: false,
+      databaseBackupIntervalMinutes: 60,
+      databaseBackupRetentionDays: 30,
+      databaseBackupDir: "/tmp/paperclip-test-backups",
+      serveUi: false,
+      uiDevMiddleware: false,
+      secretsProvider: "local_encrypted",
+      secretsStrictMode: false,
+      secretsMasterKeyFilePath: "/tmp/paperclip-master.key",
+      storageProvider: "local_disk",
+      storageLocalDiskBaseDir: "/tmp/paperclip-storage",
+      storageS3Bucket: "paperclip-test",
+      storageS3Region: "us-east-1",
+      storageS3Endpoint: undefined,
+      storageS3Prefix: "",
+      storageS3ForcePathStyle: false,
+      feedbackExportBackendUrl: undefined,
+      feedbackExportBackendToken: undefined,
+      heartbeatSchedulerEnabled: false,
+      heartbeatSchedulerIntervalMs: 30000,
+      closedIssueArchiveEnabled: false,
+      closedIssueArchiveIntervalMs: 3600000,
+      closedIssueArchiveAgeDays: 14,
+      companyDeletionEnabled: false,
+      telemetryEnabled: true,
+    }));
+
+    await startServer();
+
+    expect(createFeedbackTraceShareClientFromConfigMock).not.toHaveBeenCalled();
+    expect(feedbackServiceFactoryMock.mock.calls[0]?.[1]).toMatchObject({
+      shareClient: undefined,
+    });
+  });
 
   it("does not initialize closed issue auto-archive scheduler when disabled", async () => {
     await startServer();

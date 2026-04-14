@@ -55,12 +55,11 @@ function mermaidEscape(s: string): string {
   return s.replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** Build a display label for a skill's source, linking to GitHub when available. */
+/** Build a display label for a skill's source without creating markdown links. */
 function skillSourceLabel(skill: CompanyPortabilityManifest["skills"][number]): string {
   if (skill.sourceLocator) {
-    // For GitHub or URL sources, render as a markdown link
     if (skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url") {
-      return `[${skill.sourceType}](${skill.sourceLocator})`;
+      return `${skill.sourceType}: \`${skill.sourceLocator}\``;
     }
     return skill.sourceLocator;
   }
@@ -96,7 +95,7 @@ export function generateReadme(
   // What's Inside table
   lines.push("## What's Inside");
   lines.push("");
-  lines.push("> This is an [Agent Company](https://agentcompanies.io) package from [PrivateClip](https://paperclip.ing)");
+  lines.push("> This is an [Agent Company](https://agentcompanies.io) package from [Orchestrero](https://www.orchestrero.ai)");
   lines.push("");
 
   const counts: Array<[string, number]> = [];
@@ -160,12 +159,12 @@ export function generateReadme(
   lines.push("pnpm paperclipai company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
-  lines.push("See [PrivateClip](https://paperclip.ing) for more information.");
+  lines.push("See [Orchestrero](https://www.orchestrero.ai) for more information.");
   lines.push("");
 
   // Footer
   lines.push("---");
-  lines.push(`Exported from [PrivateClip](https://paperclip.ing) on ${new Date().toISOString().split("T")[0]}`);
+  lines.push(`Exported from [Orchestrero](https://www.orchestrero.ai) on ${new Date().toISOString().split("T")[0]}`);
   lines.push("");
 
   return lines.join("\n");

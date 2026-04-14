@@ -21,6 +21,10 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -31,6 +35,7 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => mockDocumentsService,
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
   goalService: () => ({}),

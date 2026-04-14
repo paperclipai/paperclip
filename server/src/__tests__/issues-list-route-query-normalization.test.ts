@@ -15,6 +15,10 @@ const mockIssueService = vi.hoisted(() => ({
   })),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
@@ -24,6 +28,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentService: () => ({}),
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
@@ -118,6 +123,20 @@ describe("issue list query normalization", () => {
       "company-1",
       expect.objectContaining({
         includeRelations: true,
+      }),
+    );
+  });
+
+  it("passes recovery-source exclusion query flag to the issue service list filter", async () => {
+    const res = await request(createApp()).get(
+      "/api/companies/company-1/issues?excludeRecoverySourcesWithOpenSuccessors=true",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        excludeRecoverySourcesWithOpenSuccessors: true,
       }),
     );
   });

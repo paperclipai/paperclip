@@ -3,16 +3,16 @@ title: How Agents Work
 summary: Agent lifecycle, execution model, and status
 ---
 
-Agents in PrivateClip are AI employees that wake up, do work, and go back to sleep. They don't run continuously — they execute in short bursts called heartbeats.
+Agents in Orchestrero are AI employees that wake up, do work, and go back to sleep. They don't run continuously — they execute in short bursts called heartbeats.
 
 ## Execution Model
 
 1. **Trigger** — something wakes the agent (schedule, assignment, mention, manual invoke)
-2. **Adapter invocation** — PrivateClip calls the agent's configured adapter
+2. **Adapter invocation** — Orchestrero calls the agent's configured adapter
 3. **Agent process** — the adapter spawns the agent runtime (e.g. Claude Code CLI)
-4. **PrivateClip API calls** — the agent checks assignments, claims tasks, does work, updates status
+4. **Orchestrero API calls** — the agent checks assignments, claims tasks, does work, updates status
 5. **Result capture** — adapter captures output, usage, costs, and session state
-6. **Run record** — PrivateClip stores the run result for audit and debugging
+6. **Run record** — Orchestrero stores the run result for audit and debugging
 
 ## Agent Identity
 
@@ -22,7 +22,7 @@ Every agent has environment variables injected at runtime:
 |----------|-------------|
 | `PAPERCLIP_AGENT_ID` | The agent's unique ID |
 | `PAPERCLIP_COMPANY_ID` | The company the agent belongs to |
-| `PAPERCLIP_API_URL` | Base URL for the PrivateClip API |
+| `PAPERCLIP_API_URL` | Base URL for the Orchestrero API |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API authentication |
 | `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
 

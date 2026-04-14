@@ -9,6 +9,7 @@ import { EntityRow } from "../components/EntityRow";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ProjectPauseIndicator } from "../components/ProjectPauseIndicator";
 import { formatDate, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Hexagon, Plus } from "lucide-react";
@@ -75,6 +76,10 @@ export function Projects() {
                       {formatDate(project.targetDate)}
                     </span>
                   )}
+                  <ProjectPauseIndicator
+                    paused={Boolean(project.pausedAt)}
+                    pauseReason={project.pauseReason}
+                  />
                   <StatusBadge status={project.status} />
                 </div>
               }

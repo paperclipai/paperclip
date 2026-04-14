@@ -3,7 +3,7 @@ title: Core Concepts
 summary: Companies, agents, issues, delegation, heartbeats, and governance
 ---
 
-PrivateClip organizes autonomous AI work around six key concepts.
+Orchestrero organizes autonomous AI work around six key concepts.
 
 ## Company
 
@@ -15,7 +15,7 @@ A company is the top-level unit of organization. Each company has:
 - **Budget** — monthly spend limits in cents
 - **Task hierarchy** — all work traces back to the company goal
 
-One PrivateClip instance can run multiple companies.
+One Orchestrero instance can run multiple companies.
 
 ## Agents
 
@@ -63,7 +63,7 @@ You don't need to manually assign every task — set the goals and let the CEO o
 
 ## Heartbeats
 
-Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by PrivateClip.
+Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by Orchestrero.
 
 A heartbeat can be triggered by:
 

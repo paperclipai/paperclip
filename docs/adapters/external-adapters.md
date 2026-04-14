@@ -1,9 +1,9 @@
 ---
 title: External Adapters
-summary: Build, package, and distribute adapters as plugins without modifying PrivateClip source
+summary: Build, package, and distribute adapters as plugins without modifying Orchestrero source
 ---
 
-PrivateClip supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to PrivateClip's source code.
+Orchestrero supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to Orchestrero's source code.
 
 ## Built-in vs External
 
@@ -12,8 +12,8 @@ PrivateClip supports external adapter plugins that can be installed from npm pac
 | Source location | Inside `paperclip-fork/packages/adapters/` | Separate npm package or local directory |
 | Registration | Hardcoded in three registries | Loaded at startup via plugin system |
 | UI parser | Static import at build time | Dynamically loaded from API (see [UI Parser](/adapters/adapter-ui-parser)) |
-| Distribution | Ships with PrivateClip | Published to npm or linked via `file:` |
-| Updates | Requires PrivateClip release | Independent versioning |
+| Distribution | Ships with Orchestrero | Published to npm or linked via `file:` |
+| Updates | Requires Orchestrero release | Independent versioning |
 
 ## Quick Start
 
@@ -160,7 +160,7 @@ export async function execute(
   const command = String(config.command ?? "my-agent");
   const timeoutSec = Number(config.timeoutSec ?? 300);
 
-  // 2. Build environment with PrivateClip vars injected
+  // 2. Build environment with Orchestrero vars injected
   const env = buildPaperclipEnv(agent);
 
   // 3. Render prompt template
@@ -260,7 +260,7 @@ Check levels:
 ### From npm
 
 ```sh
-# Via the PrivateClip UI
+# Via the Orchestrero UI
 # Settings → Adapters → Install from npm → "my-paperclip-adapter"
 
 # Or via API
@@ -279,7 +279,7 @@ curl -X POST http://localhost:3102/api/adapters \
   -d '{"localPath": "/home/user/my-adapter"}'
 ```
 
-Local adapters are symlinked into PrivateClip's adapter directory. Changes to the source are picked up on server restart.
+Local adapters are symlinked into Orchestrero's adapter directory. Changes to the source are picked up on server restart.
 
 ### Via adapter-plugins.json
 
@@ -375,7 +375,7 @@ npm run build
 npm publish
 ```
 
-Other PrivateClip users can then install your adapter by package name from the UI or API.
+Other Orchestrero users can then install your adapter by package name from the UI or API.
 
 ## Security
 

@@ -201,4 +201,31 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+
+  it("shows recovery continuation details when the issue has a successor", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "blocked",
+        recoverySuccessor: {
+          id: "issue-2",
+          identifier: "PAP-2",
+          title: "Replacement issue",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+        },
+      }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Recovery");
+    expect(container.textContent).toContain("Continues as");
+    expect(container.textContent).toContain("PAP-2");
+
+    act(() => root.unmount());
+  });
 });

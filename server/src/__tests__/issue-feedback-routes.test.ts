@@ -24,6 +24,10 @@ const mockFeedbackExportService = vi.hoisted(() => ({
   flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 1, sent: 1, failed: 0 })),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
@@ -33,6 +37,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentService: () => ({}),
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),

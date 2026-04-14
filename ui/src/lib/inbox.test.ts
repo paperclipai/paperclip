@@ -277,6 +277,41 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  brief: {
+    health: "watch",
+    snapshot: {
+      progress: {
+        value: "1",
+        label: "In flight",
+        headline: "Work is moving",
+        detail: "0 issues completed recently",
+        tone: "healthy",
+      },
+      risk: {
+        value: "0",
+        label: "Blocked",
+        headline: "No critical execution risk right now",
+        detail: "0 failed runs on active work",
+        tone: "healthy",
+      },
+      decisions: {
+        value: "1",
+        label: "Waiting",
+        headline: "Board input required",
+        detail: "1 approval, 0 join requests, 0 board-owned issues",
+        tone: "watch",
+      },
+      spend: {
+        value: "$9.00",
+        label: "Month spend",
+        headline: "Budget is under control",
+        detail: "90% of $10.00 budget",
+        tone: "watch",
+      },
+    },
+    focusAreas: [],
+    needsAttention: [],
+  },
 };
 
 describe("inbox helpers", () => {

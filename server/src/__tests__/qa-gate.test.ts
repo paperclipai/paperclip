@@ -92,6 +92,24 @@ describe("qa gate helpers", () => {
     expect(ready.missingRequirements).toEqual([]);
   });
 
+  it("treats technical branch work as delivery-scoped even when a non-engineering role is assigned", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "pm",
+      issueText: "COMA-1063 App Merge branches",
+      qaComments: [],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.isDeliveryScoped).toBe(true);
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toEqual([
+      "qa_gate_missing_qa_pass",
+      "qa_gate_missing_release_confirmation",
+    ]);
+  });
+
   it("flags stale review when no recent summary exists", () => {
     const stale = buildIssueQaGate({
       issue: { status: "in_review" },
@@ -116,4 +134,3 @@ describe("qa gate helpers", () => {
     expect(issueQaGateReasonMessage("qa_gate_missing_release_confirmation")).toContain("[RELEASE CONFIRMED]");
   });
 });
-

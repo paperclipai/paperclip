@@ -1,11 +1,11 @@
 ---
 title: Tailscale Private Access
-summary: Run PrivateClip with Tailscale-friendly host binding and connect from other devices
+summary: Run Orchestrero with Tailscale-friendly host binding and connect from other devices
 ---
 
-Use this when you want to access PrivateClip over Tailscale (or a private LAN/VPN) instead of only `localhost`.
+Use this when you want to access Orchestrero over Tailscale (or a private LAN/VPN) instead of only `localhost`.
 
-## 1. Start PrivateClip in private authenticated mode
+## 1. Start Orchestrero in private authenticated mode
 
 ```sh
 pnpm dev --tailscale-auth
@@ -26,7 +26,7 @@ pnpm dev --authenticated-private
 
 ## 2. Find your reachable Tailscale address
 
-From the machine running PrivateClip:
+From the machine running Orchestrero:
 
 ```sh
 tailscale ip -4
@@ -34,9 +34,9 @@ tailscale ip -4
 
 You can also use your Tailscale MagicDNS hostname (for example `my-macbook.tailnet.ts.net`).
 
-## 3. Open PrivateClip from another device
+## 3. Open Orchestrero from another device
 
-Use the Tailscale IP or MagicDNS host with the PrivateClip port:
+Use the Tailscale IP or MagicDNS host with the Orchestrero port:
 
 ```txt
 http://<tailscale-host-or-ip>:3100
@@ -50,7 +50,7 @@ http://my-macbook.tailnet.ts.net:3100
 
 ## 4. Allow custom private hostnames when needed
 
-If you access PrivateClip with a custom private hostname, add it to the allowlist:
+If you access Orchestrero with a custom private hostname, add it to the allowlist:
 
 ```sh
 pnpm paperclipai allowed-hostname my-macbook.tailnet.ts.net

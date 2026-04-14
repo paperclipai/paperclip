@@ -66,8 +66,7 @@ import {
   summarizeToolInput,
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
-import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn, formatDateTime } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Link2, Loader2, MoreHorizontal, Search, ThumbsDown, ThumbsUp } from "lucide-react";
@@ -242,13 +241,25 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
   return null;
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+function IssueChatTimestampAnchor({
+  anchorId,
+  createdAt,
+}: {
+  anchorId?: string;
+  createdAt?: Date | string;
+}) {
+  if (!createdAt) return null;
+  const label = formatDateTime(createdAt);
 
-function commentDateLabel(date: Date | string | undefined): string {
-  if (!date) return "";
-  const then = new Date(date).getTime();
-  if (Date.now() - then < WEEK_MS) return timeAgo(date);
-  return formatShortDate(date);
+  return (
+    <a
+      href={anchorId ? `#${anchorId}` : undefined}
+      className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground transition-colors hover:border-border hover:text-foreground"
+      title={label}
+    >
+      {label}
+    </a>
+  );
 }
 
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
@@ -710,6 +721,30 @@ function IssueChatUserMessage() {
     <MessagePrimitive.Root id={anchorId}>
       <div className="group flex items-start justify-end gap-2.5">
         <div className="flex min-w-0 max-w-[85%] flex-col items-end">
+          <div className="mb-1.5 flex w-full items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <span className="truncate text-sm font-semibold text-foreground">You</span>
+              {queued ? (
+                <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+                  Queued
+                </span>
+              ) : null}
+              {queueTargetRunId && onInterruptQueued ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                  disabled={interruptingQueuedRunId === queueTargetRunId}
+                  onClick={() => void onInterruptQueued(queueTargetRunId)}
+                >
+                  {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                </Button>
+              ) : null}
+              {pending ? <span className="text-xs text-muted-foreground">Sending...</span> : null}
+            </div>
+            <IssueChatTimestampAnchor anchorId={anchorId} createdAt={message.createdAt} />
+          </div>
+
           <div
             className={cn(
               "min-w-0 break-all rounded-2xl px-4 py-2.5",
@@ -719,26 +754,6 @@ function IssueChatUserMessage() {
               pending && "opacity-80",
             )}
           >
-            {queued ? (
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-                  Queued
-                </span>
-                {queueTargetRunId && onInterruptQueued ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                    disabled={interruptingQueuedRunId === queueTargetRunId}
-                    onClick={() => void onInterruptQueued(queueTargetRunId)}
-                  >
-                    {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-            {pending ? <div className="mb-1 text-xs text-muted-foreground">Sending...</div> : null}
-
             <div className="space-y-3">
               <MessagePrimitive.Parts
                 components={{
@@ -749,19 +764,6 @@ function IssueChatUserMessage() {
           </div>
 
           <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <a
-                  href={anchorId ? `#${anchorId}` : undefined}
-                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                </a>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {message.createdAt ? formatDateTime(message.createdAt) : ""}
-              </TooltipContent>
-            </Tooltip>
             <button
               type="button"
               className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
@@ -864,31 +866,40 @@ function IssueChatAssistantMessage() {
 
         <div className="min-w-0 flex-1">
           {isFoldable ? (
-            <button
-              type="button"
-              className="group flex w-full items-center gap-2 py-0.5 text-left"
-              onClick={() => setFolded((v) => !v)}
-            >
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
-              <span className="ml-auto flex items-center gap-1.5">
-                {message.createdAt ? (
-                  <span className="text-[11px] text-muted-foreground/50">
-                    {commentDateLabel(message.createdAt)}
+            <div className="mb-1.5 flex items-start justify-between gap-3">
+              <button
+                type="button"
+                className="group flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
+                onClick={() => setFolded((v) => !v)}
+              >
+                <span className="truncate text-sm font-semibold text-foreground">{authorName}</span>
+                <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
+              </button>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <IssueChatTimestampAnchor anchorId={anchorId} createdAt={message.createdAt} />
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title={folded ? "Expand details" : "Collapse details"}
+                  aria-label={folded ? "Expand details" : "Collapse details"}
+                  onClick={() => setFolded((v) => !v)}
+                >
+                  <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", !folded && "rotate-180")} />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mb-1.5 flex items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="truncate text-sm font-semibold text-foreground">{authorName}</span>
+                {isRunning ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Running
                   </span>
                 ) : null}
-                <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", !folded && "rotate-180")} />
-              </span>
-            </button>
-          ) : (
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
-                </span>
-              ) : null}
+              </div>
+              <IssueChatTimestampAnchor anchorId={anchorId} createdAt={message.createdAt} />
             </div>
           )}
 
@@ -938,19 +949,6 @@ function IssueChatAssistantMessage() {
                     onVote={handleVote}
                   />
                 ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <a
-                      href={anchorId ? `#${anchorId}` : undefined}
-                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                    </a>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="text-xs">
-                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
-                  </TooltipContent>
-                </Tooltip>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1156,7 +1154,7 @@ function IssueChatFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with PrivateClip Labs. This
+              Choose whether voted AI outputs can be shared with Orchestrero. This
               answer becomes the default for future thumbs up and thumbs down votes.
             </DialogDescription>
           </DialogHeader>

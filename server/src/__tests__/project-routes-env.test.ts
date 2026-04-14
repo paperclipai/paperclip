@@ -6,6 +6,8 @@ const mockProjectService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
   update: vi.fn(),
   createWorkspace: vi.fn(),
   listWorkspaces: vi.fn(),
@@ -18,6 +20,9 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelExecutionScopeWork: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackProjectCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -37,6 +42,7 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
@@ -171,10 +177,12 @@ describe("project env routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockProjectService.update).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ env: normalizedEnv }),
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      normalizedEnv,
+      expect.objectContaining({ fieldPath: "env" }),
     );
+    expect(res.body.env).toEqual(normalizedEnv);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -182,6 +190,59 @@ describe("project env routes", () => {
           changedKeys: ["env"],
           envKeys: ["PLAIN_KEY"],
         },
+      }),
+    );
+  });
+
+  it("pauses a project and cancels only project-scoped execution work", async () => {
+    const pausedProject = buildProject({
+      pauseReason: "manual",
+      pausedAt: new Date("2026-04-13T12:00:00.000Z"),
+    });
+    mockProjectService.pause.mockResolvedValue(pausedProject);
+    mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
+      cancelledRunCount: 2,
+      cancelledWakeupCount: 1,
+    });
+
+    const app = await createApp();
+    const res = await request(app).post("/api/projects/project-1/pause").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.pause).toHaveBeenCalledWith("project-1");
+    expect(mockHeartbeatService.cancelExecutionScopeWork).toHaveBeenCalledWith(
+      {
+        companyId: "company-1",
+        scopeType: "project",
+        scopeId: "project-1",
+      },
+      "Cancelled due to project pause",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "project.paused",
+        entityId: "project-1",
+      }),
+    );
+  });
+
+  it("resumes a manually paused project", async () => {
+    const activeProject = buildProject();
+    mockProjectService.resume.mockResolvedValue(activeProject);
+
+    const app = await createApp();
+    const res = await request(app).post("/api/projects/project-1/resume").send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.resume).toHaveBeenCalledWith("project-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "project.resumed",
+        entityId: "project-1",
       }),
     );
   });

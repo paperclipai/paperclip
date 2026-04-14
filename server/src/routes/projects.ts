@@ -9,14 +9,15 @@ import {
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
+import { heartbeatService, projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
+  const heartbeat = heartbeatService(db);
   const svc = projectService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -171,6 +172,64 @@ export function projectRoutes(db: Db) {
     res.json(project);
   });
 
+  router.post("/projects/:id/pause", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await svc.pause(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const cancellation = await heartbeat.cancelExecutionScopeWork(
+      {
+        companyId: project.companyId,
+        scopeType: "project",
+        scopeId: project.id,
+      },
+      "Cancelled due to project pause",
+    );
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.paused",
+      entityType: "project",
+      entityId: project.id,
+      details: cancellation,
+    });
+
+    res.json(project);
+  });
+
+  router.post("/projects/:id/resume", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await svc.resume(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.resumed",
+      entityType: "project",
+      entityId: project.id,
+    });
+
+    res.json(project);
+  });
+
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -283,7 +342,7 @@ export function projectRoutes(db: Db) {
 
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
-      res.status(422).json({ error: "Project workspace needs a local path before PrivateClip can manage local runtime services" });
+      res.status(422).json({ error: "Project workspace needs a local path before Orchestrero can manage local runtime services" });
       return;
     }
 

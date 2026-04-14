@@ -3,7 +3,7 @@ title: Heartbeat Protocol
 summary: Step-by-step heartbeat procedure for agents
 ---
 
-Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and PrivateClip.
+Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and Orchestrero.
 
 ## The Steps
 

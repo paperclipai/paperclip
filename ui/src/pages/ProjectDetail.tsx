@@ -18,6 +18,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
+import { ProjectPauseControl } from "../components/ProjectPauseControl";
+import { ProjectPauseIndicator } from "../components/ProjectPauseIndicator";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
@@ -183,8 +185,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   }, [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.listByProject(companyId, projectId),
-    queryFn: () => issuesApi.list(companyId, { projectId }),
+    queryKey: [...queryKeys.issues.listByProject(companyId, projectId), "exclude-recovery-sources-open-successors", "true"],
+    queryFn: () => issuesApi.list(companyId, { projectId, excludeRecoverySourcesWithOpenSuccessors: true }),
     enabled: !!companyId,
   });
 
@@ -206,6 +208,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
+      excludeRecoverySourcesWithOpenSuccessors
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -587,6 +590,48 @@ export function ProjectDetail() {
     },
   });
 
+  const projectRuntimeMutation = useMutation({
+    mutationFn: async (action: "pause" | "resume") => {
+      const companyId = resolvedCompanyId ?? lookupCompanyId;
+      if (!companyId) throw new Error("No company selected");
+      return action === "pause"
+        ? projectsApi.pause(projectLookupRef, companyId)
+        : projectsApi.resume(projectLookupRef, companyId);
+    },
+    onSuccess: async (_updatedProject, action) => {
+      const companyId = resolvedCompanyId ?? lookupCompanyId;
+      if (companyId) {
+        const effectiveProjectId = project?.id ?? projectLookupRef;
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(companyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, effectiveProjectId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId: effectiveProjectId }) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) }),
+        ]);
+      }
+
+      pushToast({
+        title: action === "pause" ? "Project paused" : "Project resumed",
+        body: action === "pause"
+          ? "New work on this project is blocked until you resume it."
+          : "Project execution can start again.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update project runtime",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   const { data: budgetOverview } = useQuery({
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
     queryFn: () => budgetsApi.overview(resolvedCompanyId!),
@@ -794,27 +839,36 @@ export function ProjectDetail() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="h-7 flex items-center">
-          <ColorPicker
-            currentColor={project.color ?? "#6366f1"}
-            onSelect={(color) => updateProject.mutate({ color })}
-          />
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="h-7 flex items-center">
+            <ColorPicker
+              currentColor={project.color ?? "#6366f1"}
+              onSelect={(color) => updateProject.mutate({ color })}
+            />
+          </div>
+          <div className="min-w-0 space-y-2">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold"
+            />
+            <ProjectPauseIndicator
+              paused={Boolean(project.pausedAt)}
+              pauseReason={project.pauseReason}
+            />
+          </div>
         </div>
-        <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
-          {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
-              <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
-            </div>
-          ) : null}
-        </div>
+        <ProjectPauseControl
+          projectRef={canonicalProjectRef}
+          paused={Boolean(project.pausedAt)}
+          pauseReason={project.pauseReason}
+          isPending={projectRuntimeMutation.isPending}
+          pendingAction={projectRuntimeMutation.variables}
+          onPause={() => projectRuntimeMutation.mutate("pause")}
+          onResume={() => projectRuntimeMutation.mutate("resume")}
+        />
       </div>
 
       <PluginSlotOutlet

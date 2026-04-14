@@ -1,18 +1,18 @@
-# ClipHub: Marketplace for PrivateClip Team Configurations
+# ClipHub: Marketplace for Orchestrero Team Configurations
 
 > Supersession note: this marketplace plan predates the markdown-first company package direction. For the current package-format and import/export rollout plan, see `doc/plans/2026-03-13-company-import-export-v2.md` and `docs/companies/companies-spec.md`.
 
-> The "app store" for whole-company AI teams — pre-built PrivateClip configurations, agent blueprints, skills, and governance templates that ship real work from day one.
+> The "app store" for whole-company AI teams — pre-built Orchestrero configurations, agent blueprints, skills, and governance templates that ship real work from day one.
 
 ## 1. Vision & Positioning
 
-**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for PrivateClip-managed companies.
+**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for Orchestrero-managed companies.
 
 | Dimension | ClipHub |
 |---|---|
 | Unit of sale | Team blueprint (multi-agent org) |
 | Buyer | Founder / team lead spinning up an AI company |
-| Install target | PrivateClip company (agents, projects, governance) |
+| Install target | Orchestrero company (agents, projects, governance) |
 | Value prop | "Skip org design — get a shipping team in minutes" |
 | Price range | $0–$499 per blueprint (+ individual add-ons) |
 
@@ -22,7 +22,7 @@
 
 ### 2.1 Team Blueprints (primary product)
 
-A complete PrivateClip company configuration:
+A complete Orchestrero company configuration:
 
 - **Org chart**: Agents with roles, titles, reporting chains, capabilities
 - **Agent configs**: Adapter type, model, prompt templates, instructions paths
@@ -38,7 +38,7 @@ A complete PrivateClip company configuration:
 
 ### 2.2 Agent Blueprints (individual agents within a team context)
 
-Single-agent configurations designed to plug into a PrivateClip org:
+Single-agent configurations designed to plug into a Orchestrero org:
 
 - Role definition, prompt template, adapter config
 - Reporting chain expectations (who they report to)
@@ -52,11 +52,11 @@ Single-agent configurations designed to plug into a PrivateClip org:
 
 ### 2.3 Skills (modular capabilities)
 
-Portable skill files that any PrivateClip agent can use:
+Portable skill files that any Orchestrero agent can use:
 
 - Markdown skill files with instructions
 - Tool configurations and shell scripts
-- Compatible with PrivateClip's skill loading system
+- Compatible with Orchestrero's skill loading system
 
 **Examples:**
 - "Git PR Workflow" — standardized PR creation and review (Free)
@@ -113,7 +113,7 @@ interface Listing {
   // Compatibility
   compatibleAdapters: string[];    // ['claude_local', 'codex_local', ...]
   requiredModels: string[];        // ['claude-opus-4-6', 'claude-sonnet-4-6']
-  paperclipVersionMin: string;     // Minimum PrivateClip version
+  paperclipVersionMin: string;     // Minimum Orchestrero version
 
   // Social proof
   installCount: number;
@@ -218,7 +218,7 @@ interface Purchase {
   id: string;
   listingId: string;
   buyerUserId: string;
-  buyerCompanyId: string | null;    // Target PrivateClip company
+  buyerCompanyId: string | null;    // Target Orchestrero company
   pricePaidCents: number;
   paymentIntentId: string | null;   // Stripe
   installedAt: string | null;       // When deployed to company
@@ -286,7 +286,7 @@ interface Review {
 | `PATCH` | `/api/listings/:id` | Update listing |
 | `DELETE` | `/api/listings/:id` | Archive listing |
 | `POST` | `/api/listings/:id/purchase` | Purchase listing (Stripe checkout) |
-| `POST` | `/api/listings/:id/install` | Install to PrivateClip company |
+| `POST` | `/api/listings/:id/install` | Install to Orchestrero company |
 | `GET` | `/api/listings/:id/reviews` | Get reviews |
 | `POST` | `/api/listings/:id/reviews` | Submit review |
 | `GET` | `/api/creators/:slug` | Creator profile |
@@ -306,14 +306,14 @@ Homepage → Browse marketplace → Filter by type/category
   → Click listing → Read details, reviews, preview org chart
   → Click "Buy" → Stripe checkout (or free install)
   → Post-purchase: "Install to Company" button
-  → Select target PrivateClip company (or create new)
-  → ClipHub API calls PrivateClip API to:
+  → Select target Orchestrero company (or create new)
+  → ClipHub API calls Orchestrero API to:
       1. Create agents with configs from blueprint
       2. Set up reporting chains
       3. Create projects with workspace configs
       4. Apply governance rules
       5. Deploy skill files to agent instruction paths
-  → Redirect to PrivateClip dashboard with new team running
+  → Redirect to Orchestrero dashboard with new team running
 ```
 
 ### 5.2 Creator: Build → Publish → Earn
@@ -331,11 +331,11 @@ Sign up as creator → Connect Stripe
   → Track installs, revenue, reviews on creator dashboard
 ```
 
-### 5.3 Creator: Export from PrivateClip → Publish
+### 5.3 Creator: Export from Orchestrero → Publish
 
 ```
-Running PrivateClip company → "Export as Blueprint" (CLI or UI)
-  → PrivateClip exports:
+Running Orchestrero company → "Export as Blueprint" (CLI or UI)
+  → Orchestrero exports:
       - Agent configs (sanitized — no secrets)
       - Org chart / reporting chains
       - Governance rules
@@ -351,7 +351,7 @@ Running PrivateClip company → "Export as Blueprint" (CLI or UI)
 
 ### 6.1 Visual Language
 
-- **Color palette**: Dark ink primary, warm sand backgrounds, accent color for CTAs (PrivateClip brand blue/purple)
+- **Color palette**: Dark ink primary, warm sand backgrounds, accent color for CTAs (Orchestrero brand blue/purple)
 - **Typography**: Clean sans-serif, strong hierarchy, monospace for technical details
 - **Cards**: Rounded corners, subtle shadows, clear pricing badges
 - **Org chart visuals**: Interactive tree/graph showing agent relationships in team blueprints
@@ -362,7 +362,7 @@ Running PrivateClip company → "Export as Blueprint" (CLI or UI)
 |---|---|
 | Product card | Org chart mini-preview + agent count badge |
 | Detail page | Interactive org chart + per-agent breakdown |
-| Install flow | One-click deploy to PrivateClip company |
+| Install flow | One-click deploy to Orchestrero company |
 | Social proof | "X companies running this blueprint" |
 | Preview | Live demo sandbox (stretch goal) |
 
@@ -409,7 +409,7 @@ When a buyer clicks "Install to Company":
 ```
 POST /api/listings/:id/install
 {
-  "targetCompanyId": "uuid",         // Existing PrivateClip company
+  "targetCompanyId": "uuid",         // Existing Orchestrero company
   "overrides": {                      // Optional customization
     "agentModel": "claude-sonnet-4-6", // Override default model
     "budgetScale": 0.5,               // Scale budgets
@@ -455,20 +455,20 @@ The install handler:
 
 ### 9.1 Stack
 
-- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as PrivateClip
-- **Backend**: Node.js API (or extend PrivateClip server)
-- **Database**: Postgres (can share PrivateClip's DB or separate)
+- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as Orchestrero
+- **Backend**: Node.js API (or extend Orchestrero server)
+- **Database**: Postgres (can share Orchestrero's DB or separate)
 - **Payments**: Stripe Connect (marketplace mode)
 - **Storage**: S3/R2 for listing bundles and images
-- **Auth**: Shared with PrivateClip auth (or OAuth2)
+- **Auth**: Shared with Orchestrero auth (or OAuth2)
 
-### 9.2 Integration with PrivateClip
+### 9.2 Integration with Orchestrero
 
 ClipHub can be:
-- **Option A**: A separate app that calls PrivateClip's API to install blueprints
-- **Option B**: A built-in section of the PrivateClip UI (`/marketplace` route)
+- **Option A**: A separate app that calls Orchestrero's API to install blueprints
+- **Option B**: A built-in section of the Orchestrero UI (`/marketplace` route)
 
-Option B is simpler for MVP — adds routes to the existing PrivateClip UI and API.
+Option B is simpler for MVP — adds routes to the existing Orchestrero UI and API.
 
 ### 9.3 Bundle Format
 
@@ -508,14 +508,14 @@ blueprint/
 - [ ] Listing detail page with org chart visualization
 - [ ] Creator registration and listing creation wizard
 - [ ] Free installs only (no payments yet)
-- [ ] Install flow: blueprint → PrivateClip company
+- [ ] Install flow: blueprint → Orchestrero company
 
 ### Phase 2: Payments & Social
 - [ ] Stripe Connect integration
 - [ ] Purchase flow
 - [ ] Review system
 - [ ] Creator analytics dashboard
-- [ ] "Export from PrivateClip" CLI command
+- [ ] "Export from Orchestrero" CLI command
 
 ### Phase 3: Growth
 - [ ] Search with relevance ranking

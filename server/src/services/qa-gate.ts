@@ -7,6 +7,7 @@ import type {
   IssueQaReviewOverall,
   IssueStatus,
 } from "@paperclipai/shared";
+import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
 
 const DELIVERY_SCOPED_ASSIGNEE_ROLES = new Set(["engineer", "qa", "devops", "cto"]);
 const QA_SUMMARY_TOKEN_REGEX = /\[(CQ|EH|TC|CM|DOC)\s*:\s*(pass|warn|fail|na)\]/gi;
@@ -92,12 +93,14 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
 export function buildIssueQaGate(input: {
   issue: Pick<{ status: IssueStatus }, "status">;
   assigneeRole: string | null | undefined;
+  issueText?: string | null | undefined;
   qaComments: Array<Pick<IssueComment, "id" | "body" | "createdAt">>;
   latestDecisionOutcome?: IssueExecutionDecisionOutcome | null;
   now?: Date;
 }): IssueQaGate {
   const now = input.now ?? new Date();
-  const isDeliveryScoped = isDeliveryScopedAssigneeRole(input.assigneeRole);
+  const isDeliveryScoped =
+    isDeliveryScopedAssigneeRole(input.assigneeRole) || isLikelyTechnicalIssueText(input.issueText);
   const qaComments = [...input.qaComments].sort(sortCommentsDesc);
   const latestQaComment = qaComments[0] ?? null;
   let summaryDimensions = defaultDimensions();

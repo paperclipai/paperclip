@@ -1,10 +1,10 @@
 # Running OpenClaw in Docker (Local Development)
 
-How to get OpenClaw running in a Docker container for local development and testing the PrivateClip OpenClaw adapter integration.
+How to get OpenClaw running in a Docker container for local development and testing the Orchestrero OpenClaw adapter integration.
 
 ## Automated Join Smoke Test (Recommended First)
 
-PrivateClip includes an end-to-end join smoke harness:
+Orchestrero includes an end-to-end join smoke harness:
 
 ```bash
 pnpm smoke:openclaw-join
@@ -42,7 +42,7 @@ What this command does:
 - writes isolated smoke config under `~/.openclaw-paperclip-smoke/openclaw.json` and Docker `.env`
 - pins agent model defaults to OpenAI (`openai/gpt-5.2` with OpenAI fallback)
 - starts `openclaw-gateway` via Compose (with required `/tmp` tmpfs override)
-- probes and prints a PrivateClip host URL that is reachable from inside OpenClaw Docker
+- probes and prints a Orchestrero host URL that is reachable from inside OpenClaw Docker
 - waits for health and prints:
   - `http://127.0.0.1:18789/#token=...`
 - disables Control UI device pairing by default for local smoke ergonomics
@@ -66,7 +66,7 @@ Environment knobs:
 
 ### Authenticated mode
 
-If your PrivateClip deployment is `authenticated`, provide auth context:
+If your Orchestrero deployment is `authenticated`, provide auth context:
 
 ```bash
 PAPERCLIP_AUTH_HEADER="Bearer <token>" pnpm smoke:openclaw-join
@@ -77,15 +77,15 @@ PAPERCLIP_COOKIE="your_session_cookie=..." pnpm smoke:openclaw-join
 ### Network topology tips
 
 - Local same-host smoke: default callback uses `http://127.0.0.1:<port>/webhook`.
-- Inside OpenClaw Docker, `127.0.0.1` points to the container itself, not your host PrivateClip server.
-- For invite/onboarding URLs consumed by OpenClaw in Docker, use the script-printed PrivateClip URL (typically `http://host.docker.internal:3100`).
-- If PrivateClip rejects the container-visible host with a hostname error, allow it from host:
+- Inside OpenClaw Docker, `127.0.0.1` points to the container itself, not your host Orchestrero server.
+- For invite/onboarding URLs consumed by OpenClaw in Docker, use the script-printed Orchestrero URL (typically `http://host.docker.internal:3100`).
+- If Orchestrero rejects the container-visible host with a hostname error, allow it from host:
 
 ```bash
 pnpm paperclipai allowed-hostname host.docker.internal
 ```
 
-Then restart PrivateClip and rerun the smoke script.
+Then restart Orchestrero and rerun the smoke script.
 - Docker/remote OpenClaw: prefer a reachable hostname (Docker host alias, Tailscale hostname, or public domain).
 - Authenticated/private mode: ensure hostnames are in the allowed list when required:
 

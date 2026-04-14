@@ -217,6 +217,7 @@ interface IssuesListProps {
   searchFilters?: {
     participantAgentId?: string;
   };
+  excludeRecoverySourcesWithOpenSuccessors?: boolean;
   showClosed?: boolean;
   onShowClosedChange?: (next: boolean) => void;
   onArchiveClosed?: () => void;
@@ -238,6 +239,7 @@ export function IssuesList({
   initialAssignees,
   initialSearch,
   searchFilters,
+  excludeRecoverySourcesWithOpenSuccessors = false,
   showClosed = false,
   onShowClosedChange,
   onArchiveClosed,
@@ -309,6 +311,7 @@ export function IssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      excludeRecoverySourcesWithOpenSuccessors ? "exclude-recovery-sources-open-successors" : "include-recovery-sources-open-successors",
       showClosed ? "show-closed" : "hide-closed",
     ],
     queryFn: () =>
@@ -316,6 +319,7 @@ export function IssuesList({
         q: normalizedIssueSearch,
         projectId,
         ...searchFilters,
+        ...(excludeRecoverySourcesWithOpenSuccessors ? { excludeRecoverySourcesWithOpenSuccessors: true } : {}),
         ...(showClosed ? {} : { status: OPEN_ISSUE_STATUSES }),
       }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,

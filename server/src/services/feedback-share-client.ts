@@ -2,7 +2,7 @@ import { gzipSync } from "node:zlib";
 import type { FeedbackTraceBundle } from "@paperclipai/shared";
 import type { Config } from "../config.js";
 
-const DEFAULT_FEEDBACK_EXPORT_BACKEND_URL = "https://telemetry.paperclip.ing";
+const FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED = "Feedback export backend is not configured";
 
 function buildFeedbackShareObjectKey(bundle: FeedbackTraceBundle, exportedAt: Date) {
   const year = String(exportedAt.getUTCFullYear());
@@ -18,12 +18,15 @@ export interface FeedbackTraceShareClient {
 export function createFeedbackTraceShareClientFromConfig(
   config: Pick<Config, "feedbackExportBackendUrl" | "feedbackExportBackendToken">,
 ): FeedbackTraceShareClient {
-  const baseUrl = config.feedbackExportBackendUrl?.trim() || DEFAULT_FEEDBACK_EXPORT_BACKEND_URL;
+  const baseUrl = config.feedbackExportBackendUrl?.trim() || null;
   const token = config.feedbackExportBackendToken?.trim();
-  const endpoint = new URL("/feedback-traces", baseUrl).toString();
+  const endpoint = baseUrl ? new URL("/feedback-traces", baseUrl).toString() : null;
 
   return {
     async uploadTraceBundle(bundle) {
+      if (!endpoint) {
+        throw new Error(FEEDBACK_EXPORT_BACKEND_NOT_CONFIGURED);
+      }
       const exportedAt = new Date();
       const objectKey = buildFeedbackShareObjectKey(bundle, exportedAt);
       const requestBody = JSON.stringify({

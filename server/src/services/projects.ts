@@ -18,6 +18,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { conflict } from "../errors.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -398,6 +399,19 @@ async function ensureSinglePrimaryWorkspace(
 }
 
 export function projectService(db: Db) {
+  const getByIdInternal = async (id: string): Promise<ProjectWithGoals | null> => {
+    const row = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [withGoals] = await attachGoals(db, [row]);
+    if (!withGoals) return null;
+    const [enriched] = await attachWorkspaces(db, [withGoals]);
+    return enriched ?? null;
+  };
+
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
@@ -418,18 +432,7 @@ export function projectService(db: Db) {
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
-    getById: async (id: string): Promise<ProjectWithGoals | null> => {
-      const row = await db
-        .select()
-        .from(projects)
-        .where(eq(projects.id, id))
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [withGoals] = await attachGoals(db, [row]);
-      if (!withGoals) return null;
-      const [enriched] = await attachWorkspaces(db, [withGoals]);
-      return enriched ?? null;
-    },
+    getById: getByIdInternal,
 
     create: async (
       companyId: string,
@@ -521,6 +524,63 @@ export function projectService(db: Db) {
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
       return enriched ?? null;
+    },
+
+    pause: async (id: string): Promise<ProjectWithGoals | null> => {
+      const existing = await db
+        .select({
+          id: projects.id,
+          pauseReason: projects.pauseReason,
+          pausedAt: projects.pausedAt,
+        })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      if (!existing.pausedAt) {
+        const now = new Date();
+        await db
+          .update(projects)
+          .set({
+            pauseReason: "manual",
+            pausedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(projects.id, id));
+      }
+
+      return getByIdInternal(id);
+    },
+
+    resume: async (id: string): Promise<ProjectWithGoals | null> => {
+      const existing = await db
+        .select({
+          id: projects.id,
+          pauseReason: projects.pauseReason,
+          pausedAt: projects.pausedAt,
+        })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      if (existing.pauseReason === "budget") {
+        throw conflict("Project is paused because its budget hard-stop was reached.");
+      }
+
+      if (existing.pausedAt) {
+        await db
+          .update(projects)
+          .set({
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, id));
+      }
+
+      return getByIdInternal(id);
     },
 
     remove: (id: string) =>

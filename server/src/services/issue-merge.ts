@@ -259,7 +259,7 @@ export async function getIssueMergeStatus(input: MergeStatusInput): Promise<Issu
       targetBranch,
       sourceBranch,
       repoRoot: null,
-      reason: "Merge-on-QA is enabled but PrivateClip could not resolve the workspace repo root.",
+      reason: "Merge-on-QA is enabled but Orchestrero could not resolve the workspace repo root.",
       lastIssueCommentStatus: input.lastIssueCommentStatus ?? null,
     });
   }
@@ -438,7 +438,7 @@ export async function attemptQaPassAutoMerge(input: {
             targetBranch,
             sourceBranch,
             repoRoot,
-            reason: `Merged commit was created, but PrivateClip could not update local branch "${targetBranch}": ${error instanceof Error ? error.message : String(error)}`,
+            reason: `Merged commit was created, but Orchestrero could not update local branch "${targetBranch}": ${error instanceof Error ? error.message : String(error)}`,
             lastAttemptedAt: now,
           }),
         };
@@ -474,7 +474,7 @@ export async function attemptQaPassAutoMerge(input: {
           targetBranch,
           sourceBranch,
           repoRoot,
-          reason: `Merge created ${mergedCommit}, but PrivateClip had no safe way to publish it to "${targetBranch}".`,
+          reason: `Merge created ${mergedCommit}, but Orchestrero had no safe way to publish it to "${targetBranch}".`,
           mergedCommit,
           lastAttemptedAt: now,
         }),

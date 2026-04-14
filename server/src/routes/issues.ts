@@ -36,6 +36,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  executionGateService,
   executionWorkspaceService,
   feedbackService,
   goalService,
@@ -65,6 +66,7 @@ import { parseProjectExecutionWorkspacePolicy } from "../services/execution-work
 import { issueMergeService } from "../services/issue-merge.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
 import { buildIssueQaGate, isDeliveryScopedAssigneeRole, issueQaGateReasonMessage } from "../services/qa-gate.js";
+import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const AUTO_FIX_ATTEMPT_MARKER = "[AUTO-FIX ATTEMPT]";
@@ -99,6 +101,7 @@ export function issueRoutes(
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
+  const executionGate = executionGateService(db);
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
@@ -250,6 +253,9 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeAgentId: string | null;
+      identifier?: string | null;
+      title?: string;
+      projectId?: string | null;
       executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
     },
     opts?: { commentLimit?: number },
@@ -257,6 +263,10 @@ export function issueRoutes(
     const assigneeRole = issue.assigneeAgentId
       ? await getAgentRole(issue.assigneeAgentId, issue.companyId)
       : null;
+    const projectName =
+      issue.projectId
+        ? (await projectsSvc.getById(issue.projectId).catch(() => null))?.name ?? null
+        : null;
     const qaComments = await listQaCommentsForIssue({
       issueId: issue.id,
       companyId: issue.companyId,
@@ -269,6 +279,11 @@ export function issueRoutes(
     return buildIssueQaGate({
       issue: { status: issue.status as IssueStatus },
       assigneeRole,
+      issueText: buildIssueRoutingText({
+        identifier: issue.identifier ?? null,
+        title: issue.title ?? "",
+        projectName,
+      }),
       qaComments,
       latestDecisionOutcome,
     });
@@ -414,7 +429,7 @@ export function issueRoutes(
         [
           QA_MERGE_BLOCKED_MARKER,
           "QA validation passed, but auto-merge is blocked.",
-          mergeResult.status.reason ?? "PrivateClip could not determine the merge blocker.",
+          mergeResult.status.reason ?? "Orchestrero could not determine the merge blocker.",
         ].join("\n"),
         {},
       );
@@ -641,6 +656,68 @@ export function issueRoutes(
     return null;
   }
 
+  function respondExecutionBlocked(
+    res: Response,
+    block: {
+      message: string;
+      code: string;
+      scopeType: string;
+      scopeId: string;
+    },
+  ) {
+    res.status(409).json({
+      error: block.message,
+      message: block.message,
+      code: block.code,
+      scopeType: block.scopeType,
+      scopeId: block.scopeId,
+    });
+  }
+
+  async function assertAgentExecutionMutationAllowed(
+    req: Request,
+    res: Response,
+    input: {
+      companyId: string;
+      issueId?: string | null;
+      projectId?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (!req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+
+    const block = await executionGate.getExecutionBlock(input.companyId, req.actor.agentId, {
+      issueId: input.issueId ?? null,
+      projectId: input.projectId ?? null,
+    });
+    if (!block) return true;
+
+    respondExecutionBlocked(res, block);
+    return false;
+  }
+
+  async function assertExecutionStartAllowed(
+    res: Response,
+    input: {
+      companyId: string;
+      agentId: string;
+      issueId?: string | null;
+      projectId?: string | null;
+    },
+  ) {
+    const block = await executionGate.getExecutionBlock(input.companyId, input.agentId, {
+      issueId: input.issueId ?? null,
+      projectId: input.projectId ?? null,
+    });
+    if (!block) return true;
+
+    respondExecutionBlocked(res, block);
+    return false;
+  }
+
   async function resolveAssignmentScopedRunContext(req: Request, companyId: string) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -834,6 +911,9 @@ export function issueRoutes(
     }
     const includeClosed = parseBooleanQuery(req.query.includeClosed);
     const includeRelations = parseBooleanQuery(req.query.includeRelations);
+    const excludeRecoverySourcesWithOpenSuccessors = parseBooleanQuery(
+      req.query.excludeRecoverySourcesWithOpenSuccessors,
+    );
     const assigneeAgentId = parseOptionalQueryString(req.query.assigneeAgentId);
     const participantAgentId = parseOptionalQueryString(req.query.participantAgentId);
     const projectId = parseOptionalQueryString(req.query.projectId);
@@ -891,6 +971,7 @@ export function issueRoutes(
       status: req.query.status as string | undefined,
       includeClosed,
       includeRelations,
+      excludeRecoverySourcesWithOpenSuccessors,
       assigneeAgentId,
       participantAgentId,
       assigneeUserId,
@@ -1047,6 +1128,8 @@ export function issueRoutes(
       ancestors,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
+      recoverySource: relations.recoverySource,
+      recoverySuccessor: relations.recoverySuccessor,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,
@@ -1192,6 +1275,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -1268,6 +1356,11 @@ export function issueRoutes(
         res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
         return;
       }
+      if (!(await assertAgentExecutionMutationAllowed(req, res, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId,
+      }))) return;
 
       const actor = getActorInfo(req);
       const result = await documentsSvc.restoreIssueDocumentRevision({
@@ -1351,6 +1444,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: req.body.projectId ?? issue.projectId ?? null,
+    }))) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -1382,6 +1480,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const workProductIssue = existing.issueId ? await svc.getById(existing.issueId) : null;
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: existing.companyId,
+      issueId: existing.issueId ?? null,
+      projectId: existing.projectId ?? workProductIssue?.projectId ?? null,
+    }))) return;
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
@@ -1410,6 +1514,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const workProductIssue = existing.issueId ? await svc.getById(existing.issueId) : null;
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: existing.companyId,
+      issueId: existing.issueId ?? null,
+      projectId: existing.projectId ?? workProductIssue?.projectId ?? null,
+    }))) return;
     const removed = await workProductsSvc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
@@ -1577,6 +1687,11 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
     const actor = getActorInfo(req);
@@ -1609,6 +1724,11 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
     await issueApprovalsSvc.unlink(id, approvalId);
@@ -1632,6 +1752,10 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId,
+      projectId: req.body.projectId ?? null,
+    }))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1683,6 +1807,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: existing.companyId,
+      issueId: existing.id,
+      projectId: existing.projectId,
+    }))) return;
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
@@ -2350,6 +2479,13 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
 
+    if (!(await assertExecutionStartAllowed(res, {
+      companyId: issue.companyId,
+      agentId: req.body.agentId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
+
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
       if (project?.pausedAt) {
@@ -2423,6 +2559,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: existing.companyId,
+      issueId: existing.id,
+      projectId: existing.projectId,
+    }))) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -2591,6 +2732,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+    }))) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {

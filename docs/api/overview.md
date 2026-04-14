@@ -3,7 +3,7 @@ title: API Overview
 summary: Authentication, base URL, error codes, and conventions
 ---
 
-PrivateClip exposes a RESTful JSON API for all control plane operations.
+Orchestrero exposes a RESTful JSON API for all control plane operations.
 
 ## Base URL
 

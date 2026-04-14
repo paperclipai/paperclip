@@ -1,14 +1,41 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import { formatDateTime } from "../lib/utils";
+
+const RuntimeContext = createContext<{ messages?: Array<Record<string, unknown>> }>({});
+const MessageContext = createContext<Record<string, unknown> | null>(null);
 
 vi.mock("@assistant-ui/react", () => ({
-  AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  AssistantRuntimeProvider: ({
+    runtime,
+    children,
+  }: {
+    runtime: { messages?: Array<Record<string, unknown>> };
+    children: ReactNode;
+  }) => <RuntimeContext.Provider value={runtime}>{children}</RuntimeContext.Provider>,
+  ActionBarPrimitive: {
+    Copy: ({
+      children,
+      className,
+      title,
+      "aria-label": ariaLabel,
+    }: {
+      children: ReactNode;
+      className?: string;
+      title?: string;
+      "aria-label"?: string;
+    }) => (
+      <button type="button" className={className} title={title} aria-label={ariaLabel} data-copied="false">
+        {children}
+      </button>
+    ),
+  },
   ThreadPrimitive: {
     Root: ({ children, className }: { children: ReactNode; className?: string }) => (
       <div data-testid="thread-root" className={className}>{children}</div>
@@ -17,23 +44,74 @@ vi.mock("@assistant-ui/react", () => ({
       <div data-testid="thread-viewport" className={className}>{children}</div>
     ),
     Empty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Messages: () => <div data-testid="thread-messages" />,
+    Messages: ({
+      components,
+    }: {
+      components: {
+        UserMessage: React.ComponentType;
+        AssistantMessage: React.ComponentType;
+        SystemMessage: React.ComponentType;
+      };
+    }) => {
+      const runtime = useContext(RuntimeContext);
+      const messages = runtime.messages ?? [];
+
+      return (
+        <div data-testid="thread-messages">
+          {messages.map((message) => {
+            const role = message.role;
+            const Component = role === "assistant"
+              ? components.AssistantMessage
+              : role === "system"
+                ? components.SystemMessage
+                : components.UserMessage;
+
+            return (
+              <MessageContext.Provider key={String(message.id)} value={message}>
+                <Component />
+              </MessageContext.Provider>
+            );
+          })}
+        </div>
+      );
+    },
   },
   MessagePrimitive: {
-    Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    Root: ({ children, id }: { children: ReactNode; id?: string }) => <div id={id}>{children}</div>,
     Content: () => null,
-    Parts: () => null,
+    Parts: ({
+      components,
+    }: {
+      components: {
+        Text?: React.ComponentType<{ text: string }>;
+      };
+    }) => {
+      const message = useContext(MessageContext);
+      const content = Array.isArray(message?.content) ? message.content : [];
+
+      return (
+        <>
+          {content.map((part, index) => {
+            if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+              const Text = components.Text;
+              return Text ? <Text key={index} text={part.text} /> : <div key={index}>{part.text}</div>;
+            }
+            return null;
+          })}
+        </>
+      );
+    },
   },
   useAui: () => ({ thread: () => ({ append: vi.fn() }) }),
   useAuiState: () => false,
-  useMessage: () => ({
+  useMessage: () => useContext(MessageContext) ?? {
     id: "message",
     role: "assistant",
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     content: [],
     metadata: { custom: {} },
     status: { type: "complete" },
-  }),
+  },
 }));
 
 vi.mock("./transcript/useLiveRunTranscripts", () => ({
@@ -87,7 +165,7 @@ vi.mock("./StatusBadge", () => ({
 }));
 
 vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
-  usePaperclipIssueRuntime: () => ({}),
+  usePaperclipIssueRuntime: (args: Record<string, unknown>) => args,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,6 +315,90 @@ describe("IssueChatThread", () => {
 
     act(() => {
       remount.unmount();
+    });
+  });
+
+  it("shows absolute header timestamps for both board and agent comments", () => {
+    const root = createRoot(container);
+    const userCommentAt = new Date("2026-04-06T12:34:00.000Z");
+    const agentCommentAt = new Date("2026-04-06T13:45:00.000Z");
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "user-1",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-1",
+                body: "Board update",
+                createdAt: userCommentAt,
+                updatedAt: userCommentAt,
+              },
+              {
+                id: "agent-1",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Agent response",
+                createdAt: agentCommentAt,
+                updatedAt: agentCommentAt,
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            agentMap={new Map([[
+              "agent-1",
+              {
+                id: "agent-1",
+                companyId: "company-1",
+                name: "CodexCoder",
+                urlKey: "codexcoder",
+                role: "engineer",
+                title: null,
+                icon: "code",
+                status: "active",
+                reportsTo: null,
+                capabilities: null,
+                adapterType: "process",
+                adapterConfig: {},
+                runtimeConfig: {},
+                budgetMonthlyCents: 0,
+                spentMonthlyCents: 0,
+                pauseReason: null,
+                pausedAt: null,
+                permissions: { canCreateAgents: false },
+                lastHeartbeatAt: null,
+                metadata: null,
+                createdAt: userCommentAt,
+                updatedAt: userCommentAt,
+              },
+            ]])}
+            currentUserId="user-1"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const userTimestamp = container.querySelector('a[href="#comment-user-1"]') as HTMLAnchorElement | null;
+    const agentTimestamp = container.querySelector('a[href="#comment-agent-1"]') as HTMLAnchorElement | null;
+
+    expect(userTimestamp?.textContent).toBe(formatDateTime(userCommentAt));
+    expect(agentTimestamp?.textContent).toBe(formatDateTime(agentCommentAt));
+    expect(userTimestamp?.className).toContain("rounded-full");
+    expect(agentTimestamp?.className).toContain("rounded-full");
+
+    act(() => {
+      root.unmount();
     });
   });
 

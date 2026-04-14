@@ -3,7 +3,7 @@ title: Creating an Adapter
 summary: Guide to building a custom adapter
 ---
 
-Build a custom adapter to connect PrivateClip to any agent runtime.
+Build a custom adapter to connect Orchestrero to any agent runtime.
 
 <Tip>
 If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can guide you through the full adapter creation process interactively. Just ask Claude to create a new adapter and it will walk you through each step.
@@ -14,12 +14,12 @@ If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can
 | | Built-in | External Plugin |
 |---|---|---|
 | Source | Inside `paperclip-fork` | Separate npm package |
-| Distribution | Ships with PrivateClip | Independent npm publish |
+| Distribution | Ships with Orchestrero | Independent npm publish |
 | UI parser | Static import | Dynamic load from API |
 | Registration | Edit 3 registries | Auto-loaded at startup |
 | Best for | Core adapters, contributors | Third-party adapters, internal tools |
 
-For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying PrivateClip's source. See [External Adapters](/adapters/external-adapters) for the full guide.
+For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying Orchestrero's source. See [External Adapters](/adapters/external-adapters) for the full guide.
 
 The rest of this page covers the shared internals that both paths use.
 
@@ -155,7 +155,7 @@ export async function testEnvironment(
 
 ## Step 4: UI Module (Built-in Only)
 
-For built-in adapters registered in PrivateClip's source:
+For built-in adapters registered in Orchestrero's source:
 
 - `parse-stdout.ts` — converts stdout lines to `TranscriptEntry[]` for the run viewer
 - `build-config.ts` — converts form values to `adapterConfig` JSON
@@ -205,7 +205,7 @@ export const sessionCodec: AdapterSessionCodec = {
 
 ## Skills Injection
 
-Make PrivateClip skills discoverable to your agent runtime without writing to the agent's working directory:
+Make Orchestrero skills discoverable to your agent runtime without writing to the agent's working directory:
 
 1. **Best: tmpdir + flag** — create tmpdir, symlink skills, pass via CLI flag, clean up after
 2. **Acceptable: global config dir** — symlink to the runtime's global plugins directory

@@ -267,6 +267,8 @@ describe("agent instructions service", () => {
     expect(agentsMd).toContain("paperclip:qa-baseline:start");
     expect(agentsMd).toContain("[QA PASS]");
     expect(agentsMd).toContain("[RELEASE CONFIRMED]");
+    expect(agentsMd).toContain("[CQ:pass|warn|fail|na]");
+    expect(agentsMd).toContain("[DOC:pass|warn|fail|na]");
   });
 
   it("keeps the QA baseline idempotent when rewriting a managed QA bundle", async () => {

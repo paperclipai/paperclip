@@ -18,6 +18,10 @@ export const projectsApi = {
     api.post<Project>(`/companies/${companyId}/projects`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
+  pause: (id: string, companyId?: string) =>
+    api.post<Project>(projectPath(id, companyId, "/pause"), {}),
+  resume: (id: string, companyId?: string) =>
+    api.post<Project>(projectPath(id, companyId, "/resume"), {}),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>

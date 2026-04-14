@@ -125,7 +125,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     const targetCommentId = randomUUID();
     const earlierCommentId = randomUUID();
     const laterCommentId = randomUUID();
-    const runId = randomUUID();
+    const runId = "66328704-2118-4bcc-9a4d-38bd5d633ef7";
     const instructionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-instructions-"));
     tempDirs.push(instructionsDir);
     const instructionsPath = path.join(instructionsDir, "AGENTS.md");

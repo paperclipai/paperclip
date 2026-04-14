@@ -7,7 +7,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 
 const HIRE_APPROVED_MESSAGE =
-  "Tell your user that your hire was approved, now they should assign you a task in PrivateClip or ask you to create issues.";
+  "Tell your user that your hire was approved, now they should assign you a task in Orchestrero or ask you to create issues.";
 
 export interface NotifyHireApprovedInput {
   companyId: string;

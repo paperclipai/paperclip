@@ -278,6 +278,8 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  recoverySource?: IssueRelationIssueSummary | null;
+  recoverySuccessor?: IssueRelationIssueSummary | null;
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;

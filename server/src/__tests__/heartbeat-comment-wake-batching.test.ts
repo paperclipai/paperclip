@@ -250,7 +250,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 45_000);
 
-  it("skips wakeups when an agent has reached its live run limit", async () => {
+  it("does not count queued backlog against the live run limit", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -311,13 +311,13 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         requestedByActorId: "user-1",
       });
 
-      expect(wakeResult).toBeNull();
+      expect(wakeResult).toBeTruthy();
 
       const liveRuns = await db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running"))));
-      expect(liveRuns).toHaveLength(2);
+      expect(liveRuns).toHaveLength(3);
 
       const skippedWakeups = await db
         .select()
@@ -331,7 +331,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           ),
         );
 
-      expect(skippedWakeups).toHaveLength(1);
+      expect(skippedWakeups).toHaveLength(0);
     } finally {
       await db
         .update(heartbeatRuns)
@@ -426,6 +426,103 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(sourceIssue?.status).toBe("blocked");
+  });
+
+  it("excludes user-assigned todo work from operations auto-assignment sweeps", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const humanOwnedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Human-owned work stays human-owned",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: humanOwnedIssueId,
+      companyId,
+      title: "Human-owned TODO should not be auto-assigned to an agent",
+      status: "todo",
+      priority: "urgent",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const persistedIssue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, humanOwnedIssueId))
+      .then((rows) => rows[0] ?? null);
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    const context = (persistedRun?.contextSnapshot ?? {}) as Record<string, unknown>;
+    const sweep = (context.operationsHeartbeatSweep ?? {}) as Record<string, unknown>;
+
+    expect(persistedIssue).toMatchObject({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    });
+    expect(sweep.unassignedOpenCount).toBe(0);
+    expect(sweep.targetIssueId).toBeNull();
+    expect(sweep.targetMode).toBeNull();
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {

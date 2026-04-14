@@ -32,12 +32,19 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { executionGateService } from "./execution-gate.js";
 import { createAgentStartLockController } from "./agent-start-lock.js";
 import {
   hasFalseCompleteRecoverySignal,
   isSuccessfulHeartbeatRunStatus,
   selectReadyUnassignedCandidate,
 } from "./operations-heartbeat-target.js";
+import {
+  buildIssueRoutingText,
+  isLikelyTechnicalIssueText,
+  pickOperationsAssignmentCandidate,
+} from "./issue-routing-heuristics.js";
+import { countLiveRunLimitRelevantRuns, hasReachedLiveRunLimit } from "./heartbeat-run-limit.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
@@ -95,8 +102,6 @@ const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
 const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
 const ISSUE_COMMENT_RECOVERY_MARKER = "[issue-comment-recovery]";
 const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
-const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
-  /\bcart|checkout|frontend|backend|api|component|typescript|react|db|database|migration|refactor|bug|fix|code\b/i;
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_OPERATIONS_RECOVERY_TARGETS_PER_SWEEP = 48;
@@ -659,6 +664,7 @@ async function resolveOperationsHeartbeatTargets(
         inArray(issues.status, READY_UNASSIGNED_STATUSES as unknown as string[]),
         sql`${issues.hiddenAt} is null`,
         sql`${issues.assigneeAgentId} is null`,
+        sql`${issues.assigneeUserId} is null`,
       ),
     );
   const readyUnassigned = selectReadyUnassignedCandidate(readyUnassignedRows);
@@ -1789,8 +1795,11 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const executionGate = executionGateService(db);
   const budgetHooks = {
-    cancelWorkForScope: cancelBudgetScopeWork,
+    cancelWorkForScope: async (scope: BudgetEnforcementScope) => {
+      await cancelExecutionScopeWorkInternal(scope, "Cancelled due to budget pause");
+    },
   };
   const budgets = budgetService(db, budgetHooks);
   const roadmapEpics = roadmapEpicService(db);
@@ -1999,7 +2008,7 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(latestRun.error);
 
     const handoffMarkdown = [
-      "PrivateClip session handoff:",
+      "Orchestrero session handoff:",
       `- Previous session: ${sessionId}`,
       issueId ? `- Issue: ${issueId}` : "",
       `- Rotation reason: ${reason}`,
@@ -2862,7 +2871,7 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Run ended without an issue comment and PrivateClip could not queue another retry; operator recovery is required",
+      message: "Run ended without an issue comment and Orchestrero could not queue another retry; operator recovery is required",
     });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
@@ -3082,10 +3091,6 @@ export function heartbeatService(db: Db) {
       await cancelRunInternal(run.id, "Cancelled because the company no longer exists");
       return null;
     }
-    if (companyStatus === "paused") {
-      // Company-level pause keeps queued work in place until resume.
-      return null;
-    }
 
     const context = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(context.issueId);
@@ -3097,12 +3102,12 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+    const executionBlock = await executionGate.getExecutionBlock(run.companyId, run.agentId, {
       issueId: contextIssueId,
       projectId: readNonEmptyString(context.projectId),
     });
-    if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+    if (executionBlock) {
+      await cancelRunInternal(run.id, executionBlock.message);
       return null;
     }
 
@@ -3504,6 +3509,7 @@ export function heartbeatService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           projectId: issues.projectId,
+          projectName: projects.name,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeName: agents.name,
           assigneeRole: agents.role,
@@ -3511,6 +3517,7 @@ export function heartbeatService(db: Db) {
         })
         .from(issues)
         .leftJoin(agents, and(eq(agents.id, issues.assigneeAgentId), eq(agents.companyId, issues.companyId)))
+        .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
         .where(
           and(
             eq(issues.companyId, companyId),
@@ -3527,14 +3534,17 @@ export function heartbeatService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           projectId: issues.projectId,
+          projectName: projects.name,
         })
         .from(issues)
+        .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
         .where(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
             sql`${issues.hiddenAt} is null`,
             sql`${issues.assigneeAgentId} is null`,
+            sql`${issues.assigneeUserId} is null`,
           ),
         )
         .orderBy(desc(issues.updatedAt)),
@@ -3926,7 +3936,7 @@ export function heartbeatService(db: Db) {
       if (!issue.assigneeAgentId) return false;
       if (issue.assigneeAgentId === input.agent.id) return false;
       if (isWatchdogIssueLabel(`${issue.identifier ?? ""} ${issue.title}`)) return false;
-      if (!ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN.test(`${issue.identifier ?? ""} ${issue.title}`)) return false;
+      if (!isLikelyTechnicalIssueText(buildIssueRoutingText(issue))) return false;
       return issue.assigneeRole !== "engineer";
     });
     for (const issue of misassignedEngineeringIssues) {
@@ -3998,111 +4008,16 @@ export function heartbeatService(db: Db) {
       identifier: string | null;
       title: string;
       projectId: string | null;
+      projectName?: string | null;
     }, opts?: { excludeAgentId?: string | null; allowPausedFallback?: boolean }) {
-      const sameProjectCounts = new Map<string, number>();
-      for (const candidateIssue of openAssignedIssues) {
-        if (!candidateIssue.assigneeAgentId) continue;
-        if (candidateIssue.projectId !== issue.projectId) continue;
-        sameProjectCounts.set(
-          candidateIssue.assigneeAgentId,
-          (sameProjectCounts.get(candidateIssue.assigneeAgentId) ?? 0) + 1,
-        );
-      }
-
-      const issueText = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
-      const isQaLikeIssue = /\bqa|release|audit|verify|test\b/.test(issueText);
-      const isLeadLikeIssue = /\blead|restaurant|prospect|sheet\b/.test(issueText);
-      const isOnboardingLikeIssue = /\bonboard|onboarding|go[- ]?live|activation|rollout|intake|implementation\b/.test(issueText);
-      const isEngineeringIssue = ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN.test(issueText);
-      const isAppLikeEngineeringIssue = /\bcart|checkout|client|frontend|ui|app|mobile|react|screen|component\b/.test(issueText);
-      const isWebLikeEngineeringIssue = /\bweb|browser|page|route|view\b/.test(issueText);
-      const isPlatformLikeEngineeringIssue = /\bplatform|infra|runtime|pipeline|orchestr|migration|database|server|backend|auth|api\b/.test(issueText);
-      const profileText = (candidate: {
-        name: string;
-        title: string | null;
-        capabilities: string | null;
-      }) => `${candidate.name ?? ""} ${candidate.title ?? ""} ${candidate.capabilities ?? ""}`.toLowerCase();
-      const healthyCandidates = availableAssignmentCandidates.filter((candidate) => candidate.status !== "error");
-      let baseCandidatePool = healthyCandidates.length > 0 ? healthyCandidates : availableAssignmentCandidates;
-      if (baseCandidatePool.length === 0 && opts?.allowPausedFallback) {
-        const pausedFallbackHealthyCandidates = pausedFallbackAssignmentCandidates.filter((candidate) => candidate.status !== "error");
-        baseCandidatePool =
-          pausedFallbackHealthyCandidates.length > 0
-            ? pausedFallbackHealthyCandidates
-            : pausedFallbackAssignmentCandidates;
-      }
-      const isReadyCandidate = (candidate: { status: string | null }) => (
-        candidate.status !== "error" &&
-        candidate.status !== "paused" &&
-        candidate.status !== "terminated" &&
-        candidate.status !== "pending_approval"
-      );
-      const specializationSourcePool = opts?.allowPausedFallback
-        ? pausedFallbackAssignmentCandidates
-        : availableAssignmentCandidates;
-      if (isEngineeringIssue) {
-        const engineerCandidates = specializationSourcePool.filter((candidate) => candidate.role === "engineer");
-        if (engineerCandidates.length === 0) return null;
-
-        const readyEngineers = engineerCandidates.filter(isReadyCandidate);
-        if (readyEngineers.length === 0) return null;
-        const appEngineerCandidates = engineerCandidates.filter((candidate) => (
-          /\bproduct engineer - app\b|\bapp\b|frontend|react|mobile|ios|android|client/.test(profileText(candidate))
-        ));
-        const webEngineerCandidates = engineerCandidates.filter((candidate) => (
-          /\bproduct engineer - web\b|\bweb\b|frontend|react|browser|ui/.test(profileText(candidate))
-        ));
-        const platformEngineerCandidates = engineerCandidates.filter((candidate) => (
-          /\bplatform\b|infra|backend|server|runtime|devops|database/.test(profileText(candidate))
-        ));
-
-        const preferReadySpecialists = (specialists: typeof engineerCandidates) => {
-          const readySpecialists = specialists.filter(isReadyCandidate);
-          return readySpecialists.length > 0 ? readySpecialists : readyEngineers;
-        };
-
-        if (isAppLikeEngineeringIssue) {
-          baseCandidatePool = preferReadySpecialists(appEngineerCandidates);
-        } else if (isWebLikeEngineeringIssue) {
-          baseCandidatePool = preferReadySpecialists(webEngineerCandidates);
-        } else if (isPlatformLikeEngineeringIssue) {
-          baseCandidatePool = preferReadySpecialists(platformEngineerCandidates);
-        } else {
-          baseCandidatePool = readyEngineers;
-        }
-      }
-      const preferredCandidatePool = opts?.excludeAgentId
-        ? baseCandidatePool.filter((candidate) => candidate.id !== opts.excludeAgentId)
-        : baseCandidatePool;
-      const candidatePool = preferredCandidatePool.length > 0 ? preferredCandidatePool : baseCandidatePool;
-
-      const ranked = candidatePool
-        .map((candidate) => {
-          const sameProjectLoad = sameProjectCounts.get(candidate.id) ?? 0;
-          let score = Math.min(sameProjectLoad, 2) * 20;
-          const candidateText = profileText(candidate);
-
-          if (candidate.status === "idle") score += 25;
-          else if (candidate.status === "running") score += 10;
-          else if (candidate.status === "error") score -= 200;
-
-          if (isQaLikeIssue) {
-            if (candidate.role === "qa" || /\bqa|release\b/.test(candidateText)) score += 120;
-          } else if (isLeadLikeIssue) {
-            if (candidate.role === "researcher" || /lead generation|sales/.test(candidateText)) score += 120;
-          } else if (isOnboardingLikeIssue) {
-            if (candidate.role === "pm" || /\bonboarding|implementation|project manager\b/.test(candidateText)) score += 120;
-          } else if (candidate.role === "engineer" || /\bengineer|app|web|platform|frontend|backend\b/.test(candidateText)) {
-            score += 140;
-          } else {
-            score -= 80;
-          }
-
-          return { candidate, score };
-        })
-        .sort((a, b) => b.score - a.score || a.candidate.name.localeCompare(b.candidate.name));
-
-      return ranked[0]?.candidate ?? null;
+      return pickOperationsAssignmentCandidate({
+        issue,
+        openAssignedIssues,
+        availableCandidates: availableAssignmentCandidates,
+        pausedFallbackCandidates: pausedFallbackAssignmentCandidates,
+        excludeAgentId: opts?.excludeAgentId,
+        allowPausedFallback: opts?.allowPausedFallback,
+      });
     }
 
     for (const reissueTarget of recoveryReissueTargets) {
@@ -4114,6 +4029,7 @@ export function heartbeatService(db: Db) {
           identifier: sourceIssue.identifier,
           title: sourceIssue.title,
           projectId: sourceIssue.projectId,
+          projectName: reissueTarget.issue.projectName,
         },
         { excludeAgentId: reissueTarget.issue.assigneeAgentId, allowPausedFallback: true },
       );
@@ -4216,6 +4132,7 @@ export function heartbeatService(db: Db) {
           identifier: issue.identifier,
           title: issue.title,
           projectId: issue.projectId,
+          projectName: issue.projectName,
         }];
       }),
     ];
@@ -5690,15 +5607,16 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
+    const executionBlock = await executionGate.getExecutionBlock(agent.companyId, agentId, {
       issueId,
       projectId,
     });
-    if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
-      throw conflict(budgetBlock.reason, {
-        scopeType: budgetBlock.scopeType,
-        scopeId: budgetBlock.scopeId,
+    if (executionBlock) {
+      await writeSkippedRequest(executionBlock.skipReason);
+      throw conflict(executionBlock.message, {
+        code: executionBlock.code,
+        scopeType: executionBlock.scopeType,
+        scopeId: executionBlock.scopeId,
       });
     }
 
@@ -5879,7 +5797,7 @@ export function heartbeatService(db: Db) {
         const [{ liveRunCount }] = await tx
           .select({ liveRunCount: sql<number>`count(*)` })
           .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
 
         if (Number(liveRunCount ?? 0) >= policy.maxLiveRuns) {
           await tx.insert(agentWakeupRequests).values({
@@ -6034,7 +5952,8 @@ export function heartbeatService(db: Db) {
       return mergedRun;
     }
 
-    if (activeRuns.length >= policy.maxLiveRuns) {
+    const liveRunCount = countLiveRunLimitRelevantRuns(activeRuns);
+    if (hasReachedLiveRunLimit(activeRuns, policy.maxLiveRuns)) {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
@@ -6055,7 +5974,7 @@ export function heartbeatService(db: Db) {
           companyId: agent.companyId,
           source,
           triggerDetail,
-          liveRunCount: activeRuns.length,
+          liveRunCount,
           liveRunLimit: policy.maxLiveRuns,
         },
         "heartbeat wakeup skipped due to live run limit",
@@ -6171,12 +6090,9 @@ export function heartbeatService(db: Db) {
     return rows.map((row) => row.id);
   }
 
-  async function cancelPendingWakeupsForBudgetScope(scope: BudgetEnforcementScope) {
-    const now = new Date();
-    let wakeupIds: string[] = [];
-
+  async function listScopedWakeupIds(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "company") {
-      wakeupIds = await db
+      return db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(
@@ -6187,8 +6103,10 @@ export function heartbeatService(db: Db) {
           ),
         )
         .then((rows) => rows.map((row) => row.id));
-    } else if (scope.scopeType === "agent") {
-      wakeupIds = await db
+    }
+
+    if (scope.scopeType === "agent") {
+      return db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(
@@ -6200,9 +6118,17 @@ export function heartbeatService(db: Db) {
           ),
         )
         .then((rows) => rows.map((row) => row.id));
-    } else {
-      wakeupIds = await listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
     }
+
+    return listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
+  }
+
+  async function cancelPendingWakeupsForScope(
+    scope: BudgetEnforcementScope,
+    reason = "Cancelled by control plane",
+  ) {
+    const now = new Date();
+    const wakeupIds = await listScopedWakeupIds(scope);
 
     if (wakeupIds.length === 0) return 0;
 
@@ -6211,7 +6137,7 @@ export function heartbeatService(db: Db) {
       .set({
         status: "cancelled",
         finishedAt: now,
-        error: "Cancelled due to budget pause",
+        error: reason,
         updatedAt: now,
       })
       .where(inArray(agentWakeupRequests.id, wakeupIds));
@@ -6317,13 +6243,10 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
-  async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
-    if (scope.scopeType === "agent") {
-      await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
-      await cancelPendingWakeupsForBudgetScope(scope);
-      return;
-    }
-
+  async function cancelExecutionScopeWorkInternal(
+    scope: BudgetEnforcementScope,
+    reason = "Cancelled by control plane",
+  ) {
     const runIds =
       scope.scopeType === "company"
         ? await db
@@ -6336,13 +6259,33 @@ export function heartbeatService(db: Db) {
             ),
           )
           .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : scope.scopeType === "agent"
+          ? await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, scope.companyId),
+                eq(heartbeatRuns.agentId, scope.scopeId),
+                inArray(heartbeatRuns.status, ["queued", "running"]),
+              ),
+            )
+            .then((rows) => rows.map((row) => row.id))
+          : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
 
     for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
+      await cancelRunInternal(runId, reason);
     }
 
-    await cancelPendingWakeupsForBudgetScope(scope);
+    const cancelledWakeupCount = await cancelPendingWakeupsForScope(scope, reason);
+    return {
+      cancelledRunCount: runIds.length,
+      cancelledWakeupCount,
+    };
+  }
+
+  async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
+    await cancelExecutionScopeWorkInternal(scope, "Cancelled due to budget pause");
   }
 
   return {
@@ -6540,6 +6483,9 @@ export function heartbeatService(db: Db) {
 
     stopRunningForCompany: (companyId: string, reason?: string) =>
       stopRunningForCompanyInternal(companyId, reason),
+
+    cancelExecutionScopeWork: (scope: BudgetEnforcementScope, reason?: string) =>
+      cancelExecutionScopeWorkInternal(scope, reason),
 
     cancelBudgetScopeWork,
 

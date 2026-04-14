@@ -1,9 +1,9 @@
 ---
 title: Quickstart
-summary: Get PrivateClip running in minutes
+summary: Get Orchestrero running in minutes
 ---
 
-Get PrivateClip running locally in under 5 minutes.
+Get Orchestrero running locally in under 5 minutes.
 
 ## Quick Start (Recommended)
 
@@ -11,21 +11,21 @@ Get PrivateClip running locally in under 5 minutes.
 npx paperclipai onboard --yes
 ```
 
-This walks you through setup, configures your environment, and gets PrivateClip running.
+This walks you through setup, configures your environment, and gets Orchestrero running.
 
-If you already have a PrivateClip install, rerunning `onboard` keeps your current config and data paths intact. Use `paperclipai configure` if you want to edit settings.
+If you already have an Orchestrero install, rerunning `onboard` keeps your current config and data paths intact. Use `paperclipai configure` if you want to edit settings.
 
-To start PrivateClip again later:
+To start Orchestrero again later:
 
 ```sh
 npx paperclipai run
 ```
 
-> **Note:** If you used `npx` for setup, always use `npx paperclipai` to run commands. The `pnpm paperclipai` form only works inside a cloned copy of the PrivateClip repository (see Local Development below).
+> **Note:** If you used `npx` for setup, always use `npx paperclipai` to run commands. The `pnpm paperclipai` form only works inside a cloned copy of the Orchestrero repository (see Local Development below).
 
 ## Local Development
 
-For contributors working on PrivateClip itself. Prerequisites: Node.js 20+ and pnpm 9+.
+For contributors working on Orchestrero itself. Prerequisites: Node.js 20+ and pnpm 9+.
 
 Clone the repository, then:
 
@@ -36,7 +36,7 @@ pnpm dev
 
 This starts the API server and UI at [http://localhost:3100](http://localhost:3100).
 
-No external database required — PrivateClip uses an embedded PostgreSQL instance by default.
+No external database required — Orchestrero uses an embedded PostgreSQL instance by default.
 
 When working from the cloned repo, you can also use:
 
@@ -48,7 +48,7 @@ This auto-onboards if config is missing, runs health checks with auto-repair, an
 
 ## What's Next
 
-Once PrivateClip is running:
+Once Orchestrero is running:
 
 1. Create your first company in the web UI
 2. Define a company goal
@@ -58,5 +58,5 @@ Once PrivateClip is running:
 6. Hit go — agents start their heartbeats and the company runs
 
 <Card title="Core Concepts" href="/start/core-concepts">
-  Learn the key concepts behind PrivateClip
+  Learn the key concepts behind Orchestrero
 </Card>

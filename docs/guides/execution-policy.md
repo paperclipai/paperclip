@@ -1,6 +1,6 @@
 # Execution Policy: Review & Approval Workflows
 
-PrivateClip's execution policy system ensures tasks are completed with the right level of oversight. Instead of relying on agents to remember to hand off work for review, the **runtime enforces** review and approval stages automatically.
+Orchestrero's execution policy system ensures tasks are completed with the right level of oversight. Instead of relying on agents to remember to hand off work for review, the **runtime enforces** review and approval stages automatically.
 
 ## Overview
 

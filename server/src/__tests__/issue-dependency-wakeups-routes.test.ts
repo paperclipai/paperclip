@@ -16,6 +16,10 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(async () => []),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
@@ -32,6 +36,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
     getById: vi.fn(),
   }),

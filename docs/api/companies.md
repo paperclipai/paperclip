@@ -3,7 +3,7 @@ title: Companies
 summary: Company CRUD endpoints
 ---
 
-Manage companies within your PrivateClip instance.
+Manage companies within your Orchestrero instance.
 
 ## List Companies
 
@@ -61,7 +61,7 @@ Valid image content types:
 - `image/gif`
 - `image/svg+xml`
 
-Company logo uploads use the normal PrivateClip attachment size limit.
+Company logo uploads use the normal Orchestrero attachment size limit.
 
 Then set the company logo by PATCHing the returned `assetId` into `logoAssetId`.
 
@@ -88,7 +88,7 @@ POST /api/companies/{companyId}/resume
 ```
 
 Resumes the company at the company scope. Agent-level pause states are unchanged and queued work can start again.
-On resume, PrivateClip also ensures a COO coordinator exists and triggers a COO heartbeat kickoff (best-effort).
+On resume, Orchestrero also ensures a COO coordinator exists and triggers a COO heartbeat kickoff (best-effort).
 
 ## Roadmap Epic Pause State
 
@@ -121,7 +121,7 @@ Paused roadmap epics hold issue-linked execution wakeups and queued runs for tho
 | `description` | string | Company description |
 | `status` | string | `active`, `paused`, `archived` |
 | `logoAssetId` | string | Optional asset id for the stored logo image |
-| `logoUrl` | string | Optional PrivateClip asset content path for the stored logo image |
+| `logoUrl` | string | Optional Orchestrero asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |

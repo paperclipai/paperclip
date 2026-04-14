@@ -69,6 +69,8 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   },
 ];
 
+const UUID_LIKE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -117,6 +119,9 @@ export function sanitizeFeedbackText(
   }
 
   for (const pattern of FREE_TEXT_PATTERNS) {
+    if (pattern.kind === "phone" && UUID_LIKE_RE.test(output.trim())) {
+      continue;
+    }
     const result = applyPattern(output, pattern);
     if (result.matches > 0) {
       output = result.output;

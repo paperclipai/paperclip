@@ -12,6 +12,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -23,6 +27,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
     getById: vi.fn(async () => null),
   }),

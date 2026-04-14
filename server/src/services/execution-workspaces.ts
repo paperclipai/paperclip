@@ -80,12 +80,12 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   }
 
   if (!workspacePath) {
-    warnings.push("Workspace has no local path, so PrivateClip cannot inspect git status before close.");
+    warnings.push("Workspace has no local path, so Orchestrero cannot inspect git status before close.");
     return { git: null, warnings };
   }
 
   if (!(await pathExists(workspacePath))) {
-    warnings.push(`Workspace path "${workspacePath}" does not exist, so PrivateClip cannot inspect git status before close.`);
+    warnings.push(`Workspace path "${workspacePath}" does not exist, so Orchestrero cannot inspect git status before close.`);
     return {
       git: {
         repoRoot: null,
@@ -740,7 +740,7 @@ export function executionWorkspaceService(db: Db) {
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",
-          description: `PrivateClip will run git worktree cleanup for ${workspacePath}.`,
+          description: `Orchestrero will run git worktree cleanup for ${workspacePath}.`,
           command: `git worktree remove --force ${workspacePath}`,
         });
       }
@@ -749,7 +749,7 @@ export function executionWorkspaceService(db: Db) {
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
-          description: "PrivateClip will try to delete the runtime-created branch after removing the worktree.",
+          description: "Orchestrero will try to delete the runtime-created branch after removing the worktree.",
           command: `git branch -d ${executionWorkspace.branchName}`,
         });
       }
@@ -764,12 +764,12 @@ export function executionWorkspaceService(db: Db) {
             )
           : false;
         if (containsProjectWorkspace) {
-          warnings.push(`PrivateClip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
+          warnings.push(`Orchestrero will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
         } else {
           plannedActions.push({
             kind: "remove_local_directory",
             label: "Remove runtime-created directory",
-            description: `PrivateClip will remove the runtime-created directory at ${workspacePath}.`,
+            description: `Orchestrero will remove the runtime-created directory at ${workspacePath}.`,
             command: `rm -rf ${workspacePath}`,
           });
         }

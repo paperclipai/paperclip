@@ -1,6 +1,6 @@
 ---
 title: Dashboard
-summary: Understanding the PrivateClip dashboard
+summary: Understanding the Orchestrero dashboard
 ---
 
 The dashboard gives you a real-time overview of your autonomous company's health.

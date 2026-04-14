@@ -530,7 +530,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
 
-    const stoppedRunCount = await heartbeat.stopRunningForCompany(companyId, "Stopped due to company pause");
+    const cancellation = await heartbeat.cancelExecutionScopeWork(
+      {
+        companyId,
+        scopeType: "company",
+        scopeId: companyId,
+      },
+      "Cancelled due to company pause",
+    );
 
     await logActivity(db, {
       companyId,
@@ -539,13 +546,10 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       action: "company.paused",
       entityType: "company",
       entityId: companyId,
-      details: {
-        pausedAgentCount: result.pausedAgentCount,
-        stoppedRunCount,
-      },
+      details: cancellation,
     });
 
-    res.json(result.company);
+    res.json(result);
   });
 
   router.post("/:companyId/resume", async (req, res) => {
@@ -599,13 +603,12 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityType: "company",
       entityId: companyId,
       details: {
-        resumedAgentCount: result.resumedAgentCount,
         cooAgentId,
         cooHeartbeatTriggered,
       },
     });
 
-    res.json(result.company);
+    res.json(result);
   });
 
   router.delete("/:companyId", async (req, res) => {

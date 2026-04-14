@@ -2,13 +2,13 @@
   "name": "@paperclipai/mcp-server",
   "version": "0.1.0",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://www.orchestrero.ai",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://www.orchestrero.ai"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://www.orchestrero.ai",
     "directory": "packages/mcp-server"
   },
   "type": "module",

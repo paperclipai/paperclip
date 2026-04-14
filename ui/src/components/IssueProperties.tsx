@@ -759,6 +759,10 @@ export function IssueProperties({
     </>
   );
 
+  const recoveryRelation = issue.recoverySuccessor ?? issue.recoverySource ?? null;
+  const recoveryLabel = issue.recoverySuccessor ? "Continues as" : "Recovered from";
+  const recoveryAssigneeName = recoveryRelation ? agentName(recoveryRelation.assigneeAgentId) : null;
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -863,6 +867,24 @@ export function IssueProperties({
             <span className="text-sm text-muted-foreground">None</span>
           )}
         </PropertyRow>
+
+        {recoveryRelation ? (
+          <PropertyRow label="Recovery">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm text-muted-foreground">{recoveryLabel}</span>
+              <Link
+                to={`/issues/${recoveryRelation.identifier ?? recoveryRelation.id}`}
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+              >
+                <StatusIcon status={recoveryRelation.status} />
+                <span>{recoveryRelation.identifier ?? recoveryRelation.title}</span>
+              </Link>
+              {recoveryAssigneeName ? (
+                <span className="text-xs text-muted-foreground">owned by {recoveryAssigneeName}</span>
+              ) : null}
+            </div>
+          </PropertyRow>
+        ) : null}
 
         <PropertyRow label="Sub-issues">
           <div className="flex flex-wrap items-center gap-1.5">

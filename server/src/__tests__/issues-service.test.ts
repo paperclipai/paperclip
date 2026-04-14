@@ -13,6 +13,7 @@ import {
   instanceSettings,
   issueComments,
   issueInboxArchives,
+  issueReadStates,
   issueRelations,
   issues,
   projectWorkspaces,
@@ -64,6 +65,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueReadStates);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -346,6 +348,258 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     const openOnlyResult = await svc.list(companyId, { status: "todo" });
     expect(openOnlyResult.map((issue) => issue.id)).toEqual([openIssueId]);
+  });
+
+  it("treats user issue updates as touch activity and status-only work as unread", async () => {
+    const companyId = randomUUID();
+    const userId = "user-1";
+    const issueId = randomUUID();
+    const creatorAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "CreatorAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board-updated issue",
+      status: "done",
+      priority: "medium",
+      createdByAgentId: creatorAgentId,
+      createdAt: new Date("2026-03-26T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: { title: "Retitled", _previous: { title: "Before" } },
+        createdAt: new Date("2026-03-26T10:30:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: randomUUID(),
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: { status: "done", _previous: { status: "todo" } },
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+    ]);
+
+    const touched = await svc.list(companyId, { touchedByUserId: userId });
+    const touchedIssue = touched.find((issue) => issue.id === issueId);
+
+    expect(touchedIssue).toBeDefined();
+    expect(touchedIssue?.myLastTouchAt?.toISOString()).toBe("2026-03-26T10:30:00.000Z");
+    expect(touchedIssue?.isUnreadForMe).toBe(true);
+
+    const unread = await svc.list(companyId, { unreadForUserId: userId });
+    expect(unread.map((issue) => issue.id)).toContain(issueId);
+  });
+
+  it("surfaces recovered successor issues when the source was touched by the board user", async () => {
+    const companyId = randomUUID();
+    const userId = "user-1";
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "blocked",
+        priority: "medium",
+        createdByUserId: userId,
+        createdAt: new Date("2026-03-26T09:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T09:00:00.000Z"),
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        title: "Successor issue",
+        status: "done",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueReadStates).values({
+      companyId,
+      issueId: sourceIssueId,
+      userId,
+      lastReadAt: new Date("2026-03-26T09:30:00.000Z"),
+      createdAt: new Date("2026-03-26T09:30:00.000Z"),
+      updatedAt: new Date("2026-03-26T09:30:00.000Z"),
+    });
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: successorIssueId,
+      type: "recovered_by",
+      createdByUserId: userId,
+    });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: randomUUID(),
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: successorIssueId,
+      details: { status: "done", _previous: { status: "todo" } },
+      createdAt: new Date("2026-03-26T11:00:00.000Z"),
+    });
+
+    const touched = await svc.list(companyId, { touchedByUserId: userId });
+    const successor = touched.find((issue) => issue.id === successorIssueId);
+
+    expect(successor).toBeDefined();
+    expect(successor?.myLastTouchAt?.toISOString()).toBe("2026-03-26T09:30:00.000Z");
+    expect(successor?.isUnreadForMe).toBe(true);
+
+    const unread = await svc.list(companyId, { unreadForUserId: userId });
+    expect(unread.map((issue) => issue.id)).toContain(successorIssueId);
+  });
+
+  it("can hide blocked recovery source issues when their continuation is still open", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const closedSourceIssueId = randomUUID();
+    const openSuccessorIssueId = randomUUID();
+    const closedSuccessorIssueId = randomUUID();
+    const doneSuccessorIssueId = randomUUID();
+    const plainBlockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Blocked source issue",
+        status: "blocked",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T09:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T09:00:00.000Z"),
+      },
+      {
+        id: closedSourceIssueId,
+        companyId,
+        title: "Blocked source issue with closed continuation",
+        status: "blocked",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T09:15:00.000Z"),
+        updatedAt: new Date("2026-03-26T09:15:00.000Z"),
+      },
+      {
+        id: openSuccessorIssueId,
+        companyId,
+        title: "Open continuation",
+        status: "todo",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: closedSuccessorIssueId,
+        companyId,
+        title: "Closed continuation for blocked source",
+        status: "done",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T10:15:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:15:00.000Z"),
+      },
+      {
+        id: doneSuccessorIssueId,
+        companyId,
+        title: "Closed continuation",
+        status: "done",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T10:30:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:30:00.000Z"),
+      },
+      {
+        id: plainBlockedIssueId,
+        companyId,
+        title: "Plain blocked issue",
+        status: "blocked",
+        priority: "medium",
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: sourceIssueId,
+        relatedIssueId: openSuccessorIssueId,
+        type: "recovered_by",
+      },
+      {
+        companyId,
+        issueId: closedSourceIssueId,
+        relatedIssueId: closedSuccessorIssueId,
+        type: "recovered_by",
+      },
+      {
+        companyId,
+        issueId: doneSuccessorIssueId,
+        relatedIssueId: plainBlockedIssueId,
+        type: "blocks",
+      },
+    ]);
+
+    const defaultBlocked = await svc.list(companyId, { status: "blocked" });
+    expect(defaultBlocked.map((issue) => issue.id)).toEqual(
+      expect.arrayContaining([sourceIssueId, closedSourceIssueId, plainBlockedIssueId]),
+    );
+
+    const filteredBlocked = await svc.list(companyId, {
+      status: "blocked",
+      excludeRecoverySourcesWithOpenSuccessors: true,
+    });
+    expect(filteredBlocked.map((issue) => issue.id)).not.toContain(sourceIssueId);
+    expect(filteredBlocked.map((issue) => issue.id)).toContain(closedSourceIssueId);
+    expect(filteredBlocked.map((issue) => issue.id)).toContain(plainBlockedIssueId);
   });
 
   it("archives closed issues older than the configured window", async () => {
@@ -791,6 +1045,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueReadStates);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -1068,6 +1323,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueReadStates);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -1438,6 +1694,7 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueReadStates);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -1537,6 +1794,90 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
       .then((rows) => rows[0] ?? null);
     expect(transitionComment?.body).toContain("[issue-recovery-transition]");
     expect(transitionComment?.body).toContain(continuation.identifier ?? continuation.id);
+
+    const sourceRelations = await svc.getRelationSummaries(sourceIssueId);
+    expect(sourceRelations.recoverySuccessor).toEqual(
+      expect.objectContaining({
+        id: continuation.id,
+        identifier: continuation.identifier,
+        title: continuation.title,
+        assigneeAgentId,
+      }),
+    );
+    expect(sourceRelations.recoverySource).toBeNull();
+
+    const continuationRelations = await svc.getRelationSummaries(continuation.id);
+    expect(continuationRelations.recoverySource).toEqual(
+      expect.objectContaining({
+        id: sourceIssueId,
+        title: "Broken source issue",
+        status: "blocked",
+      }),
+    );
+    expect(continuationRelations.recoverySuccessor).toBeNull();
+  });
+
+  it("copies inbox read and archive context from the source issue to a continuation issue", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const userId = "user-1";
+    const readAt = new Date("2026-03-26T09:30:00.000Z");
+    const archivedAt = new Date("2026-03-26T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Recoverable source issue",
+      status: "in_progress",
+      priority: "medium",
+      createdByUserId: userId,
+      createdAt: new Date("2026-03-26T09:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T09:00:00.000Z"),
+    });
+    await db.insert(issueReadStates).values({
+      companyId,
+      issueId: sourceIssueId,
+      userId,
+      lastReadAt: readAt,
+      createdAt: readAt,
+      updatedAt: readAt,
+    });
+    await db.insert(issueInboxArchives).values({
+      companyId,
+      issueId: sourceIssueId,
+      userId,
+      archivedAt,
+      createdAt: archivedAt,
+      updatedAt: archivedAt,
+    });
+
+    const continuation = await svc.create(companyId, {
+      title: "Continuation issue",
+      status: "todo",
+      priority: "medium",
+      recoveryFromIssueId: sourceIssueId,
+      recoveryDisposition: "recovered_by_reissue",
+    });
+
+    const copiedReadState = await db
+      .select({ lastReadAt: issueReadStates.lastReadAt })
+      .from(issueReadStates)
+      .where(eq(issueReadStates.issueId, continuation.id))
+      .then((rows) => rows[0] ?? null);
+    const copiedArchiveState = await db
+      .select({ archivedAt: issueInboxArchives.archivedAt })
+      .from(issueInboxArchives)
+      .where(eq(issueInboxArchives.issueId, continuation.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(copiedReadState?.lastReadAt.toISOString()).toBe(readAt.toISOString());
+    expect(copiedArchiveState?.archivedAt.toISOString()).toBe(archivedAt.toISOString());
   });
 
   it("update recovery with successor clears source ownership and persists transition truth", async () => {
@@ -1688,6 +2029,7 @@ describeEmbeddedPostgres("issueService.checkout queued execution handoff", () =>
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueReadStates);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);

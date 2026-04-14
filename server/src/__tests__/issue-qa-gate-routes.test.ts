@@ -29,6 +29,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
 const mockIssueMergeService = vi.hoisted(() => ({
   getIssueMergeStatus: vi.fn(async () => null),
   attemptQaPassAutoMerge: vi.fn(async () => ({ outcome: "not_applicable" as const, status: null })),
@@ -45,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
+  executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
     getById: vi.fn(async () => null),
   }),
@@ -236,6 +241,33 @@ describe("issue QA gate routes", () => {
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
       reasonCode: "qa_gate_missing_release_confirmation",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects technical issue done transition when it was misassigned to a non-delivery role", async () => {
+    const existing = {
+      ...makeIssue("in_review"),
+      identifier: "COMA-1063",
+      title: "Merge branches",
+      assigneeAgentId: "agent-pm",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.listComments.mockResolvedValue([]);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "agent-pm") return { id, companyId: "company-1", role: "pm", name: "Onboarding Agent" };
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      if (id === "agent-qa") return { id, companyId: "company-1", role: "qa", name: "QA" };
+      return null;
+    });
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_qa_pass",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

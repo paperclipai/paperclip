@@ -33,7 +33,7 @@ If resume fails with an unknown session error, the adapter automatically retries
 
 ## Skills Injection
 
-The adapter symlinks PrivateClip skills into the Gemini global skills directory (`~/.gemini/skills`). Existing user skills are not overwritten.
+The adapter symlinks Orchestrero skills into the Gemini global skills directory (`~/.gemini/skills`). Existing user skills are not overwritten.
 
 ## Environment Test
 

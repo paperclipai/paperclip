@@ -3,7 +3,7 @@ title: Deployment Overview
 summary: Deployment modes at a glance
 ---
 
-PrivateClip supports three deployment configurations, from zero-friction local to internet-facing production.
+Orchestrero supports three deployment configurations, from zero-friction local to internet-facing production.
 
 ## Deployment Modes
 
@@ -38,7 +38,7 @@ PrivateClip supports three deployment configurations, from zero-friction local t
 
 ## Choosing a Mode
 
-- **Just trying PrivateClip?** Use `local_trusted` (the default)
+- **Just trying Orchestrero?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
 - **Deploying to the cloud?** Use `authenticated` + `public`
 

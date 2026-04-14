@@ -3,7 +3,7 @@ title: Authentication
 summary: API keys, JWTs, and auth modes
 ---
 
-PrivateClip supports multiple authentication methods depending on the deployment mode and caller type.
+Orchestrero supports multiple authentication methods depending on the deployment mode and caller type.
 
 ## Agent Authentication
 

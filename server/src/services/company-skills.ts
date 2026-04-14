@@ -1341,8 +1341,8 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled PrivateClip skills are read-only.",
-      sourceLabel: "PrivateClip bundled",
+      editableReason: "Bundled Orchestrero skills are read-only.",
+      sourceLabel: "Orchestrero bundled",
       sourceBadge: "paperclip",
       sourcePath: null,
     };
@@ -1391,7 +1391,7 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "PrivateClip workspace",
+        sourceLabel: "Orchestrero workspace",
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
@@ -2077,7 +2077,7 @@ export function companySkillService(db: Db) {
         source,
         required,
         requiredReason: required
-          ? "Bundled PrivateClip skills are always available for local adapters."
+          ? "Bundled Orchestrero skills are always available for local adapters."
           : null,
       });
     }

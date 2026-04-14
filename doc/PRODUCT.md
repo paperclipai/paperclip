@@ -1,8 +1,8 @@
-# PrivateClip — Product Definition
+# Orchestrero — Product Definition
 
 ## What It Is
 
-PrivateClip is the control plane for autonomous AI companies. One instance of PrivateClip can run multiple companies. A **company** is a first-order object.
+Orchestrero is the control plane for autonomous AI companies. One instance of Orchestrero can run multiple companies. A **company** is a first-order object.
 
 ## Core Concepts
 
@@ -22,7 +22,7 @@ Every employee is an agent. When you create a company, you start by defining the
 
 Each employee has:
 
-- **Adapter type + config** — how this agent runs and what defines its identity/behavior. This is adapter-specific (e.g., an OpenClaw agent might use SOUL.md and HEARTBEAT.md files; a Claude Code agent might use CLAUDE.md; a bare script might use CLI args). PrivateClip doesn't prescribe the format — the adapter does.
+- **Adapter type + config** — how this agent runs and what defines its identity/behavior. This is adapter-specific (e.g., an OpenClaw agent might use SOUL.md and HEARTBEAT.md files; a Claude Code agent might use CLAUDE.md; a bare script might use CLI args). Orchestrero doesn't prescribe the format — the adapter does.
 - **Role & reporting** — their title, who they report to, who reports to them
 - **Capabilities description** — a short paragraph on what this agent does and when they're relevant (helps other agents discover who can help with what)
 
@@ -34,8 +34,8 @@ Then you define who reports to the CEO: a CTO managing programmers, a CMO managi
 
 There are two fundamental modes for running an agent's heartbeat:
 
-1. **Run a command** — PrivateClip kicks off a process (shell command, Python script, etc.) and tracks it. The heartbeat is "execute this and monitor it."
-2. **Fire and forget a request** — PrivateClip sends a webhook/API call to an externally running agent. The heartbeat is "notify this agent to wake up." (OpenClaw hooks work this way.)
+1. **Run a command** — Orchestrero kicks off a process (shell command, Python script, etc.) and tracks it. The heartbeat is "execute this and monitor it."
+2. **Fire and forget a request** — Orchestrero sends a webhook/API call to an externally running agent. The heartbeat is "notify this agent to wake up." (OpenClaw hooks work this way.)
 
 We provide sensible defaults — a default agent that shells out to Claude Code or Codex with your configuration, remembers session IDs, runs basic scripts. But you can plug in anything.
 
@@ -58,19 +58,19 @@ More detailed task structure TBD.
 
 ## Principles
 
-1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. PrivateClip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.
+1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Orchestrero defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.
 
-2. **Company is the unit of organization.** Everything lives under a company. One PrivateClip instance, many companies.
+2. **Company is the unit of organization.** Everything lives under a company. One Orchestrero instance, many companies.
 
 3. **Adapter config defines the agent.** Every agent has an adapter type and configuration that controls its identity and behavior. The minimum contract is just "be callable."
 
 4. **All work traces to the goal.** Hierarchical task management means nothing exists in isolation. If you can't explain why a task matters to the company goal, it shouldn't exist.
 
-5. **Control plane, not execution plane.** PrivateClip orchestrates. Agents run wherever they run and phone home.
+5. **Control plane, not execution plane.** Orchestrero orchestrates. Agents run wherever they run and phone home.
 
 ## User Flow (Dream Scenario)
 
-1. Open PrivateClip, create a new company
+1. Open Orchestrero, create a new company
 2. Define the company's goal: "Create the #1 AI note-taking app, $1M MRR in 3 months"
 3. Create the CEO
    - Choose an adapter (e.g., process adapter for Claude Code, HTTP adapter for OpenClaw)
@@ -84,7 +84,7 @@ More detailed task structure TBD.
 
 ## Guidelines
 
-There are two runtime modes PrivateClip must support:
+There are two runtime modes Orchestrero must support:
 
 - `local_trusted` (default): single-user local trusted deployment with no login friction
 - `authenticated`: login-required mode that supports both private-network and public deployment exposure policies
@@ -97,9 +97,9 @@ See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./T
 
 ---
 
-PrivateClip’s core identity is a **control plane for autonomous AI companies**, centered on **companies, org charts, goals, issues/comments, heartbeats, budgets, approvals, and board governance**. The public docs are also explicit about the current boundaries: **tasks/comments are the built-in communication model**, PrivateClip is **not a chatbot**, and it is **not a code review tool**. The roadmap already points toward **easier onboarding, cloud agents, easier agent configuration, plugins, better docs, and ClipMart/ClipHub-style reusable companies/templates**.
+Orchestrero’s core identity is a **control plane for autonomous AI companies**, centered on **companies, org charts, goals, issues/comments, heartbeats, budgets, approvals, and board governance**. The public docs are also explicit about the current boundaries: **tasks/comments are the built-in communication model**, Orchestrero is **not a chatbot**, and it is **not a code review tool**. The roadmap already points toward **easier onboarding, cloud agents, easier agent configuration, plugins, better docs, and ClipMart/ClipHub-style reusable companies/templates**.
 
-## What PrivateClip should do vs. not do
+## What Orchestrero should do vs. not do
 
 **Do**
 
@@ -114,7 +114,7 @@ PrivateClip’s core identity is a **control plane for autonomous AI companies**
 **Do not**
 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
-- Do not build a complete Jira/GitHub replacement. The repo/docs already position PrivateClip as organization orchestration, not focused on pull-request review.
+- Do not build a complete Jira/GitHub replacement. The repo/docs already position Orchestrero as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. The current V1 spec still treats multi-board governance and fine-grained human permissions as out of scope, so the first multi-user version should be coarse and company-scoped.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.

@@ -44,6 +44,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const ISSUE_STATUS_TRANSITIONS: Record<string, Set<string>> = {
   backlog: new Set(["todo", "in_progress", "in_review", "blocked", "done", "cancelled"]),
@@ -225,6 +226,91 @@ async function appendRecoveryTransitionComment({
   });
 }
 
+async function copyRecoveryInboxContext({
+  dbOrTx,
+  companyId,
+  sourceIssueId,
+  successorIssueId,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  sourceIssueId: string;
+  successorIssueId: string;
+}) {
+  const [readRows, archiveRows] = await Promise.all([
+    dbOrTx
+      .select({
+        userId: issueReadStates.userId,
+        lastReadAt: issueReadStates.lastReadAt,
+        createdAt: issueReadStates.createdAt,
+        updatedAt: issueReadStates.updatedAt,
+      })
+      .from(issueReadStates)
+      .where(
+        and(
+          eq(issueReadStates.companyId, companyId),
+          eq(issueReadStates.issueId, sourceIssueId),
+        ),
+      ),
+    dbOrTx
+      .select({
+        userId: issueInboxArchives.userId,
+        archivedAt: issueInboxArchives.archivedAt,
+        createdAt: issueInboxArchives.createdAt,
+        updatedAt: issueInboxArchives.updatedAt,
+      })
+      .from(issueInboxArchives)
+      .where(
+        and(
+          eq(issueInboxArchives.companyId, companyId),
+          eq(issueInboxArchives.issueId, sourceIssueId),
+        ),
+      ),
+  ]);
+
+  if (readRows.length > 0) {
+    await dbOrTx
+      .insert(issueReadStates)
+      .values(
+        readRows.map((row: {
+          userId: string;
+          lastReadAt: Date;
+          createdAt: Date;
+          updatedAt: Date;
+        }) => ({
+          companyId,
+          issueId: successorIssueId,
+          userId: row.userId,
+          lastReadAt: row.lastReadAt,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        })),
+      )
+      .onConflictDoNothing();
+  }
+
+  if (archiveRows.length > 0) {
+    await dbOrTx
+      .insert(issueInboxArchives)
+      .values(
+        archiveRows.map((row: {
+          userId: string;
+          archivedAt: Date;
+          createdAt: Date;
+          updatedAt: Date;
+        }) => ({
+          companyId,
+          issueId: successorIssueId,
+          userId: row.userId,
+          archivedAt: row.archivedAt,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        })),
+      )
+      .onConflictDoNothing();
+  }
+}
+
 async function resolveRecoveryTarget({
   dbOrTx,
   companyId,
@@ -287,6 +373,12 @@ async function resolveRecoveryTarget({
     actorAgentId,
     actorUserId,
   });
+  await copyRecoveryInboxContext({
+    dbOrTx,
+    companyId,
+    sourceIssueId,
+    successorIssueId,
+  });
   await appendRecoveryTransitionComment({
     dbOrTx,
     companyId,
@@ -302,6 +394,7 @@ export interface IssueFilters {
   status?: string;
   includeClosed?: boolean;
   includeRelations?: boolean;
+  excludeRecoverySourcesWithOpenSuccessors?: boolean;
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -333,10 +426,12 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
-type IssueUserCommentStats = {
+type IssueUserActivityStats = {
   issueId: string;
   myLastCommentAt: Date | null;
+  myLastActivityAt: Date | null;
   lastExternalCommentAt: Date | null;
+  lastExternalActivityAt: Date | null;
 };
 type IssueLastActivityStat = {
   issueId: string;
@@ -344,6 +439,7 @@ type IssueLastActivityStat = {
   latestLogAt: Date | null;
 };
 type IssueUserContextInput = {
+  id?: string;
   createdByUserId: string | null;
   assigneeUserId: string | null;
   createdAt: Date | string;
@@ -361,6 +457,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
+  recoverySource: IssueRelationIssueSummary | null;
+  recoverySuccessor: IssueRelationIssueSummary | null;
 };
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
@@ -388,6 +486,26 @@ async function getProjectDefaultGoalId(
   return row?.goalId ?? null;
 }
 
+function toIssueRelationSummary(row: {
+  relatedId: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}): IssueRelationIssueSummary {
+  return {
+    id: row.relatedId,
+    identifier: row.identifier,
+    title: row.title,
+    status: row.status as IssueRelationIssueSummary["status"],
+    priority: row.priority as IssueRelationIssueSummary["priority"],
+    assigneeAgentId: row.assigneeAgentId,
+    assigneeUserId: row.assigneeUserId,
+  };
+}
+
 async function getWorkspaceInheritanceIssue(
   db: DbReader,
   companyId: string,
@@ -410,24 +528,73 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
-function touchedByUserCondition(companyId: string, userId: string) {
+function issueTouchedByUserForIssueIdCondition(
+  companyId: string,
+  userId: string,
+  issueIdExpr: { getSQL?: () => unknown } | unknown,
+) {
   return sql<boolean>`
     (
-      ${issues.createdByUserId} = ${userId}
-      OR ${issues.assigneeUserId} = ${userId}
-      OR EXISTS (
+      EXISTS (
         SELECT 1
         FROM ${issueReadStates}
-        WHERE ${issueReadStates.issueId} = ${issues.id}
+        WHERE ${issueReadStates.issueId} = ${issueIdExpr}
           AND ${issueReadStates.companyId} = ${companyId}
           AND ${issueReadStates.userId} = ${userId}
       )
       OR EXISTS (
         SELECT 1
         FROM ${issueComments}
-        WHERE ${issueComments.issueId} = ${issues.id}
+        WHERE ${issueComments.issueId} = ${issueIdExpr}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${activityLog}
+        WHERE ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issueIdExpr}::text
+          AND ${activityLog.actorType} = 'user'
+          AND ${activityLog.actorId} = ${userId}
+          AND ${activityLog.action} NOT IN (${sql.join(
+            ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+            sql`, `,
+          )})
+      )
+    )
+  `;
+}
+
+function touchedByUserCondition(companyId: string, userId: string) {
+  const relatedIssueId = sql`
+    CASE
+      WHEN ${issueRelations.issueId} = ${issues.id} THEN ${issueRelations.relatedIssueId}
+      ELSE ${issueRelations.issueId}
+    END
+  `;
+  return sql<boolean>`
+    (
+      ${issues.createdByUserId} = ${userId}
+      OR ${issues.assigneeUserId} = ${userId}
+      OR ${issueTouchedByUserForIssueIdCondition(companyId, userId, issues.id)}
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueRelations}
+        INNER JOIN ${issues} AS related_issues
+          ON related_issues.id = ${relatedIssueId}
+          AND related_issues.company_id = ${companyId}
+        WHERE ${issueRelations.companyId} = ${companyId}
+          AND ${issueRelations.type} = ${RECOVERY_RELATION_TYPE}
+          AND (
+            ${issueRelations.issueId} = ${issues.id}
+            OR ${issueRelations.relatedIssueId} = ${issues.id}
+          )
+          AND (
+            related_issues.created_by_user_id = ${userId}
+            OR related_issues.assignee_user_id = ${userId}
+            OR ${issueTouchedByUserForIssueIdCondition(companyId, userId, relatedIssueId)}
+          )
       )
     )
   `;
@@ -469,6 +636,24 @@ function myLastCommentAtExpr(companyId: string, userId: string) {
   `;
 }
 
+function myLastActivityAtExpr(companyId: string, userId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${activityLog.createdAt})
+      FROM ${activityLog}
+      WHERE ${activityLog.companyId} = ${companyId}
+        AND ${activityLog.entityType} = 'issue'
+        AND ${activityLog.entityId} = ${issues.id}::text
+        AND ${activityLog.actorType} = 'user'
+        AND ${activityLog.actorId} = ${userId}
+        AND ${activityLog.action} NOT IN (${sql.join(
+          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+          sql`, `,
+        )})
+    )
+  `;
+}
+
 function myLastReadAtExpr(companyId: string, userId: string) {
   return sql<Date | null>`
     (
@@ -483,10 +668,12 @@ function myLastReadAtExpr(companyId: string, userId: string) {
 
 function myLastTouchAtExpr(companyId: string, userId: string) {
   const myLastCommentAt = myLastCommentAtExpr(companyId, userId);
+  const myLastActivityAt = myLastActivityAtExpr(companyId, userId);
   const myLastReadAt = myLastReadAtExpr(companyId, userId);
   return sql<Date | null>`
     GREATEST(
       COALESCE(${myLastCommentAt}, to_timestamp(0)),
+      COALESCE(${myLastActivityAt}, to_timestamp(0)),
       COALESCE(${myLastReadAt}, to_timestamp(0)),
       COALESCE(CASE WHEN ${issues.createdByUserId} = ${userId} THEN ${issues.createdAt} ELSE NULL END, to_timestamp(0)),
       COALESCE(CASE WHEN ${issues.assigneeUserId} = ${userId} THEN ${issues.updatedAt} ELSE NULL END, to_timestamp(0))
@@ -509,12 +696,34 @@ function lastExternalCommentAtExpr(companyId: string, userId: string) {
   `;
 }
 
+function lastExternalActivityAtExpr(companyId: string, userId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${activityLog.createdAt})
+      FROM ${activityLog}
+      WHERE ${activityLog.companyId} = ${companyId}
+        AND ${activityLog.entityType} = 'issue'
+        AND ${activityLog.entityId} = ${issues.id}::text
+        AND ${activityLog.action} NOT IN (${sql.join(
+          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+          sql`, `,
+        )})
+        AND (
+          ${activityLog.actorType} <> 'user'
+          OR ${activityLog.actorId} <> ${userId}
+        )
+    )
+  `;
+}
+
 function issueLastActivityAtExpr(companyId: string, userId: string) {
   const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
+  const lastExternalActivityAt = lastExternalActivityAtExpr(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
   return sql<Date>`
     GREATEST(
       COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
+      COALESCE(${lastExternalActivityAt}, to_timestamp(0)),
       CASE
         WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
         THEN ${issues.updatedAt}
@@ -572,20 +781,38 @@ function issueCanonicalLastActivityAtExpr(companyId: string) {
 
 function unreadForUserCondition(companyId: string, userId: string) {
   const touchedCondition = touchedByUserCondition(companyId, userId);
+  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
+  const lastExternalActivityAt = lastExternalActivityAtExpr(companyId, userId);
   return sql<boolean>`
     (
       ${touchedCondition}
-      AND EXISTS (
+      AND GREATEST(
+        COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
+        COALESCE(${lastExternalActivityAt}, to_timestamp(0))
+      ) > COALESCE(${myLastTouchAt}, to_timestamp(0))
+    )
+  `;
+}
+
+function visibleBlockedRecoverySourceCondition(companyId: string) {
+  return sql<boolean>`
+    (
+      ${issues.status} <> 'blocked'
+      OR NOT EXISTS (
         SELECT 1
-        FROM ${issueComments}
-        WHERE ${issueComments.issueId} = ${issues.id}
-          AND ${issueComments.companyId} = ${companyId}
-          AND (
-            ${issueComments.authorUserId} IS NULL
-            OR ${issueComments.authorUserId} <> ${userId}
-          )
-          AND ${issueComments.createdAt} > ${myLastTouchAt}
+        FROM ${issueRelations}
+        INNER JOIN ${issues} AS recovery_successors
+          ON recovery_successors.id = ${issueRelations.relatedIssueId}
+          AND recovery_successors.company_id = ${companyId}
+        WHERE ${issueRelations.companyId} = ${companyId}
+          AND ${issueRelations.type} = ${RECOVERY_RELATION_TYPE}
+          AND ${issueRelations.issueId} = ${issues.id}
+          AND recovery_successors.hidden_at IS NULL
+          AND recovery_successors.status IN (${sql.join(
+            OPEN_ISSUE_STATUSES.map((status) => sql`${status}`),
+            sql`, `,
+          )})
       )
     )
   `;
@@ -647,7 +874,10 @@ export function deriveIssueUserContext(
     | {
       myLastCommentAt: Date | string | null;
       myLastReadAt: Date | string | null;
+      myLastActivityAt?: Date | string | null;
       lastExternalCommentAt: Date | string | null;
+      lastExternalActivityAt?: Date | string | null;
+      relatedLastTouchAt?: Date | string | null;
     }
     | null
     | undefined,
@@ -661,16 +891,22 @@ export function deriveIssueUserContext(
 
   const myLastCommentAt = normalizeDate(stats?.myLastCommentAt);
   const myLastReadAt = normalizeDate(stats?.myLastReadAt);
+  const myLastActivityAt = normalizeDate(stats?.myLastActivityAt);
   const createdTouchAt = issue.createdByUserId === userId ? normalizeDate(issue.createdAt) : null;
   const assignedTouchAt = issue.assigneeUserId === userId ? normalizeDate(issue.updatedAt) : null;
-  const myLastTouchAt = [myLastCommentAt, myLastReadAt, createdTouchAt, assignedTouchAt]
+  const relatedLastTouchAt = normalizeDate(stats?.relatedLastTouchAt);
+  const myLastTouchAt = [myLastCommentAt, myLastReadAt, myLastActivityAt, createdTouchAt, assignedTouchAt, relatedLastTouchAt]
     .filter((value): value is Date => value instanceof Date)
     .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
   const lastExternalCommentAt = normalizeDate(stats?.lastExternalCommentAt);
+  const lastExternalActivityAt = latestIssueActivityAt(
+    lastExternalCommentAt,
+    stats?.lastExternalActivityAt ?? null,
+  );
   const isUnreadForMe = Boolean(
     myLastTouchAt &&
-    lastExternalCommentAt &&
-    lastExternalCommentAt.getTime() > myLastTouchAt.getTime(),
+    lastExternalActivityAt &&
+    lastExternalActivityAt.getTime() > myLastTouchAt.getTime(),
   );
 
   return {
@@ -929,11 +1165,11 @@ export function issueService(db: Db) {
     const uniqueIssueIds = [...new Set(issueIds)];
     const empty = new Map<string, IssueRelationSummaryMap>();
     for (const issueId of uniqueIssueIds) {
-      empty.set(issueId, { blockedBy: [], blocks: [] });
+      empty.set(issueId, { blockedBy: [], blocks: [], recoverySource: null, recoverySuccessor: null });
     }
     if (uniqueIssueIds.length === 0) return empty;
 
-    const [blockedByRows, blockingRows] = await Promise.all([
+    const [blockedByRows, blockingRows, recoverySourceRows, recoverySuccessorRows] = await Promise.all([
       dbOrTx
         .select({
           currentIssueId: issueRelations.relatedIssueId,
@@ -974,29 +1210,67 @@ export function issueService(db: Db) {
             inArray(issueRelations.issueId, uniqueIssueIds),
           ),
         ),
+      dbOrTx
+        .select({
+          currentIssueId: issueRelations.relatedIssueId,
+          relatedId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          relationCreatedAt: issueRelations.createdAt,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, RECOVERY_RELATION_TYPE),
+            inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+          ),
+        )
+        .orderBy(desc(issueRelations.createdAt), desc(issueRelations.updatedAt)),
+      dbOrTx
+        .select({
+          currentIssueId: issueRelations.issueId,
+          relatedId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          relationCreatedAt: issueRelations.createdAt,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, RECOVERY_RELATION_TYPE),
+            inArray(issueRelations.issueId, uniqueIssueIds),
+          ),
+        )
+        .orderBy(desc(issueRelations.createdAt), desc(issueRelations.updatedAt)),
     ]);
 
     for (const row of blockedByRows) {
-      empty.get(row.currentIssueId)?.blockedBy.push({
-        id: row.relatedId,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status as IssueRelationIssueSummary["status"],
-        priority: row.priority as IssueRelationIssueSummary["priority"],
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-      });
+      empty.get(row.currentIssueId)?.blockedBy.push(toIssueRelationSummary(row));
     }
     for (const row of blockingRows) {
-      empty.get(row.currentIssueId)?.blocks.push({
-        id: row.relatedId,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status as IssueRelationIssueSummary["status"],
-        priority: row.priority as IssueRelationIssueSummary["priority"],
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-      });
+      empty.get(row.currentIssueId)?.blocks.push(toIssueRelationSummary(row));
+    }
+    for (const row of recoverySourceRows) {
+      const relations = empty.get(row.currentIssueId);
+      if (!relations || relations.recoverySource) continue;
+      relations.recoverySource = toIssueRelationSummary(row);
+    }
+    for (const row of recoverySuccessorRows) {
+      const relations = empty.get(row.currentIssueId);
+      if (!relations || relations.recoverySuccessor) continue;
+      relations.recoverySuccessor = toIssueRelationSummary(row);
     }
 
     for (const relations of empty.values()) {
@@ -1274,12 +1548,14 @@ export function issueService(db: Db) {
       }
       if (touchedByUserId) {
         conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+      } else if (unreadForUserId) {
+        conditions.push(touchedByUserCondition(companyId, unreadForUserId));
       }
       if (inboxArchivedByUserId) {
         conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
       }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+      if (filters?.excludeRecoverySourcesWithOpenSuccessors) {
+        conditions.push(visibleBlockedRecoverySourceCondition(companyId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.executionWorkspaceId) {
@@ -1346,7 +1622,50 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows] = await Promise.all([
+      const issueIdSet = new Set(issueIds);
+      const directRecoveryNeighborsByIssueId = new Map<string, string[]>();
+      const contextIssueIdsSet = new Set(issueIds);
+      const pushDirectRecoveryNeighbor = (issueId: string, neighborId: string) => {
+        const existing = directRecoveryNeighborsByIssueId.get(issueId);
+        if (existing) {
+          if (!existing.includes(neighborId)) existing.push(neighborId);
+          return;
+        }
+        directRecoveryNeighborsByIssueId.set(issueId, [neighborId]);
+      };
+
+      const directRecoveryRows = contextUserId
+        ? await db
+          .select({
+            issueId: issueRelations.issueId,
+            relatedIssueId: issueRelations.relatedIssueId,
+          })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, companyId),
+              eq(issueRelations.type, RECOVERY_RELATION_TYPE),
+              or(
+                inArray(issueRelations.issueId, issueIds),
+                inArray(issueRelations.relatedIssueId, issueIds),
+              )!,
+            ),
+          )
+        : [];
+
+      for (const row of directRecoveryRows) {
+        if (issueIdSet.has(row.issueId)) {
+          contextIssueIdsSet.add(row.relatedIssueId);
+          pushDirectRecoveryNeighbor(row.issueId, row.relatedIssueId);
+        }
+        if (issueIdSet.has(row.relatedIssueId)) {
+          contextIssueIdsSet.add(row.issueId);
+          pushDirectRecoveryNeighbor(row.relatedIssueId, row.issueId);
+        }
+      }
+
+      const contextIssueIds = [...contextIssueIdsSet];
+      const [commentStatsRows, activityStatsRows, readRows, lastActivityRows, relatedIssueRows] = await Promise.all([
         contextUserId
           ? db
             .select({
@@ -1367,10 +1686,53 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issueComments.companyId, companyId),
-                inArray(issueComments.issueId, issueIds),
+                inArray(issueComments.issueId, contextIssueIds),
               ),
             )
             .groupBy(issueComments.issueId)
+          : Promise.resolve([]),
+        contextUserId
+          ? db
+            .select({
+              issueId: activityLog.entityId,
+              myLastActivityAt: sql<Date | null>`
+                MAX(
+                  CASE
+                    WHEN ${activityLog.actorType} = 'user'
+                      AND ${activityLog.actorId} = ${contextUserId}
+                      AND ${activityLog.action} NOT IN (${sql.join(
+                        ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+                        sql`, `,
+                      )})
+                    THEN ${activityLog.createdAt}
+                  END
+                )
+              `,
+              lastExternalActivityAt: sql<Date | null>`
+                MAX(
+                  CASE
+                    WHEN ${activityLog.action} NOT IN (${sql.join(
+                      ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+                      sql`, `,
+                    )})
+                      AND (
+                        ${activityLog.actorType} <> 'user'
+                        OR ${activityLog.actorId} <> ${contextUserId}
+                      )
+                    THEN ${activityLog.createdAt}
+                  END
+                )
+              `,
+            })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, companyId),
+                eq(activityLog.entityType, "issue"),
+                inArray(activityLog.entityId, contextIssueIds),
+              ),
+            )
+            .groupBy(activityLog.entityId)
           : Promise.resolve([]),
         contextUserId
           ? db
@@ -1383,7 +1745,7 @@ export function issueService(db: Db) {
               and(
                 eq(issueReadStates.companyId, companyId),
                 eq(issueReadStates.userId, contextUserId),
-                inArray(issueReadStates.issueId, issueIds),
+                inArray(issueReadStates.issueId, contextIssueIds),
               ),
             )
           : Promise.resolve([]),
@@ -1441,8 +1803,49 @@ export function issueService(db: Db) {
           }
           return [...byIssueId.values()];
         }),
+        contextUserId && contextIssueIds.length > issueIds.length
+          ? db
+            .select({
+              id: issues.id,
+              createdByUserId: issues.createdByUserId,
+              assigneeUserId: issues.assigneeUserId,
+              createdAt: issues.createdAt,
+              updatedAt: issues.updatedAt,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                inArray(issues.id, contextIssueIds),
+              ),
+            )
+          : Promise.resolve([]),
       ]);
-      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+      const statsByIssueId = new Map<string, IssueUserActivityStats>();
+      for (const row of commentStatsRows) {
+        statsByIssueId.set(row.issueId, {
+          issueId: row.issueId,
+          myLastCommentAt: row.myLastCommentAt,
+          myLastActivityAt: null,
+          lastExternalCommentAt: row.lastExternalCommentAt,
+          lastExternalActivityAt: null,
+        });
+      }
+      for (const row of activityStatsRows) {
+        const existing = statsByIssueId.get(row.issueId);
+        if (existing) {
+          existing.myLastActivityAt = row.myLastActivityAt;
+          existing.lastExternalActivityAt = row.lastExternalActivityAt;
+        } else {
+          statsByIssueId.set(row.issueId, {
+            issueId: row.issueId,
+            myLastCommentAt: null,
+            myLastActivityAt: row.myLastActivityAt,
+            lastExternalCommentAt: null,
+            lastExternalActivityAt: row.lastExternalActivityAt,
+          });
+        }
+      }
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
       const rowsWithActivity = !contextUserId
@@ -1460,6 +1863,13 @@ export function issueService(db: Db) {
         })
         : (() => {
           const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+          const issueUserContextById = new Map<string, IssueUserContextInput>();
+          for (const row of withRuns) {
+            issueUserContextById.set(row.id, row);
+          }
+          for (const row of relatedIssueRows) {
+            issueUserContextById.set(row.id, row);
+          }
           return withRuns.map((row) => {
             const activity = lastActivityByIssueId.get(row.id);
             const lastActivityAt = latestIssueActivityAt(
@@ -1467,6 +1877,20 @@ export function issueService(db: Db) {
               activity?.latestCommentAt ?? null,
               activity?.latestLogAt ?? null,
             ) ?? row.updatedAt;
+            const relatedLastTouchAt = latestIssueActivityAt(
+              ...(directRecoveryNeighborsByIssueId.get(row.id) ?? []).map((relatedIssueId) => {
+                const relatedIssue = issueUserContextById.get(relatedIssueId);
+                if (!relatedIssue) return null;
+                const relatedStats = statsByIssueId.get(relatedIssueId);
+                return deriveIssueUserContext(relatedIssue, contextUserId, {
+                  myLastCommentAt: relatedStats?.myLastCommentAt ?? null,
+                  myLastReadAt: readByIssueId.get(relatedIssueId) ?? null,
+                  myLastActivityAt: relatedStats?.myLastActivityAt ?? null,
+                  lastExternalCommentAt: relatedStats?.lastExternalCommentAt ?? null,
+                  lastExternalActivityAt: relatedStats?.lastExternalActivityAt ?? null,
+                }).myLastTouchAt;
+              }),
+            );
             return {
               ...row,
               lastActivityAt,
@@ -1474,19 +1898,51 @@ export function issueService(db: Db) {
                 myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
                 myLastReadAt: readByIssueId.get(row.id) ?? null,
                 lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+                myLastActivityAt: statsByIssueId.get(row.id)?.myLastActivityAt ?? null,
+                lastExternalActivityAt: statsByIssueId.get(row.id)?.lastExternalActivityAt ?? null,
+                relatedLastTouchAt,
               }),
             };
           });
         })();
 
-      if (!filters?.includeRelations) {
-        return rowsWithActivity;
+      if (!contextUserId) {
+        if (!filters?.includeRelations) {
+          return rowsWithActivity;
+        }
+
+        const relationsByIssueId = await getIssueRelationSummaryMap(companyId, rowsWithActivity.map((row) => row.id));
+        return rowsWithActivity.map((row) => ({
+          ...row,
+          ...(relationsByIssueId.get(row.id) ?? {
+            blockedBy: [],
+            blocks: [],
+            recoverySource: null,
+            recoverySuccessor: null,
+          }),
+        }));
       }
 
-      const relationsByIssueId = await getIssueRelationSummaryMap(companyId, rowsWithActivity.map((row) => row.id));
-      return rowsWithActivity.map((row) => ({
+      const rowsWithUserContext = rowsWithActivity as Array<(typeof rowsWithActivity)[number] & {
+        isUnreadForMe?: boolean;
+      }>;
+      const unreadFilteredRows = unreadForUserId
+        ? rowsWithUserContext.filter((row) => row.isUnreadForMe)
+        : rowsWithUserContext;
+
+      if (!filters?.includeRelations) {
+        return unreadFilteredRows;
+      }
+
+      const relationsByIssueId = await getIssueRelationSummaryMap(companyId, unreadFilteredRows.map((row) => row.id));
+      return unreadFilteredRows.map((row) => ({
         ...row,
-        ...(relationsByIssueId.get(row.id) ?? { blockedBy: [], blocks: [] }),
+        ...(relationsByIssueId.get(row.id) ?? {
+          blockedBy: [],
+          blocks: [],
+          recoverySource: null,
+          recoverySuccessor: null,
+        }),
       }));
     },
 
@@ -1688,7 +2144,12 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
       const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
-      return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
+      return relations.get(issueId) ?? {
+        blockedBy: [],
+        blocks: [],
+        recoverySource: null,
+        recoverySuccessor: null,
+      };
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {

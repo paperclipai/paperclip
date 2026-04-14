@@ -1,9 +1,9 @@
 ---
 title: Local Development
-summary: Set up PrivateClip for local development
+summary: Set up Orchestrero for local development
 ---
 
-Run PrivateClip locally with zero external dependencies.
+Run Orchestrero locally with zero external dependencies.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ This starts:
 - **API server** at `http://localhost:3100`
 - **UI** served by the API server in dev middleware mode (same origin)
 
-No Docker or external database required. PrivateClip uses embedded PostgreSQL automatically.
+No Docker or external database required. Orchestrero uses embedded PostgreSQL automatically.
 
 ## One-Command Bootstrap
 

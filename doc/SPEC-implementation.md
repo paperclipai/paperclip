@@ -1,4 +1,4 @@
-# PrivateClip V1 Implementation Spec
+# Orchestrero V1 Implementation Spec
 
 Status: Implementation contract for first release (V1)
 Date: 2026-02-17
@@ -13,7 +13,7 @@ When there is a conflict, `SPEC-implementation.md` controls V1 behavior.
 
 ## 2. V1 Outcomes
 
-PrivateClip V1 must provide a full control-plane loop for autonomous agents:
+Orchestrero V1 must provide a full control-plane loop for autonomous agents:
 
 1. A human board creates a company and defines goals.
 2. The board creates and manages agents in an org tree.
@@ -190,7 +190,7 @@ Invariant: at least one root `company` level goal per company.
 
 Invariant:
 
-- project env is merged into run environment for issues in that project and overrides conflicting agent env keys before PrivateClip runtime-owned keys are injected
+- project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Orchestrero runtime-owned keys are injected
 
 ## 7.6 `issues` (core task entity)
 
@@ -853,7 +853,7 @@ V1 supports company import/export using a portable package contract:
 
 - markdown-first package rooted at `COMPANY.md`
 - implicit folder discovery by convention
-- `.paperclip.yaml` sidecar for PrivateClip-specific fidelity
+- `.paperclip.yaml` sidecar for Orchestrero-specific fidelity
 - canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
 - common conventions:
   - `agents/<slug>/AGENTS.md`
@@ -867,8 +867,8 @@ Export/import behavior in V1:
 
 - export emits a clean vendor-neutral markdown package plus `.paperclip.yaml`
 - projects and starter tasks are opt-in export content rather than default package content
-- recurring `TASK.md` entries use `recurring: true` in the base package and PrivateClip routine fidelity in `.paperclip.yaml`
-- PrivateClip imports recurring task packages as routines instead of downgrading them to one-time issues
+- recurring `TASK.md` entries use `recurring: true` in the base package and Orchestrero routine fidelity in `.paperclip.yaml`
+- Orchestrero imports recurring task packages as routines instead of downgrading them to one-time issues
 - export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
 - export never includes secret values; env inputs are reported as portable declarations instead
 - import supports target modes:

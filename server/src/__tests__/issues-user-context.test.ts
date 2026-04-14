@@ -110,4 +110,38 @@ describe("deriveIssueUserContext", () => {
     expect(context.lastExternalCommentAt?.toISOString()).toBe("2026-03-06T11:00:00.000Z");
     expect(context.isUnreadForMe).toBe(true);
   });
+
+  it("treats user issue activity updates as a touch point", () => {
+    const context = deriveIssueUserContext(
+      makeIssue(),
+      "user-1",
+      {
+        myLastCommentAt: null,
+        myLastReadAt: null,
+        myLastActivityAt: new Date("2026-03-06T12:00:00.000Z"),
+        lastExternalCommentAt: null,
+        lastExternalActivityAt: new Date("2026-03-06T13:00:00.000Z"),
+      },
+    );
+
+    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T12:00:00.000Z");
+    expect(context.isUnreadForMe).toBe(true);
+  });
+
+  it("uses related recovery touch timestamps when successor issues have not been opened yet", () => {
+    const context = deriveIssueUserContext(
+      makeIssue(),
+      "user-1",
+      {
+        myLastCommentAt: null,
+        myLastReadAt: null,
+        lastExternalCommentAt: null,
+        lastExternalActivityAt: new Date("2026-03-06T13:00:00.000Z"),
+        relatedLastTouchAt: new Date("2026-03-06T12:30:00.000Z"),
+      },
+    );
+
+    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T12:30:00.000Z");
+    expect(context.isUnreadForMe).toBe(true);
+  });
 });

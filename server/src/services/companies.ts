@@ -28,7 +28,7 @@ import {
   companyMemberships,
   companySkills,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -270,11 +270,21 @@ export function companyService(db: Db) {
           .select({
             id: companies.id,
             status: companies.status,
+            pauseReason: companies.pauseReason,
           })
           .from(companies)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        if (existing.status === "paused") {
+          const row = await getCompanyQuery(tx)
+            .where(eq(companies.id, id))
+            .then((rows) => rows[0] ?? null);
+          if (!row) return null;
+          const [hydrated] = await hydrateCompanySpend([row], tx);
+          return enrichCompany(hydrated);
+        }
 
         const now = new Date();
         await tx
@@ -292,10 +302,7 @@ export function companyService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const [hydrated] = await hydrateCompanySpend([row], tx);
-        return {
-          company: enrichCompany(hydrated),
-          pausedAgentCount: 0,
-        };
+        return enrichCompany(hydrated);
       }),
 
     resume: (id: string) =>
@@ -304,11 +311,25 @@ export function companyService(db: Db) {
           .select({
             id: companies.id,
             status: companies.status,
+            pauseReason: companies.pauseReason,
           })
           .from(companies)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        if (existing.pauseReason === "budget") {
+          throw conflict("Company is paused because its budget hard-stop was reached.");
+        }
+
+        if (existing.status !== "paused") {
+          const row = await getCompanyQuery(tx)
+            .where(eq(companies.id, id))
+            .then((rows) => rows[0] ?? null);
+          if (!row) return null;
+          const [hydrated] = await hydrateCompanySpend([row], tx);
+          return enrichCompany(hydrated);
+        }
 
         const now = new Date();
         await tx
@@ -326,10 +347,7 @@ export function companyService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const [hydrated] = await hydrateCompanySpend([row], tx);
-        return {
-          company: enrichCompany(hydrated),
-          resumedAgentCount: 0,
-        };
+        return enrichCompany(hydrated);
       }),
 
     remove: (id: string) =>

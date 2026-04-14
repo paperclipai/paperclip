@@ -119,7 +119,7 @@ const ACTION_LABELS: Record<string, string> = {
   "approval.rejected": "rejected",
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://www.orchestrero.ai/tos";
 const QA_DIMENSION_TITLES = [
   { key: "codeQuality", label: "Code Quality" },
   { key: "errorHandling", label: "Error Handling" },

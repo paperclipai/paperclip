@@ -44,6 +44,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 
 - Every QA decision must be visible in an issue comment.
 - Comments must state what was verified, what failed if applicable, and what the next owner must do.
+- Every QA verdict comment must include one Smart Review summary line using exactly this token format:
+  `[CQ:pass|warn|fail|na] [EH:pass|warn|fail|na] [TC:pass|warn|fail|na] [CM:pass|warn|fail|na] [DOC:pass|warn|fail|na]`
 - Do not treat implementation-complete as release-complete. `Done` requires both QA pass and release confirmation.
 
 ## Role Charter Baseline

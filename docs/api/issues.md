@@ -3,7 +3,7 @@ title: Issues
 summary: Issue CRUD, checkout/release, comments, documents, and attachments
 ---
 
-Issues are the unit of work in PrivateClip. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
+Issues are the unit of work in Orchestrero. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
 
 ## List Issues
 

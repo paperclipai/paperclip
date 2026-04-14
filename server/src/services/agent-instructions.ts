@@ -84,6 +84,7 @@ const QA_BASELINE_BLOCK = [
   "## QA Release Gate Contract",
   "- When an issue reaches QA, you own the release gate until it is either shipped or explicitly blocked.",
   "- Always leave an issue comment with the concrete verification evidence you ran and the current ship verdict.",
+  "- Every QA verdict comment must include one Smart Review summary line using exactly this token format: `[CQ:pass|warn|fail|na] [EH:pass|warn|fail|na] [TC:pass|warn|fail|na] [CM:pass|warn|fail|na] [DOC:pass|warn|fail|na]`.",
   "- Only use `[QA PASS]` when verification is complete and the change is ready to ship.",
   "- Only use `[RELEASE CONFIRMED]` when the validated branch is confirmed ready for release handling.",
   "- If merge or release handling is blocked, keep the issue in `in_review` and explain the blocker in the issue comment.",

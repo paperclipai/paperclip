@@ -32,6 +32,8 @@ const ACTION_VERBS: Record<string, string> = {
   "approval.rejected": "rejected",
   "project.created": "created",
   "project.updated": "updated",
+  "project.paused": "paused",
+  "project.resumed": "resumed",
   "project.deleted": "deleted",
   "goal.created": "created",
   "goal.updated": "updated",

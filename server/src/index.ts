@@ -588,8 +588,11 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const feedbackShareClient = config.feedbackExportBackendUrl?.trim()
+    ? createFeedbackTraceShareClientFromConfig(config)
+    : undefined;
   const feedback = feedbackService(db as any, {
-    shareClient: createFeedbackTraceShareClientFromConfig(config),
+    shareClient: feedbackShareClient,
   });
   const app = await createApp(db as any, {
     uiMode,
@@ -929,7 +932,7 @@ function isMainModule(metaUrl: string): boolean {
 
 if (isMainModule(import.meta.url)) {
   void startServer().catch((err) => {
-    logger.error({ err }, "PrivateClip server failed to start");
+    logger.error({ err }, "Orchestrero server failed to start");
     process.exit(1);
   });
 }

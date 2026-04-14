@@ -347,7 +347,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(1);
     expect(wakeups[0]?.status).toBe("skipped");
-    expect(wakeups[0]?.reason).toBe("budget.blocked");
+    expect(wakeups[0]?.reason).toBe("company.paused");
     expect(wakeups[0]?.source).toBe("timer");
 
     const runs = await db

@@ -12,7 +12,7 @@ This specification is an extension of the Agent Skills specification, not a repl
 
 It defines how company-, team-, and agent-level package structure composes around the existing `SKILL.md` model.
 
-This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only PrivateClip.
+This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only Orchestrero.
 
 The format is designed to:
 
@@ -21,7 +21,7 @@ The format is designed to:
 - require no central registry
 - support attribution and pinned references to upstream files
 - extend the existing Agent Skills ecosystem without redefining it
-- be useful outside PrivateClip
+- be useful outside Orchestrero
 
 ## 2. Core Principles
 
@@ -272,7 +272,7 @@ recurring: true
 - this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
 - legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
 
-Example PrivateClip extension:
+Example Orchestrero extension:
 
 ```yaml
 routines:
@@ -293,8 +293,8 @@ A skill package must remain a valid Agent Skills package.
 Rules:
 
 - `SKILL.md` should follow the Agent Skills spec
-- PrivateClip must not require extra top-level fields for skill validity
-- PrivateClip-specific extensions must live under `metadata.paperclip` or `metadata.sources`
+- Orchestrero must not require extra top-level fields for skill validity
+- Orchestrero-specific extensions must live under `metadata.paperclip` or `metadata.sources`
 - a skill directory may include `scripts/`, `references/`, and `assets/` exactly as the Agent Skills ecosystem expects
 - tools implementing this spec should treat `skills.sh` compatibility as a first-class goal rather than inventing a parallel skill format
 
@@ -418,7 +418,7 @@ Suggested import UI behavior:
 
 Vendor-specific data should live outside the base package shape.
 
-For PrivateClip, the preferred fidelity extension is:
+For Orchestrero, the preferred fidelity extension is:
 
 ```text
 .paperclip.yaml
@@ -433,15 +433,15 @@ Example uses:
 - budgets
 - approval policies
 - project execution workspace policies
-- issue/task PrivateClip-only metadata
+- issue/task Orchestrero-only metadata
 
 Rules:
 
 - the base package must remain readable without the extension
 - tools that do not understand a vendor extension should ignore it
-- PrivateClip tools may emit the vendor extension by default as a sidecar while keeping the base markdown clean
+- Orchestrero tools may emit the vendor extension by default as a sidecar while keeping the base markdown clean
 
-Suggested PrivateClip shape:
+Suggested Orchestrero shape:
 
 ```yaml
 schema: paperclip/v1
@@ -472,13 +472,13 @@ routines:
         timezone: America/Chicago
 ```
 
-Additional rules for PrivateClip exporters:
+Additional rules for Orchestrero exporters:
 
 - do not duplicate `promptTemplate` when `AGENTS.md` already contains the agent instructions
 - do not export provider-specific secret bindings such as `secretId`, `version`, or `type: secret_ref`
 - export env inputs as portable declarations with `required` or `optional` semantics and optional defaults
 - warn on system-dependent values such as absolute commands and absolute `PATH` overrides
-- omit empty and default-valued PrivateClip fields when possible
+- omit empty and default-valued Orchestrero fields when possible
 
 ## 16. Export Rules
 
@@ -491,7 +491,7 @@ A compliant exporter should:
 - preserve task descriptions and recurring-task declarations when exporting tasks
 - omit empty/default fields
 - default to the vendor-neutral base package
-- PrivateClip exporters should emit `.paperclip.yaml` as a sidecar by default
+- Orchestrero exporters should emit `.paperclip.yaml` as a sidecar by default
 - preserve attribution and source references
 - prefer `referenced` over silent vendoring for third-party content
 - preserve `SKILL.md` as-is when exporting compatible skills
@@ -528,9 +528,9 @@ Rules:
 - lock files are generated artifacts, not canonical authoring input
 - the markdown package remains the source of truth
 
-## 19. PrivateClip Mapping
+## 19. Orchestrero Mapping
 
-PrivateClip can map this spec to its runtime model like this:
+Orchestrero can map this spec to its runtime model like this:
 
 - base package:
   - `COMPANY.md` -> company metadata
@@ -540,24 +540,24 @@ PrivateClip can map this spec to its runtime model like this:
   - `TASK.md` -> starter issue/task definition, or recurring task template when `recurring: true`
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
-- PrivateClip extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other PrivateClip-specific fidelity
+- Orchestrero extension:
+  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Orchestrero-specific fidelity
 
-Inline PrivateClip-only metadata that must live inside a shared markdown file should use:
+Inline Orchestrero-only metadata that must live inside a shared markdown file should use:
 
 - `metadata.paperclip`
 
-That keeps the base format broader than PrivateClip.
+That keeps the base format broader than Orchestrero.
 
-This specification itself remains vendor-neutral and intended for any agent-company runtime, not only PrivateClip.
+This specification itself remains vendor-neutral and intended for any agent-company runtime, not only Orchestrero.
 
 ## 20. Cutover
 
-PrivateClip should cut over to this markdown-first package model as the primary portability format.
+Orchestrero should cut over to this markdown-first package model as the primary portability format.
 
 `paperclip.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
 
-For PrivateClip, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
+For Orchestrero, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
 
 ## 21. Minimal Example
 

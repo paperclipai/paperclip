@@ -587,4 +587,25 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     expect(target).toBeNull();
   });
+
+  it("does not treat user-assigned todo work as ready unassigned work", async () => {
+    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const humanOwnedIssueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: humanOwnedIssueId,
+      companyId,
+      title: "Board-owned follow-up remains with the human operator",
+      status: "todo",
+      priority: "urgent",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toBeNull();
+  });
 });

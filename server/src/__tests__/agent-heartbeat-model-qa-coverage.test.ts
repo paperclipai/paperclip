@@ -143,6 +143,8 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
     expect(actualAgentsMd).toContain("paperclip:qa-baseline:start");
     expect(actualAgentsMd).toContain("[QA PASS]");
     expect(actualAgentsMd).toContain("[RELEASE CONFIRMED]");
+    expect(actualAgentsMd).toContain("[CQ:pass|warn|fail|na]");
+    expect(actualAgentsMd).toContain("[DOC:pass|warn|fail|na]");
   });
 
   it("repairs drifted managed QA instructions without deleting custom persona content", async () => {
@@ -219,6 +221,8 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
     expect(agentsMd).toContain("paperclip:qa-baseline:start");
     expect(agentsMd).toContain("[QA PASS]");
     expect(agentsMd).toContain("[RELEASE CONFIRMED]");
+    expect(agentsMd).toContain("[CQ:pass|warn|fail|na]");
+    expect(agentsMd).toContain("[DOC:pass|warn|fail|na]");
   });
 
   it("skips companies that do not have a tech team", async () => {

@@ -1,3 +1,47 @@
+export type DashboardBriefTone = "healthy" | "watch" | "at_risk" | "blocked";
+
+export interface DashboardBriefMetric {
+  value: string;
+  label: string;
+  headline: string;
+  detail: string;
+  tone: DashboardBriefTone;
+}
+
+export interface DashboardFocusArea {
+  key: string;
+  label: string;
+  tone: DashboardBriefTone;
+  changedIssueCount: number;
+  blockedCount: number;
+  failedRunCount: number;
+  activeAgentCount: number;
+  latestUpdate: string;
+  href: string;
+}
+
+export interface DashboardAttentionItem {
+  key: string;
+  kind: "issue" | "run" | "approval" | "join_request";
+  title: string;
+  reason: string;
+  severity: "low" | "medium" | "high" | "critical";
+  timestamp: Date;
+  href: string;
+}
+
+export interface DashboardBrief {
+  health: DashboardBriefTone;
+  snapshot: {
+    progress: DashboardBriefMetric;
+    risk: DashboardBriefMetric;
+    decisions: DashboardBriefMetric;
+    spend: DashboardBriefMetric;
+  };
+  focusAreas: DashboardFocusArea[];
+  needsAttention: DashboardAttentionItem[];
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -24,4 +68,5 @@ export interface DashboardSummary {
     pausedAgents: number;
     pausedProjects: number;
   };
+  brief: DashboardBrief;
 }

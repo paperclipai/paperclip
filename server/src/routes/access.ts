@@ -131,7 +131,7 @@ function readSkillMarkdown(skillName: string): string | null {
   return null;
 }
 
-/** Resolve the PrivateClip repo skills directory (built-in / managed skills). */
+/** Resolve the Orchestrero repo skills directory (built-in / managed skills). */
 function resolvePaperclipSkillsDir(): string | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -180,7 +180,7 @@ function listAvailableSkills(): AvailableSkill[] {
   const claudeSkillsDir = path.join(homeDir, ".claude", "skills");
   const paperclipSkillsDir = resolvePaperclipSkillsDir();
 
-  // Build set of PrivateClip-managed skill names
+  // Build set of Orchestrero-managed skill names
   const paperclipSkillNames = new Set<string>();
   if (paperclipSkillsDir) {
     try {
@@ -917,7 +917,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_api_loopback",
       level: "warn",
       message:
-        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your PrivateClip host.",
+        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your Orchestrero host.",
       hint: "Use a reachable hostname/IP (for example Tailscale hostname, Docker host alias, or public domain)."
     });
   }
@@ -930,7 +930,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
     diagnostics.push({
       code: "openclaw_onboarding_private_loopback_bind",
       level: "warn",
-      message: "PrivateClip is bound to loopback in authenticated/private mode.",
+      message: "Orchestrero is bound to loopback in authenticated/private mode.",
       hint: "Run with a reachable bind host or use pnpm dev --tailscale-auth for private-network onboarding."
     });
   }
@@ -1073,8 +1073,8 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the PrivateClip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this PrivateClip API base URL for invite, claim, and skill bootstrap calls."
+            ? "If OpenClaw runs on another machine, ensure the Orchestrero hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
+            : "Ensure OpenClaw can reach this Orchestrero API base URL for invite, claim, and skill bootstrap calls."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1136,7 +1136,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # PrivateClip OpenClaw Gateway Onboarding
+    # Orchestrero OpenClaw Gateway Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1205,7 +1205,7 @@ export function buildInviteOnboardingTextDocument(
     Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
     Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
     Pairing mode requirement:
-    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, PrivateClip generates and persists one during join so pairing approvals are stable.
+    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Orchestrero generates and persists one during join so pairing approvals are stable.
     - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
     - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
     Do NOT use /v1/responses or /hooks/* in this gateway join flow.
@@ -1233,7 +1233,7 @@ export function buildInviteOnboardingTextDocument(
     - claimApiKeyPath
 
     ## Step 2: Wait for board approval
-    The board approves the join request in PrivateClip before key claim is allowed.
+    The board approves the join request in Orchestrero before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -1269,7 +1269,7 @@ export function buildInviteOnboardingTextDocument(
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install PrivateClip skill in OpenClaw
+    ## Step 4: Install Orchestrero skill in OpenClaw
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
@@ -1281,7 +1281,7 @@ export function buildInviteOnboardingTextDocument(
     ## Connectivity guidance
     ${
       onboarding.connectivity?.guidance ??
-      "Ensure PrivateClip is reachable from your OpenClaw runtime."
+      "Ensure Orchestrero is reachable from your OpenClaw runtime."
     }
   `);
 
@@ -1294,7 +1294,7 @@ export function buildInviteOnboardingTextDocument(
     : [];
 
   if (connectionCandidates.length > 0) {
-    lines.push("## Suggested PrivateClip base URLs to try");
+    lines.push("## Suggested Orchestrero base URLs to try");
     for (const candidate of connectionCandidates) {
       lines.push(`- ${candidate}`);
     }
@@ -1307,7 +1307,7 @@ export function buildInviteOnboardingTextDocument(
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
       - pnpm paperclipai allowed-hostname <host>
-      - then restart PrivateClip and retry onboarding.
+      - then restart Orchestrero and retry onboarding.
     `);
   }
 

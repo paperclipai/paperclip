@@ -494,7 +494,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "This secret is stored securely via the PrivateClip secret provider."
+        "This secret is stored securely via the Orchestrero secret provider."
       }
       required={isRequired}
       error={error}

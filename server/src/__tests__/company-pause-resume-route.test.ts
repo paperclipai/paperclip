@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { companyRoutes } from "../routes/companies.js";
 import { errorHandler } from "../middleware/index.js";
+import { conflict } from "../errors.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -31,6 +32,7 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForCompany: vi.fn(),
+  cancelExecutionScopeWork: vi.fn(),
   stopRunningForCompany: vi.fn(),
   invoke: vi.fn(),
   resumeQueuedRuns: vi.fn(),
@@ -143,13 +145,13 @@ describe("company pause/resume routes", () => {
     });
   });
 
-  it("pauses a company without cancelling active work", async () => {
+  it("pauses a company and cancels queued, running, and deferred company work", async () => {
     const paused = createCompany("paused");
-    mockCompanyService.pause.mockResolvedValue({
-      company: paused,
-      pausedAgentCount: 0,
+    mockCompanyService.pause.mockResolvedValue(paused);
+    mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
+      cancelledRunCount: 2,
+      cancelledWakeupCount: 3,
     });
-    mockHeartbeatService.stopRunningForCompany.mockResolvedValue(2);
 
     const app = createApp({
       type: "board",
@@ -162,27 +164,29 @@ describe("company pause/resume routes", () => {
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("paused");
     expect(mockCompanyService.pause).toHaveBeenCalledWith("company-1");
-    expect(mockHeartbeatService.stopRunningForCompany).toHaveBeenCalledWith(
-      "company-1",
-      "Stopped due to company pause",
+    expect(mockHeartbeatService.cancelExecutionScopeWork).toHaveBeenCalledWith(
+      {
+        companyId: "company-1",
+        scopeType: "company",
+        scopeId: "company-1",
+      },
+      "Cancelled due to company pause",
     );
     expect(mockHeartbeatService.cancelActiveForCompany).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.stopRunningForCompany).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         companyId: "company-1",
         action: "company.paused",
-        details: { pausedAgentCount: 0, stoppedRunCount: 2 },
+        details: { cancelledRunCount: 2, cancelledWakeupCount: 3 },
       }),
     );
   });
 
-  it("resumes a company and resumes company-paused agents", async () => {
+  it("resumes a company and triggers a COO kickoff for future work", async () => {
     const active = createCompany("active");
-    mockCompanyService.resume.mockResolvedValue({
-      company: active,
-      resumedAgentCount: 0,
-    });
+    mockCompanyService.resume.mockResolvedValue(active);
     mockAgentService.list.mockResolvedValue([
       { id: "agent-coo-1", role: "coo", status: "idle" },
     ]);
@@ -221,12 +225,29 @@ describe("company pause/resume routes", () => {
         companyId: "company-1",
         action: "company.resumed",
         details: {
-          resumedAgentCount: 0,
           cooAgentId: "agent-coo-1",
           cooHeartbeatTriggered: true,
         },
       }),
     );
+  });
+
+  it("returns 409 when attempting to manually resume a budget-paused company", async () => {
+    mockCompanyService.resume.mockRejectedValue(
+      conflict("Company is paused because its budget hard-stop was reached."),
+    );
+
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const response = await request(app).post("/api/companies/company-1/resume").send({});
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain("budget hard-stop");
+    expect(mockHeartbeatService.resumeQueuedRuns).not.toHaveBeenCalled();
   });
 
   it("lists paused roadmap epics for a company", async () => {

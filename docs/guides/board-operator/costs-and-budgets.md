@@ -3,7 +3,7 @@ title: Costs and Budgets
 summary: Budget caps, cost tracking, and auto-pause enforcement
 ---
 
-PrivateClip tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
+Orchestrero tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
 
 ## How Cost Tracking Works
 
@@ -39,7 +39,7 @@ PATCH /api/agents/{agentId}
 
 ## Budget Enforcement
 
-PrivateClip enforces budgets automatically:
+Orchestrero enforces budgets automatically:
 
 | Threshold | Action |
 |-----------|--------|

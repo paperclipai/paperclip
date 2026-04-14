@@ -5,12 +5,12 @@ import { canonicalizeAgentRole } from "@paperclipai/shared";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
 
-export const LEGACY_GENERIC_DEFAULT_AGENT_INSTRUCTIONS_BASELINE = `You are an agent at PrivateClip company.
+export const LEGACY_GENERIC_DEFAULT_AGENT_INSTRUCTIONS_BASELINE = `You are an agent at Orchestrero company.
 
 Keep the work moving until it's done. If you need QA to review it, ask them. If you need your boss to review it, ask them. If someone needs to unblock you, assign them the ticket with a comment asking for what you need. Don't let work just sit here. You must always update your task with a comment.
 `;
 
-export const CURRENT_SHARED_DEFAULT_AGENT_INSTRUCTIONS_BASELINE = `You are an agent at a PrivateClip company.
+export const CURRENT_SHARED_DEFAULT_AGENT_INSTRUCTIONS_BASELINE = `You are an agent at a Orchestrero company.
 
 Keep the work moving until it is done. Do not let work sit without visible issue-level truth.
 

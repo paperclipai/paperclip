@@ -6,7 +6,7 @@ import type {
   TelemetryState,
 } from "./types.js";
 
-const DEFAULT_ENDPOINT = "https://telemetry.paperclip.ing/ingest";
+const DEFAULT_ENDPOINT = "https://www.orchestrero.ai/telemetry";
 const BATCH_SIZE = 50;
 const SEND_TIMEOUT_MS = 5_000;
 

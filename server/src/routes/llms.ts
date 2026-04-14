@@ -29,7 +29,7 @@ export function llmRoutes(db: Db) {
     await assertCanRead(req);
     const adapters = listServerAdapters().sort((a, b) => a.type.localeCompare(b.type));
     const lines = [
-      "# PrivateClip Agent Configuration Index",
+      "# Orchestrero Agent Configuration Index",
       "",
       "Installed adapters:",
       ...adapters.map((adapter) => `- ${adapter.type}: /llms/agent-configuration/${adapter.type}.txt`),
@@ -53,7 +53,7 @@ export function llmRoutes(db: Db) {
   router.get("/llms/agent-icons.txt", async (req, res) => {
     await assertCanRead(req);
     const lines = [
-      "# PrivateClip Agent Icon Names",
+      "# Orchestrero Agent Icon Names",
       "",
       "Set the `icon` field on hire/create payloads to one of:",
       ...AGENT_ICON_NAMES.map((name) => `- ${name}`),

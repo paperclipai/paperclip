@@ -270,9 +270,9 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* PrivateClip icon - aligned with top sections (implied line, no visible border) */}
+      {/* Orchestrero icon - aligned with top sections (implied line, no visible border) */}
       <div className="flex items-center justify-center h-16 w-full shrink-0">
-        <img src="/favicon.svg" alt="PrivateClip logo" className="h-12 w-12" />
+        <img src="/favicon.svg" alt="Orchestrero logo" className="h-12 w-12" />
       </div>
 
       {/* Company list */}

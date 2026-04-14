@@ -1,6 +1,6 @@
 import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Menu, Pause, Play } from "lucide-react";
+import { Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -19,6 +19,7 @@ import {
 import { Fragment, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { CompanyRuntimeButton } from "./CompanyRuntimeButton";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -88,37 +89,21 @@ export function BreadcrumbBar() {
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
   const showRuntimeButton = Boolean(selectedCompanyId && selectedCompany && selectedCompany.status !== "archived");
 
-  const runtimeAction = selectedCompany?.status === "paused" ? "resume" : "pause";
   const runtimeButton = showRuntimeButton ? (
-    <Button
-      size="sm"
-      disabled={lifecycleMutation.isPending}
-      className={selectedCompany?.status === "paused"
-        ? "bg-emerald-600 text-white hover:bg-emerald-700"
-        : "bg-amber-500 text-amber-950 hover:bg-amber-400"}
-      onClick={() => {
+    <CompanyRuntimeButton
+      companyPaused={selectedCompany?.status === "paused"}
+      pauseReason={selectedCompany?.pauseReason ?? null}
+      isPending={lifecycleMutation.isPending}
+      pendingAction={lifecycleMutation.variables?.action}
+      onPause={() => {
         if (!selectedCompanyId || !selectedCompany) return;
-        lifecycleMutation.mutate({ action: runtimeAction, companyId: selectedCompanyId });
+        lifecycleMutation.mutate({ action: "pause", companyId: selectedCompanyId });
       }}
-      title={selectedCompany?.status === "paused" ? "Run company" : "Pause company"}
-      aria-label={selectedCompany?.status === "paused" ? "Run company" : "Pause company"}
-    >
-      {lifecycleMutation.isPending
-        ? (lifecycleMutation.variables?.action === "resume" ? "Running..." : "Pausing...")
-        : selectedCompany?.status === "paused"
-          ? (
-            <>
-              <Play className="mr-1 h-3.5 w-3.5" />
-              Run
-            </>
-          )
-          : (
-            <>
-              <Pause className="mr-1 h-3.5 w-3.5" />
-              Pause
-            </>
-          )}
-    </Button>
+      onResume={() => {
+        if (!selectedCompanyId || !selectedCompany) return;
+        lifecycleMutation.mutate({ action: "resume", companyId: selectedCompanyId });
+      }}
+    />
   ) : null;
 
   const rightControls = (runtimeButton || globalToolbarSlots) ? (
@@ -131,7 +116,7 @@ export function BreadcrumbBar() {
   const desktopCenterBrand = (
     <div className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 md:block">
       <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-        PrivateClip
+        Orchestrero
       </span>
     </div>
   );

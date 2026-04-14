@@ -291,7 +291,7 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in PrivateClip runtime skills are added automatically.
+                Optional skills from the company library. Built-in Orchestrero runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (
