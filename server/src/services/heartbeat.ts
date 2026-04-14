@@ -6360,7 +6360,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
-    const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
+    const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, derivedTaskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
       enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
