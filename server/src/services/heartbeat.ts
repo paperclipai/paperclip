@@ -4703,5 +4703,24 @@ export function heartbeatService(db: Db) {
         .limit(1);
       return run ?? null;
     },
+
+    appendExternalRunEvent: async (
+      runId: string,
+      event: {
+        eventType: string;
+        stream?: "system" | "stdout" | "stderr";
+        level?: "info" | "warn" | "error";
+        color?: string;
+        message?: string;
+        payload?: Record<string, unknown>;
+      },
+    ) => {
+      const run = await getRun(runId);
+      if (!run) return null;
+      if (run.status !== "running" && run.status !== "queued") return null;
+      const seq = await nextRunEventSeq(runId);
+      await appendRunEvent(run, seq, event);
+      return { seq };
+    },
   };
 }
