@@ -6,12 +6,17 @@ const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockMobileWebHandoffService = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
+  agentService: () => mockAgentService,
   mobileWebHandoffService: () => mockMobileWebHandoffService,
 }));
 
@@ -38,6 +43,31 @@ function createCompany(overrides: Record<string, unknown> = {}) {
     logoUrl: null,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
+  };
+}
+
+function createAgent(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-03-19T02:00:00.000Z");
+  return {
+    id: "agent-1",
+    companyId: "company-1",
+    name: "CTO",
+    role: "cto",
+    status: "active",
+    adapterType: "openai",
+    adapterConfig: {},
+    runtimeConfig: {},
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    title: null,
+    reportsTo: null,
+    capabilities: null,
+    metadata: null,
+    permissions: [],
+    createdAt: now,
+    updatedAt: now,
+    urlKey: "cto",
     ...overrides,
   };
 }
@@ -152,6 +182,37 @@ describe("mobile web handoff routes", () => {
     });
   });
 
+  it("creates an agent configuration handoff", async () => {
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockAgentService.getById.mockResolvedValue(createAgent());
+    mockMobileWebHandoffService.create.mockResolvedValue({
+      token: "token-123",
+      expiresAt: new Date("2026-04-13T16:00:00.000Z"),
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "remote_auth",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/mobile-web-handoff")
+      .send({
+        target: "agent_configuration",
+        companyId: "company-1",
+        agentId: "agent-1",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockMobileWebHandoffService.create).toHaveBeenCalledWith({
+      userId: "user-1",
+      targetPath: "/PAP/agents/cto/configuration",
+      companyId: "company-1",
+    });
+  });
+
   it("rejects unsupported return urls", async () => {
     const app = await createApp({
       type: "board",
@@ -188,6 +249,29 @@ describe("mobile web handoff routes", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Company not found");
+  });
+
+  it("returns 404 when the requested agent is missing", async () => {
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockAgentService.getById.mockResolvedValue(null);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "remote_auth",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/mobile-web-handoff")
+      .send({
+        target: "agent_configuration",
+        companyId: "company-1",
+        agentId: "agent-1",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
   });
 
   it("rejects unauthorized company access", async () => {

@@ -5,15 +5,22 @@ import type {
   CreateMobileWebHandoffRequest,
   MobileWebHandoffResponse,
 } from "@paperclipai/shared";
-import { companyService, mobileWebHandoffService } from "../services/index.js";
+import { agentService, companyService, mobileWebHandoffService } from "../services/index.js";
 import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
-const createMobileWebHandoffBodySchema = z.object({
-  target: z.literal("onboarding"),
-  companyId: z.string().trim().min(1).optional(),
-  returnUrl: z.string().trim().url().optional(),
-});
+const createMobileWebHandoffBodySchema = z.discriminatedUnion("target", [
+  z.object({
+    target: z.literal("onboarding"),
+    companyId: z.string().trim().min(1).optional(),
+    returnUrl: z.string().trim().url().optional(),
+  }),
+  z.object({
+    target: z.literal("agent_configuration"),
+    companyId: z.string().trim().min(1),
+    agentId: z.string().trim().min(1),
+  }),
+]);
 
 const ALLOWED_RETURN_URL = "clipios://onboarding-complete";
 
@@ -50,6 +57,7 @@ function buildOnboardingTargetPath(issuePrefix: string | null | undefined) {
 export function mobileWebHandoffRoutes(db: Db) {
   const router = Router();
   const companies = companyService(db);
+  const agents = agentService(db);
   const handoffs = mobileWebHandoffService(db);
 
   router.post("/", async (req, res) => {
@@ -60,28 +68,42 @@ export function mobileWebHandoffRoutes(db: Db) {
       throw badRequest("Missing board user");
     }
 
-    let companyId: string | null = null;
+    let companyId: string | null = body.companyId ?? null;
     let targetPath = "/onboarding";
 
-    if (body.returnUrl && body.returnUrl !== ALLOWED_RETURN_URL) {
+    if (body.target === "onboarding" && body.returnUrl && body.returnUrl !== ALLOWED_RETURN_URL) {
       throw badRequest("Unsupported returnUrl");
     }
 
     if (body.companyId) {
-      companyId = body.companyId;
-      assertCompanyAccess(req, companyId);
-      const company = await companies.getById(companyId);
+      const requestedCompanyId = body.companyId;
+      companyId = requestedCompanyId;
+      assertCompanyAccess(req, requestedCompanyId);
+      const company = await companies.getById(requestedCompanyId);
       if (!company) {
         res.status(404).json({ error: "Company not found" });
         return;
       }
-      targetPath = buildOnboardingTargetPath(company.issuePrefix);
-    }
 
-    if (body.returnUrl) {
-      const targetUrl = new URL(targetPath, "http://paperclip.local");
-      targetUrl.searchParams.set("returnUrl", body.returnUrl);
-      targetPath = `${targetUrl.pathname}${targetUrl.search}`;
+      if (body.target === "onboarding") {
+        targetPath = buildOnboardingTargetPath(company.issuePrefix);
+        if (body.returnUrl) {
+          const targetUrl = new URL(targetPath, "http://paperclip.local");
+          targetUrl.searchParams.set("returnUrl", body.returnUrl);
+          targetPath = `${targetUrl.pathname}${targetUrl.search}`;
+        }
+      } else {
+        if (!body.agentId) {
+          throw badRequest("Missing agentId");
+        }
+        const agentId = body.agentId;
+        const agent = await agents.getById(agentId);
+        if (!agent || agent.companyId !== requestedCompanyId) {
+          res.status(404).json({ error: "Agent not found" });
+          return;
+        }
+        targetPath = `/${company.issuePrefix}/agents/${agent.urlKey ?? agent.id}/configuration`;
+      }
     }
 
     const handoff = await handoffs.create({
