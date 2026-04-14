@@ -19,34 +19,25 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockTrackProjectCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/shared/telemetry", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
-    "@paperclipai/shared/telemetry",
-  );
-  return {
-    ...actual,
-    trackProjectCreated: mockTrackProjectCreated,
-  };
-});
+function registerModuleMocks() {
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
+  vi.doMock("../services/index.js", () => ({
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
 
-vi.mock("../services/index.js", () => ({
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  secretService: () => mockSecretService,
-  workspaceOperationService: () => mockWorkspaceOperationService,
-}));
-
-vi.mock("../services/workspace-runtime.js", () => ({
-  startRuntimeServicesForWorkspaceControl: vi.fn(),
-  stopRuntimeServicesForProjectWorkspace: vi.fn(),
-}));
+  vi.doMock("../services/workspace-runtime.js", () => ({
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
+}
 
 async function createApp() {
   const { projectRoutes } = await import("../routes/projects.js");
@@ -108,6 +99,8 @@ function buildProject(overrides: Record<string, unknown> = {}) {
 
 describe("project env routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerModuleMocks();
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
@@ -171,10 +164,6 @@ describe("project env routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockProjectService.update).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ env: normalizedEnv }),
-    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

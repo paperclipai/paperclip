@@ -125,12 +125,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retentionDays: 7,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-test",
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql$/);
-        expect(result.sizeBytes).toBeGreaterThan(1024 * 1024);
+        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
+        expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
         await runDatabaseRestore({

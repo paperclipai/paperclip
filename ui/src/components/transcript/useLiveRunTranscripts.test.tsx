@@ -115,4 +115,77 @@ describe("useLiveRunTranscripts", () => {
     expect(socket.closeCalls).toEqual([{ code: 1000, reason: "live_run_transcripts_unmount" }]);
     container.remove();
   });
+
+  it("treats stored run output as available before transcript chunks finish loading", async () => {
+    let latestHasOutput = false;
+
+    function Harness() {
+      const { hasOutputForRun } = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", hasStoredOutput: true }],
+      });
+      latestHasOutput = hasOutputForRun("run-1");
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(latestHasOutput).toBe(true);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("reports initial hydration until the first persisted-log read completes", async () => {
+    let latestIsInitialHydrating = false;
+    type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
+    let resolveLog: ((value: RunLogResult | PromiseLike<RunLogResult>) => void) | null = null;
+    logMock.mockImplementationOnce(
+      () =>
+        new Promise<RunLogResult>((resolve) => {
+          resolveLog = resolve;
+        }),
+    );
+
+    function Harness() {
+      const { isInitialHydrating } = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local" }],
+      });
+      latestIsInitialHydrating = isInitialHydrating;
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(latestIsInitialHydrating).toBe(true);
+
+    await act(async () => {
+      resolveLog?.({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 });
+      await Promise.resolve();
+    });
+
+    expect(latestIsInitialHydrating).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
 });

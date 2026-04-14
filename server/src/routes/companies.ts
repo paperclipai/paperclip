@@ -24,7 +24,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -46,6 +46,17 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw badRequest(`Invalid ${field} query value`);
     }
     return parsed;
+  }
+
+  function assertImportTargetAccess(
+    req: Request,
+    target: { mode: "new_company" } | { mode: "existing_company"; companyId: string },
+  ) {
+    if (target.mode === "new_company") {
+      assertInstanceAdmin(req);
+      return;
+    }
+    assertCompanyAccess(req, target.companyId);
   }
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
@@ -160,18 +171,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const preview = await portability.previewImport(req.body);
     res.json(preview);
   });
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
     await logActivity(db, {

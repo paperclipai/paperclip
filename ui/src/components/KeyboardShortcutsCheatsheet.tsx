@@ -34,6 +34,7 @@ const sections: ShortcutSection[] = [
   {
     title: "Global",
     shortcuts: [
+      { keys: ["/"], label: "Search current page or quick search" },
       { keys: ["c"], label: "New issue" },
       { keys: ["["], label: "Toggle sidebar" },
       { keys: ["]"], label: "Toggle panel" },

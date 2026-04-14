@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  findPageSearchShortcutTarget,
+  focusPageSearchShortcutTarget,
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
   resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
+  shouldBlurPageSearchOnEnter,
+  shouldBlurPageSearchOnEscape,
 } from "./keyboardShortcuts";
 
 describe("keyboardShortcuts helpers", () => {
@@ -40,6 +44,72 @@ describe("keyboardShortcuts helpers", () => {
 
     expect(hasBlockingShortcutDialog(root)).toBe(false);
   });
+
+  it("finds the visible page search shortcut target", () => {
+    const root = document.createElement("div");
+    const hidden = document.createElement("input");
+    hidden.setAttribute("data-page-search-target", "true");
+    vi.spyOn(hidden, "getClientRects").mockReturnValue([] as unknown as DOMRectList);
+
+    const visible = document.createElement("input");
+    visible.setAttribute("data-page-search-target", "true");
+    vi.spyOn(visible, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+
+    root.append(hidden, visible);
+    document.body.appendChild(root);
+
+    expect(findPageSearchShortcutTarget(root)).toBe(visible);
+
+    root.remove();
+  });
+
+  it("focuses and selects the page search shortcut target", () => {
+    const root = document.createElement("div");
+    const input = document.createElement("input");
+    input.value = "existing query";
+    input.setAttribute("data-page-search-target", "true");
+    vi.spyOn(input, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+    root.appendChild(input);
+    document.body.appendChild(root);
+
+    expect(focusPageSearchShortcutTarget(root)).toBe(true);
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(input.value.length);
+
+    root.remove();
+  });
+
+  it("blurs page search on a plain Enter press", () => {
+    expect(shouldBlurPageSearchOnEnter({
+      key: "Enter",
+      isComposing: false,
+    })).toBe(true);
+  });
+
+  it("keeps focus while composing with an IME", () => {
+    expect(shouldBlurPageSearchOnEnter({
+      key: "Enter",
+      isComposing: true,
+    })).toBe(false);
+  });
+
+  it("blurs page search on Escape when the field is already empty", () => {
+    expect(shouldBlurPageSearchOnEscape({
+      key: "Escape",
+      isComposing: false,
+      currentValue: "",
+    })).toBe(true);
+  });
+
+  it("keeps focus on the first Escape while the field still has text", () => {
+    expect(shouldBlurPageSearchOnEscape({
+      key: "Escape",
+      isComposing: false,
+      currentValue: "query",
+    })).toBe(false);
+  });
+
   it("archives only the first clean y press", () => {
     const button = document.createElement("button");
 

@@ -18,6 +18,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   listLabels: vi.fn(),
 }));
 
@@ -193,6 +194,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
   });
@@ -225,6 +227,119 @@ describe("IssueProperties", () => {
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
+  });
+
+  it("shows an add-label button when labels already exist and opens the picker", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        labels: [{ id: "label-1", companyId: "company-1", name: "Bug", color: "#ef4444", createdAt: new Date("2026-04-06T12:00:00.000Z"), updatedAt: new Date("2026-04-06T12:00:00.000Z") }],
+        labelIds: ["label-1"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
+    expect(addLabelButton).not.toBeNull();
+    expect(container.querySelector('input[placeholder="Search labels..."]')).toBeNull();
+
+    await act(async () => {
+      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('input[placeholder="Search labels..."]')).not.toBeNull();
+    expect(container.querySelector('button[title="Delete Bug"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("allows setting and clearing a parent issue from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate parent", status: "in_progress" }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const parentTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No parent"));
+    expect(parentTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      parentTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const candidateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+    expect(candidateButton).not.toBeUndefined();
+
+    await act(async () => {
+      candidateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ parentId: "issue-2" });
+
+    onUpdate.mockClear();
+    const rerenderedIssue = createIssue({
+      parentId: "issue-2",
+      ancestors: [
+        {
+          id: "issue-2",
+          identifier: "PAP-2",
+          title: "Candidate parent",
+          description: null,
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          projectId: null,
+          goalId: null,
+          project: null,
+          goal: null,
+        },
+      ],
+    });
+
+    act(() => root.unmount());
+
+    const rerenderedRoot = renderProperties(container, {
+      issue: rerenderedIssue,
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const selectedParentTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+    expect(selectedParentTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      selectedParentTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const clearParentButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No parent"));
+    expect(clearParentButton).not.toBeUndefined();
+
+    await act(async () => {
+      clearParentButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ parentId: null });
+
+    act(() => rerenderedRoot.unmount());
   });
 
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {

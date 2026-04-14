@@ -96,13 +96,6 @@ function executionPrincipalsEqual(
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
 }
 
-function executionParticipantMatchesAgent(
-  participant: ParsedExecutionState["currentParticipant"] | null,
-  agentId: string | null | undefined,
-) {
-  return Boolean(agentId) && participant?.type === "agent" && participant.agentId === agentId;
-}
-
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -1386,14 +1379,10 @@ export function issueRoutes(
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
 
-    const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
-    const requestedAssigneePatchProvided =
-      req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
-
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
-      requestedStatus,
+      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId:
           req.body.assigneeAgentId === undefined ? undefined : (req.body.assigneeAgentId as string | null),
@@ -1418,27 +1407,6 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
-
-    const effectiveExecutionState = parseIssueExecutionState(
-      transition.patch.executionState !== undefined ? transition.patch.executionState : existing.executionState,
-    );
-    const isUnauthorizedAgentStageMutation =
-      req.actor.type === "agent" &&
-      req.actor.agentId &&
-      existing.status === "in_review" &&
-      transition.workflowControlledAssignment &&
-      !transition.decision &&
-      effectiveExecutionState?.status === "pending" &&
-      (
-        (requestedStatus !== undefined && requestedStatus !== "in_review") ||
-        requestedAssigneePatchProvided
-      ) &&
-      !executionParticipantMatchesAgent(effectiveExecutionState.currentParticipant, req.actor.agentId);
-    if (isUnauthorizedAgentStageMutation) {
-      const stageLabel = effectiveExecutionState.currentStageType ?? "execution";
-      res.status(403).json({ error: `Only the active ${stageLabel} participant can update this stage` });
-      return;
-    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -1733,6 +1701,7 @@ export function issueRoutes(
           reason: "issue_assigned",
           payload: {
             issueId: issue.id,
+            ...(comment ? { commentId: comment.id } : {}),
             mutation: "update",
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
@@ -1740,6 +1709,13 @@ export function issueRoutes(
           requestedByActorId: actor.actorId,
           contextSnapshot: {
             issueId: issue.id,
+            ...(comment
+              ? {
+                  taskId: issue.id,
+                  commentId: comment.id,
+                  wakeCommentId: comment.id,
+                }
+              : {}),
             source: "issue.update",
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
@@ -1767,6 +1743,38 @@ export function issueRoutes(
       }
 
       if (commentBody && comment) {
+        const assigneeId = issue.assigneeAgentId;
+        const actorIsAgent = actor.actorType === "agent";
+        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const skipAssigneeCommentWake = selfComment || isClosed;
+
+        if (assigneeId && !assigneeChanged && !skipAssigneeCommentWake) {
+          addWakeup(assigneeId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            payload: {
+              issueId: id,
+              commentId: comment.id,
+              mutation: "comment",
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: id,
+              taskId: id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              source: reopened ? "issue.comment.reopen" : "issue.comment",
+              wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+          });
+        }
+
         let mentionedIds: string[] = [];
         try {
           mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);

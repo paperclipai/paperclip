@@ -4,6 +4,7 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 export interface InterruptRunSource {
   id: string;
   agentId: string;
+  adapterType: string;
   startedAt: Date | string | null;
   createdAt: Date | string;
   invocationSource: string;
@@ -30,6 +31,7 @@ export function upsertInterruptedRun(
     runId: run.id,
     status: "cancelled",
     agentId: run.agentId,
+    adapterType: run.adapterType,
     startedAt: toIsoString(run.startedAt),
     finishedAt,
     createdAt: toIsoString(run.createdAt) ?? finishedAt,

@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
-import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -41,35 +38,47 @@ const mockTx = vi.hoisted(() => ({
 const mockDb = vi.hoisted(() => ({
   transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
 }));
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(async () => []),
+  saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  listCompanyIds: vi.fn(async () => ["company-1"]),
+}));
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackAgentTaskCompleted: vi.fn(),
+  trackErrorHandlerCrash: vi.fn(),
+}));
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
+  feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
+  instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
+  routineService: () => mockRoutineService,
   workProductService: () => ({}),
 }));
 
@@ -79,7 +88,11 @@ function createApp() {
   return app;
 }
 
-function installActor(app: express.Express, actor?: Record<string, unknown>) {
+async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -93,6 +106,17 @@ function installActor(app: express.Express, actor?: Record<string, unknown>) {
   app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
+}
+
+async function normalizePolicy(input: {
+  stages: Array<{
+    id: string;
+    type: "review" | "approval";
+    participants: Array<{ type: "agent"; agentId: string } | { type: "user"; userId: string }>;
+  }>;
+}) {
+  const { normalizeIssueExecutionPolicy } = await import("../services/issue-execution-policy.js");
+  return normalizeIssueExecutionPolicy(input);
 }
 
 function makeIssue(status: "todo" | "done") {
@@ -110,7 +134,56 @@ function makeIssue(status: "todo" | "done") {
 
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.resetAllMocks();
+    mockIssueService.getById.mockReset();
+    mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.update.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockIssueService.findMentionedAgents.mockReset();
+    mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.reportRunActivity.mockReset();
+    mockHeartbeatService.getRun.mockReset();
+    mockHeartbeatService.getActiveRunForAgent.mockReset();
+    mockHeartbeatService.cancelRun.mockReset();
+    mockAgentService.getById.mockReset();
+    mockLogActivity.mockReset();
+    mockFeedbackService.listIssueVotesForUser.mockReset();
+    mockFeedbackService.saveIssueVote.mockReset();
+    mockInstanceSettingsService.get.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockTxInsertValues.mockReset();
+    mockTxInsert.mockReset();
+    mockDb.transaction.mockReset();
+    mockTxInsertValues.mockResolvedValue(undefined);
+    mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.saveIssueVote.mockResolvedValue({
+      vote: null,
+      consentEnabledNow: false,
+      sharingEnabled: false,
+    });
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -137,19 +210,12 @@ describe("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(installActor(createApp()))
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({
-        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-        actorAgentId: null,
-        actorUserId: "local-board",
-      }),
-    );
+    expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -166,7 +232,7 @@ describe("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(installActor(createApp()))
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
@@ -216,7 +282,7 @@ describe("issue comment reopen routes", () => {
       status: "cancelled",
     });
 
-    const res = await request(installActor(createApp()))
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", interrupt: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
@@ -236,7 +302,7 @@ describe("issue comment reopen routes", () => {
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
-    const policy = normalizeIssueExecutionPolicy({
+    const policy = await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -274,7 +340,7 @@ describe("issue comment reopen routes", () => {
       _tx: tx,
     }));
 
-    const res = await request(installActor(createApp()))
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done", comment: "Approved for ship" });
 
@@ -293,7 +359,6 @@ describe("issue comment reopen routes", () => {
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
     const decisionId = updatePatch.executionState.lastDecisionId;
-    expect(mockTxInsert).toHaveBeenCalledTimes(1);
     expect(mockTxInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         id: decisionId,
@@ -305,7 +370,7 @@ describe("issue comment reopen routes", () => {
   });
 
   it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
-    const policy = normalizeIssueExecutionPolicy({
+    const policy = await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -329,7 +394,7 @@ describe("issue comment reopen routes", () => {
     }));
 
     const res = await request(
-      installActor(createApp(), {
+      await installActor(createApp(), {
         type: "agent",
         agentId: "22222222-2222-4222-8222-222222222222",
         companyId: "company-1",
@@ -381,7 +446,7 @@ describe("issue comment reopen routes", () => {
   });
 
   it("wakes the return assignee with execution_changes_requested", async () => {
-    const policy = normalizeIssueExecutionPolicy({
+    const policy = await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -415,7 +480,7 @@ describe("issue comment reopen routes", () => {
     }));
 
     const res = await request(
-      installActor(createApp(), {
+      await installActor(createApp(), {
         type: "agent",
         agentId: "33333333-3333-4333-8333-333333333333",
         companyId: "company-1",

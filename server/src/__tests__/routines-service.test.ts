@@ -221,6 +221,31 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("creates draft routines without a project or default assignee", async () => {
+    const { companyId, svc } = await seedFixture();
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft routine",
+        description: "No defaults yet",
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(routine.projectId).toBeNull();
+    expect(routine.assigneeAgentId).toBeNull();
+    expect(routine.status).toBe("paused");
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 
@@ -434,6 +459,73 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
+  });
+
+  it("runs draft routines with one-off agent and project overrides", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const draftRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft dispatch",
+        description: "Pick defaults at run time",
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(draftRoutine.id, {
+      source: "manual",
+      projectId,
+      assigneeAgentId: agentId,
+    });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const storedIssue = await db
+      .select({
+        projectId: issues.projectId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue).toEqual({
+      projectId,
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("rejects enabling automation for routines without a default agent", async () => {
+    const { companyId, svc } = await seedFixture();
+    const draftRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft routine",
+        description: null,
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    await expect(
+      svc.update(draftRoutine.id, { status: "active" }, {}),
+    ).rejects.toThrow(/default agent required/i);
   });
 
   it("blocks schedule triggers when required variables do not have defaults", async () => {

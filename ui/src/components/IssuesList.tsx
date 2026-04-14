@@ -7,8 +7,22 @@ import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  shouldBlurPageSearchOnEnter,
+  shouldBlurPageSearchOnEscape,
+} from "../lib/keyboardShortcuts";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
+import {
+  applyIssueFilters,
+  countActiveIssueFilters,
+  defaultIssueFilterState,
+  issueFilterLabel,
+  issuePriorityOrder,
+  resolveIssueFilterWorkspaceId,
+  issueStatusOrder,
+  type IssueFilterState,
+} from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   getAvailableInboxIssueColumns,
@@ -27,39 +41,24 @@ import {
   issueTrailingColumns,
 } from "./IssueColumns";
 import { StatusIcon } from "./StatusIcon";
-import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
+import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import type { Issue, Project } from "@paperclipai/shared";
-
-/* ── Helpers ── */
-
-const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
-const priorityOrder = ["critical", "high", "medium", "low"];
 const ISSUE_SEARCH_DEBOUNCE_MS = 150;
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /* ── View state ── */
 
-export type IssueViewState = {
-  statuses: string[];
-  priorities: string[];
-  assignees: string[];
-  labels: string[];
-  projects: string[];
+export type IssueViewState = IssueFilterState & {
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
@@ -69,11 +68,7 @@ export type IssueViewState = {
 };
 
 const defaultViewState: IssueViewState = {
-  statuses: [],
-  priorities: [],
-  assignees: [],
-  labels: [],
-  projects: [],
+  ...defaultIssueFilterState,
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
@@ -81,13 +76,6 @@ const defaultViewState: IssueViewState = {
   collapsedGroups: [],
   collapsedParents: [],
 };
-
-const quickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
-];
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
@@ -100,45 +88,15 @@ function saveViewState(key: string, state: IssueViewState) {
   localStorage.setItem(key, JSON.stringify(state));
 }
 
-function arraysEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  return sa.every((v, i) => v === sb[i]);
-}
-
-function toggleInArray(arr: string[], value: string): string[] {
-  return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
-}
-
-function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: string | null): Issue[] {
-  let result = issues;
-  if (state.statuses.length > 0) result = result.filter((i) => state.statuses.includes(i.status));
-  if (state.priorities.length > 0) result = result.filter((i) => state.priorities.includes(i.priority));
-  if (state.assignees.length > 0) {
-    result = result.filter((issue) => {
-      for (const assignee of state.assignees) {
-        if (assignee === "__unassigned" && !issue.assigneeAgentId && !issue.assigneeUserId) return true;
-        if (assignee === "__me" && currentUserId && issue.assigneeUserId === currentUserId) return true;
-        if (issue.assigneeAgentId === assignee) return true;
-      }
-      return false;
-    });
-  }
-  if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
-  if (state.projects.length > 0) result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
-  return result;
-}
-
 function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   const sorted = [...issues];
   const dir = state.sortDir === "asc" ? 1 : -1;
   sorted.sort((a, b) => {
     switch (state.sortField) {
       case "status":
-        return dir * (statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status));
+        return dir * (issueStatusOrder.indexOf(a.status) - issueStatusOrder.indexOf(b.status));
       case "priority":
-        return dir * (priorityOrder.indexOf(a.priority) - priorityOrder.indexOf(b.priority));
+        return dir * (issuePriorityOrder.indexOf(a.priority) - issuePriorityOrder.indexOf(b.priority));
       case "title":
         return dir * a.title.localeCompare(b.title);
       case "created":
@@ -150,16 +108,6 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
     }
   });
   return sorted;
-}
-
-function countActiveFilters(state: IssueViewState): number {
-  let count = 0;
-  if (state.statuses.length > 0) count++;
-  if (state.priorities.length > 0) count++;
-  if (state.assignees.length > 0) count++;
-  if (state.labels.length > 0) count++;
-  if (state.projects.length > 0) count++;
-  return count;
 }
 
 /* ── Component ── */
@@ -186,6 +134,7 @@ interface IssuesListProps {
   searchFilters?: {
     participantAgentId?: string;
   };
+  enableRoutineVisibilityFilter?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -226,9 +175,27 @@ function IssueSearchInput({
         onChange={(e) => {
           setDraftValue(e.target.value);
         }}
+        onKeyDown={(e) => {
+          if (shouldBlurPageSearchOnEnter({
+            key: e.key,
+            isComposing: e.nativeEvent.isComposing,
+          })) {
+            e.currentTarget.blur();
+            return;
+          }
+
+          if (shouldBlurPageSearchOnEscape({
+            key: e.key,
+            isComposing: e.nativeEvent.isComposing,
+            currentValue: e.currentTarget.value,
+          })) {
+            e.currentTarget.blur();
+          }
+        }}
         placeholder="Search issues..."
         className="pl-7 text-xs sm:text-sm"
         aria-label="Search issues"
+        data-page-search-target="true"
       />
     </div>
   );
@@ -247,6 +214,7 @@ export function IssuesList({
   initialAssignees,
   initialSearch,
   searchFilters,
+  enableRoutineVisibilityFilter = false,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -319,8 +287,15 @@ export function IssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        q: normalizedIssueSearch,
+        projectId,
+        ...searchFilters,
+        ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+      }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
     placeholderData: (previousData) => previousData,
   });
@@ -394,6 +369,16 @@ export function IssuesList({
     return map;
   }, [executionWorkspaceById, projectWorkspaceById]);
 
+  const workspaceOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    for (const [workspaceId, workspaceName] of workspaceNameMap) {
+      options.set(workspaceId, workspaceName);
+    }
+    return [...options.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([id, name]) => ({ id, name }));
+  }, [workspaceNameMap]);
+
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
@@ -423,9 +408,9 @@ export function IssuesList({
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
-    const filteredByControls = applyFilters(sourceIssues, viewState, currentUserId);
+    const filteredByControls = applyIssueFilters(sourceIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId]);
+  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -433,7 +418,7 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
-  const activeFilterCount = countActiveFilters(viewState);
+  const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -441,18 +426,18 @@ export function IssuesList({
     }
     if (viewState.groupBy === "status") {
       const groups = groupBy(filtered, (i) => i.status);
-      return statusOrder
+      return issueStatusOrder
         .filter((s) => groups[s]?.length)
-        .map((s) => ({ key: s, label: statusLabel(s), items: groups[s]! }));
+        .map((s) => ({ key: s, label: issueFilterLabel(s), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
       const groups = groupBy(filtered, (i) => i.priority);
-      return priorityOrder
+      return issuePriorityOrder
         .filter((p) => groups[p]?.length)
-        .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
+        .map((p) => ({ key: p, label: issueFilterLabel(p), items: groups[p]! }));
     }
     if (viewState.groupBy === "workspace") {
-      const groups = groupBy(filtered, (i) => i.projectWorkspaceId ?? "__no_workspace");
+      const groups = groupBy(filtered, (issue) => resolveIssueFilterWorkspaceId(issue) ?? "__no_workspace");
       return Object.keys(groups)
         .sort((a, b) => {
           // Groups with items first, "no workspace" last
@@ -514,6 +499,10 @@ export function IssuesList({
     }
     return defaults;
   }, [projectId, viewState.groupBy]);
+
+  const filterToWorkspace = useCallback((workspaceId: string) => {
+    updateView({ workspaces: [workspaceId] });
+  }, [updateView]);
 
   const setIssueColumns = useCallback((next: InboxIssueColumn[]) => {
     const normalized = normalizeInboxIssueColumns(next);
@@ -579,185 +568,28 @@ export function IssuesList({
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
             title="Choose which issue columns stay visible"
+            iconOnly
           />
 
-          {/* Filter */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
-                <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
-                {activeFilterCount > 0 && (
-                  <span className="sm:hidden text-[10px] font-medium ml-0.5">{activeFilterCount}</span>
-                )}
-                {activeFilterCount > 0 && (
-                  <X
-                    className="h-3 w-3 ml-1 hidden sm:block"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] });
-                    }}
-                  />
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
-              <div className="p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Filters</span>
-                  {activeFilterCount > 0 && (
-                    <button
-                      className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-
-                {/* Quick filters */}
-                <div className="space-y-1.5">
-                  <span className="text-xs text-muted-foreground">Quick filters</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {quickFilterPresets.map((preset) => {
-                      const isActive = arraysEqual(viewState.statuses, preset.statuses);
-                      return (
-                        <button
-                          key={preset.label}
-                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                            isActive
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
-                          }`}
-                          onClick={() => updateView({ statuses: isActive ? [] : [...preset.statuses] })}
-                        >
-                          {preset.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="border-t border-border" />
-
-                {/* Multi-column filter sections */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-                  {/* Status */}
-                  <div className="space-y-1">
-                    <span className="text-xs text-muted-foreground">Status</span>
-                    <div className="space-y-0.5">
-                      {statusOrder.map((s) => (
-                        <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                          <Checkbox
-                            checked={viewState.statuses.includes(s)}
-                            onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
-                          />
-                          <StatusIcon status={s} />
-                          <span className="text-sm">{statusLabel(s)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Priority + Assignee stacked in right column */}
-                  <div className="space-y-3">
-                    {/* Priority */}
-                    <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">Priority</span>
-                      <div className="space-y-0.5">
-                        {priorityOrder.map((p) => (
-                          <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                            <Checkbox
-                              checked={viewState.priorities.includes(p)}
-                              onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
-                            />
-                            <PriorityIcon priority={p} />
-                            <span className="text-sm">{statusLabel(p)}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Assignee */}
-                    <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">Assignee</span>
-                      <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                        <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                          <Checkbox
-                            checked={viewState.assignees.includes("__unassigned")}
-                            onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
-                          />
-                          <span className="text-sm">No assignee</span>
-                        </label>
-                        {currentUserId && (
-                          <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                            <Checkbox
-                              checked={viewState.assignees.includes("__me")}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
-                            />
-                            <User className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-sm">Me</span>
-                          </label>
-                        )}
-                        {(agents ?? []).map((agent) => (
-                          <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                            <Checkbox
-                              checked={viewState.assignees.includes(agent.id)}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
-                            />
-                            <span className="text-sm">{agent.name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-
-                    {labels && labels.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">Labels</span>
-                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                          {labels.map((label) => (
-                            <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                              <Checkbox
-                                checked={viewState.labels.includes(label.id)}
-                                onCheckedChange={() => updateView({ labels: toggleInArray(viewState.labels, label.id) })}
-                              />
-                              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
-                              <span className="text-sm">{label.name}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {projects && projects.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">Project</span>
-                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                          {projects.map((project) => (
-                            <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                              <Checkbox
-                                checked={viewState.projects.includes(project.id)}
-                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
-                              />
-                              <span className="text-sm">{project.name}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
+          <IssueFiltersPopover
+            state={viewState}
+            onChange={updateView}
+            activeFilterCount={activeFilterCount}
+            agents={agents}
+            projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
+            labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+            currentUserId={currentUserId}
+            enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
+            iconOnly
+            workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
+          />
 
           {/* Sort (list view only) */}
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs">
-                  <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Sort</span>
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                  <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
@@ -799,9 +631,8 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs">
-                  <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Group</span>
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                  <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
@@ -958,11 +789,13 @@ export function IssuesList({
                               columns={visibleTrailingIssueColumns}
                               projectName={issueProject?.name ?? null}
                               projectColor={issueProject?.color ?? null}
+                              workspaceId={resolveIssueFilterWorkspaceId(issue)}
                               workspaceName={resolveIssueWorkspaceName(issue, {
                                 executionWorkspaceById,
                                 projectWorkspaceById,
                                 defaultProjectWorkspaceIdByProjectId,
                               })}
+                              onFilterWorkspace={filterToWorkspace}
                               assigneeName={agentName(issue.assigneeAgentId)}
                               currentUserId={currentUserId}
                               parentIdentifier={parentIssue?.identifier ?? null}

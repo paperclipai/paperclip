@@ -413,45 +413,33 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
-    it("non-participant stage updates are coerced back to the active stage", () => {
-      const result = applyIssueExecutionPolicyTransition({
-        issue: {
-          status: "in_review",
-          assigneeAgentId: qaAgentId,
-          assigneeUserId: null,
-          executionPolicy: policy,
-          executionState: {
-            status: "pending",
-            currentStageId: reviewStageId,
-            currentStageIndex: 0,
-            currentStageType: "review",
-            currentParticipant: { type: "agent", agentId: qaAgentId },
-            returnAssignee: { type: "agent", agentId: coderAgentId },
-            completedStageIds: [],
-            lastDecisionId: null,
-            lastDecisionOutcome: null,
+    it("non-participant cannot advance the active stage", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
           },
-        },
-        policy,
-        requestedStatus: "done",
-        requestedAssigneePatch: { assigneeUserId: boardUserId },
-        actor: { agentId: coderAgentId },
-        commentBody: "Trying to bypass review",
-      });
-
-      expect(result.patch).toMatchObject({
-        status: "in_review",
-        assigneeAgentId: qaAgentId,
-        assigneeUserId: null,
-        executionState: {
-          status: "pending",
-          currentStageId: reviewStageId,
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: qaAgentId },
-          returnAssignee: { type: "agent", agentId: coderAgentId },
-        },
-      });
-      expect(result.decision).toBeUndefined();
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: { assigneeUserId: boardUserId },
+          actor: { agentId: coderAgentId },
+          commentBody: "Trying to bypass review",
+        }),
+      ).toThrow("Only the active reviewer or approver can advance");
     });
 
     it("non-participant can still post non-advancing updates", () => {

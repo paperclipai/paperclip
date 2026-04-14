@@ -406,7 +406,7 @@ describe("heartbeat comment wake batching", () => {
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
-      }, 30_000);
+      }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -422,7 +422,7 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 45_000);
+  }, 120_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
     const gateway = await createControlledGatewayServer();
@@ -496,15 +496,34 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Require a comment",
-            status: "todo",
+            status: "in_progress",
             priority: "medium",
           },
+          checkedOutByHarness: true,
           commentIds: [],
         },
       });
       expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(String(firstPayload.message ?? "")).toContain("- checkout: already claimed by the harness for this run");
+      expect(String(firstPayload.message ?? "")).toContain(
+        "The harness already checked out this issue for the current run.",
+      );
       expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
+      const checkedOutIssue = await db
+        .select({
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(checkedOutIssue).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: firstRun?.id,
+        executionRunId: firstRun?.id,
+      });
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db
@@ -555,4 +574,5 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
 });

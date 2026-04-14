@@ -32,10 +32,12 @@ export interface IssueChatLinkedRun {
   runId: string;
   status: string;
   agentId: string;
+  adapterType?: string;
   agentName?: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  hasStoredOutput?: boolean;
 }
 
 export interface IssueChatTranscriptEntry {
@@ -70,6 +72,8 @@ export interface IssueChatTranscriptEntry {
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
 }
+
+const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -154,6 +158,62 @@ function mergePartText(
 
 function formatDiffBlock(lines: string[]) {
   return `\`\`\`diff\n${lines.join("\n")}\n\`\`\``;
+}
+
+function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
+  return entry.kind !== "init"
+    && entry.kind !== "stderr"
+    && entry.kind !== "stdout"
+    && entry.kind !== "system";
+}
+
+function compactIssueChatTranscript(
+  entries: readonly IssueChatTranscriptEntry[],
+  maxVisibleEntries = ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES,
+): readonly IssueChatTranscriptEntry[] {
+  const renderable = entries
+    .map((entry, fullIndex) => ({ entry, fullIndex }))
+    .filter(({ entry }) => isIssueChatRenderableTranscriptEntry(entry));
+
+  if (renderable.length <= maxVisibleEntries) {
+    return entries;
+  }
+
+  let startPos = Math.max(0, renderable.length - maxVisibleEntries);
+  while (
+    startPos > 0
+    && renderable[startPos]?.entry.kind === "diff"
+    && renderable[startPos - 1]?.entry.kind === "diff"
+  ) {
+    startPos -= 1;
+  }
+
+  const keptRenderablePositions = new Set<number>();
+  for (let pos = startPos; pos < renderable.length; pos += 1) {
+    keptRenderablePositions.add(pos);
+  }
+
+  // Keep the matching tool call when the visible tail starts at a tool result.
+  for (let pos = startPos; pos < renderable.length; pos += 1) {
+    const entry = renderable[pos]?.entry;
+    if (entry?.kind !== "tool_result" || !entry.toolUseId) continue;
+    for (let scan = pos - 1; scan >= 0; scan -= 1) {
+      const candidate = renderable[scan]?.entry;
+      if (candidate?.kind === "tool_call" && candidate.toolUseId === entry.toolUseId) {
+        keptRenderablePositions.add(scan);
+        break;
+      }
+    }
+  }
+
+  const keptFullIndices = new Set<number>();
+  for (const pos of keptRenderablePositions) {
+    const fullIndex = renderable[pos]?.fullIndex;
+    if (fullIndex !== undefined) keptFullIndices.add(fullIndex);
+  }
+
+  const compactedEntries = entries.filter((_entry, index) => keptFullIndices.has(index));
+  return compactedEntries;
 }
 
 function createAssistantMetadata(custom: Record<string, unknown>) {
@@ -401,7 +461,8 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
     ? parts
@@ -595,7 +656,8 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
       ? "Queued..."

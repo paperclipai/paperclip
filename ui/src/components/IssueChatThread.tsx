@@ -41,6 +41,7 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -423,7 +424,12 @@ function commentDateLabel(date: Date | string | undefined): string {
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
   return (
-    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined} onImageClick={onImageClick}>
+    <MarkdownBody
+      className="text-sm leading-6"
+      style={recessed ? { opacity: 0.55 } : undefined}
+      softBreaks
+      onImageClick={onImageClick}
+    >
       {text}
     </MarkdownBody>
   );
@@ -907,8 +913,6 @@ function IssueChatUserMessage() {
                 ) : null}
               </div>
             ) : null}
-            {pending ? <div className="mb-1 text-xs text-muted-foreground">Sending...</div> : null}
-
             <div className="space-y-3">
               <MessagePrimitive.Parts
                 components={{
@@ -918,39 +922,43 @@ function IssueChatUserMessage() {
             </div>
           </div>
 
-          <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <a
-                  href={anchorId ? `#${anchorId}` : undefined}
-                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                </a>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {message.createdAt ? formatDateTime(message.createdAt) : ""}
-              </TooltipContent>
-            </Tooltip>
-            <button
-              type="button"
-              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-              title="Copy message"
-              aria-label="Copy message"
-              onClick={() => {
-                const text = message.content
-                  .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                  .map((p) => p.text)
-                  .join("\n\n");
-                void navigator.clipboard.writeText(text).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 2000);
-                });
-              }}
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-            </button>
-          </div>
+          {pending ? (
+            <div className="mt-1 flex justify-end px-1 text-[11px] text-muted-foreground">Sending...</div>
+          ) : (
+            <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={anchorId ? `#${anchorId}` : undefined}
+                    className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  {message.createdAt ? formatDateTime(message.createdAt) : ""}
+                </TooltipContent>
+              </Tooltip>
+              <button
+                type="button"
+                className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                title="Copy message"
+                aria-label="Copy message"
+                onClick={() => {
+                  const text = message.content
+                    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                    .map((p) => p.text)
+                    .join("\n\n");
+                  void navigator.clipboard.writeText(text).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  });
+                }}
+              >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+          )}
         </div>
 
         <Avatar size="sm" className="mt-1 shrink-0">
@@ -1820,26 +1828,12 @@ export function IssueChatThread({
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [activeRun, liveRuns]);
   const transcriptRuns = useMemo(() => {
-    const combined = new Map<string, { id: string; status: string; adapterType: string }>();
-    for (const run of displayLiveRuns) {
-      combined.set(run.id, {
-        id: run.id,
-        status: run.status,
-        adapterType: run.adapterType,
-      });
-    }
-    for (const run of linkedRuns) {
-      if (combined.has(run.runId)) continue;
-      const adapterType = agentMap?.get(run.agentId)?.adapterType;
-      if (!adapterType) continue;
-      combined.set(run.runId, {
-        id: run.runId,
-        status: run.status,
-        adapterType,
-      });
-    }
-    return [...combined.values()];
-  }, [agentMap, displayLiveRuns, linkedRuns]);
+    return resolveIssueChatTranscriptRuns({
+      linkedRuns,
+      liveRuns: displayLiveRuns,
+      activeRun,
+    });
+  }, [activeRun, displayLiveRuns, linkedRuns]);
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,

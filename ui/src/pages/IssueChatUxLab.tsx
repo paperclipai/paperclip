@@ -14,6 +14,7 @@ import {
   issueChatUxReassignOptions,
   issueChatUxReviewComments,
   issueChatUxReviewEvents,
+  issueChatUxSubmittingComments,
   issueChatUxTranscriptsByRunId,
 } from "../fixtures/issueChatUxFixtures";
 import { cn } from "../lib/utils";
@@ -25,6 +26,7 @@ const highlights = [
   "Running assistant replies with streamed text, reasoning, tool cards, and background status notes",
   "Historical issue events and linked runs rendered inline with the chat timeline",
   "Queued user messages, settled assistant comments, and feedback controls",
+  "Submitting (pending) message bubble with Sending... label and reduced opacity",
   "Empty and disabled-composer states without relying on live backend data",
 ];
 
@@ -282,6 +284,26 @@ export function IssueChatUxLab() {
           enableLiveTranscriptPolling={false}
           transcriptsByRunId={issueChatUxTranscriptsByRunId}
           hasOutputForRun={(runId) => issueChatUxTranscriptsByRunId.has(runId)}
+        />
+      </LabSection>
+
+      <LabSection
+        eyebrow="Submitting state"
+        title="Pending message bubble"
+        description='When a user sends a message, the bubble briefly shows a "Sending..." label at reduced opacity until the server confirms receipt. This preview renders that transient state.'
+        accentClassName="bg-[linear-gradient(180deg,rgba(59,130,246,0.06),transparent_28%),var(--background)]"
+      >
+        <IssueChatThread
+          comments={issueChatUxSubmittingComments}
+          linkedRuns={[]}
+          timelineEvents={[]}
+          issueStatus="in_progress"
+          agentMap={issueChatUxAgentMap}
+          currentUserId="user-1"
+          onAdd={noop}
+          draftKey="issue-chat-ux-lab-submitting"
+          showComposer={false}
+          enableLiveTranscriptPolling={false}
         />
       </LabSection>
 

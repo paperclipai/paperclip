@@ -13,6 +13,34 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function mergeHeartbeatRunResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  summary: string | null | undefined,
+): Record<string, unknown> | null {
+  const normalizedSummary = readCommentText(summary);
+  const baseResult =
+    resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      ? resultJson
+      : null;
+
+  if (!baseResult) {
+    return normalizedSummary ? { summary: normalizedSummary } : null;
+  }
+
+  if (!normalizedSummary) {
+    return baseResult;
+  }
+
+  if (readCommentText(baseResult.summary)) {
+    return baseResult;
+  }
+
+  return {
+    ...baseResult,
+    summary: normalizedSummary,
+  };
+}
+
 export function summarizeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
