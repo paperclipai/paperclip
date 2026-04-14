@@ -202,6 +202,10 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  const effectiveCodexHome =
+    configuredCodexHome ?? await prepareManagedCodexHome({ ...process.env, ...env }, async () => {}, ctx.companyId);
+  env.CODEX_HOME = effectiveCodexHome;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
