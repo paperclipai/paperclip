@@ -19,73 +19,142 @@ function errorText(value: unknown): string {
   }
 }
 
-export function parseOpenCodeJsonl(stdout: string) {
-  let sessionId: string | null = null;
-  const messages: string[] = [];
-  const errors: string[] = [];
-  const toolErrors: string[] = [];
-  const usage = {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
+interface OpenCodeJsonlParseState {
+  sessionId: string | null;
+  messages: string[];
+  errors: string[];
+  toolErrors: string[];
+  usage: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
   };
-  let costUsd = 0;
+  costUsd: number;
+}
 
+interface OpenCodeJsonlParseResult {
+  sessionId: string | null;
+  summary: string;
+  usage: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+  };
+  costUsd: number;
+  errorMessage: string | null;
+  toolErrors: string[];
+}
+
+function createOpenCodeJsonlParseState(): OpenCodeJsonlParseState {
+  return {
+    sessionId: null,
+    messages: [],
+    errors: [],
+    toolErrors: [],
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    },
+    costUsd: 0,
+  };
+}
+
+function processOpenCodeJsonlEvent(state: OpenCodeJsonlParseState, event: Record<string, unknown>): void {
+  const currentSessionId = asString(event.sessionID, "").trim();
+  if (currentSessionId) state.sessionId = currentSessionId;
+
+  const type = asString(event.type, "");
+
+  if (type === "text") {
+    const part = parseObject(event.part);
+    const text = asString(part.text, "").trim();
+    if (text) state.messages.push(text);
+    return;
+  }
+
+  if (type === "step_finish") {
+    const part = parseObject(event.part);
+    const tokens = parseObject(part.tokens);
+    const cache = parseObject(tokens.cache);
+    state.usage.inputTokens += asNumber(tokens.input, 0);
+    state.usage.cachedInputTokens += asNumber(cache.read, 0);
+    state.usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
+    state.costUsd += asNumber(part.cost, 0);
+    return;
+  }
+
+  if (type === "tool_use") {
+    const part = parseObject(event.part);
+    const statePart = parseObject(part.state);
+    if (asString(statePart.status, "") === "error") {
+      const text = asString(statePart.error, "").trim();
+      if (text) state.toolErrors.push(text);
+    }
+    return;
+  }
+
+  if (type === "error") {
+    const text = errorText(event.error ?? event.message).trim();
+    if (text) state.errors.push(text);
+  }
+}
+
+function processOpenCodeJsonlLine(state: OpenCodeJsonlParseState, rawLine: string): void {
+  const line = rawLine.trim();
+  if (!line) return;
+
+  const event = parseJson(line);
+  if (!event) return;
+  processOpenCodeJsonlEvent(state, event);
+}
+
+function finalizeOpenCodeJsonlParse(state: OpenCodeJsonlParseState): OpenCodeJsonlParseResult {
+  return {
+    sessionId: state.sessionId,
+    summary: state.messages.join("\n\n").trim(),
+    usage: state.usage,
+    costUsd: state.costUsd,
+    errorMessage: state.errors.length > 0 ? state.errors.join("\n") : null,
+    toolErrors: state.toolErrors,
+  };
+}
+
+function parseOpenCodeJsonlText(stdout: string): OpenCodeJsonlParseResult {
+  const state = createOpenCodeJsonlParseState();
   for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+    processOpenCodeJsonlLine(state, rawLine);
+  }
+  return finalizeOpenCodeJsonlParse(state);
+}
 
-    const event = parseJson(line);
-    if (!event) continue;
+async function parseOpenCodeJsonlStream(stdoutStream: AsyncIterable<string>): Promise<OpenCodeJsonlParseResult> {
+  const state = createOpenCodeJsonlParseState();
+  let buffer = "";
 
-    const currentSessionId = asString(event.sessionID, "").trim();
-    if (currentSessionId) sessionId = currentSessionId;
-
-    const type = asString(event.type, "");
-
-    if (type === "text") {
-      const part = parseObject(event.part);
-      const text = asString(part.text, "").trim();
-      if (text) messages.push(text);
-      continue;
-    }
-
-    if (type === "step_finish") {
-      const part = parseObject(event.part);
-      const tokens = parseObject(part.tokens);
-      const cache = parseObject(tokens.cache);
-      usage.inputTokens += asNumber(tokens.input, 0);
-      usage.cachedInputTokens += asNumber(cache.read, 0);
-      usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
-      costUsd += asNumber(part.cost, 0);
-      continue;
-    }
-
-    if (type === "tool_use") {
-      const part = parseObject(event.part);
-      const state = parseObject(part.state);
-      if (asString(state.status, "") === "error") {
-        const text = asString(state.error, "").trim();
-        if (text) toolErrors.push(text);
-      }
-      continue;
-    }
-
-    if (type === "error") {
-      const text = errorText(event.error ?? event.message).trim();
-      if (text) errors.push(text);
-      continue;
+  for await (const chunk of stdoutStream) {
+    buffer += chunk;
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      processOpenCodeJsonlLine(state, rawLine);
     }
   }
 
-  return {
-    sessionId,
-    summary: messages.join("\n\n").trim(),
-    usage,
-    costUsd,
-    errorMessage: errors.length > 0 ? errors.join("\n") : null,
-    toolErrors,
-  };
+  if (buffer.trim()) {
+    processOpenCodeJsonlLine(state, buffer);
+  }
+
+  return finalizeOpenCodeJsonlParse(state);
+}
+
+export function parseOpenCodeJsonl(stdout: string): OpenCodeJsonlParseResult;
+export function parseOpenCodeJsonl(stdoutStream: AsyncIterable<string>): Promise<OpenCodeJsonlParseResult>;
+export function parseOpenCodeJsonl(
+  input: string | AsyncIterable<string>,
+): OpenCodeJsonlParseResult | Promise<OpenCodeJsonlParseResult> {
+  return typeof input === "string" ? parseOpenCodeJsonlText(input) : parseOpenCodeJsonlStream(input);
 }
 
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {

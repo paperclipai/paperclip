@@ -186,7 +186,8 @@ export async function testEnvironment(
         },
       );
 
-      const parsedStream = parseClaudeStreamJson(probe.stdout);
+      async function* asStream(text: string) { yield text; }
+      const parsedStream = await parseClaudeStreamJson(asStream(probe.stdout));
       const parsed = parsedStream.resultJson;
       const loginMeta = detectClaudeLoginRequired({
         parsed,
