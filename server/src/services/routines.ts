@@ -829,8 +829,26 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           mutation: "create",
           contextSource: "routine.dispatch",
           requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          silentCompletion: true,
+          onComplete: {
+            issueStatus: "blocked",
+            commentBody:
+              "루틴 실행이 비정상 종료되었습니다. 결과: {outcome}. 후속 이슈: {createdIssueIdentifier}",
+            createIssue: {
+              title: `Follow-up: ${createdIssue.title}`,
+              description:
+                "Automatically created because the routine execution heartbeat failed or timed out.",
+              status: "todo",
+              priority: createdIssue.priority as "critical" | "high" | "medium" | "low",
+              assignToAgentId: createdIssue.assigneeAgentId,
+              commentBody:
+                "이 이슈는 실행 {runId} 의 실패 후 자동 생성되었습니다. 부모 이슈: {issueId}",
+            },
+            onlyOn: ["failed", "timed_out"],
+          },
           rethrowOnError: true,
         });
+
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
