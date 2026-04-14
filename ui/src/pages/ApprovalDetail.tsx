@@ -173,16 +173,16 @@ export function ApprovalDetail() {
   return (
     <div className="space-y-6 max-w-3xl">
       {showApprovedBanner && (
-        <div className="border border-green-300 dark:border-green-700/40 bg-green-50 dark:bg-green-900/20 rounded-lg px-4 py-3 animate-in fade-in zoom-in-95 duration-300">
+        <div className="border border-green-300 bg-green-50 rounded-lg px-4 py-3 animate-in fade-in zoom-in-95 duration-300">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-2">
               <div className="relative mt-0.5">
-                <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-300" />
-                <Sparkles className="h-3 w-3 text-green-500 dark:text-green-200 absolute -right-2 -top-1 animate-pulse" />
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <Sparkles className="h-3 w-3 text-green-500 absolute -right-2 -top-1 animate-pulse" />
               </div>
               <div>
-                <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
-                <p className="text-xs text-green-700 dark:text-green-200/90">
+                <p className="text-sm text-green-800 font-medium">Approval confirmed</p>
+                <p className="text-xs text-green-700">
                   Requesting agent was notified to review this approval and linked issues.
                 </p>
               </div>
@@ -190,7 +190,7 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              className="border-green-400 dark:border-green-600/50 text-green-800 dark:text-green-100 hover:bg-green-100 dark:hover:bg-green-900/30"
+              className="border-green-400 text-green-800 hover:bg-green-100"
               onClick={() => navigate(resolvedCta.to)}
             >
               {resolvedCta.label}

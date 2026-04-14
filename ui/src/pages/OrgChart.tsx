@@ -395,13 +395,13 @@ export function OrgChart() {
       {warningAgents.length > 0 && (
         <div className="mb-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs shrink-0 flex-wrap">
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-          <span className="text-amber-700 dark:text-amber-400 font-medium shrink-0">
+          <span className="text-amber-700 font-medium shrink-0">
             Budget warning:
           </span>
           {warningAgents.map((a) => (
             <span
               key={a.id}
-              className={`px-2 py-0.5 rounded-full font-medium ${a.pct >= 95 ? "bg-red-500/15 text-red-600 dark:text-red-400" : "bg-amber-500/15 text-amber-700 dark:text-amber-400"}`}
+              className={`px-2 py-0.5 rounded-full font-medium ${a.pct >= 95 ? "bg-red-500/15 text-red-600" : "bg-amber-500/15 text-amber-700"}`}
             >
               {a.name} {Math.round(a.pct)}%
             </span>

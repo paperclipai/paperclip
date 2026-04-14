@@ -99,7 +99,7 @@ function LiveWidgetPreview({
   return (
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-[0_20px_50px_rgba(6,182,212,0.10)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.05] px-5 py-4">
-        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700 dark:text-cyan-300">
+        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
@@ -172,7 +172,7 @@ function DashboardPreview({
               <ExternalLink className="h-2.5 w-2.5" />
             </span>
           </div>
-          <div className="mt-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-xs text-cyan-700 dark:text-cyan-300">
+          <div className="mt-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-xs text-cyan-700">
             {runTranscriptFixtureMeta.issueIdentifier} - {runTranscriptFixtureMeta.issueTitle}
           </div>
         </div>
@@ -204,7 +204,7 @@ export function RunTranscriptUxLab() {
         <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="border-b border-border/60 bg-background/75 p-5 lg:border-b-0 lg:border-r">
             <div className="mb-5">
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700 dark:text-cyan-300">
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700">
                 <FlaskConical className="h-3.5 w-3.5" />
                 UX Lab
               </div>
@@ -230,7 +230,7 @@ export function RunTranscriptUxLab() {
                     )}
                   >
                     <div className="flex items-start gap-3">
-                      <span className="rounded-lg border border-current/15 p-2 text-cyan-700 dark:text-cyan-300">
+                      <span className="rounded-lg border border-current/15 p-2 text-cyan-700">
                         <Icon className="h-4 w-4" />
                       </span>
                       <span className="min-w-0">

@@ -139,13 +139,13 @@ const runStatusIcons: Record<
 > = {
   succeeded: {
     icon: CheckCircle2,
-    color: "text-green-600 dark:text-green-400",
+    color: "text-green-600",
   },
-  failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
-  running: { icon: Loader2, color: "text-cyan-600 dark:text-cyan-400" },
-  queued: { icon: Clock, color: "text-yellow-600 dark:text-yellow-400" },
-  timed_out: { icon: Timer, color: "text-orange-600 dark:text-orange-400" },
-  cancelled: { icon: Slash, color: "text-neutral-500 dark:text-neutral-400" },
+  failed: { icon: XCircle, color: "text-red-600" },
+  running: { icon: Loader2, color: "text-cyan-600" },
+  queued: { icon: Clock, color: "text-yellow-600" },
+  timed_out: { icon: Timer, color: "text-orange-600" },
+  cancelled: { icon: Slash, color: "text-neutral-500" },
 };
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
@@ -403,13 +403,13 @@ function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
 function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
   switch (status) {
     case "succeeded":
-      return "border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-300";
+      return "border-green-500/20 bg-green-500/10 text-green-700";
     case "failed":
-      return "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300";
+      return "border-red-500/20 bg-red-500/10 text-red-700";
     case "running":
-      return "border-cyan-500/20 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300";
+      return "border-cyan-500/20 bg-cyan-500/10 text-cyan-700";
     case "skipped":
-      return "border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
+      return "border-yellow-500/20 bg-yellow-500/10 text-yellow-700";
     default:
       return "border-border bg-muted/40 text-muted-foreground";
   }
@@ -483,7 +483,7 @@ function WorkspaceOperationLogViewer({
             </div>
           )}
           {chunks.length > 0 && (
-            <div className="max-h-64 overflow-y-auto rounded bg-neutral-100 p-2 font-mono text-xs dark:bg-neutral-950">
+            <div className="max-h-64 overflow-y-auto rounded bg-neutral-100 p-2 font-mono text-xs">
               {chunks.map((chunk, index) => (
                 <div key={`${chunk.ts}-${index}`} className="flex gap-2">
                   <span className="shrink-0 text-neutral-500">
@@ -495,9 +495,9 @@ function WorkspaceOperationLogViewer({
                     className={cn(
                       "shrink-0 w-14",
                       chunk.stream === "stderr"
-                        ? "text-red-600 dark:text-red-300"
+                        ? "text-red-600"
                         : chunk.stream === "system"
-                          ? "text-blue-600 dark:text-blue-300"
+                          ? "text-blue-600"
                           : "text-muted-foreground",
                     )}
                   >
@@ -618,10 +618,10 @@ function WorkspaceOperationsSection({
               )}
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">
+                  <div className="mb-1 text-xs text-red-700">
                     stderr excerpt
                   </div>
-                  <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
+                  <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800">
                     {redactPathText(
                       operation.stderrExcerpt,
                       censorUsernameInLogs,
@@ -634,7 +634,7 @@ function WorkspaceOperationsSection({
                   <div className="mb-1 text-xs text-muted-foreground">
                     stdout excerpt
                   </div>
-                  <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
+                  <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all">
                     {redactPathText(
                       operation.stdoutExcerpt,
                       censorUsernameInLogs,
@@ -1156,7 +1156,7 @@ export function AgentDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              <span className="text-[11px] font-medium text-blue-600">
                 Live
               </span>
             </Link>
@@ -1455,11 +1455,11 @@ function LatestRunCard({
             className={cn(
               "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
               run.invocationSource === "timer"
-                ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                ? "bg-blue-100 text-blue-700"
                 : run.invocationSource === "assignment"
-                  ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                  ? "bg-violet-100 text-violet-700"
                   : run.invocationSource === "on_demand"
-                    ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+                    ? "bg-cyan-100 text-cyan-700"
                     : "bg-muted text-muted-foreground",
             )}
           >
@@ -3253,7 +3253,7 @@ function AgentSkillsTab({
       </div>
 
       {skillSnapshot?.warnings.length ? (
-        <div className="space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+        <div className="space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800">
           {skillSnapshot.warnings.map((warning) => (
             <div key={warning}>{warning}</div>
           ))}
@@ -3422,7 +3422,7 @@ function AgentSkillsTab({
           })()}
 
           {desiredOnlyMissingSkills.length > 0 && (
-            <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+            <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800">
               <div className="font-medium">
                 Requested skills missing from the company library
               </div>
@@ -3516,11 +3516,11 @@ function RunListItem({
           className={cn(
             "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
             run.invocationSource === "timer"
-              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+              ? "bg-blue-100 text-blue-700"
               : run.invocationSource === "assignment"
-                ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                ? "bg-violet-100 text-violet-700"
                 : run.invocationSource === "on_demand"
-                  ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+                  ? "bg-cyan-100 text-cyan-700"
                   : "bg-muted text-muted-foreground",
           )}
         >
@@ -3955,7 +3955,7 @@ function RunDetail({
             )}
             {run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">
+                <span className="text-red-600">
                   {run.error}
                 </span>
                 {run.errorCode && (
@@ -3991,7 +3991,7 @@ function RunDetail({
                       Login URL:
                       <a
                         href={claudeLoginResult.loginUrl}
-                        className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
+                        className="text-blue-600 underline underline-offset-2 ml-1 break-all"
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -4002,12 +4002,12 @@ function RunDetail({
                   {claudeLoginResult && (
                     <>
                       {!!claudeLoginResult.stdout && (
-                        <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                        <pre className="bg-neutral-100 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
                           {claudeLoginResult.stdout}
                         </pre>
                       )}
                       {!!claudeLoginResult.stderr && (
-                        <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                        <pre className="bg-neutral-100 rounded-md p-3 text-xs font-mono text-red-700 overflow-x-auto whitespace-pre-wrap">
                           {claudeLoginResult.stderr}
                         </pre>
                       )}
@@ -4016,7 +4016,7 @@ function RunDetail({
                 </div>
               )}
             {hasNonZeroExit && (
-              <div className="text-xs text-red-600 dark:text-red-400">
+              <div className="text-xs text-red-600">
                 Exit code {run.exitCode}
                 {run.signal && (
                   <span className="text-muted-foreground ml-1">
@@ -4158,10 +4158,10 @@ function RunDetail({
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">
+          <span className="text-xs font-medium text-red-600">
             stderr
           </span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+          <pre className="bg-neutral-100 rounded-md p-3 text-xs font-mono text-red-700 overflow-x-auto whitespace-pre-wrap">
             {run.stderrExcerpt}
           </pre>
         </div>
@@ -4173,7 +4173,7 @@ function RunDetail({
           <span className="text-xs font-medium text-muted-foreground">
             stdout
           </span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+          <pre className="bg-neutral-100 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
             {run.stdoutExcerpt}
           </pre>
         </div>
@@ -4626,14 +4626,14 @@ function LogViewer({
 
   const levelColors: Record<string, string> = {
     info: "text-foreground",
-    warn: "text-yellow-600 dark:text-yellow-400",
-    error: "text-red-600 dark:text-red-400",
+    warn: "text-yellow-600",
+    error: "text-red-600",
   };
 
   const streamColors: Record<string, string> = {
     stdout: "text-foreground",
-    stderr: "text-red-600 dark:text-red-300",
-    system: "text-blue-600 dark:text-blue-300",
+    stderr: "text-red-600",
+    system: "text-blue-600",
   };
 
   return (
@@ -4700,7 +4700,7 @@ function LogViewer({
           {adapterInvokePayload.prompt !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-neutral-100 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
                 {typeof adapterInvokePayload.prompt === "string"
                   ? redactPathText(
                       adapterInvokePayload.prompt,
@@ -4720,7 +4720,7 @@ function LogViewer({
           {adapterInvokePayload.context !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-neutral-100 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
                 {JSON.stringify(
                   redactPathValue(
                     adapterInvokePayload.context,
@@ -4737,7 +4737,7 @@ function LogViewer({
               <div className="text-xs text-muted-foreground mb-1">
                 Environment
               </div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+              <pre className="bg-neutral-100 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
                 {formatEnvForDisplay(
                   adapterInvokePayload.env,
                   censorUsernameInLogs,
@@ -4808,7 +4808,7 @@ function LogViewer({
           }
         />
         {logError && (
-          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700">
             {logError}
           </div>
         )}
@@ -4816,32 +4816,32 @@ function LogViewer({
       </div>
 
       {(run.status === "failed" || run.status === "timed_out") && (
-        <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-2">
+          <div className="text-xs font-medium text-red-700">
             Failure details
           </div>
           {run.error && (
-            <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
+            <div className="text-xs text-red-600">
+              <span className="text-red-700">Error: </span>
               {redactPathText(run.error, censorUsernameInLogs)}
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+              <div className="text-xs text-red-700 mb-1">
                 stderr excerpt
               </div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className="bg-red-50 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800">
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
           )}
           {run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+              <div className="text-xs text-red-700 mb-1">
                 adapter result JSON
               </div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className="bg-red-50 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800">
                 {JSON.stringify(
                   redactPathValue(run.resultJson, censorUsernameInLogs),
                   null,
@@ -4852,10 +4852,10 @@ function LogViewer({
           )}
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">
+              <div className="text-xs text-red-700 mb-1">
                 stdout excerpt
               </div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className="bg-red-50 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800">
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
@@ -4868,7 +4868,7 @@ function LogViewer({
           <div className="mb-2 text-xs font-medium text-muted-foreground">
             Events ({events.length})
           </div>
-          <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
+          <div className="bg-neutral-100 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color =
                 evt.color ??
@@ -4878,7 +4878,7 @@ function LogViewer({
 
               return (
                 <div key={evt.id} className="flex gap-2">
-                  <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
+                  <span className="text-neutral-400 shrink-0 select-none w-16">
                     {new Date(evt.createdAt).toLocaleTimeString("en-US", {
                       hour12: false,
                     })}
@@ -4969,12 +4969,12 @@ function KeysTab({
     <div className="space-y-6">
       {/* New token banner */}
       {newToken && (
-        <div className="border border-yellow-300 dark:border-yellow-600/40 bg-yellow-50 dark:bg-yellow-500/5 rounded-lg p-4 space-y-2">
-          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
+        <div className="border border-yellow-300 bg-yellow-50 rounded-lg p-4 space-y-2">
+          <p className="text-sm font-medium text-yellow-700">
             API key created — copy it now, it will not be shown again.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
+            <code className="flex-1 bg-neutral-100 rounded px-3 py-1.5 text-xs font-mono text-green-700 truncate">
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
             </code>
             <Button

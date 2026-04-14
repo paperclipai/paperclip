@@ -90,7 +90,7 @@ export function FailedRunInboxRow({
               >
                 <span
                   className={cn(
-                    "block h-2 w-2 rounded-full bg-blue-600 transition-opacity duration-300 dark:bg-blue-400",
+                    "block h-2 w-2 rounded-full bg-blue-600 transition-opacity duration-300",
                     unreadState === "fading" ? "opacity-0" : "opacity-100",
                   )}
                 />
@@ -125,7 +125,7 @@ export function FailedRunInboxRow({
             aria-hidden="true"
           />
           <span className="mt-0.5 shrink-0 rounded-md bg-red-500/20 p-1.5 sm:mt-0">
-            <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+            <XCircle className="h-4 w-4 text-red-600" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">

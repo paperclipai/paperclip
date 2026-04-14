@@ -944,10 +944,10 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
   const statusClass =
     result.status === "pass"
-      ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
+      ? "text-green-700 border-green-300 bg-green-50"
       : result.status === "warn"
-        ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
-        : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
+        ? "text-amber-700 border-amber-300 bg-amber-50"
+        : "text-red-700 border-red-300 bg-red-50";
 
   return (
     <div className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>

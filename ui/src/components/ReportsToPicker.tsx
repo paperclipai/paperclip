@@ -59,7 +59,7 @@ export function ReportsToPicker({
               <span
                 className={cn(
                   "min-w-0 truncate",
-                  terminatedManager && "text-amber-900 dark:text-amber-200",
+                  terminatedManager && "text-amber-900",
                 )}
               >
                 {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}

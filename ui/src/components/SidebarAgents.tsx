@@ -129,7 +129,7 @@ export function SidebarAgents() {
                       </span>
                     ) : null}
                     {runCount > 0 ? (
-                      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                      <span className="text-[11px] font-medium text-blue-600">
                         {runCount} live
                       </span>
                     ) : null}

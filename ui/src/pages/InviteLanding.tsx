@@ -286,7 +286,7 @@ export function InviteLandingPage() {
                   <p
                     className={
                       diag.level === "warn"
-                        ? "text-amber-600 dark:text-amber-400"
+                        ? "text-amber-600"
                         : undefined
                     }
                   >

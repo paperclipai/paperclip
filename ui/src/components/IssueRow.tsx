@@ -113,7 +113,7 @@ export function IssueRow({
             >
               <span
                 className={cn(
-                  "block h-2 w-2 rounded-full bg-blue-600 transition-opacity duration-300 dark:bg-blue-400",
+                  "block h-2 w-2 rounded-full bg-blue-600 transition-opacity duration-300",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )}
               />

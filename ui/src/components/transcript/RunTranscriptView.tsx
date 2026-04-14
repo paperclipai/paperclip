@@ -590,10 +590,10 @@ function TranscriptToolCard({
         : "Completed";
   const statusTone =
     block.status === "running"
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-cyan-700"
       : block.status === "error"
-        ? "text-red-700 dark:text-red-300"
-        : "text-emerald-700 dark:text-emerald-300";
+        ? "text-red-700"
+        : "text-emerald-700";
   const detailsClass = cn(
     "space-y-3",
     block.status === "error" && "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3",
@@ -601,10 +601,10 @@ function TranscriptToolCard({
   const iconClass = cn(
     "mt-0.5 h-3.5 w-3.5 shrink-0",
     block.status === "error"
-      ? "text-red-600 dark:text-red-300"
+      ? "text-red-600"
       : block.status === "completed"
-        ? "text-emerald-600 dark:text-emerald-300"
-        : "text-cyan-600 dark:text-cyan-300",
+        ? "text-emerald-600"
+        : "text-cyan-600",
   );
   const summary = block.status === "running"
     ? summarizeToolInput(block.name, block.input, density)
@@ -662,7 +662,7 @@ function TranscriptToolCard({
                 </div>
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  block.status === "error" ? "text-red-700" : "text-foreground/80",
                 )}>
                   {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
                 </pre>
@@ -703,7 +703,7 @@ function TranscriptCommandGroup({
     ? summarizeToolInput("command_execution", runningItem.input, density)
     : null;
   const statusTone = isRunning
-      ? "text-cyan-700 dark:text-cyan-300"
+      ? "text-cyan-700"
       : "text-foreground/70";
 
   return (
@@ -731,7 +731,7 @@ function TranscriptCommandGroup({
                 "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
                 index > 0 && "-ml-1.5",
                 isRunning
-                  ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                  ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600"
                   : "border-border/70 bg-background text-foreground/55",
                 isRunning && "animate-pulse",
               )}
@@ -778,9 +778,9 @@ function TranscriptCommandGroup({
                 <span className={cn(
                   "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
                   item.status === "error"
-                    ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                    ? "border-red-500/25 bg-red-500/[0.08] text-red-600"
                     : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
                   <TerminalSquare className="h-3 w-3" />
@@ -792,7 +792,7 @@ function TranscriptCommandGroup({
               {item.result && (
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  item.status === "error" ? "text-red-700" : "text-foreground/80",
                 )}>
                   {formatToolPayload(item.result)}
                 </pre>
@@ -815,7 +815,7 @@ function TranscriptActivityRow({
   return (
     <div className="flex items-start gap-2">
       {block.status === "completed" ? (
-        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
+        <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
       ) : (
         <span className="relative mt-1 flex h-2.5 w-2.5 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
@@ -842,11 +842,11 @@ function TranscriptEventRow({
   const compact = density === "compact";
   const toneClasses =
     block.tone === "error"
-      ? "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3 text-red-700 dark:text-red-300"
+      ? "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3 text-red-700"
       : block.tone === "warn"
-        ? "text-amber-700 dark:text-amber-300"
+        ? "text-amber-700"
         : block.tone === "info"
-          ? "text-sky-700 dark:text-sky-300"
+          ? "text-sky-700"
           : "text-foreground/75";
 
   return (
@@ -861,7 +861,7 @@ function TranscriptEventRow({
         )}
         <div className="min-w-0 flex-1">
           {block.label === "result" && block.tone !== "error" ? (
-            <div className={cn("whitespace-pre-wrap break-words text-sky-700 dark:text-sky-300", compact ? "text-[11px]" : "text-xs")}>
+            <div className={cn("whitespace-pre-wrap break-words text-sky-700", compact ? "text-[11px]" : "text-xs")}>
               {block.text}
             </div>
           ) : (

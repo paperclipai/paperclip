@@ -528,7 +528,7 @@ export function PluginSettings() {
                             entry.level === "error"
                               ? "text-destructive"
                               : entry.level === "warn"
-                                ? "text-yellow-600 dark:text-yellow-400"
+                                ? "text-yellow-600"
                                 : entry.level === "debug"
                                   ? "text-muted-foreground/60"
                                   : "text-muted-foreground"
@@ -862,7 +862,7 @@ function PluginConfigForm({
         <div
           className={`text-sm p-2 rounded border ${
             saveMessage.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
+              ? "text-green-700 bg-green-50 border-green-200"
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >
@@ -874,7 +874,7 @@ function PluginConfigForm({
         <div
           className={`text-sm p-2 rounded border ${
             testResult.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
+              ? "text-green-700 bg-green-50 border-green-200"
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >

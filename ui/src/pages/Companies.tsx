@@ -170,9 +170,9 @@ export function Companies() {
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
                           company.status === "active"
-                            ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                            ? "bg-green-500/10 text-green-600"
                             : company.status === "paused"
-                              ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                              ? "bg-yellow-500/10 text-yellow-600"
                               : "bg-muted text-muted-foreground"
                         }`}
                       >
