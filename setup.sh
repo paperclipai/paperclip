@@ -44,8 +44,10 @@ if [[ -f .env ]]; then
   if [[ "$RECREATE" != "s" && "$RECREATE" != "S" ]]; then
     info "Usando .env existente."
     ENV_READY=true
-    # Read PUBLIC_URL from existing .env so health check uses the correct URL
+    # Read PUBLIC_URL and HTTP_PORT from existing .env so health check uses the correct values
     PUBLIC_URL=$(grep -E '^PAPERCLIP_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '"'"'"'"' || true)
+    _ENV_HTTP_PORT=$(grep -E '^HTTP_PORT=' .env | cut -d= -f2- | tr -d '"'"'"'"' || true)
+    [[ -n "$_ENV_HTTP_PORT" ]] && HTTP_PORT="$_ENV_HTTP_PORT"
   fi
 fi
 
@@ -81,10 +83,12 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
 
   # Write to a temp file first, then atomically rename to avoid partial .env on failure.
   ENV_TMP=".env.tmp.$$"
+  trap 'rm -f "$ENV_TMP"' EXIT
   printf 'PAPERCLIP_PUBLIC_URL=%s\nBETTER_AUTH_SECRET=%s\nDB_PASSWORD=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nPAPERCLIP_DEPLOYMENT_MODE=authenticated\nPAPERCLIP_DEPLOYMENT_EXPOSURE=private\n' \
     "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > "$ENV_TMP"
   chmod 600 "$ENV_TMP"
   mv "$ENV_TMP" .env
+  trap - EXIT  # temp file successfully renamed; clear the cleanup trap
   info ".env criado com sucesso."
 fi
 

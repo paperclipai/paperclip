@@ -8,6 +8,7 @@
 # Restauração:
 #   gunzip -c backup.sql.gz | docker exec -i <container_db> psql -U paperclip -d paperclip
 set -euo pipefail
+umask 077  # ensure temp files are not world-readable
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -47,9 +48,15 @@ docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \
   | gzip > "$TMP_BACKUP"
 PGDUMP_EXIT=${PIPESTATUS[0]}
+GZIP_EXIT=${PIPESTATUS[1]}
 
 if [[ $PGDUMP_EXIT -ne 0 ]]; then
   echo "Erro: pg_dump falhou (exit $PGDUMP_EXIT)." >&2
+  exit 1
+fi
+
+if [[ $GZIP_EXIT -ne 0 ]]; then
+  echo "Erro: gzip falhou (exit $GZIP_EXIT) — backup pode estar incompleto." >&2
   exit 1
 fi
 
