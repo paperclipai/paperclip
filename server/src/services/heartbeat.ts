@@ -4938,7 +4938,7 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
+    list: async (companyId: string, agentId?: string, limit: number = 200, offset?: number) => {
       let query = db
         .select(heartbeatRunListColumns)
         .from(heartbeatRuns)
@@ -4947,11 +4947,9 @@ export function heartbeatService(db: Db) {
             ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(limit);
 
-      if (limit !== undefined) {
-        query = query.limit(limit) as any;
-      }
       if (offset !== undefined && offset > 0) {
         query = query.offset(offset) as any;
       }
