@@ -24,7 +24,7 @@ done
 
 # Default: backups/<timestamp>.sql.gz
 BACKUP_DIR="$PROJECT_ROOT/backups"
-mkdir -p "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="${OUTPUT_FILE:-$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz}"
 

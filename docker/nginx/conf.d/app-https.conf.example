@@ -31,6 +31,8 @@ server {
   ssl_certificate_key /etc/nginx/certs/privkey.pem;
   ssl_protocols       TLSv1.2 TLSv1.3;
   ssl_ciphers         HIGH:!aNULL:!MD5;
+  ssl_session_cache   shared:SSL:10m;
+  ssl_session_timeout 10m;
 
   # Health check endpoint (no auth required)
   location /health {
