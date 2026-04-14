@@ -978,11 +978,47 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export async function symlinkOrJunction(source: string, target: string): Promise<void> {
+  if (process.platform !== "win32") {
+    await fs.symlink(source, target);
+    return;
+  }
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+    await fs.symlink(path.win32.resolve(source), target, "junction");
+  }
+}
+
+export async function symlinkOrHardLink(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+      try {
+        await fs.link(source, target);
+      } catch (linkErr: unknown) {
+        if ((linkErr as NodeJS.ErrnoException).code === "EXDEV") {
+          console.warn(
+            `[paperclip] symlinkOrHardLink: falling back to file copy for "${target}" ` +
+              "(source and target are on different drives — the copy will not stay in sync with the source).",
+          );
+          await fs.copyFile(source, target);
+          return;
+        }
+        throw linkErr;
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = symlinkOrJunction,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -991,6 +1027,20 @@ export async function ensurePaperclipSkillSymlink(
   }
 
   if (!existing.isSymbolicLink()) {
+    if (process.platform === "win32" && existing.isDirectory()) {
+      const junctionTarget = await fs.readlink(target).catch(() => null);
+      if (junctionTarget !== null) {
+        const resolvedJunctionTarget = path.win32.isAbsolute(junctionTarget)
+          ? junctionTarget
+          : path.resolve(path.dirname(target), junctionTarget);
+        if (resolvedJunctionTarget === path.win32.resolve(source)) {
+          return "skipped";
+        }
+        await fs.unlink(target);
+        await linkSkill(source, target);
+        return "repaired";
+      }
+    }
     return "skipped";
   }
 

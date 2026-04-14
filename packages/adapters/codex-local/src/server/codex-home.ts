@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { symlinkOrHardLink } from "@paperclipai/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -46,22 +47,26 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
-  if (!existing.isSymbolicLink()) {
+  if (existing.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) return;
+    const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+    if (resolvedLinkedPath === source) return;
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
-
-  await fs.unlink(target);
-  await fs.symlink(source, target);
+  if (process.platform !== "win32") return;
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (sourceStat && existing.ino !== sourceStat.ino) {
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
+  }
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
