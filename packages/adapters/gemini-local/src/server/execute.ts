@@ -38,6 +38,12 @@ import { firstNonEmptyLine } from "./utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Filename for the auto-injected system prompt that Gemini CLI reads for context.
+ * Written to the agent's cwd so Gemini discovers it naturally without env overrides.
+ */
+const GEMINI_SYSTEM_FILENAME = "gemini-system.md";
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -338,10 +344,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else {
       args.push("--sandbox=none");
     }
+    // Allow agents to write intermediate results to /tmp (e.g., test output capping)
+    args.push("--include-directories", `${cwd}:/tmp`);
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;
   };
+
+  /**
+   * Inject the system prompt as gemini-system.md in the agent's cwd.
+   * Gemini CLI auto-reads this file for system context when present.
+   */
+  const systemPrompt = joinPromptSections([
+    instructionsPrefix,
+    renderedBootstrapPrompt,
+    paperclipEnvNote,
+    apiAccessNote,
+    renderedPrompt,
+  ]);
+  if (systemPrompt.trim().length > 0) {
+    const systemFilePath = path.join(cwd, GEMINI_SYSTEM_FILENAME);
+    try {
+      await fs.writeFile(systemFilePath, systemPrompt, "utf8");
+      await onLog(
+        "stderr",
+        `[paperclip] Injected system prompt as ${systemFilePath}\n`,
+      );
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not write ${systemFilePath}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
