@@ -25,9 +25,6 @@ importers:
       esbuild:
         specifier: ^0.27.3
         version: 0.27.3
-      inline-style-parser:
-        specifier: 0.2.7
-        version: 0.2.7
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -673,9 +670,6 @@ importers:
       hermes-paperclip-adapter:
         specifier: ^0.2.0
         version: 0.2.0
-      inline-style-parser:
-        specifier: 0.2.7
-        version: 0.2.7
       lexical:
         specifier: 0.35.0
         version: 0.35.0

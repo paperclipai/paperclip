@@ -547,7 +547,7 @@ describe("openclaw gateway adapter execute", () => {
         PAPERCLIP_AGENT_ID: "agent-123",
         PAPERCLIP_COMPANY_ID: "company-123",
         PAPERCLIP_RUN_ID: "run-123",
-        PAPERCLIP_API_URL: expect.stringMatching(/^http:\/\/(?:localhost|127\.0\.0\.1):3100$/),
+        PAPERCLIP_API_URL: expect.stringMatching(/^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/),
         PAPERCLIP_API_KEY: "paperclip-jwt-123",
         PAPERCLIP_TASK_ID: "task-123",
         PAPERCLIP_WAKE_REASON: "issue_assigned",

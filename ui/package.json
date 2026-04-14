@@ -48,7 +48,6 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "hermes-paperclip-adapter": "^0.2.0",
-    "inline-style-parser": "0.2.7",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.12.0",
