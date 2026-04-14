@@ -8,6 +8,7 @@ import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
@@ -114,6 +115,7 @@ function formatDueDate(date: Date | string): string {
 
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
@@ -167,6 +169,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       setNewLabelName("");
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create label",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const deleteLabel = useMutation({
@@ -175,6 +184,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to delete label",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -205,7 +221,11 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
+    () =>
+      sortAgentsByRecency(
+        (agents ?? []).filter((a) => a.status !== "terminated" && a.status !== "pending_approval"),
+        recentAssigneeIds,
+      ),
     [agents, recentAssigneeIds],
   );
 

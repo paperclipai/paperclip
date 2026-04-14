@@ -17,7 +17,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 
@@ -302,6 +302,9 @@ export function approvalRoutes(db: Db) {
       res.status(403).json({ error: "Only requesting agent can resubmit this approval" });
       return;
     }
+    if (req.actor.type === "board" && req.actor.userId !== existing.requestedByUserId) {
+      await requirePermission(req, access, existing.companyId, "approvals:review");
+    }
 
     const normalizedPayload = req.body.payload
       ? existing.type === "hire_agent"
@@ -347,6 +350,16 @@ export function approvalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, approval.companyId);
+
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId !== approval.requestedByAgentId) {
+        res.status(403).json({ error: "Only requesting agent can comment on this approval" });
+        return;
+      }
+    } else if (req.actor.type === "board" && req.actor.userId !== approval.requestedByUserId) {
+      await requirePermission(req, access, approval.companyId, "approvals:review");
+    }
+
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,

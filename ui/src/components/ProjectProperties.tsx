@@ -7,6 +7,7 @@ import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
@@ -78,6 +79,7 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
 
 export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
@@ -123,26 +125,61 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
       setWorkspaceError(null);
       invalidateProject();
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create workspace",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const removeWorkspace = useMutation({
     mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, workspaceId),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({
+        title: "Failed to remove workspace",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
   const updateWorkspace = useMutation({
     mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }) =>
       projectsApi.updateWorkspace(project.id, workspaceId, data),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update workspace",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const archiveProject = useMutation({
     mutationFn: () => projectsApi.archive(project.id),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({
+        title: "Failed to archive project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const unarchiveProject = useMutation({
     mutationFn: () => projectsApi.unarchive(project.id),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({
+        title: "Failed to unarchive project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const handleArchiveToggle = () => {

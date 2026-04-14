@@ -29,7 +29,7 @@ import {
   secretService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
@@ -767,6 +767,8 @@ export function agentRoutes(db: Db) {
       assertBoard(req);
     }
 
+    await requirePermission(req, access, companyId, "agents:create");
+
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       req.body.adapterType,
       ((req.body.adapterConfig ?? {}) as Record<string, unknown>),
@@ -838,6 +840,8 @@ export function agentRoutes(db: Db) {
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
+    } else {
+      await requirePermission(req, access, existing.companyId, "users:manage_permissions");
     }
 
     const agent = await svc.updatePermissions(id, req.body);

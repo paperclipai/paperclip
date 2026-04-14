@@ -10,6 +10,7 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  providerCredentials,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -214,6 +215,18 @@ export function agentService(db: Db) {
     return manager;
   }
 
+  async function assertCredentialBelongsToCompany(companyId: string, credentialId: string) {
+    const cred = await db
+      .select({ companyId: providerCredentials.companyId })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credentialId))
+      .then((rows) => rows[0] ?? null);
+    if (!cred) throw notFound("Credential not found");
+    if (cred.companyId !== companyId) {
+      throw unprocessable("Credential must belong to same company");
+    }
+  }
+
   async function assertNoCycle(agentId: string, reportsTo: string | null | undefined) {
     if (!reportsTo) return;
     if (reportsTo === agentId) throw unprocessable("Agent cannot report to itself");
@@ -278,6 +291,10 @@ export function agentService(db: Db) {
       await assertNoCycle(id, data.reportsTo);
     }
 
+    if (data.credentialId) {
+      await assertCredentialBelongsToCompany(existing.companyId, data.credentialId);
+    }
+
     if (data.name !== undefined) {
       const previousShortname = normalizeAgentUrlKey(existing.name);
       const nextShortname = normalizeAgentUrlKey(data.name);
@@ -339,6 +356,10 @@ export function agentService(db: Db) {
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
+      }
+
+      if (data.credentialId) {
+        await assertCredentialBelongsToCompany(companyId, data.credentialId);
       }
 
       await assertCompanyShortnameAvailable(companyId, data.name);

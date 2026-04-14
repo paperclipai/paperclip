@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
@@ -39,6 +40,7 @@ export function Companies() {
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -57,6 +59,13 @@ export function Companies() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       setEditingId(null);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update company",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -65,6 +74,13 @@ export function Companies() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
       setConfirmDeleteId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to delete company",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

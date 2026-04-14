@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { credentialsApi } from "../api/credentials";
@@ -15,7 +16,7 @@ import {
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
-import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential, TelegramNotificationLevel } from "@paperclipai/shared";
+import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential } from "@paperclipai/shared";
 import { PERMISSION_KEYS, ROLE_PRESETS } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
@@ -32,6 +33,7 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
   // General settings local state
@@ -39,7 +41,6 @@ export function CompanySettings() {
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
-  const [telegramNotificationLevel, setTelegramNotificationLevel] = useState<TelegramNotificationLevel>("important");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -49,7 +50,6 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     const s = selectedCompany.settings as CompanySettingsType | undefined;
     setTelegramChatId(s?.telegram?.chatId ?? "");
-    setTelegramNotificationLevel(s?.telegram?.notificationLevel ?? "important");
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -71,6 +71,13 @@ export function CompanySettings() {
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update company",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     }
   });
 
@@ -81,6 +88,13 @@ export function CompanySettings() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update settings",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     }
   });
 
@@ -162,6 +176,13 @@ export function CompanySettings() {
       });
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to archive company",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
       });
     }
   });
@@ -324,9 +345,6 @@ export function CompanySettings() {
         telegramChatId={telegramChatId}
         setTelegramChatId={setTelegramChatId}
         savedChatId={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.chatId ?? ""}
-        notificationLevel={telegramNotificationLevel}
-        setNotificationLevel={setTelegramNotificationLevel}
-        savedNotificationLevel={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.notificationLevel ?? "important"}
       />
 
       {/* Credentials */}
@@ -508,6 +526,7 @@ const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
 
 function MembersSection({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   // State
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
@@ -550,6 +569,13 @@ function MembersSection({ companyId }: { companyId: string }) {
       queryClient.invalidateQueries({ queryKey: queryKeys.access.members(companyId) });
       setExpandedMemberId(null);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update permissions",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   // Approve/reject join request mutations
@@ -567,6 +593,13 @@ function MembersSection({ companyId }: { companyId: string }) {
         queryKey: queryKeys.sidebarBadges(companyId),
       });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to approve request",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const rejectMutation = useMutation({
@@ -578,6 +611,13 @@ function MembersSection({ companyId }: { companyId: string }) {
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.sidebarBadges(companyId),
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to reject request",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
       });
     },
   });
@@ -1408,31 +1448,20 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   );
 }
 
-const NOTIFICATION_LEVEL_OPTIONS: { value: TelegramNotificationLevel; label: string; description: string }[] = [
-  { value: "all", label: "All", description: "Every comment, status change, and run failure" },
-  { value: "important", label: "Important", description: "Human-directed comments, blocked/review issues, approval requests, issue-related run failures" },
-  { value: "critical", label: "Critical only", description: "Only blocked issues and approval requests" },
-];
-
 function TelegramSection({
   companyId,
   telegramChatId,
   setTelegramChatId,
   savedChatId,
-  notificationLevel,
-  setNotificationLevel,
-  savedNotificationLevel,
 }: {
   companyId: string;
   telegramChatId: string;
   setTelegramChatId: (v: string) => void;
   savedChatId: string;
-  notificationLevel: TelegramNotificationLevel;
-  setNotificationLevel: (v: TelegramNotificationLevel) => void;
-  savedNotificationLevel: TelegramNotificationLevel;
 }) {
   const queryClient = useQueryClient();
-  const dirty = telegramChatId !== savedChatId || notificationLevel !== savedNotificationLevel;
+  const { pushToast } = useToast();
+  const dirty = telegramChatId !== savedChatId;
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -1440,24 +1469,30 @@ function TelegramSection({
         settings: {
           telegram: {
             chatId: telegramChatId.trim() || undefined,
-            notificationLevel,
           },
         },
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to save notification settings",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   return (
     <div className="space-y-4">
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        Notifications
+        Escalation Notifications
       </div>
       <div className="space-y-3 rounded-md border border-border px-4 py-4">
         <Field
           label="Telegram Chat ID"
-          hint="Telegram group/channel chat ID for this workspace. Overrides the global default. Use a bot like @userinfobot or the Telegram Bot API getUpdates to find the chat ID."
+          hint="Telegram chat ID for escalation alerts. When a super admin is @mentioned in a comment, a notification is sent here."
         >
           <div className="flex items-center gap-2">
             <Send className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -1469,22 +1504,6 @@ function TelegramSection({
               placeholder="-100xxxxxxxxxx"
             />
           </div>
-        </Field>
-        <Field
-          label="Notification level"
-          hint="Controls which events send Telegram notifications. 'Important' filters out agent-to-agent chatter and routine heartbeat failures."
-        >
-          <select
-            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-            value={notificationLevel}
-            onChange={(e) => setNotificationLevel(e.target.value as TelegramNotificationLevel)}
-          >
-            {NOTIFICATION_LEVEL_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label} — {opt.description}
-              </option>
-            ))}
-          </select>
         </Field>
         {dirty && (
           <div className="flex items-center gap-2">
@@ -1508,7 +1527,7 @@ function TelegramSection({
           </div>
         )}
         <p className="text-xs text-muted-foreground">
-          When set, Telegram notifications for this workspace (comments, blocked/review issues, failed runs) are sent to this chat instead of the global default.
+          When set, escalation notifications for this workspace are sent to this Telegram chat instead of the global default.
         </p>
       </div>
     </div>

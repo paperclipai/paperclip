@@ -4,6 +4,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EntityRow } from "../components/EntityRow";
 import { StatusBadge } from "../components/StatusBadge";
@@ -19,6 +20,7 @@ export function Projects() {
   const { openNewProject } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
@@ -41,6 +43,13 @@ export function Projects() {
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.listWithArchived(selectedCompanyId) });
       }
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to archive project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const unarchiveProject = useMutation({
@@ -50,6 +59,13 @@ export function Projects() {
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.listWithArchived(selectedCompanyId) });
       }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to unarchive project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

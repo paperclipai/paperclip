@@ -138,6 +138,7 @@ function countActiveFilters(state: IssueViewState): number {
 interface Agent {
   id: string;
   name: string;
+  status?: string;
 }
 
 interface IssuesListProps {
@@ -812,6 +813,7 @@ export function IssuesList({
                               No assignee
                             </button>
                             {(agents ?? [])
+                              .filter((agent) => agent.status !== "terminated" && agent.status !== "pending_approval")
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
                                 return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());

@@ -3,8 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { goalService, accessService, logActivity } from "../services/index.js";
-import { forbidden } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -31,13 +30,7 @@ export function goalRoutes(db: Db) {
 
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(companyId, req.actor.userId, "goals:manage");
-        if (!allowed) throw forbidden("Missing permission: goals:manage");
-      }
-    }
+    await requirePermission(req, access, companyId, "goals:manage");
     const goal = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -60,13 +53,7 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "goals:manage");
-        if (!allowed) throw forbidden("Missing permission: goals:manage");
-      }
-    }
+    await requirePermission(req, access, existing.companyId, "goals:manage");
     const goal = await svc.update(id, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
@@ -95,13 +82,7 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "goals:manage");
-        if (!allowed) throw forbidden("Missing permission: goals:manage");
-      }
-    }
+    await requirePermission(req, access, existing.companyId, "goals:manage");
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

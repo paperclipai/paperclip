@@ -1,7 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentTemplates, agents } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { agentTemplates, agents, providerCredentials } from "@paperclipai/db";
+import { conflict, notFound, unprocessable } from "../errors.js";
 
 export function agentTemplateService(db: Db) {
   return {
@@ -121,6 +121,18 @@ export function agentTemplateService(db: Db) {
     ) {
       const template = await this.getById(templateId);
       if (!template) throw notFound("Agent template not found");
+
+      if (overrides?.credentialId) {
+        const cred = await db
+          .select({ companyId: providerCredentials.companyId })
+          .from(providerCredentials)
+          .where(eq(providerCredentials.id, overrides.credentialId))
+          .then((rows) => rows[0] ?? null);
+        if (!cred) throw notFound("Credential not found");
+        if (cred.companyId !== companyId) {
+          throw unprocessable("Credential must belong to same company");
+        }
+      }
 
       const [created] = await db
         .insert(agents)

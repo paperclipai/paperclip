@@ -11,6 +11,7 @@ import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
@@ -232,6 +233,7 @@ function ColorPicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -267,6 +269,13 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update issue",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   return (
@@ -287,6 +296,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
 
 function ProjectMembersSection({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   // State
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
@@ -349,6 +359,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
       setAddMemberPrincipalId("");
       setAddMemberRole("viewer");
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add member",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   // Update permissions mutation
@@ -358,6 +375,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
       setExpandedMemberId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update permissions",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -369,6 +393,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
       setExpandedMemberId(null);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to apply role preset",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   // Remove member mutation
@@ -377,6 +408,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
       setExpandedMemberId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to remove member",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -387,6 +425,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
       setAddAgentId("");
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add agent to project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   // Remove agent access mutation
@@ -394,6 +439,13 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
     mutationFn: (agentId: string) => projectsApi.removeAgentAccess(projectId, agentId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to remove agent from project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -762,6 +814,7 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -803,12 +856,26 @@ export function ProjectDetail() {
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to upload image",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

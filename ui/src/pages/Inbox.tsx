@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
@@ -180,6 +181,7 @@ function FailedRunCard({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const sourceLabel = RUN_SOURCE_LABELS[run.invocationSource] ?? "Manual";
@@ -209,6 +211,13 @@ function FailedRunCard({
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
       navigate(`/agents/${run.agentId}/runs/${newRun.id}`);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to retry run",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

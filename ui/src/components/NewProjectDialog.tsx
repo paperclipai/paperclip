@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
@@ -47,6 +48,7 @@ const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -72,12 +74,26 @@ export function NewProjectDialog() {
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.create(selectedCompanyId!, data),
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
       if (!selectedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to upload image",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

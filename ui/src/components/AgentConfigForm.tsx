@@ -31,6 +31,7 @@ import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import {
   Field,
   ToggleField,
@@ -169,6 +170,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
   const { data: availableSecrets = [] } = useQuery({
@@ -186,12 +188,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create secret",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to upload images");
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to upload image",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -367,6 +383,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to test environment",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
       });
     },
   });

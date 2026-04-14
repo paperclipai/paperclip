@@ -13,6 +13,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AgentSkillsEditor } from "../components/AgentSkillsEditor";
@@ -1084,6 +1085,7 @@ function AgentConfigurePage({
   updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   const { data: configRevisions } = useQuery({
@@ -1097,6 +1099,13 @@ function AgentConfigurePage({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to rollback config",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -1193,6 +1202,7 @@ function ConfigurationTab({
   updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: adapterModels } = useQuery({
     queryKey:
@@ -1209,6 +1219,13 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update agent",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -1389,6 +1406,7 @@ function RunsTab({
 
 function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const navigate = useNavigate();
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
@@ -1402,6 +1420,13 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
     mutationFn: () => heartbeatsApi.cancel(run.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to cancel run",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
   const canResumeLostRun = run.errorCode === "process_lost" && run.status === "failed";
@@ -1438,6 +1463,13 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
       navigate(`/agents/${agentRouteId}/runs/${resumedRun.id}`);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to resume run",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const canRetryRun = run.status === "failed" || run.status === "timed_out";
@@ -1470,6 +1502,13 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
       navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to retry run",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const { data: touchedIssues } = useQuery({
@@ -1492,12 +1531,26 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(run.agentId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(run.id) });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to clear sessions",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const runClaudeLogin = useMutation({
     mutationFn: () => agentsApi.loginWithClaude(run.agentId, run.companyId),
     onSuccess: (data) => {
       setClaudeLoginResult(data);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to run Claude login",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -2511,6 +2564,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
@@ -2529,12 +2583,26 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       setNewKeyName("");
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create API key",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const revokeKey = useMutation({
     mutationFn: (keyId: string) => agentsApi.revokeKey(agentId, keyId, companyId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to revoke API key",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
