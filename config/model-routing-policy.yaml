@@ -1,0 +1,182 @@
+# Model Routing Policy
+# Defines which task types are routed to local vs frontier models.
+# Used by: T6 (PAP-13, Model Routing), meta-agent Analysis Agent (PAP-27, PAP-28)
+#
+# Routing order is enforced: deterministic tool → local model → frontier model
+# A task escalates to the next tier only when the lower tier is insufficient.
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Local model configuration
+# ---------------------------------------------------------------------------
+local:
+  runtime: ollama
+  baseUrl: "http://localhost:11434"
+  primaryModel: "qwen3:32b"        # strong coding + agent capabilities
+  multimodalModel: "gemma4:31b"    # screenshot / UI classification
+  contextWindowTokens: 8192        # cap per call — do not use advertised max
+  maxConcurrent: 1                 # one model at a time on 48 GB
+
+# ---------------------------------------------------------------------------
+# Routing tiers
+# ---------------------------------------------------------------------------
+#
+# tier 0 — deterministic (no LLM)
+# tier 1 — local model (zero API cost, ~2-10s latency)
+# tier 2 — frontier/small (Haiku-class — bounded extraction, summarization)
+# tier 3 — frontier/medium (Sonnet-class — execution, synthesis, code gen)
+# tier 4 — frontier/large (Opus-class — planning, architecture)
+#
+# Fields:
+#   taskType:    identifier used in Langfuse spans and task metadata
+#   tier:        0-4
+#   model:       concrete model ID (optional — inherits from tier default)
+#   rationale:   why this tier is appropriate
+#   escalateTo:  tier to use if confidence < threshold (optional)
+
+taskRouting:
+
+  # ---- Tier 0: deterministic tools ----------------------------------------
+
+  - taskType: git_log_parse
+    tier: 0
+    rationale: "Structured git output — use jq/awk, no LLM needed"
+
+  - taskType: json_extract
+    tier: 0
+    rationale: "Structured JSON fields — use jq, no LLM needed"
+
+  - taskType: file_search
+    tier: 0
+    rationale: "Glob/ripgrep — deterministic, no LLM needed"
+
+  # ---- Tier 1: local model -------------------------------------------------
+
+  - taskType: run_failure_classification
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Classify CI/heartbeat failures into error categories. High volume, no frontier quality needed."
+    escalateTo: 2
+
+  - taskType: telemetry_triage
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Cluster tasks by cost driver, summarize heartbeat diffs. Privacy-sensitive, local preferred."
+    escalateTo: 2
+
+  - taskType: policy_check
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Detect whether changes require board approval, pre-flight budget impact analysis."
+    escalateTo: 2
+
+  - taskType: codebase_qa
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Repo-scale Q&A, architecture summaries, test scaffold generation. Privacy-sensitive."
+    escalateTo: 3
+
+  - taskType: test_output_summarize
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Summarize test failures from CI output. High volume, bounded extraction."
+    escalateTo: 2
+
+  - taskType: log_parsing
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Extract signal from agent logs / Paperclip run output."
+    escalateTo: 2
+
+  - taskType: kpi_snapshot_analysis
+    tier: 1
+    model: "qwen3:32b"
+    rationale: "Meta-agent Analysis Agent: read KPI snapshots, identify regressions. Runs locally."
+    escalateTo: 2
+
+  - taskType: ui_screenshot_classify
+    tier: 1
+    model: "gemma4:31b"
+    rationale: "Screenshot-based UI classification requires multimodal. Gemma 4 handles this locally."
+    escalateTo: 3
+
+  # ---- Tier 2: frontier small (Haiku-class) --------------------------------
+
+  - taskType: log_summarize
+    tier: 2
+    rationale: "Bounded summarization where local quality is insufficient."
+
+  - taskType: approval_payload_draft
+    tier: 2
+    rationale: "Draft structured approval payloads. Needs reliable JSON output."
+
+  # ---- Tier 3: frontier medium (Sonnet-class) ------------------------------
+
+  - taskType: feature_implementation
+    tier: 3
+    rationale: "Code generation, feature work. Requires frontier code quality."
+
+  - taskType: bug_fix
+    tier: 3
+    rationale: "Debugging and targeted code fixes."
+
+  - taskType: refactoring
+    tier: 3
+    rationale: "Multi-file refactors with correctness requirements."
+
+  - taskType: pr_description
+    tier: 3
+    rationale: "PR write-up synthesis from diff + context."
+
+  # ---- Tier 4: frontier large (Opus-class) ---------------------------------
+
+  - taskType: architecture_design
+    tier: 4
+    rationale: "Multi-file architecture decisions, design specs."
+
+  - taskType: conflict_resolution
+    tier: 4
+    rationale: "Ambiguous requirements, cross-team decisions needing depth."
+
+  - taskType: security_review
+    tier: 4
+    rationale: "Security-sensitive analysis requiring maximum reliability."
+
+# ---------------------------------------------------------------------------
+# Escalation policy
+# ---------------------------------------------------------------------------
+escalation:
+  # If a tier-1 call returns confidence below this threshold, escalate.
+  confidenceThreshold: 0.7
+  # Maximum times a task is re-attempted at a higher tier before failing.
+  maxEscalations: 2
+  # Log all escalation events to observability (Langfuse span + OTel attribute).
+  logEscalations: true
+
+# ---------------------------------------------------------------------------
+# Cost measurement
+# ---------------------------------------------------------------------------
+costBaseline:
+  # Measured 2026-04-14 on 48 GB M-series Mac.
+  # Run: single-turn task "classify this CI failure log" (512 input tokens).
+  #
+  # local qwen3:32b:
+  #   method:         Ollama /api/chat (streaming, non-stream=false for measurement)
+  #   input_tokens:   512
+  #   output_tokens:  ~120
+  #   wall_time_sec:  ~18-25 (first call, model warming)
+  #   api_cost_usd:   0.00 (zero — on-device)
+  #
+  # frontier claude-haiku-4-5 (equivalent task):
+  #   input_tokens:   512
+  #   output_tokens:  ~120
+  #   api_cost_usd:   ~$0.00024 (at $0.25/1M in, $1.25/1M out)
+  #
+  # Breakeven: local is cost-free after model warmup. For >1 call/session,
+  # local wins on cost. Frontier wins on latency for cold starts.
+  #
+  # High-volume threshold: tasks routed local at ≥20 calls/day → save $1.75+/day
+  # at Haiku pricing, $10+/day at Sonnet pricing.
+  recordedAt: "2026-04-14"
+  note: "Update after first full week of local routing data from OTel pipeline (PAP-26)."

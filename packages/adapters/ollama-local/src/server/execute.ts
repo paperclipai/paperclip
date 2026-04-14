@@ -14,6 +14,7 @@ import {
   stringifyPaperclipWakePayload,
   ensureAbsoluteDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_OLLAMA_LOCAL_MODEL } from "../index.js";
 
 const execAsync = promisify(exec);
 
@@ -310,7 +311,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
 
   const baseUrl = asString(config.baseUrl, "http://localhost:11434").trim();
-  const model = asString(config.model, "llama3.2").trim();
+  const model = asString(config.model, DEFAULT_OLLAMA_LOCAL_MODEL).trim();
   const configuredCwd = asString(config.cwd, "").trim();
   const timeoutSec = asNumber(config.timeoutSec, 0);
 

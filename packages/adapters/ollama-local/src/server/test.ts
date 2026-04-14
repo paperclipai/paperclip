@@ -5,6 +5,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { asString, parseObject, ensureAbsoluteDirectory } from "@paperclipai/adapter-utils/server-utils";
 import { discoverOllamaModels } from "./models.js";
+import { DEFAULT_OLLAMA_LOCAL_MODEL } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((c) => c.level === "error")) return "fail";
@@ -18,7 +19,7 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const baseUrl = asString(config.baseUrl, "http://localhost:11434").trim();
-  const model = asString(config.model, "llama3.2").trim();
+  const model = asString(config.model, DEFAULT_OLLAMA_LOCAL_MODEL).trim();
   const cwd = asString(config.cwd, process.cwd());
 
   // Check cwd
