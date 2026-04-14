@@ -218,15 +218,21 @@ export function Dashboard() {
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
                   <p className="text-sm font-medium text-red-50">
-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
+                    {t("dashboard.budgets.activeIncidents", "Active budget incidents: {{count}}", {
+                      count: data.budgets.activeIncidents,
+                    })}
                   </p>
                   <p className="text-xs text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
+                    {t("dashboard.budgets.pauseSummary", "{{pausedAgents}} agents paused · {{pausedProjects}} projects paused · {{pendingApprovals}} pending budget approvals", {
+                      pausedAgents: data.budgets.pausedAgents,
+                      pausedProjects: data.budgets.pausedProjects,
+                      pendingApprovals: data.budgets.pendingApprovals,
+                    })}
                   </p>
                 </div>
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
-                Open budgets
+                {t("dashboard.actions.openBudgets", "Open budgets")}
               </Link>
             </div>
           ) : null}
@@ -239,9 +245,11 @@ export function Dashboard() {
               to="/agents"
               description={
                 <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
+                  {t("dashboard.metrics.agentsStatus", "{{running}} running, {{paused}} paused, {{errors}} errors", {
+                    running: data.agents.running,
+                    paused: data.agents.paused,
+                    errors: data.agents.error,
+                  })}
                 </span>
               }
             />
@@ -252,8 +260,10 @@ export function Dashboard() {
               to="/issues"
               description={
                 <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                  {t("dashboard.metrics.tasksStatus", "{{open}} open, {{blocked}} blocked", {
+                    open: data.tasks.open,
+                    blocked: data.tasks.blocked,
+                  })}
                 </span>
               }
             />
@@ -265,8 +275,11 @@ export function Dashboard() {
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                    ? t("dashboard.metrics.monthUtilization", "{{percent}}% of {{budget}} budget", {
+                        percent: data.costs.monthUtilizationPercent,
+                        budget: formatCents(data.costs.monthBudgetCents),
+                      })
+                    : t("dashboard.metrics.unlimitedBudget", "Unlimited budget")}
                 </span>
               }
             />
@@ -278,24 +291,38 @@ export function Dashboard() {
               description={
                 <span>
                   {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                    ? t("dashboard.metrics.budgetOverridesAwaitingBoardReview", "{{count}} budget overrides awaiting board review", {
+                        count: data.budgets.pendingApprovals,
+                      })
+                    : t("dashboard.metrics.awaitingBoardReview", "Awaiting board review")}
                 </span>
               }
             />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
+            <ChartCard
+              title={t("dashboard.charts.runActivity", "Run Activity")}
+              subtitle={t("dashboard.charts.last14Days", "Last 14 days")}
+            >
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard
+              title={t("dashboard.charts.issuesByPriority", "Issues by Priority")}
+              subtitle={t("dashboard.charts.last14Days", "Last 14 days")}
+            >
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard
+              title={t("dashboard.charts.issuesByStatus", "Issues by Status")}
+              subtitle={t("dashboard.charts.last14Days", "Last 14 days")}
+            >
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
+            <ChartCard
+              title={t("dashboard.charts.successRate", "Success Rate")}
+              subtitle={t("dashboard.charts.last14Days", "Last 14 days")}
+            >
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
@@ -312,7 +339,7 @@ export function Dashboard() {
             {recentActivity.length > 0 && (
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
+                  {t("dashboard.sections.recentActivity", "Recent Activity")}
                 </h3>
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
@@ -332,11 +359,11 @@ export function Dashboard() {
             {/* Recent Tasks */}
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
+                {t("dashboard.sections.recentTasks", "Recent Tasks")}
               </h3>
               {recentIssues.length === 0 ? (
                 <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                  <p className="text-sm text-muted-foreground">{t("dashboard.empty.noTasksYet", "No tasks yet.")}</p>
                 </div>
               ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">

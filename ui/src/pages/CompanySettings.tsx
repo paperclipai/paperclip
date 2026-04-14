@@ -10,6 +10,7 @@ import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n/runtime";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -36,6 +37,7 @@ export function CompanySettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -92,14 +94,16 @@ export function CompanySettings() {
     onSuccess: (_company, enabled) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        title: enabled
+          ? t("companySettings.feedbackSharing.toast.enabled", "Feedback sharing enabled")
+          : t("companySettings.feedbackSharing.toast.disabled", "Feedback sharing disabled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Failed to update feedback sharing",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("companySettings.feedbackSharing.toast.updateFailed", "Failed to update feedback sharing"),
+        body: err instanceof Error ? err.message : t("companySettings.feedbackSharing.toast.unknownError", "Unknown error"),
         tone: "error",
       });
     },
@@ -153,7 +157,7 @@ export function CompanySettings() {
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : t("companySettings.invites.createFailed", "Failed to create invite")
       );
     }
   });
@@ -224,15 +228,15 @@ export function CompanySettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: selectedCompany?.name ?? t("companySettings.breadcrumb.companyFallback", "Company"), href: "/dashboard" },
+      { label: t("companySettings.breadcrumb.settings", "Settings") }
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        {t("companySettings.empty.selectCompany", "No company selected. Select a company from the switcher above.")}
       </div>
     );
   }
@@ -249,16 +253,19 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-semibold">{t("companySettings.title", "Company Settings")}</h1>
       </div>
 
       {/* General */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {t("companySettings.sections.general", "General")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field
+            label={t("companySettings.fields.companyName.label", "Company name")}
+            hint={t("companySettings.fields.companyName.hint", "The display name for your company.")}
+          >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -267,14 +274,14 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label={t("companySettings.fields.description.label", "Description")}
+            hint={t("companySettings.fields.description.hint", "Optional description shown in the company profile.")}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={t("companySettings.fields.description.placeholder", "Optional company description")}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -284,7 +291,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {t("companySettings.sections.appearance", "Appearance")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
@@ -298,8 +305,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label={t("companySettings.fields.logo.label", "Logo")}
+                hint={t("companySettings.fields.logo.hint", "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.")}
               >
                 <div className="space-y-2">
                   <input
@@ -316,7 +323,9 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending
+                          ? t("companySettings.fields.logo.removing", "Removing...")
+                          : t("companySettings.fields.logo.remove", "Remove logo")}
                       </Button>
                     </div>
                   )}
@@ -325,7 +334,7 @@ export function CompanySettings() {
                       {logoUploadError ??
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                          : t("companySettings.fields.logo.uploadFailed", "Logo upload failed"))}
                     </span>
                   )}
                   {clearLogoMutation.isError && (
@@ -334,13 +343,15 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">
+                      {t("companySettings.fields.logo.uploading", "Uploading logo...")}
+                    </span>
                   )}
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label={t("companySettings.fields.brandColor.label", "Brand color")}
+                hint={t("companySettings.fields.brandColor.hint", "Sets the hue for the company icon. Leave empty for auto-generated color.")}
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -358,7 +369,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder={t("companySettings.fields.brandColor.placeholder", "Auto")}
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -368,7 +379,7 @@ export function CompanySettings() {
                       onClick={() => setBrandColor("")}
                       className="text-xs text-muted-foreground"
                     >
-                      Clear
+                      {t("companySettings.fields.brandColor.clear", "Clear")}
                     </Button>
                   )}
                 </div>
@@ -386,16 +397,18 @@ export function CompanySettings() {
             onClick={handleSaveGeneral}
             disabled={generalMutation.isPending || !companyName.trim()}
           >
-            {generalMutation.isPending ? "Saving..." : "Save changes"}
+            {generalMutation.isPending
+              ? t("companySettings.actions.saving", "Saving...")
+              : t("companySettings.actions.saveChanges", "Save changes")}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{t("companySettings.actions.saved", "Saved")}</span>
           )}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
                   ? generalMutation.error.message
-                  : "Failed to save"}
+                  : t("companySettings.actions.saveFailed", "Failed to save")}
             </span>
           )}
         </div>
@@ -404,12 +417,12 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {t("companySettings.sections.hiring", "Hiring")}
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={t("companySettings.hiring.requireBoardApproval.label", "Require board approval for new hires")}
+            hint={t("companySettings.hiring.requireBoardApproval.hint", "New agent hires stay pending until approved by board.")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -419,31 +432,31 @@ export function CompanySettings() {
 
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Feedback Sharing
+          {t("companySettings.sections.feedbackSharing", "Feedback Sharing")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
-            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            label={t("companySettings.feedbackSharing.toggle.label", "Allow sharing voted AI outputs with Paperclip Labs")}
+            hint={t("companySettings.feedbackSharing.toggle.hint", "Only AI-generated outputs you explicitly vote on are eligible for feedback sharing.")}
             checked={!!selectedCompany.feedbackDataSharingEnabled}
             onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
           />
           <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+            {t("companySettings.feedbackSharing.description", "Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.")}
           </p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+              {t("companySettings.feedbackSharing.termsVersion", "Terms version")}: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
             </div>
             {selectedCompany.feedbackDataSharingConsentAt ? (
               <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {t("companySettings.feedbackSharing.enabledAt", "Enabled")} {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
                 {selectedCompany.feedbackDataSharingConsentByUserId
-                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  ? ` ${t("companySettings.feedbackSharing.byUser", "by")} ${selectedCompany.feedbackDataSharingConsentByUserId}`
                   : ""}
               </div>
             ) : (
-              <div>Sharing is currently disabled.</div>
+              <div>{t("companySettings.feedbackSharing.disabled", "Sharing is currently disabled.")}</div>
             )}
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -452,7 +465,7 @@ export function CompanySettings() {
                 rel="noreferrer"
                 className="inline-flex text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                {t("companySettings.feedbackSharing.readTerms", "Read our terms of service")}
               </a>
             ) : null}
           </div>
@@ -462,14 +475,14 @@ export function CompanySettings() {
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          {t("companySettings.sections.invites", "Invites")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              {t("companySettings.invites.description", "Generate an OpenClaw agent invite snippet.")}
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text={t("companySettings.invites.hint", "Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt.")} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -479,8 +492,8 @@ export function CompanySettings() {
               disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+                ? t("companySettings.invites.generating", "Generating...")
+                : t("companySettings.invites.generatePrompt", "Generate OpenClaw Invite Prompt")}
             </Button>
           </div>
           {inviteError && (
@@ -493,7 +506,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  {t("companySettings.invites.promptLabel", "OpenClaw Invite Prompt")}
                 </div>
                 {snippetCopied && (
                   <span
@@ -501,7 +514,7 @@ export function CompanySettings() {
                     className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
                   >
                     <Check className="h-3 w-3" />
-                    Copied
+                    {t("companySettings.invites.copied", "Copied")}
                   </span>
                 )}
               </div>
@@ -528,7 +541,9 @@ export function CompanySettings() {
                       }
                     }}
                   >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                    {snippetCopied
+                      ? t("companySettings.invites.copySnippetDone", "Copied snippet")
+                      : t("companySettings.invites.copySnippet", "Copy snippet")}
                   </Button>
                 </div>
               </div>
@@ -540,24 +555,25 @@ export function CompanySettings() {
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
+          {t("companySettings.sections.companyPackages", "Company Packages")}
         </div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            {t("companySettings.companyPackages.descriptionPrefix", "Import and export have moved to dedicated pages accessible from the ")}
+            <a href="/org" className="underline hover:text-foreground">{t("companySettings.companyPackages.orgChart", "Org Chart")}</a>
+            {t("companySettings.companyPackages.descriptionSuffix", " header.")}
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
+                {t("companySettings.companyPackages.export", "Export")}
               </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
+                {t("companySettings.companyPackages.import", "Import")}
               </Link>
             </Button>
           </div>
@@ -567,12 +583,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {t("companySettings.sections.dangerZone", "Danger Zone")}
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            {t("companySettings.dangerZone.description", "Archive this company to hide it from the sidebar. This persists in the database.")}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -585,7 +600,11 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  t(
+                    "companySettings.dangerZone.archiveConfirm",
+                    "Archive company \"{{name}}\"? It will be hidden from the sidebar.",
+                    { name: selectedCompany.name },
+                  )
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
@@ -601,16 +620,16 @@ export function CompanySettings() {
               }}
             >
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? t("companySettings.dangerZone.archiving", "Archiving...")
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? t("companySettings.dangerZone.alreadyArchived", "Already archived")
+                : t("companySettings.dangerZone.archiveCompany", "Archive company")}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : t("companySettings.dangerZone.archiveFailed", "Failed to archive company")}
               </span>
             )}
           </div>
@@ -620,7 +639,7 @@ export function CompanySettings() {
   );
 }
 
-function buildAgentSnippet(input: AgentSnippetInput) {
+export function buildAgentSnippet(input: AgentSnippetInput) {
   const candidateUrls = buildCandidateOnboardingUrls(input);
   const resolutionTestUrl = buildResolutionTestUrl(input);
 
@@ -631,52 +650,52 @@ function buildAgentSnippet(input: AgentSnippetInput) {
 
   const connectivityBlock =
     candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
-Suggested steps:
-- choose a hostname that resolves to the Paperclip host from your runtime
-- run: pnpm paperclipai allowed-hostname <host>
-- restart Paperclip
-- verify with: curl -fsS http://<host>:3100/api/health
-- regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
-Suggested command:
+      ? `当前没有可用的候选 URL。请让你的用户先在 Paperclip 中配置一个可达的主机名，然后再重试。
+建议步骤：
+- 选择一个在你的运行环境中能够解析到 Paperclip 主机的主机名
+- 运行：pnpm paperclipai allowed-hostname <host>
+- 重启 Paperclip
+- 验证：curl -fsS http://<host>:3100/api/health
+- 重新生成这段邀请片段`
+      : `如果这些地址都不可达，请让你的用户在 Paperclip 中添加一个可达主机名，重启后再试。
+建议命令：
 - pnpm paperclipai allowed-hostname <host>
-Then verify with: curl -fsS <base-url>/api/health`;
+然后验证：curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? `\n你必须测试 Paperclip 到 gateway 的连通性，请调用：${resolutionTestUrl}?url=<urlencoded-gateway-url>（使用上面已经验证可用的主机名）。不要假设你的 172.x 地址一定能被 Paperclip 访问到，务必实际测试。`
     : "";
 
-  return `You're invited to join a Paperclip organization.
+  return `你已被邀请加入一个 Paperclip 组织。
 
-The URLs you should try are:
+你应该尝试的 URL：
 ${candidateList}
 
-Connectivity guidance:
-If you are running on a different machine than Paperclip, Paperclip must be reachable at one of the hostnames used above.
-Verify the hostname works from your runtime with: GET <base-url>/api/health
+连通性说明：
+如果你运行在与 Paperclip 不同的机器上，Paperclip 必须能通过上述某个主机名访问到你。
+请先在你的运行环境里验证该主机名可用：GET <base-url>/api/health
 
 ${connectivityBlock}
 
-For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
+对于 “agentName”，直接使用你自己的智能体名称（OpenClaw 或你的实际名称）并原样发送即可。
+你还需要提供一个 Paperclip 可以访问的 gateway URL。请检查你的配置并附上该 URL。${resolutionLine}
 
 ---
 
-This onboarding flow is for OpenClaw Gateway.
-When you submit the join request, use:
+此引导流程适用于 OpenClaw Gateway。
+提交加入请求时，请使用：
 - \`adapterType: "openclaw_gateway"\`
-- \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
-- \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
-- (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
-- Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, Paperclip will generate and persist one during join so pairing approvals remain stable.
-- Only use \`disableDeviceAuth=true\` for special environments where pairing cannot be completed.
+- 将 \`agentDefaultsPayload.url\` 设为你的 \`ws://\` 或 \`wss://\` gateway URL
+- 将 \`agentDefaultsPayload.headers["x-openclaw-token"]\` 设为你的 gateway token
+- （兼容旧版本）也可使用 \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
+- 建议保持 device auth 启用。如果省略 \`devicePrivateKeyPem\`，Paperclip 会在加入时自动生成并持久化，以保持配对审批稳定。
+- 仅在无法完成配对的特殊环境中使用 \`disableDeviceAuth=true\`。
 
-Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
+在此加入流程中，不要使用 \`/v1/responses\` 或 \`/hooks/*\`。
 
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+在做任何事之前，请先回复你的用户：你已经理解这些说明，并将开始执行。然后在另一个名为 "paperclip-onboarding" 的会话里完成上述步骤，并在完成后告知你的用户。过程中也要持续给用户同步中间进展，让他们知道当前情况。
 
-Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
+当你连接到 Paperclip（完成密钥交换等）之后，你必须继续查看并遵循他们提供给你的 onboarding.txt 中的引导说明。
 
 `;
 }

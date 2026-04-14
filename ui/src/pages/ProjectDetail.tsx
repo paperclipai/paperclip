@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { useI18n } from "@/i18n/runtime";
 import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
 import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
@@ -39,6 +40,27 @@ import { IssuesQuicklook } from "../components/IssuesQuicklook";
 type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
+type Translate = ReturnType<typeof useI18n>["t"];
+
+type ProjectWorkspaceStatusLabelKey =
+  | "executionWorkspaceDetail.workspaceStatus.active"
+  | "executionWorkspaceDetail.workspaceStatus.idle"
+  | "executionWorkspaceDetail.workspaceStatus.inReview"
+  | "executionWorkspaceDetail.workspaceStatus.archived"
+  | "executionWorkspaceDetail.workspaceStatus.cleanupFailed";
+
+const projectWorkspaceStatusLabels: Record<ExecutionWorkspace["status"], readonly [ProjectWorkspaceStatusLabelKey, string]> = {
+  active: ["executionWorkspaceDetail.workspaceStatus.active", "Active"],
+  idle: ["executionWorkspaceDetail.workspaceStatus.idle", "Idle"],
+  in_review: ["executionWorkspaceDetail.workspaceStatus.inReview", "In review"],
+  archived: ["executionWorkspaceDetail.workspaceStatus.archived", "Archived"],
+  cleanup_failed: ["executionWorkspaceDetail.workspaceStatus.cleanupFailed", "Cleanup failed"],
+};
+
+function translateProjectWorkspaceStatus(t: Translate, status: ExecutionWorkspace["status"]) {
+  const [key, fallback] = projectWorkspaceStatusLabels[status];
+  return t(key, fallback);
+}
 
 function isProjectPluginTab(value: string | null): value is ProjectPluginTab {
   return typeof value === "string" && value.startsWith("plugin:");
@@ -68,6 +90,8 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -76,21 +100,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projectDetail.overview.descriptionPlaceholder", "Add a description...")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("projectDetail.overview.status", "Status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projectDetail.overview.targetDate", "Target Date")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -108,6 +132,7 @@ function ColorPicker({
   currentColor: string;
   onSelect: (color: string) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -128,7 +153,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={t("projectDetail.colorPicker.changeProjectColor", "Change project color")}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -146,7 +171,7 @@ function ColorPicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                aria-label={t("projectDetail.colorPicker.selectColor", "Select color {{color}}", { color })}
               />
             ))}
           </div>
@@ -228,6 +253,7 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -257,7 +283,7 @@ function ProjectWorkspacesContent({
   });
 
   if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("projectDetail.workspaces.empty", "No non-default workspace activity yet.")}</p>;
   }
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
@@ -300,7 +326,7 @@ function ProjectWorkspacesContent({
               </span>
             ) : null}
             {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
-              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
+              <span className="text-[11px] text-muted-foreground">{translateProjectWorkspaceStatus(t, summary.executionWorkspaceStatus)}</span>
             ) : null}
           </div>
 
@@ -328,7 +354,9 @@ function ProjectWorkspacesContent({
                 ) : (
                   <Play className="h-3 w-3" />
                 )}
-                {hasRunningServices ? "Stop" : "Start"}
+                {hasRunningServices
+                  ? t("projectDetail.workspaces.actions.stop", "Stop")
+                  : t("projectDetail.workspaces.actions.start", "Start")}
               </Button>
             ) : null}
             {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
@@ -342,7 +370,9 @@ function ProjectWorkspacesContent({
                   status: summary.executionWorkspaceStatus!,
                 })}
               >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
+                {summary.executionWorkspaceStatus === "cleanup_failed"
+                  ? t("projectDetail.workspaces.actions.retryClose", "Retry close")
+                  : t("projectDetail.workspaces.actions.close", "Close")}
               </Button>
             ) : null}
           </div>
@@ -362,7 +392,7 @@ function ProjectWorkspacesContent({
               <span className="truncate font-mono" title={summary.cwd}>
                 {truncatePath(summary.cwd)}
               </span>
-              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
+              <CopyText text={summary.cwd} className="shrink-0" copiedLabel={t("projectDetail.workspaces.pathCopied", "Path copied")}>
                 <Copy className="h-3 w-3" />
               </CopyText>
             </div>
@@ -384,7 +414,7 @@ function ProjectWorkspacesContent({
         {/* Issues */}
         {summary.issues.length > 0 ? (
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-medium text-muted-foreground/70">Issues</span>
+            <span className="font-medium text-muted-foreground/70">{t("projectDetail.workspaces.issuesLabel", "Issues")}</span>
             {visibleIssues.map((issue) => (
               <IssuesQuicklook key={issue.id} issue={issue}>
                 <Link
@@ -397,7 +427,7 @@ function ProjectWorkspacesContent({
             ))}
             {hiddenIssueCount > 0 ? (
               <Link to={workspaceHref} className="hover:text-foreground hover:underline">
-                +{hiddenIssueCount} more
+                {t("projectDetail.workspaces.moreIssues", "+{{count}} more", { count: hiddenIssueCount })}
               </Link>
             ) : null}
           </div>
@@ -415,7 +445,7 @@ function ProjectWorkspacesContent({
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
+              {t("projectDetail.workspaces.cleanupAttention", "Cleanup attention needed")}
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
               {cleanupFailedSummaries.map(renderSummaryRow)}
@@ -459,6 +489,7 @@ export function ProjectDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useI18n();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
@@ -603,10 +634,15 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: t("projectDetail.breadcrumb.projects", "Projects"), href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? t("projectDetail.breadcrumb.projectFallback", "Project") },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [setBreadcrumbs, project, routeProjectRef, t]);
+
+  useEffect(() => {
+    closePanel();
+    return () => closePanel();
+  }, [closePanel]);
 
   useEffect(() => {
     if (!project) return;
@@ -641,11 +677,6 @@ export function ProjectDetail() {
     }
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
   }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
-
-  useEffect(() => {
-    closePanel();
-    return () => closePanel();
-  }, [closePanel]);
 
   useEffect(() => {
     return () => {
@@ -695,9 +726,11 @@ export function ProjectDetail() {
       (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
     );
     if (matched) return matched;
+
+    const pausedByBudget = project?.pauseReason === "budget";
     return {
       policyId: "",
-      companyId: resolvedCompanyId ?? "",
+      companyId: resolvedCompanyId ?? project?.companyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
       scopeName: project?.name ?? "Project",
@@ -706,13 +739,13 @@ export function ProjectDetail() {
       amount: 0,
       observedAmount: 0,
       remainingAmount: 0,
-      utilizationPercent: 0,
+      utilizationPercent: pausedByBudget ? 100 : 0,
       warnPercent: 80,
       hardStopEnabled: true,
       notifyEnabled: true,
       isActive: false,
-      status: "ok",
-      paused: Boolean(project?.pausedAt),
+      status: pausedByBudget ? "hard_stop" : "ok",
+      paused: pausedByBudget,
       pauseReason: project?.pauseReason ?? null,
       windowStart: new Date(),
       windowEnd: new Date(),
@@ -817,7 +850,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {t("projectDetail.budgetHardStop", "Paused by budget hard stop")}
             </div>
           ) : null}
         </div>
@@ -857,11 +890,11 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: t("projectDetail.tabs.issues", "Issues") },
+            { value: "overview", label: t("projectDetail.tabs.overview", "Overview") },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("projectDetail.tabs.workspaces", "Workspaces") }] : []),
+            { value: "configuration", label: t("projectDetail.tabs.configuration", "Configuration") },
+            { value: "budget", label: t("projectDetail.tabs.budget", "Budget") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -901,7 +934,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("projectDetail.loading.workspaces", "Loading workspaces...")}</p>
         )
       ) : null}
 
