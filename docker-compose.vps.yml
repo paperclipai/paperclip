@@ -66,6 +66,12 @@ services:
       BROWSER_TEST_HOST: "${BROWSER_TEST_HOST:-}"
       BROWSER_TEST_USER: "${BROWSER_TEST_USER:-root}"
       BROWSER_TEST_SSH_KEY: "${BROWSER_TEST_SSH_KEY:-}"
+      # Verification gate flags (Phase 4-6b operational controls). All default to safe
+      # no-op modes so deploying this PR has no behavior change. Board flips them on the
+      # VPS .env file when ready to enforce. See CLAUDE.md for the rollout sequence.
+      VERIFICATION_GATE_MODE: "${VERIFICATION_GATE_MODE:-log_only}"
+      TERMINAL_OUTPUT_GATE_MODE: "${TERMINAL_OUTPUT_GATE_MODE:-log_only}"
+      LEGACY_QA_GATES: "${LEGACY_QA_GATES:-on}"
     # gid 999 = docker group on host, needed for hermes-bridge.sh to docker-exec into hermes-agent container.
     group_add:
       - "999"
