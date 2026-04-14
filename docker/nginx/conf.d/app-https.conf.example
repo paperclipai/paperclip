@@ -3,7 +3,8 @@
 #   1. Place fullchain.pem and privkey.pem in the nginx-certs Docker volume
 #      (docker volume inspect toca-da-ia_nginx-certs to find the host path)
 #   2. cp app-https.conf.example app-https.conf
-#   3. docker compose -f docker/docker-compose.prod.yml restart nginx
+#   3. rm app.conf   ← REQUIRED: both files define listen 80; keeping app.conf causes silent conflict
+#   4. docker compose -f docker/docker-compose.prod.yml restart nginx
 
 # Redirect all HTTP traffic to HTTPS
 server {

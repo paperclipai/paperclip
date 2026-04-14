@@ -34,6 +34,10 @@ if [[ -z "$DB_CONTAINER" ]]; then
   echo "Erro: container do banco não encontrado. Verifique se o stack está rodando." >&2
   exit 1
 fi
+if [[ "$(docker inspect --format='{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null)" != "true" ]]; then
+  echo "Erro: container do banco encontrado mas não está em execução." >&2
+  exit 1
+fi
 
 echo "→ Realizando backup do banco..."
 TMP_BACKUP=$(mktemp "${BACKUP_DIR}/.backup_tmp_XXXXXXXX.sql.gz")
@@ -60,8 +64,8 @@ if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
   exit 1
 fi
 
-trap - EXIT INT TERM
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
+trap - EXIT INT TERM
 chmod 600 "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)
