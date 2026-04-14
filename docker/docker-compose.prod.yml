@@ -36,12 +36,12 @@ services:
       - redisdata:/data
 
   app:
-    image: "${APP_IMAGE:-ghcr.io/connect-distribuidora/toca-da-ia:latest}"
+    image: "${APP_IMAGE:-ghcr.io/connect-distribuidora/toca-da-ia:v2026.414.0}"
     restart: unless-stopped
     environment:
       HOST: "0.0.0.0"
       PORT: "3100"
-      DATABASE_URL: "postgres://paperclip:${DB_PASSWORD}@db:5432/paperclip"
+      DATABASE_URL: "postgres://paperclip:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/paperclip"
       REDIS_URL: "redis://redis:6379"
       SERVE_UI: "true"
       PAPERCLIP_HOME: "/paperclip"

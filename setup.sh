@@ -73,9 +73,18 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
     warn "Nenhuma chave de IA informada. Agentes não funcionarão sem ao menos uma."
   fi
 
+  # Strip any embedded newlines/carriage-returns from user-supplied values before
+  # writing to .env to prevent line-injection attacks (e.g., pasted URL with \n).
+  PUBLIC_URL="${PUBLIC_URL//$'\n'/}"; PUBLIC_URL="${PUBLIC_URL//$'\r'/}"
+  ANTHROPIC_KEY="${ANTHROPIC_KEY//$'\n'/}"; ANTHROPIC_KEY="${ANTHROPIC_KEY//$'\r'/}"
+  OPENAI_KEY="${OPENAI_KEY//$'\n'/}"; OPENAI_KEY="${OPENAI_KEY//$'\r'/}"
+
+  # Write to a temp file first, then atomically rename to avoid partial .env on failure.
+  ENV_TMP=".env.tmp.$$"
   printf 'PAPERCLIP_PUBLIC_URL=%s\nBETTER_AUTH_SECRET=%s\nDB_PASSWORD=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nPAPERCLIP_DEPLOYMENT_MODE=authenticated\nPAPERCLIP_DEPLOYMENT_EXPOSURE=private\n' \
-    "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > .env
-  chmod 600 .env
+    "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > "$ENV_TMP"
+  chmod 600 "$ENV_TMP"
+  mv "$ENV_TMP" .env
   info ".env criado com sucesso."
 fi
 
@@ -96,7 +105,8 @@ HEALTH_URL="http://localhost:${HTTP_PORT_LOCAL}/health"
 RETRIES=30
 for i in $(seq 1 $RETRIES); do
   HEALTH_RESPONSE=$(curl -sf "$HEALTH_URL" 2>/dev/null || true)
-  if echo "$HEALTH_RESPONSE" | grep -q '"status":"ok"'; then
+  if echo "$HEALTH_RESPONSE" | grep -qE '"status"\s*:\s*"ok"[,}]'; then
+    echo ""
     info "Aplicação pronta!"
     break
   fi

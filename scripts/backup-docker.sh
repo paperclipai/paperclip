@@ -64,9 +64,9 @@ if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
   exit 1
 fi
 
+chmod 600 "$TMP_BACKUP"
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
 trap - EXIT INT TERM
-chmod 600 "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)
 echo "✔ Backup salvo em: $OUTPUT_FILE ($SIZE)"
