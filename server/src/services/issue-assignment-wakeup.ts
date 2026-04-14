@@ -2,6 +2,31 @@ import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
+type HeartbeatCompletionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+type HeartbeatIssueStatus = "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled";
+type HeartbeatIssuePriority = "critical" | "high" | "medium" | "low";
+
+type IssueAssignmentWakeupOnComplete = Partial<{
+  agentId: string | null;
+  source: WakeupSource | null;
+  triggerDetail: WakeupTriggerDetail | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown> | null;
+  commentBody: string | null;
+  issueStatus: HeartbeatIssueStatus | null;
+  createIssue:
+    | {
+        title: string | null;
+        description: string | null;
+        status: HeartbeatIssueStatus | null;
+        priority: HeartbeatIssuePriority | null;
+        assignToAgentId: string | null;
+        commentBody: string | null;
+      }
+    | null;
+  onlyOn: HeartbeatCompletionOutcome[] | null;
+}>;
 
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
@@ -14,6 +39,8 @@ export interface IssueAssignmentWakeupDeps {
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
+      silentCompletion?: boolean;
+      onComplete?: IssueAssignmentWakeupOnComplete | null;
     },
   ) => Promise<unknown>;
 }
@@ -26,6 +53,8 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  silentCompletion?: boolean;
+  onComplete?: IssueAssignmentWakeupOnComplete | null;
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -39,6 +68,8 @@ export function queueIssueAssignmentWakeup(input: {
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
+      ...(input.silentCompletion !== undefined ? { silentCompletion: input.silentCompletion === true } : {}),
+      ...(input.onComplete !== undefined ? { onComplete: input.onComplete ?? null } : {}),
     })
     .catch((err) => {
       logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");

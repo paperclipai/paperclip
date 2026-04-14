@@ -928,7 +928,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_private_loopback_bind",
       level: "warn",
       message: "Paperclip is bound to loopback in authenticated/private mode.",
-      hint: "Use a reachable private bind mode such as `pnpm dev --bind lan` or `pnpm dev --bind tailnet` for private-network onboarding."
+      hint: "Run with a reachable bind host or use pnpm dev --tailscale-auth for private-network onboarding."
     });
   }
 
@@ -1645,12 +1645,25 @@ export function accessRoutes(
         created.challengeSecret,
       );
       const baseUrl = requestBaseUrl(req);
+      
+      // Truncate sensitive tokens in response for security
+      function truncateToken(token: string): string {
+        if (token.length <= 10) return token;
+        const start = token.slice(0, 6);
+        const end = token.slice(-4);
+        return `${start}...${end}`;
+      }
+      
+      const redactedApprovalPath = approvalPath.replace(/token=([^&]+)/, (match, tokenValue) => {
+        return `token=${truncateToken(tokenValue)}`;
+      });
+      
       res.status(201).json({
         id: created.challenge.id,
-        token: created.challengeSecret,
+        challengeToken: truncateToken(created.challengeSecret),
         boardApiToken: created.pendingBoardToken,
-        approvalPath,
-        approvalUrl: baseUrl ? `${baseUrl}${approvalPath}` : null,
+        approvalPath: redactedApprovalPath,
+        approvalUrl: baseUrl ? `${baseUrl}${redactedApprovalPath}` : null,
         pollPath: `/cli-auth/challenges/${created.challenge.id}`,
         expiresAt: created.challenge.expiresAt.toISOString(),
         suggestedPollIntervalMs: 1000,

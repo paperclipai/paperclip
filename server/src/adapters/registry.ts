@@ -69,13 +69,13 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
 import {
-  execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
   listSkills as hermesListSkills,
   syncSkills as hermesSyncSkills,
   detectModel as detectModelFromHermes,
 } from "hermes-paperclip-adapter/server";
+import { hermesExecuteWithPaperclipContext } from "./hermes-local-wrapper.js";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
@@ -182,7 +182,7 @@ const piLocalAdapter: ServerAdapterModule = {
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
-  execute: hermesExecute,
+  execute: hermesExecuteWithPaperclipContext,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,

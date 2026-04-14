@@ -100,13 +100,13 @@ describe("cli auth routes", () => {
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
       id: "challenge-1",
-      token: "pcp_cli_auth_secret",
+      challengeToken: "pcp_cl...cret",
       boardApiToken: "pcp_board_token",
-      approvalPath: "/cli-auth/challenge-1?token=pcp_cli_auth_secret",
+      approvalPath: "/cli-auth/challenge-1?token=pcp_cl...cret",
       pollPath: "/cli-auth/challenges/challenge-1",
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
-    expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
+    expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cl...cret");
   });
 
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {

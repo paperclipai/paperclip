@@ -380,12 +380,28 @@ export function buildDefaultImportAdapterOverrides(
       .map((agent) => [
         agent.slug,
         {
-          // TODO: replace this temporary claude_local fallback with adapter selection in the import TUI.
-          adapterType: "claude_local",
+          adapterType: "claude_local", // fallback for non-interactive mode
         },
       ]),
   );
   return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+export async function buildInteractiveImportAdapterOverrides(
+  preview: Pick<CompanyPortabilityPreviewResult, "manifest" | "selectedAgentSlugs">,
+): Promise<Record<string, { adapterType: string }> | undefined> {
+  const selectedAgentSlugs = new Set(preview.selectedAgentSlugs);
+  const processAgentSlugs = preview.manifest.agents
+    .filter((agent) => selectedAgentSlugs.size === 0 || selectedAgentSlugs.has(agent.slug))
+    .filter((agent) => agent.adapterType === "process")
+    .map((agent) => agent.slug);
+
+  if (processAgentSlugs.length === 0) {
+    return undefined;
+  }
+
+  const { promptImportAdapterSelection } = await import("../../prompts/adapter.js");
+  return promptImportAdapterSelection(processAgentSlugs);
 }
 
 function buildDefaultImportAdapterMessages(
@@ -1381,7 +1397,9 @@ export function registerCompanyCommands(program: Command): void {
           if (!preview) {
             throw new Error("Import preview returned no data.");
           }
-          const adapterOverrides = buildDefaultImportAdapterOverrides(preview);
+          const adapterOverrides = (!opts.dryRun && interactiveView && !opts.yes)
+            ? await buildInteractiveImportAdapterOverrides(preview)
+            : buildDefaultImportAdapterOverrides(preview);
           const adapterMessages = buildDefaultImportAdapterMessages(adapterOverrides);
 
           if (opts.dryRun) {

@@ -456,6 +456,30 @@ async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   }
 }
 
+export type HeartbeatCompletionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+
+export interface HeartbeatOnCompleteCreateIssueConfig {
+  title: string | null;
+  description: string | null;
+  status: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled" | null;
+  priority: "critical" | "high" | "medium" | "low" | null;
+  assignToAgentId: string | null;
+  commentBody: string | null;
+}
+
+export interface HeartbeatOnCompleteConfig {
+  agentId: string | null;
+  source: "timer" | "assignment" | "on_demand" | "automation" | null;
+  triggerDetail: "manual" | "ping" | "callback" | "system" | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown> | null;
+  commentBody: string | null;
+  issueStatus: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled" | null;
+  createIssue: HeartbeatOnCompleteCreateIssueConfig | null;
+  onlyOn: HeartbeatCompletionOutcome[] | null;
+}
+
 interface WakeupOptions {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -465,6 +489,8 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  silentCompletion?: boolean;
+  onComplete?: Partial<HeartbeatOnCompleteConfig> | null;
 }
 
 type UsageTotals = {
@@ -821,6 +847,122 @@ export function deriveTaskKeyWithHeartbeatFallback(
   if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
 
   return null;
+}
+
+function normalizeHeartbeatCompletionOnlyOn(value: unknown): HeartbeatCompletionOutcome[] | null {
+  if (!Array.isArray(value)) return null;
+  const normalized = value.filter(
+    (entry): entry is HeartbeatCompletionOutcome =>
+      entry === "succeeded" || entry === "failed" || entry === "cancelled" || entry === "timed_out",
+  );
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : null;
+}
+
+function normalizeHeartbeatOnCompleteIssueStatus(value: unknown): HeartbeatOnCompleteConfig["issueStatus"] {
+  return value === "backlog" ||
+    value === "todo" ||
+    value === "in_progress" ||
+    value === "in_review" ||
+    value === "blocked" ||
+    value === "done" ||
+    value === "cancelled"
+    ? value
+    : null;
+}
+
+function normalizeHeartbeatOnCompleteIssuePriority(value: unknown): HeartbeatOnCompleteCreateIssueConfig["priority"] {
+  return value === "critical" || value === "high" || value === "medium" || value === "low" ? value : null;
+}
+
+export function resolveHeartbeatOnCompleteCreateIssueConfig(value: unknown): HeartbeatOnCompleteCreateIssueConfig | null {
+  const parsed = parseObject(value);
+  if (Object.keys(parsed).length === 0) return null;
+  return {
+    title: readNonEmptyString(parsed.title),
+    description: readNonEmptyString(parsed.description),
+    status: normalizeHeartbeatOnCompleteIssueStatus(parsed.status),
+    priority: normalizeHeartbeatOnCompleteIssuePriority(parsed.priority),
+    assignToAgentId: readNonEmptyString(parsed.assignToAgentId),
+    commentBody: readNonEmptyString(parsed.commentBody),
+  };
+}
+
+export function resolveHeartbeatOnCompleteConfig(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): { silentCompletion: boolean; onComplete: HeartbeatOnCompleteConfig | null } {
+  const context = parseObject(contextSnapshot);
+  const payload = parseObject(context.payload);
+  const silentCompletion = context.silentCompletion === true || payload.silentCompletion === true;
+
+  const rawOnComplete = parseObject(context.onComplete);
+  const legacyOnComplete = Object.keys(rawOnComplete).length > 0 ? rawOnComplete : parseObject(payload.onComplete);
+  if (Object.keys(legacyOnComplete).length === 0) {
+    return {
+      silentCompletion,
+      onComplete: null,
+    };
+  }
+
+  const payloadConfig = parseObject(legacyOnComplete.payload);
+  const contextConfig = parseObject(legacyOnComplete.contextSnapshot);
+
+  return {
+    silentCompletion,
+    onComplete: {
+      agentId: readNonEmptyString(legacyOnComplete.agentId),
+      source:
+        (readNonEmptyString(legacyOnComplete.source) as HeartbeatOnCompleteConfig["source"]) ?? null,
+      triggerDetail:
+        (readNonEmptyString(legacyOnComplete.triggerDetail) as HeartbeatOnCompleteConfig["triggerDetail"]) ?? null,
+      reason: readNonEmptyString(legacyOnComplete.reason),
+      payload: Object.keys(payloadConfig).length > 0 ? payloadConfig : null,
+      contextSnapshot: Object.keys(contextConfig).length > 0 ? contextConfig : null,
+      commentBody: readNonEmptyString(legacyOnComplete.commentBody),
+      issueStatus: normalizeHeartbeatOnCompleteIssueStatus(legacyOnComplete.issueStatus),
+      createIssue: resolveHeartbeatOnCompleteCreateIssueConfig(legacyOnComplete.createIssue),
+      onlyOn: normalizeHeartbeatCompletionOnlyOn(legacyOnComplete.onlyOn),
+    },
+  };
+}
+
+export function shouldTriggerHeartbeatOnComplete(
+  config: HeartbeatOnCompleteConfig | null | undefined,
+  outcome: HeartbeatCompletionOutcome,
+) {
+  if (!config) return false;
+  if (!config.onlyOn || config.onlyOn.length === 0) return true;
+  return config.onlyOn.includes(outcome);
+}
+
+export function shouldApplyHeartbeatOnCompleteActions(
+  config: HeartbeatOnCompleteConfig | null | undefined,
+  outcome: HeartbeatCompletionOutcome,
+) {
+  if (!shouldTriggerHeartbeatOnComplete(config, outcome)) return false;
+  return Boolean(config?.createIssue?.title || config?.issueStatus || config?.commentBody);
+}
+
+export function renderHeartbeatOnCompleteComment(
+  template: string | null | undefined,
+  input: {
+    outcome: HeartbeatCompletionOutcome;
+    runId: string;
+    agentId: string;
+    issueId: string | null;
+    createdIssueId?: string | null;
+    createdIssueIdentifier?: string | null;
+  },
+) {
+  const raw = typeof template === "string" ? template : "";
+  const rendered = raw
+    .replaceAll("{outcome}", input.outcome)
+    .replaceAll("{runId}", input.runId)
+    .replaceAll("{agentId}", input.agentId)
+    .replaceAll("{issueId}", input.issueId ?? "")
+    .replaceAll("{createdIssueId}", input.createdIssueId ?? "")
+    .replaceAll("{createdIssueIdentifier}", input.createdIssueIdentifier ?? "");
+  const trimmed = rendered.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function shouldResetTaskSessionForWake(
@@ -2281,6 +2423,28 @@ export function heartbeatService(db: Db) {
           issueCommentRetryQueuedAt: null,
         });
       }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
+    const competingDeferredWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, run.companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.agentId} <> ${run.agentId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (competingDeferredWake) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
