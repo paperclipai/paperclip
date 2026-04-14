@@ -30,7 +30,7 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, isGitHubDotCom, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -515,20 +515,20 @@ function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, un
   };
 }
 
-async function fetchText(url: string, authToken?: string) {
-  const response = await ghFetch(url, undefined, authToken);
+async function fetchText(url: string, authToken?: string, trustedGheHostname?: string) {
+  const response = await ghFetch(url, undefined, authToken, trustedGheHostname);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
 }
 
-async function fetchJson<T>(url: string, authToken?: string): Promise<T> {
+async function fetchJson<T>(url: string, authToken?: string, trustedGheHostname?: string): Promise<T> {
   const response = await ghFetch(url, {
     headers: {
       accept: "application/vnd.github+json",
     },
-  }, authToken);
+  }, authToken, trustedGheHostname);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -536,18 +536,20 @@ async function fetchJson<T>(url: string, authToken?: string): Promise<T> {
 }
 
 
-async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, authToken?: string) {
+async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, authToken?: string, trustedGheHostname?: string) {
   const response = await fetchJson<{ default_branch?: string }>(
     `${apiBase}/repos/${owner}/${repo}`,
     authToken,
+    trustedGheHostname,
   );
   return asString(response.default_branch) ?? "main";
 }
 
-async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string, authToken?: string) {
+async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string, authToken?: string, trustedGheHostname?: string) {
   const response = await fetchJson<{ sha?: string }>(
     `${apiBase}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
     authToken,
+    trustedGheHostname,
   );
   const sha = asString(response.sha);
   if (!sha) {
@@ -586,6 +588,7 @@ function parseGitHubSourceUrl(rawUrl: string) {
 
 async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>, authToken?: string) {
   const apiBase = gitHubApiBase(parsed.hostname);
+  const gheHost = isGitHubDotCom(parsed.hostname) ? undefined : parsed.hostname;
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
       pinnedRef: parsed.ref,
@@ -595,8 +598,8 @@ async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourc
 
   const trackingRef = parsed.explicitRef
     ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, authToken);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, authToken);
+    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, authToken, gheHost);
+  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, authToken, gheHost);
   return { pinnedRef, trackingRef };
 }
 
@@ -1044,9 +1047,11 @@ async function readUrlSkillImports(
     const apiBase = gitHubApiBase(parsed.hostname);
     const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, authToken);
     let ref = pinnedRef;
+    const gheHost = isGitHubDotCom(parsed.hostname) ? undefined : parsed.hostname;
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
       authToken,
+      gheHost,
     ).catch(() => {
       throw unprocessable(`Failed to read GitHub tree for ${url}`);
     });
@@ -1073,7 +1078,7 @@ async function readUrlSkillImports(
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath), authToken);
+      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath), authToken, gheHost);
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
       const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
@@ -1765,7 +1770,8 @@ export function companySkillService(db: Db) {
     const hostname = asString(metadata.hostname) || "github.com";
     const apiBase = gitHubApiBase(hostname);
     const authToken = await resolveSkillAuthToken(companyId, skill);
-    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase, authToken);
+    const gheHost = isGitHubDotCom(hostname) ? undefined : hostname;
+    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase, authToken, gheHost);
     return {
       supported: true,
       reason: null,
@@ -1811,7 +1817,8 @@ export function companySkillService(db: Db) {
       }
       const authToken = await resolveSkillAuthToken(companyId, skill);
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath), authToken);
+      const gheHost = isGitHubDotCom(hostname) ? undefined : hostname;
+      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath), authToken, gheHost);
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
