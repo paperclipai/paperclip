@@ -39,6 +39,41 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 - Run tests locally first
 - Be kind in discussions 😄
 
+## CI/CD and Lockfile Policy
+
+**Important: Do NOT commit `pnpm-lock.yaml` changes in your pull requests.**
+
+Paperclip uses an automated lockfile management system:
+
+1. **Make your changes** to `package.json` files as needed
+2. **Do NOT run `pnpm install`** or commit lockfile changes
+3. **Submit your PR** with only the `package.json` changes
+4. **CI will automatically regenerate** the lockfile during the policy check
+
+### Why This Matters
+
+- The policy check will **reject PRs** that include lockfile changes
+- CI regenerates the lockfile to ensure consistency across all environments
+- This prevents lockfile conflicts and ensures reproducible builds
+
+### If You Accidentally Committed Lockfile Changes
+
+Restore the lockfile to match master:
+
+```bash
+git checkout origin/master -- pnpm-lock.yaml
+git commit -m "chore: remove lockfile changes per CI policy"
+```
+
+### CI Workflow
+
+Your PR will go through these checks:
+
+1. **Policy** - Validates Dockerfile dependencies and blocks manual lockfile edits
+2. **Verify** - Runs typecheck, tests, and builds with CI-regenerated lockfile
+3. **E2E** - Runs end-to-end tests
+4. **Docker** - Validates Docker image builds (on master branch merges)
+
 ## Writing a Good PR message
 
 Please include a "thinking path" at the top of your PR message that explains from the top of the project down to what you fixed. E.g.:
