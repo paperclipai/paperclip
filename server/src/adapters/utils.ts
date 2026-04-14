@@ -6,8 +6,10 @@ import { logger } from "../middleware/logger.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 export type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
-export const runningProcesses: Map<string, { child: ChildProcess; graceSec: number }> =
-  serverUtils.runningProcesses;
+export const runningProcesses: Map<
+  string,
+  { child: ChildProcess; graceSec: number; processGroupId?: number | null }
+> = serverUtils.runningProcesses;
 export const MAX_CAPTURE_BYTES = serverUtils.MAX_CAPTURE_BYTES;
 export const MAX_EXCERPT_BYTES = serverUtils.MAX_EXCERPT_BYTES;
 export const parseObject = serverUtils.parseObject;

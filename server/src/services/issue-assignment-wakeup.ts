@@ -1,10 +1,14 @@
-import type { HeartbeatOnCompleteConfig } from "./heartbeat.js";
 import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
 
-type IssueAssignmentWakeupOnComplete = Partial<HeartbeatOnCompleteConfig>;
+type IssueAssignmentWakeupOnComplete = Partial<{
+  silent: boolean;
+  statuses: Record<string, string>;
+  commentTemplate: string;
+  createIssue: Record<string, unknown>;
+}>;
 
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
