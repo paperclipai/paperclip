@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createTranslator } from "@paperclipai/i18n";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { useLocale } from "../context/LocaleContext";
+import { getCurrentLocale } from "../lib/locale-store";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
+type Translate = ReturnType<typeof createTranslator>["t"];
 
 const MINUTES = Array.from({ length: 12 }, (_, i) => ({
   value: String(i * 5),
@@ -16,15 +19,23 @@ const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   label: String(i + 1),
 }));
 
-const ENGLISH_DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
-];
+function defaultTranslate() {
+  return createTranslator(getCurrentLocale()).t;
+}
+
+function formatScheduleTime(locale: string, hour: string, minute: string) {
+  return new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(2024, 0, 1, Number(hour), Number(minute), 0));
+}
+
+function formatScheduleWeekday(locale: string, dayOfWeek: string) {
+  const dayNumber = dayOfWeek === "0" ? 7 : Number(dayOfWeek);
+  return new Intl.DateTimeFormat(locale, { weekday: "short" }).format(
+    new Date(2024, 0, dayNumber),
+  );
+}
 
 function parseCronToPreset(cron: string): {
   preset: SchedulePreset;
@@ -98,35 +109,32 @@ function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWe
   }
 }
 
-function describeSchedule(cron: string): string {
+function describeSchedule(
+  cron: string,
+  t: Translate = defaultTranslate(),
+  locale = getCurrentLocale(),
+): string {
   const { preset, hour, minute, dayOfWeek, dayOfMonth } = parseCronToPreset(cron);
-  const hourLabel = `${hour}`;
-  const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
+  const timeStr = formatScheduleTime(locale, hour, minute);
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return t("scheduleEditor.everyMinute");
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return t("scheduleEditor.summaryEveryHourAtMinute", { minute: minute.padStart(2, "0") });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return t("scheduleEditor.summaryEveryDayAtTime", { time: timeStr });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return t("scheduleEditor.summaryWeekdaysAtTime", { time: timeStr });
     case "weekly": {
-      const day = ENGLISH_DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      const day = formatScheduleWeekday(locale, dayOfWeek);
+      return t("scheduleEditor.summaryWeeklyAtTime", { day, time: timeStr });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return t("scheduleEditor.summaryMonthlyAtTime", { day: dayOfMonth, time: timeStr });
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("scheduleEditor.noScheduleSet");
   }
-}
-
-function ordinalSuffix(n: number): string {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
 }
 
 export { describeSchedule };

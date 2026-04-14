@@ -52,11 +52,11 @@ Next Batches:
   `ui/src/components/MarkdownBody.tsx`
   `ui/src/components/RunChatSurface.tsx`
   `ui/src/components/LiveRunWidget.tsx`
-  Remaining production sweep:
   `ui/src/components/JsonSchemaForm.tsx`
   `ui/src/components/EnvVarEditor.tsx`
   `ui/src/components/ExecutionParticipantPicker.tsx`
   `ui/src/components/ScheduleEditor.tsx`
+  Remaining production sweep:
   `ui/src/components/BillerSpendCard.tsx`
   `ui/src/components/ProviderQuotaCard.tsx`
   `ui/src/pages/Routines.tsx`
@@ -69,7 +69,7 @@ Verification Notes:
 - `bun scripts/check-i18n.ts` is the translation completeness gate.
 - `pnpm --filter @paperclipai/ui typecheck` must be reported truthfully because this environment has intermittently hung during `tsc -b`.
 - Current evidence:
-  `bun scripts/check-i18n.ts` passed with `2645` translation keys across `6` locales.
+  `bun scripts/check-i18n.ts` passed with `2688` translation keys across `6` locales.
   `git diff --check` passed.
   `origin/master` review found no additional `ui/` or `docs/` scope in the 2 remote-ahead commits.
   Project/workspace detail pages are now localized:
@@ -125,15 +125,17 @@ Verification Notes:
   `ui/src/components/MarkdownBody.tsx`
   `ui/src/components/RunChatSurface.tsx`
   `ui/src/components/LiveRunWidget.tsx`
-  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "RunTranscriptView|packages/i18n/src/index"` produced no matches after the transcript batch.
-  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "CopyText|InlineEditor|MarkdownBody|RunChatSurface|LiveRunWidget|packages/i18n/src/index"` produced no matches for the utility batch.
-  Earlier targeted `pnpm --filter @paperclipai/ui typecheck` output still reports existing `t` signature mismatches in `ui/src/components/ProjectProperties.tsx`; the shared primitive batch was therefore not claimed as fully typecheck-clean.
-  Fresh `pnpm --filter @paperclipai/ui typecheck` still exits `1` on pre-existing unrelated errors in `ui/src/components/DevRestartBanner.tsx`, `ui/src/components/IssueFiltersPopover.tsx`, `ui/src/components/PathInstructionsModal.tsx`, `ui/src/components/ProjectProperties.tsx`, `ui/src/pages/CompanyImport.tsx`, `ui/src/pages/CompanySkills.tsx`, `ui/src/pages/ExecutionWorkspaceDetail.tsx`, and `ui/src/pages/PluginSettings.tsx`.
-  Fresh residual scan found remaining production i18n scope in:
+  Schema, env-binding, participant picker, and routine schedule editors are now localized:
   `ui/src/components/JsonSchemaForm.tsx`
   `ui/src/components/EnvVarEditor.tsx`
   `ui/src/components/ExecutionParticipantPicker.tsx`
   `ui/src/components/ScheduleEditor.tsx`
+  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "RunTranscriptView|packages/i18n/src/index"` produced no matches after the transcript batch.
+  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "CopyText|InlineEditor|MarkdownBody|RunChatSurface|LiveRunWidget|packages/i18n/src/index"` produced no matches for the utility batch.
+  Targeted `pnpm --filter @paperclipai/ui typecheck | rg "JsonSchemaForm|EnvVarEditor|ExecutionParticipantPicker|ScheduleEditor|packages/i18n/src/index"` produced no matches for the schema/routine editor batch.
+  Earlier targeted `pnpm --filter @paperclipai/ui typecheck` output still reports existing `t` signature mismatches in `ui/src/components/ProjectProperties.tsx`; the shared primitive batch was therefore not claimed as fully typecheck-clean.
+  Fresh `pnpm --filter @paperclipai/ui typecheck` still exits `1` on pre-existing unrelated errors in `ui/src/components/DevRestartBanner.tsx`, `ui/src/components/IssueFiltersPopover.tsx`, `ui/src/components/PathInstructionsModal.tsx`, `ui/src/components/ProjectProperties.tsx`, `ui/src/pages/CompanyImport.tsx`, `ui/src/pages/CompanySkills.tsx`, `ui/src/pages/ExecutionWorkspaceDetail.tsx`, and `ui/src/pages/PluginSettings.tsx`.
+  Fresh residual scan found remaining production i18n scope in:
   `ui/src/components/BillerSpendCard.tsx`
   `ui/src/components/ProviderQuotaCard.tsx`
   `ui/src/pages/Routines.tsx`
