@@ -174,6 +174,28 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
+function terminateRecordedProcess(
+  record: { pid: number | null },
+  opts?: { forceAfterMs?: number },
+) {
+  const pid = typeof record.pid === "number" && record.pid > 0 ? record.pid : null;
+  if (pid === null) return;
+
+  const killWithSignal = (signal: NodeJS.Signals) => {
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!killWithSignal("SIGTERM")) return;
+  setTimeout(() => {
+    killWithSignal("SIGKILL");
+  }, opts?.forceAfterMs ?? 15_000);
+}
+
 async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
@@ -1728,7 +1750,7 @@ export function heartbeatService(db: Db) {
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
     return {
-      enabled: asBoolean(heartbeat.enabled, true),
+      enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
@@ -3729,6 +3751,10 @@ export function heartbeatService(db: Db) {
           running.child.kill("SIGKILL");
         }
       }, graceMs);
+    } else if (run.processPid) {
+      terminateRecordedProcess({
+        pid: run.processPid,
+      });
     }
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
@@ -3779,7 +3805,17 @@ export function heartbeatService(db: Db) {
       const running = runningProcesses.get(run.id);
       if (running) {
         running.child.kill("SIGTERM");
+        const graceMs = Math.max(1, running.graceSec) * 1000;
+        setTimeout(() => {
+          if (!running.child.killed) {
+            running.child.kill("SIGKILL");
+          }
+        }, graceMs);
         runningProcesses.delete(run.id);
+      } else if (run.processPid) {
+        terminateRecordedProcess({
+          pid: run.processPid,
+        });
       }
       await releaseIssueExecutionAndPromote(run);
     }

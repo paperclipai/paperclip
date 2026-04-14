@@ -296,6 +296,7 @@ describeEmbeddedPostgres("heartbeat tickTimers", () => {
       expect(result1.enqueued).toBe(1);
 
       const result2 = await heartbeat.tickTimers(now);
+      expect(result2.checked).toBe(1);
 
       const runs = await db
         .select()
