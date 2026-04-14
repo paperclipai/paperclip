@@ -26,6 +26,7 @@ import type {
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -424,18 +425,24 @@ export function createPluginToolRegistry(
         runContext,
       };
 
+      const callId = randomUUID();
+
       // Emit pre-execute event (fire-and-forget, never blocks execution)
       if (eventBus) {
         eventBus.emit({
-          type: "agent.tool.pre_execute",
+          eventId: randomUUID(),
+          eventType: "agent.tool.pre_execute",
+          occurredAt: new Date().toISOString(),
+          companyId: runContext.companyId,
+          actorId: runContext.agentId,
+          actorType: "agent",
           payload: {
+            callId,
             pluginId,
             toolName,
             namespacedName,
-            parameters,
             agentId: runContext.agentId,
             runId: runContext.runId,
-            companyId: runContext.companyId,
             projectId: runContext.projectId,
           },
         }).catch((err) => log.warn({ err, toolName }, "failed to emit agent.tool.pre_execute"));
@@ -447,14 +454,19 @@ export function createPluginToolRegistry(
       } catch (err) {
         if (eventBus) {
           eventBus.emit({
-            type: "agent.tool.post_execute",
+            eventId: randomUUID(),
+            eventType: "agent.tool.post_execute",
+            occurredAt: new Date().toISOString(),
+            companyId: runContext.companyId,
+            actorId: runContext.agentId,
+            actorType: "agent",
             payload: {
+              callId,
               pluginId,
               toolName,
               namespacedName,
               agentId: runContext.agentId,
               runId: runContext.runId,
-              companyId: runContext.companyId,
               projectId: runContext.projectId,
               error: err instanceof Error ? err.message : String(err),
             },
@@ -466,14 +478,19 @@ export function createPluginToolRegistry(
       // Emit post-execute event (fire-and-forget)
       if (eventBus) {
         eventBus.emit({
-          type: "agent.tool.post_execute",
+          eventId: randomUUID(),
+          eventType: "agent.tool.post_execute",
+          occurredAt: new Date().toISOString(),
+          companyId: runContext.companyId,
+          actorId: runContext.agentId,
+          actorType: "agent",
           payload: {
+            callId,
             pluginId,
             toolName,
             namespacedName,
             agentId: runContext.agentId,
             runId: runContext.runId,
-            companyId: runContext.companyId,
             projectId: runContext.projectId,
             hasContent: !!result.content,
             hasError: !!result.error,
