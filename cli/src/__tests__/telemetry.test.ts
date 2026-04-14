@@ -100,6 +100,8 @@ describe("cli telemetry", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home");
     process.env.PAPERCLIP_INSTANCE_ID = "telemetry-test";
+    delete process.env.DO_NOT_TRACK;
+    delete process.env.PAPERCLIP_TELEMETRY_DISABLED;
 
     const { initTelemetry, flushTelemetry } = await import("../telemetry.js");
     const client = initTelemetry({ enabled: true });
