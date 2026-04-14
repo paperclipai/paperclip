@@ -635,6 +635,13 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
+    const eventType = readString(payload.eventType);
+    if (eventType === "file.edit") {
+      queryClient.setQueryData<Array<Record<string, unknown>>>(
+        queryKeys.visibilityFileEvents(expectedCompanyId),
+        (old) => [...(old ?? []), payload],
+      );
+    }
     return;
   }
 
