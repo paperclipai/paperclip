@@ -5,6 +5,7 @@ import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
@@ -23,6 +24,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const { t } = useLocale();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
@@ -52,11 +54,11 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
+        {t("activeAgentsPanel.title")}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          <p className="text-sm text-muted-foreground">{t("activeAgentsPanel.empty")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
@@ -69,6 +71,9 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
               transcript={transcriptByRun.get(run.id) ?? []}
               hasOutput={hasOutputForRun(run.id)}
               isActive={isRunActive(run)}
+              liveNowLabel={t("activeAgentsPanel.liveNow")}
+              finishedLabel={(time) => t("activeAgentsPanel.finishedRelative", { time })}
+              startedLabel={(time) => t("activeAgentsPanel.startedRelative", { time })}
             />
           ))}
         </div>
@@ -84,6 +89,9 @@ function AgentRunCard({
   transcript,
   hasOutput,
   isActive,
+  liveNowLabel,
+  finishedLabel,
+  startedLabel,
 }: {
   companyId: string;
   run: LiveRunForIssue;
@@ -91,6 +99,9 @@ function AgentRunCard({
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   isActive: boolean;
+  liveNowLabel: string;
+  finishedLabel: (time: string) => string;
+  startedLabel: (time: string) => string;
 }) {
   return (
     <div className={cn(
@@ -114,7 +125,13 @@ function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>
+                {isActive
+                  ? liveNowLabel
+                  : run.finishedAt
+                    ? finishedLabel(relativeTime(run.finishedAt))
+                    : startedLabel(relativeTime(run.createdAt))}
+              </span>
             </div>
           </div>
 

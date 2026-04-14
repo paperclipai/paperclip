@@ -22,6 +22,8 @@ Current Batch:
 Next Batches:
 - [x] Workspace detail pages
 - [x] Project detail and project workspace pages
+- [x] Workspace close dialog and budget/finance shared components
+- [x] Active agent and activity chart shared utility components
 - [ ] Remaining high-value shared dialogs and utility components
 - [ ] Repo-wide deep scan across `ui/src/pages` and `ui/src/components`
 - [x] Re-check `origin/master` UI changes for newly introduced i18n scope
@@ -39,4 +41,12 @@ Verification Notes:
   `ui/src/pages/ProjectDetail.tsx`
   `ui/src/pages/ProjectWorkspaceDetail.tsx`
   `ui/src/pages/ExecutionWorkspaceDetail.tsx`
+  Shared finance/workspace dashboard components are now localized:
+  `ui/src/components/ExecutionWorkspaceCloseDialog.tsx`
+  `ui/src/components/BudgetPolicyCard.tsx`
+  `ui/src/components/BudgetIncidentCard.tsx`
+  `ui/src/components/FinanceTimelineCard.tsx`
+  `ui/src/components/ActiveAgentsPanel.tsx`
+  `ui/src/components/ActivityCharts.tsx`
+  `ui/src/lib/utils.ts`
   `pnpm --filter @paperclipai/ui typecheck` still hangs at `tsc -b` in this environment; the process was confirmed alive at the `tsc -b` stage and then terminated, so this batch is not claimed as freshly typecheck-clean.
