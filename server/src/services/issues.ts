@@ -90,6 +90,7 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   q?: string;
   limit?: number;
+  offset?: number;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -1248,6 +1249,9 @@ export function issueService(db: Db) {
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
+      const offset = typeof filters?.offset === "number" && Number.isFinite(filters.offset)
+        ? Math.max(0, Math.floor(filters.offset))
+        : undefined;
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
@@ -1352,7 +1356,11 @@ export function issueService(db: Db) {
           desc(canonicalLastActivityAt),
           desc(issues.updatedAt),
         );
-      const rows = (limit === undefined ? await baseQuery : await baseQuery.limit(limit)).map((row) => ({
+      // Apply limit and offset — offset requires limit in Drizzle's type chain.
+      const limitedQuery =
+        limit !== undefined ? baseQuery.limit(limit) : offset !== undefined ? baseQuery.limit(10000) : baseQuery;
+      const queriedRows = offset !== undefined ? await limitedQuery.offset(offset) : await limitedQuery;
+      const rows = queriedRows.map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
@@ -2519,16 +2527,19 @@ export function issueService(db: Db) {
       body: string,
       actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => {
-      const issue = await db
-        .select({ companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      const [issue, generalSettings] = await Promise.all([
+        db
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+        instanceSettings.getGeneral(),
+      ]);
 
       if (!issue) throw notFound("Issue not found");
 
       const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        enabled: generalSettings.censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const [comment] = await db
