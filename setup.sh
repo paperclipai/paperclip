@@ -63,8 +63,8 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
 
   echo ""
   echo "Chaves de API de IA (ao menos uma é necessária para os agentes funcionarem):"
-  read -rp "  ANTHROPIC_API_KEY (Enter para pular): " ANTHROPIC_KEY
-  read -rp "  OPENAI_API_KEY    (Enter para pular): " OPENAI_KEY
+  read -rsp "  ANTHROPIC_API_KEY (Enter para pular): " ANTHROPIC_KEY; echo
+  read -rsp "  OPENAI_API_KEY    (Enter para pular): " OPENAI_KEY; echo
 
   if [[ -z "$ANTHROPIC_KEY" && -z "$OPENAI_KEY" ]]; then
     warn "Nenhuma chave de IA informada. Agentes não funcionarão sem ao menos uma."

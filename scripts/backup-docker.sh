@@ -46,6 +46,13 @@ if [[ ! -s "$TMP_BACKUP" ]]; then
   echo "Erro: backup vazio ou falha no pg_dump." >&2
   exit 1
 fi
+
+if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
+  rm -f "$TMP_BACKUP"
+  echo "Erro: backup corrompido (falha na verificação de integridade gzip)." >&2
+  exit 1
+fi
+
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)
