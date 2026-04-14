@@ -1,18 +1,16 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { FeedbackModal } from "./FeedbackModal";
 import { BugReportModal } from "./BugReportModal";
 import { ChangelogModal, ChangelogTrigger } from "./ChangelogModal";
+import { StatusBar } from "./StatusBar";
 import { useQuery } from "@tanstack/react-query";
-import { Bug, Moon, Settings, Sun } from "lucide-react";
-import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
-import { CookieSettingsLink } from "./CookieConsent";
+import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-// Lazy-load dialogs that pull in @mdxeditor/editor — keeps it out of the main bundle
 const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((m) => ({ default: m.NewIssueDialog })));
 const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((m) => ({ default: m.NewProjectDialog })));
 const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ default: m.NewGoalDialog })));
@@ -25,31 +23,27 @@ import { DevRestartBanner } from "./DevRestartBanner";
 import { AskAIHeaderButton, AskAIPanel } from "./AskAIButton";
 import { NotificationCenter, NotificationBell, useNotifications } from "./NotificationCenter";
 import { SampleDataBanner } from "./SampleDataToggle";
-import { GuidedTour, useGuidedTour, isFirstRun, markFirstRunSeen } from "./GuidedTour";
+import { GuidedTour, useGuidedTour } from "./GuidedTour";
 import { WelcomeScreen, hasSeenWelcome } from "./WelcomeScreen";
-// FirstLoginWizard removed - redundant with onboarding wizard
 import { useChordNavigation } from "../hooks/useKeyboardPowerUser";
 import { useDialog } from "../context/DialogContext";
 import { useToast } from "../context/ToastContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { usePrefetch } from "../hooks/usePrefetch";
 import { healthApi } from "../api/health";
 import { registerRateLimitToast } from "../api/client";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import {
-  DEFAULT_INSTANCE_SETTINGS_PATH,
-  normalizeRememberedInstanceSettingsPath,
-} from "../lib/instance-settings";
+import { DEFAULT_INSTANCE_SETTINGS_PATH, normalizeRememberedInstanceSettingsPath } from "../lib/instance-settings";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
-import { Button } from "@/components/ui/button";
 import { useMeAccess } from "../hooks/useMeAccess";
+import { useMobileSwipe } from "./layout/useMobileSwipe";
+import { useMobileNavVisibility } from "./layout/useMobileNavVisibility";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "ironworks.lastInstanceSettingsPath";
 
@@ -74,7 +68,7 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { theme, toggleTheme } = useTheme();
+
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   usePrefetch(selectedCompanyId);
   const { pushToast } = useToast();
@@ -89,8 +83,6 @@ export function Layout() {
   const { isInstanceAdmin } = useMeAccess();
   const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const onboardingTriggered = useRef(false);
-  const lastMainScrollTop = useRef(0);
-  const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [bugReportOpen, setBugReportOpen] = useState(false);
@@ -102,7 +94,6 @@ export function Layout() {
   // FirstLoginWizard state removed
   const guidedTour = useGuidedTour();
   const notifs = useNotifications();
-  const nextTheme = theme === "dark" ? "light" : "dark";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -188,92 +179,9 @@ export function Layout() {
     enabled: true,
   });
 
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      return;
-    }
-    lastMainScrollTop.current = 0;
-    setMobileNavVisible(true);
-  }, [isMobile]);
-
-  // Swipe gesture to open/close sidebar on mobile
-  useEffect(() => {
-    if (!isMobile) return;
-
-    const EDGE_ZONE = 30; // px from left edge to start open-swipe
-    const MIN_DISTANCE = 50; // minimum horizontal swipe distance
-    const MAX_VERTICAL = 75; // max vertical drift before we ignore
-
-    let startX = 0;
-    let startY = 0;
-
-    const onTouchStart = (e: TouchEvent) => {
-      const t = e.touches[0]!;
-      startX = t.clientX;
-      startY = t.clientY;
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      const t = e.changedTouches[0]!;
-      const dx = t.clientX - startX;
-      const dy = Math.abs(t.clientY - startY);
-
-      if (dy > MAX_VERTICAL) return; // vertical scroll, ignore
-
-      // Swipe right from left edge → open
-      if (!sidebarOpen && startX < EDGE_ZONE && dx > MIN_DISTANCE) {
-        setSidebarOpen(true);
-        return;
-      }
-
-      // Swipe left when open → close
-      if (sidebarOpen && dx < -MIN_DISTANCE) {
-        setSidebarOpen(false);
-      }
-    };
-
-    document.addEventListener("touchstart", onTouchStart, { passive: true });
-    document.addEventListener("touchend", onTouchEnd, { passive: true });
-
-    return () => {
-      document.removeEventListener("touchstart", onTouchStart);
-      document.removeEventListener("touchend", onTouchEnd);
-    };
-  }, [isMobile, sidebarOpen, setSidebarOpen]);
-
-  const updateMobileNavVisibility = useCallback((currentTop: number) => {
-    const delta = currentTop - lastMainScrollTop.current;
-
-    if (currentTop <= 24) {
-      setMobileNavVisible(true);
-    } else if (delta > 8) {
-      setMobileNavVisible(false);
-    } else if (delta < -8) {
-      setMobileNavVisible(true);
-    }
-
-    lastMainScrollTop.current = currentTop;
-  }, []);
-
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      lastMainScrollTop.current = 0;
-      return;
-    }
-
-    const onScroll = () => {
-      updateMobileNavVisibility(window.scrollY || document.documentElement.scrollTop || 0);
-    };
-
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-    };
-  }, [isMobile, updateMobileNavVisibility]);
+  // Mobile swipe and nav visibility (extracted hooks)
+  useMobileSwipe(isMobile, sidebarOpen, setSidebarOpen);
+  const mobileNavVisible = useMobileNavVisibility(isMobile);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -361,53 +269,44 @@ export function Layout() {
               <CompanyRail />
               <div
                 className={cn(
-                  "overflow-hidden transition-[width] duration-100 ease-out",
+                  "overflow-hidden transition-[width] duration-100 ease-out relative",
                   !sidebarOpen && "w-0"
                 )}
                 style={sidebarOpen ? { width: sidebarWidth } : undefined}
               >
                 {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+                {/* Resize drag zone - right edge of sidebar */}
+                <div
+                  className="absolute top-0 right-0 w-2 h-full cursor-col-resize z-30 hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors border-r border-border/50 hover:border-blue-500/50"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    document.body.style.cursor = "col-resize";
+                    document.body.style.userSelect = "none";
+                    const startX = e.clientX;
+                    const startW = sidebarWidth;
+                    const onMove = (ev: MouseEvent) => {
+                      const newW = startW + (ev.clientX - startX);
+                      if (newW < 60) {
+                        setSidebarOpen(false);
+                      } else {
+                        setSidebarWidth(newW);
+                      }
+                    };
+                    const onUp = () => {
+                      document.body.style.cursor = "";
+                      document.body.style.userSelect = "";
+                      document.removeEventListener("mousemove", onMove);
+                      document.removeEventListener("mouseup", onUp);
+                    };
+                    document.addEventListener("mousemove", onMove);
+                    document.addEventListener("mouseup", onUp);
+                  }}
+                  onDoubleClick={() => setSidebarWidth(300)}
+                />
               </div>
             </div>
           </nav>
-        )}
-        {/* Sidebar resize handle - between nav and content, drag right = wider sidebar */}
-        {!isMobile && !focusMode && (
-          <div
-            className="w-1.5 h-full cursor-col-resize group shrink-0 flex items-center justify-center hover:bg-accent/40 active:bg-accent/60 transition-colors border-r border-border/30"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const startX = e.clientX;
-              const startW = sidebarOpen ? sidebarWidth : 0;
-              const onMove = (ev: MouseEvent) => {
-                const newW = startW + (ev.clientX - startX);
-                if (newW > 120 && !sidebarOpen) {
-                  setSidebarOpen(true);
-                  setSidebarWidth(Math.max(newW, 180));
-                } else if (newW < 60 && sidebarOpen) {
-                  setSidebarOpen(false);
-                } else if (sidebarOpen) {
-                  setSidebarWidth(newW);
-                }
-              };
-              const onUp = () => {
-                document.removeEventListener("mousemove", onMove);
-                document.removeEventListener("mouseup", onUp);
-              };
-              document.addEventListener("mousemove", onMove);
-              document.addEventListener("mouseup", onUp);
-            }}
-            onDoubleClick={() => {
-              if (sidebarOpen) {
-                setSidebarWidth(260);
-              } else {
-                setSidebarOpen(true);
-                setSidebarWidth(260);
-              }
-            }}
-          >
-            <div className="w-0.5 h-12 rounded-full bg-border group-hover:bg-ring/60 group-active:bg-ring transition-colors" />
-          </div>
         )}
 
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
@@ -453,27 +352,13 @@ export function Layout() {
             </main>
             <PropertiesPanel />
           </div>
-          <footer role="contentinfo" className="flex items-center justify-center gap-3 px-4 py-1 border-t border-border text-[11px] text-muted-foreground shrink-0 print:hidden">
-            <span className="opacity-60">IronWorks</span>
-            <span className="text-border/50">·</span>
-            <Link to="/terms" className="hover:text-foreground transition-colors">Terms</Link>
-            <Link to="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
-            <Link to="/aup" className="hover:text-foreground transition-colors">AUP</Link>
-            <span className="text-border/50">·</span>
-            <button type="button" onClick={() => setBugReportOpen(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors"><Bug className="h-3 w-3" />Report a Bug</button>
-              <ChangelogTrigger onClick={() => setChangelogOpen(true)} />
-              {isInstanceAdmin && (
-                <>
-                  <span className="text-border/50">·</span>
-                  <Link to={instanceSettingsTarget} className="hover:text-foreground transition-colors" title="Settings">Settings</Link>
-                  <Link to="/manage" className="hover:text-foreground transition-colors" title="Admin">Admin</Link>
-                </>
-              )}
-              <span className="text-border/50">·</span>
-              <button type="button" onClick={toggleTheme} className="hover:text-foreground transition-colors" aria-label={`Switch to ${nextTheme} mode`}>
-                {theme === "dark" ? "Light" : "Dark"}
-              </button>
-          </footer>
+          <StatusBar
+            isInstanceAdmin={isInstanceAdmin}
+            instanceSettingsTarget={instanceSettingsTarget}
+            onBugReport={() => setBugReportOpen(true)}
+            onChangelog={() => setChangelogOpen(true)}
+            changelogTrigger={<ChangelogTrigger onClick={() => setChangelogOpen(true)} />}
+          />
         </div>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
