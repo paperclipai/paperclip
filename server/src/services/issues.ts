@@ -38,6 +38,8 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT = 10;
+const ACTIVE_ASSIGNED_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -568,7 +570,11 @@ export function issueService(db: Db) {
     };
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
+  async function assertAssignableAgent(
+    companyId: string,
+    agentId: string,
+    options?: { excludeIssueId?: string | null; skipCapacityCheck?: boolean },
+  ) {
     const assignee = await db
       .select({
         id: agents.id,
@@ -583,11 +589,35 @@ export function issueService(db: Db) {
     if (assignee.companyId !== companyId) {
       throw unprocessable("Assignee must belong to same company");
     }
+    if (assignee.status === "paused") {
+      throw conflict("Cannot assign work to paused agents");
+    }
     if (assignee.status === "pending_approval") {
       throw conflict("Cannot assign work to pending approval agents");
     }
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
+    }
+
+    if (options?.skipCapacityCheck) {
+      return;
+    }
+
+    const assignmentConditions = [
+      eq(issues.assigneeAgentId, agentId),
+      inArray(issues.status, [...ACTIVE_ASSIGNED_ISSUE_STATUSES]),
+    ];
+    if (options?.excludeIssueId) {
+      assignmentConditions.push(sql`${issues.id} <> ${options.excludeIssueId}`);
+    }
+
+    const [{ count: activeAssignedIssueCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(...assignmentConditions));
+
+    if (Number(activeAssignedIssueCount ?? 0) >= MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT) {
+      throw conflict(`Cannot assign work to agents with ${MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT}+ open issues`);
     }
   }
 
@@ -1605,8 +1635,10 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      if (issueData.assigneeAgentId && issueData.assigneeAgentId !== existing.assigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId, {
+          excludeIssueId: existing.id,
+        });
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
@@ -1732,12 +1764,16 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      const isCurrentAssignee = issueCompany.assigneeAgentId === agentId;
+      await assertAssignableAgent(issueCompany.companyId, agentId, {
+        excludeIssueId: isCurrentAssignee ? id : null,
+        skipCapacityCheck: isCurrentAssignee,
+      });
 
       const now = new Date();
 
@@ -1980,6 +2016,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))

@@ -33,7 +33,11 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  heartbeatService,
+  isRecoverableAgentFailure,
+  shouldContinueAssignedBacklog,
+} from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -304,6 +308,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("paused");
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
@@ -345,7 +356,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
-  it("does not queue a second retry after the first process-loss retry was already used", async () => {
+  it("continues assigned backlog after process-loss recovery is exhausted", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
       processLossRetryCount: 1,
@@ -360,15 +371,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.status).toBe("failed");
+    expect(runs).toHaveLength(2);
+    const failedRun = runs.find((row) => row.id === runId);
+    const continuationRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(continuationRun?.status).toBe("queued");
+
+    const continuationWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, continuationRun?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(continuationWake?.reason).toBe("assigned_backlog_continuation");
 
     const issue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionRunId).toBe(continuationRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
@@ -401,5 +422,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockTrackAgentFirstHeartbeat).toHaveBeenCalledWith(mockTelemetryClient, {
       agentRole: "engineer",
     });
+  });
+
+  it("treats temporary provider overloads as recoverable agent failures", () => {
+    expect(
+      isRecoverableAgentFailure(
+        'Claude run failed: subtype=success: API Error: 429 {"error":{"code":"1305","message":"The service may be temporarily overloaded, please try again later"}}',
+      ),
+    ).toBe(true);
+    expect(isRecoverableAgentFailure("LLM request timed out.")).toBe(true);
+  });
+
+  it("does not treat configuration errors as recoverable agent failures", () => {
+    expect(isRecoverableAgentFailure("ANTHROPIC_API_KEY is missing")).toBe(false);
+    expect(isRecoverableAgentFailure("adapterConfig.instructionsPath must point to a file")).toBe(false);
+  });
+
+  it("continues assigned backlog after recoverable failures only", () => {
+    expect(
+      shouldContinueAssignedBacklog(
+        "failed",
+        'Claude run failed: subtype=success: API Error: 429 {"error":{"code":"1305","message":"The service may be temporarily overloaded, please try again later"}}',
+      ),
+    ).toBe(true);
+    expect(shouldContinueAssignedBacklog("timed_out", "LLM request timed out.")).toBe(true);
+    expect(shouldContinueAssignedBacklog("failed", "ANTHROPIC_API_KEY is missing")).toBe(false);
   });
 });

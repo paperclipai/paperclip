@@ -336,15 +336,25 @@ function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
 }
 
-function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
+function buildPaperclipEnvForWake(
+  ctx: AdapterExecutionContext,
+  wakePayload: WakePayload,
+  templateEnv: Record<string, string>,
+): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
+  const authToken = nonEmpty(ctx.authToken);
+  const hasExplicitApiKey =
+    typeof templateEnv.PAPERCLIP_API_KEY === "string" && templateEnv.PAPERCLIP_API_KEY.trim().length > 0;
 
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
+  }
+  if (authToken && !hasExplicitApiKey) {
+    paperclipEnv.PAPERCLIP_API_KEY = authToken;
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
@@ -1100,7 +1110,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
 
   const wakePayload = buildWakePayload(ctx);
-  const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const templateEnv = toStringRecord(payloadTemplate.env);
+  const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload, templateEnv);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
@@ -1131,7 +1142,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionKey,
     idempotencyKey: ctx.runId,
   };
+  const outboundEnv = {
+    ...templateEnv,
+    ...paperclipEnv,
+  };
   delete agentParams.text;
+  if (Object.keys(outboundEnv).length > 0) {
+    agentParams.env = outboundEnv;
+  }
   agentParams.paperclip = paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);

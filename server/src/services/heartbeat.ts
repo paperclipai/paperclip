@@ -91,6 +91,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const AUTO_CONTINUE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -1117,6 +1118,40 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+const TRANSIENT_AGENT_FAILURE_PATTERNS = [
+  /\b429\b/i,
+  /\brate[-\s]?limit/i,
+  /\btoo many requests\b/i,
+  /\btemporarily overloaded\b/i,
+  /\btry again later\b/i,
+  /\bresource_exhausted\b/i,
+  /\bquota\b/i,
+  /\bllm request timed out\b/i,
+  /\bopenclaw gateway run timed out\b/i,
+  /\bprocess lost\b/i,
+  /\bserver may have restarted\b/i,
+  /\bchild pid \d+ is no longer running\b/i,
+  /\bprocess group \d+ is no longer running\b/i,
+];
+
+export function isRecoverableAgentFailure(errorMessage: string | null | undefined) {
+  if (typeof errorMessage !== "string") return false;
+  const normalized = errorMessage.trim();
+  if (!normalized) return false;
+  return TRANSIENT_AGENT_FAILURE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function shouldContinueAssignedBacklog(
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+  errorMessage?: string | null,
+) {
+  if (outcome === "succeeded" || outcome === "cancelled") return true;
+  if (outcome === "failed" || outcome === "timed_out") {
+    return isRecoverableAgentFailure(errorMessage);
+  }
+  return false;
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -2314,6 +2349,154 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countLiveRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
+    return Number(count ?? 0);
+  }
+
+  async function countAutoContinuableIssuesForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(eq(issues.assigneeAgentId, agentId), inArray(issues.status, [...AUTO_CONTINUE_ISSUE_STATUSES])));
+    return Number(count ?? 0);
+  }
+
+  async function enqueueAssignedBacklogContinuationIfNeeded(input: {
+    agent: typeof agents.$inferSelect;
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+    contextSnapshot?: Record<string, unknown> | null;
+    errorMessage?: string | null;
+    previousRunId?: string | null;
+  }) {
+    if (!shouldContinueAssignedBacklog(input.outcome, input.errorMessage)) return null;
+
+    const currentContextSnapshot = parseObject(input.contextSnapshot);
+    if (readNonEmptyString(currentContextSnapshot.wakeReason) === "issue_commented") {
+      return null;
+    }
+    let continuationIssueId: string | null = null;
+    if (input.previousRunId) {
+      const continuationIssue = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, input.agent.companyId),
+            eq(issues.assigneeAgentId, input.agent.id),
+            eq(issues.checkoutRunId, input.previousRunId),
+            inArray(issues.status, [...AUTO_CONTINUE_ISSUE_STATUSES]),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      continuationIssueId = continuationIssue?.id ?? null;
+    }
+
+    const resumesAssignedBacklog =
+      readNonEmptyString(currentContextSnapshot.wakeReason) === "assigned_backlog_continuation";
+    const needsExistingIssueHandoff = input.outcome === "failed" || input.outcome === "timed_out";
+    if (needsExistingIssueHandoff && !continuationIssueId && !resumesAssignedBacklog) return null;
+
+    const pendingIssueCount = await countAutoContinuableIssuesForAgent(input.agent.id);
+    if (pendingIssueCount <= 0) return null;
+
+    const liveRunCount = await countLiveRunsForAgent(input.agent.id);
+    if (liveRunCount > 0) return null;
+
+    const now = new Date();
+
+    const contextSnapshot: Record<string, unknown> = {
+      source: "scheduler",
+      wakeReason: "assigned_backlog_continuation",
+      pendingAssignedIssueCount: pendingIssueCount,
+    };
+    if (continuationIssueId) {
+      contextSnapshot.issueId = continuationIssueId;
+    }
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(input.agent, taskKey);
+
+    const queuedRun = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "assigned_backlog_continuation",
+          payload: null,
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_scheduler",
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const run = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot,
+          sessionIdBefore: sessionBefore,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: run.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (continuationIssueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: run.id,
+            executionAgentNameKey: normalizeAgentNameKey(input.agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, continuationIssueId),
+              eq(issues.companyId, input.agent.companyId),
+              eq(issues.checkoutRunId, input.previousRunId ?? ""),
+            ),
+          );
+      }
+
+      return run;
+    });
+
+    publishLiveEvent({
+      companyId: queuedRun.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queuedRun.id,
+        agentId: queuedRun.agentId,
+        invocationSource: queuedRun.invocationSource,
+        triggerDetail: queuedRun.triggerDetail,
+        wakeupRequestId: queuedRun.wakeupRequestId,
+      },
+    });
+
+    return queuedRun;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -2395,6 +2578,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: { errorMessage?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -2406,10 +2590,13 @@ export function heartbeatService(db: Db) {
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
+    const recoverableFailure =
+      (outcome === "failed" || outcome === "timed_out")
+      && isRecoverableAgentFailure(options?.errorMessage);
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "cancelled" || recoverableFailure
           ? "idle"
           : "error";
 
@@ -2544,7 +2731,19 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", {
+        errorMessage: finalizedRun.error ?? baseMessage,
+      });
+      const reapedAgent = await getAgent(run.agentId);
+      if (reapedAgent) {
+        await enqueueAssignedBacklogContinuationIfNeeded({
+          agent: reapedAgent,
+          outcome: "failed",
+          contextSnapshot: parseObject(run.contextSnapshot),
+          errorMessage: finalizedRun.error ?? baseMessage,
+          previousRunId: finalizedRun.id,
+        });
+      }
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -3472,6 +3671,8 @@ export function heartbeatService(db: Db) {
       });
 
       const finalizedRun = await getRun(run.id);
+      let issueCommentPolicyResult: Awaited<ReturnType<typeof finalizeIssueCommentPolicy>> | null = null;
+      let promotedRunFromRelease: typeof heartbeatRuns.$inferSelect | null | undefined;
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -3496,8 +3697,8 @@ export function heartbeatService(db: Db) {
             );
           }
         }
-        await finalizeIssueCommentPolicy(finalizedRun, agent);
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        issueCommentPolicyResult = await finalizeIssueCommentPolicy(finalizedRun, agent);
+        promotedRunFromRelease = await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
       if (finalizedRun) {
@@ -3524,7 +3725,21 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        errorMessage: finalizedRun?.error ?? adapterResult.errorMessage ?? null,
+      });
+      if (
+        !promotedRunFromRelease &&
+        issueCommentPolicyResult?.queuedRun == null &&
+        issueCommentPolicyResult?.outcome !== "retry_exhausted"
+      ) {
+        await enqueueAssignedBacklogContinuationIfNeeded({
+          agent,
+          outcome,
+          contextSnapshot: parseObject(run.contextSnapshot),
+          errorMessage: finalizedRun?.error ?? adapterResult.errorMessage ?? null,
+        });
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -3556,6 +3771,8 @@ export function heartbeatService(db: Db) {
         error: message,
       });
 
+      let failedIssueCommentPolicyResult: Awaited<ReturnType<typeof finalizeIssueCommentPolicy>> | null = null;
+      let promotedFailedRunFromRelease: typeof heartbeatRuns.$inferSelect | null | undefined;
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {
           eventType: "error",
@@ -3563,8 +3780,8 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
-        await finalizeIssueCommentPolicy(failedRun, agent);
-        await releaseIssueExecutionAndPromote(failedRun);
+        failedIssueCommentPolicyResult = await finalizeIssueCommentPolicy(failedRun, agent);
+        promotedFailedRunFromRelease = await releaseIssueExecutionAndPromote(failedRun);
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
@@ -3589,7 +3806,22 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", {
+        errorMessage: message,
+      });
+      if (
+        !promotedFailedRunFromRelease &&
+        failedIssueCommentPolicyResult?.queuedRun == null &&
+        failedIssueCommentPolicyResult?.outcome !== "retry_exhausted"
+      ) {
+        await enqueueAssignedBacklogContinuationIfNeeded({
+          agent,
+          outcome: "failed",
+          contextSnapshot: parseObject(run.contextSnapshot),
+          errorMessage: message,
+          previousRunId: failedRun?.id ?? run.id,
+        });
+      }
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -3606,6 +3838,9 @@ export function heartbeatService(db: Db) {
             error: message,
           }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
+          let failedAgent: typeof agents.$inferSelect | null = null;
+          let outerIssueCommentPolicyResult: Awaited<ReturnType<typeof finalizeIssueCommentPolicy>> | null = null;
+          let outerPromotedRunFromRelease: typeof heartbeatRuns.$inferSelect | null | undefined;
           if (failedRun) {
             // Emit a run-log event so the failure is visible in the run timeline,
             // consistent with what the inner catch block does for adapter failures.
@@ -3615,15 +3850,31 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
-            const failedAgent = await getAgent(run.agentId).catch(() => null);
+            failedAgent = await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
-              await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
+              outerIssueCommentPolicyResult = await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => null);
             }
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+            outerPromotedRunFromRelease = await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed", {
+            errorMessage: message,
+          }).catch(() => undefined);
+          if (
+            failedAgent &&
+            !outerPromotedRunFromRelease &&
+            outerIssueCommentPolicyResult?.queuedRun == null &&
+            outerIssueCommentPolicyResult?.outcome !== "retry_exhausted"
+          ) {
+            await enqueueAssignedBacklogContinuationIfNeeded({
+              agent: failedAgent,
+              outcome: "failed",
+              contextSnapshot: parseObject(run.contextSnapshot),
+              errorMessage: message,
+              previousRunId: failedRun?.id ?? null,
+            }).catch(() => undefined);
+          }
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
@@ -3768,7 +4019,7 @@ export function heartbeatService(db: Db) {
       }
     });
 
-    if (!promotedRun) return;
+    if (!promotedRun) return null;
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
@@ -3783,6 +4034,7 @@ export function heartbeatService(db: Db) {
     });
 
     await startNextQueuedRunForAgent(promotedRun.agentId);
+    return promotedRun;
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {

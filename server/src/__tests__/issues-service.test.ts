@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -717,6 +719,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -994,6 +997,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1179,6 +1183,294 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+
+  it("rejects assigning work to paused agents", async () => {
+    const companyId = randomUUID();
+    const pausedAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: pausedAgentId,
+      companyId,
+      name: "PausedAgent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Cannot assign this",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: pausedAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign work to paused agents" });
+  });
+
+  it("rejects assigning work to overloaded agents", async () => {
+    const companyId = randomUUID();
+    const busyAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: busyAgentId,
+      companyId,
+      name: "BusyAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values(
+      Array.from({ length: 10 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Open issue ${index + 1}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        assigneeAgentId: busyAgentId,
+      })),
+    );
+
+    await expect(
+      svc.create(companyId, {
+        title: "One too many",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: busyAgentId,
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "Cannot assign work to agents with 10+ open issues" });
+  });
+
+  it("allows updates that keep the same paused assignee", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issue = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PausedLaterAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issue,
+      companyId,
+      title: "Existing issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+
+    const updated = await svc.update(issue, {
+      title: "Updated issue title",
+      assigneeAgentId: agentId,
+    });
+
+    expect(updated).toMatchObject({
+      id: issue,
+      title: "Updated issue title",
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("clears execution locks on release so another agent can check out the issue", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const nextAgentId = randomUUID();
+    const staleRunId = randomUUID();
+    const releaseRunId = randomUUID();
+    const nextRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexMax",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAgentId,
+        companyId,
+        name: "Nano",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-06T00:00:00.000Z"),
+      },
+      {
+        id: releaseRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-11T12:00:00.000Z"),
+      },
+      {
+        id: nextRunId,
+        companyId,
+        agentId: nextAgentId,
+        status: "running",
+        startedAt: new Date("2026-04-11T12:05:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "codexmax",
+      executionLockedAt: new Date("2026-04-06T00:00:00.000Z"),
+      createdByAgentId: assigneeAgentId,
+    });
+
+    const released = await svc.release(issueId, assigneeAgentId, releaseRunId);
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const checkedOut = await svc.checkout(issueId, nextAgentId, ["todo"], nextRunId);
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: nextAgentId,
+      checkoutRunId: nextRunId,
+      executionRunId: nextRunId,
+    });
+  });
+
+  it("allows an already assigned agent to resume checkout even when they are over the open-issue cap", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "BusyAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "running",
+      startedAt: new Date("2026-04-11T12:00:00.000Z"),
+    });
+
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Assigned backlog item",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+        createdByAgentId: assigneeAgentId,
+      },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Other open issue ${index + 1}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        assigneeAgentId,
+        createdByAgentId: assigneeAgentId,
+      })),
+    ]);
+
+    const checkedOut = await svc.checkout(issueId, assigneeAgentId, ["todo"], checkoutRunId);
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
     });
   });
 });

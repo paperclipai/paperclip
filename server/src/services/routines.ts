@@ -46,6 +46,8 @@ import { logActivity } from "./activity-log.js";
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT = 10;
+const ACTIVE_ASSIGNED_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_CATCH_UP_RUNS = 25;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
@@ -346,8 +348,18 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ?? null);
     if (!agent) throw notFound("Assignee agent not found");
     if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
+    if (agent.status === "paused") throw conflict("Cannot assign routines to paused agents");
     if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
     if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
+
+    const [{ count: activeAssignedIssueCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(eq(issues.assigneeAgentId, agentId), inArray(issues.status, [...ACTIVE_ASSIGNED_ISSUE_STATUSES])));
+
+    if (Number(activeAssignedIssueCount ?? 0) >= MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT) {
+      throw conflict(`Cannot assign routines to agents with ${MAX_OPEN_ASSIGNED_ISSUES_PER_AGENT}+ open issues`);
+    }
   }
 
   async function assertProject(companyId: string, projectId: string | null | undefined) {
@@ -1077,7 +1089,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== existing.assigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);

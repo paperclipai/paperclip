@@ -54,6 +54,16 @@ The agent request is built as:
 - optional additions:
   - all `payloadTemplate` fields merged in
   - `agentId` from config if set and not already in template
+  - `env`, built from `payloadTemplate.env` plus Paperclip wake vars
+
+When Paperclip has a short-lived local run JWT available, the gateway `env` payload now includes:
+
+- `PAPERCLIP_API_KEY`
+- `PAPERCLIP_API_URL`
+- `PAPERCLIP_AGENT_ID`
+- `PAPERCLIP_COMPANY_ID`
+- `PAPERCLIP_RUN_ID`
+- wake-scoped issue/comment/approval ids when present
 
 ## Timeouts
 
