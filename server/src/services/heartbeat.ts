@@ -2194,16 +2194,6 @@ export function heartbeatService(db: Db) {
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
       await tx
-        .update(issues)
-        .set({
-          executionRunId: queuedRun.id,
-          executionAgentNameKey: normalizeAgentNameKey(agent.name),
-          executionLockedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(issues.id, issue.id));
-
-      await tx
         .update(heartbeatRuns)
         .set({
           issueCommentStatus: "retry_queued",
@@ -2448,16 +2438,147 @@ export function heartbeatService(db: Db) {
     }
 
     const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const claimedIssueId = readNonEmptyString(context.issueId);
+    const claimResult = await db.transaction(async (tx) => {
+      let claimIssueId: string | null = null;
+      let claimIssuePatch: Partial<typeof issues.$inferInsert> | null = null;
+
+      if (claimedIssueId) {
+        await tx.execute(
+          sql`
+            select id
+            from issues
+            where id = ${claimedIssueId}
+              and company_id = ${run.companyId}
+            for update
+          `,
+        );
+
+        const issue = await tx
+          .select({
+            id: issues.id,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (issue) {
+          const lockRunIds = [...new Set([issue.checkoutRunId, issue.executionRunId].filter(Boolean) as string[])];
+          const lockRuns = lockRunIds.length > 0
+            ? await tx
+              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(inArray(heartbeatRuns.id, lockRunIds))
+            : [];
+          const liveLockRunIds = new Set(
+            lockRuns
+              .filter((lockRun) => lockRun.status === "queued" || lockRun.status === "running")
+              .map((lockRun) => lockRun.id),
+          );
+          const hasForeignLiveLock = lockRunIds.some((runId) => runId !== run.id && liveLockRunIds.has(runId));
+
+          if (hasForeignLiveLock) {
+            const cancelled = await tx
+              .update(heartbeatRuns)
+              .set({
+                status: "cancelled",
+                startedAt: run.startedAt ?? claimedAt,
+                finishedAt: claimedAt,
+                error: "Deferred because issue is owned by another active run",
+                errorCode: "issue_execution_deferred",
+                updatedAt: claimedAt,
+              })
+              .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+
+            if (cancelled?.wakeupRequestId) {
+              const wakeup = await tx
+                .select()
+                .from(agentWakeupRequests)
+                .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId))
+                .then((rows) => rows[0] ?? null);
+              const wakePayload = parseObject(wakeup?.payload);
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "deferred_issue_execution",
+                  reason: "issue_execution_deferred",
+                  payload: {
+                    ...wakePayload,
+                    issueId: issue.id,
+                    [DEFERRED_WAKE_CONTEXT_KEY]: {
+                      ...parseObject(wakePayload[DEFERRED_WAKE_CONTEXT_KEY]),
+                      ...context,
+                      issueId: issue.id,
+                    },
+                  },
+                  runId: null,
+                  claimedAt: null,
+                  finishedAt: null,
+                  error: null,
+                  updatedAt: claimedAt,
+                })
+                .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+            }
+
+            return { claimed: null, cancelled };
+          }
+
+          claimIssueId = issue.id;
+          claimIssuePatch = {
+            executionRunId: run.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          };
+          if (issue.checkoutRunId && !liveLockRunIds.has(issue.checkoutRunId)) {
+            claimIssuePatch.checkoutRunId = null;
+          }
+        }
+      }
+
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (claimed && claimIssueId && claimIssuePatch) {
+        await tx
+          .update(issues)
+          .set(claimIssuePatch)
+          .where(eq(issues.id, claimIssueId));
+      }
+
+      return { claimed, cancelled: null };
+    });
+    if (claimResult.cancelled) {
+      publishLiveEvent({
+        companyId: claimResult.cancelled.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: claimResult.cancelled.id,
+          agentId: claimResult.cancelled.agentId,
+          status: claimResult.cancelled.status,
+          invocationSource: claimResult.cancelled.invocationSource,
+          triggerDetail: claimResult.cancelled.triggerDetail,
+          error: claimResult.cancelled.error ?? null,
+          errorCode: claimResult.cancelled.errorCode ?? null,
+          startedAt: claimResult.cancelled.startedAt ? new Date(claimResult.cancelled.startedAt).toISOString() : null,
+          finishedAt: claimResult.cancelled.finishedAt ? new Date(claimResult.cancelled.finishedAt).toISOString() : null,
+        },
+      });
+    }
+
+    const claimed = claimResult.claimed;
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -2477,28 +2598,6 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
-    if (claimedIssueId) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
@@ -4228,16 +4327,6 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(issues.id, issue.id));
-
         return {
           run: newRun,
           reopenedActivity,
@@ -4486,14 +4575,11 @@ export function heartbeatService(db: Db) {
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, ["queued", "running"]),
+                eq(heartbeatRuns.status, "running"),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
-            .orderBy(
-              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-              asc(heartbeatRuns.createdAt),
-            )
+            .orderBy(asc(heartbeatRuns.createdAt))
             .limit(1)
             .then((rows) => rows[0] ?? null);
 

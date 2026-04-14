@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockPromoteDeferredIssueWakeupForIssue = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -37,7 +38,7 @@ vi.mock("../services/index.js", () => ({
         }
         : null),
     reportRunActivity: vi.fn(async () => undefined),
-    promoteDeferredIssueWakeupForIssue: vi.fn(async () => null),
+    promoteDeferredIssueWakeupForIssue: mockPromoteDeferredIssueWakeupForIssue,
   }),
   instanceSettingsService: () => ({}),
   issueApprovalService: () => ({}),
@@ -66,6 +67,7 @@ describe("issue release routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockPromoteDeferredIssueWakeupForIssue.mockResolvedValue(null);
   });
 
   it("preserves board identity across reroute then release", async () => {
@@ -142,6 +144,10 @@ describe("issue release routes", () => {
       actorRunId: null,
       actorUserId: "local-board",
     });
+    expect(mockPromoteDeferredIssueWakeupForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "company-1",
+    );
   });
 
   it("passes board user identity into release", async () => {
@@ -176,6 +182,10 @@ describe("issue release routes", () => {
       actorRunId: null,
       actorUserId: "local-board",
     });
+    expect(mockPromoteDeferredIssueWakeupForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "company-1",
+    );
   });
 
   it("passes agent run identity into release", async () => {
@@ -214,6 +224,10 @@ describe("issue release routes", () => {
       actorRunId: "run-1",
       actorUserId: null,
     });
+    expect(mockPromoteDeferredIssueWakeupForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "company-1",
+    );
   });
 
   it("does not log issue.released when release conflicts", async () => {
@@ -238,5 +252,6 @@ describe("issue release routes", () => {
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: "Issue still owned by active run" });
     expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockPromoteDeferredIssueWakeupForIssue).not.toHaveBeenCalled();
   });
 });
