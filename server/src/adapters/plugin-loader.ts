@@ -9,10 +9,14 @@
  * adapter-utils, never registry.ts.
  */
 
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
+
+const execFileAsync = promisify(execFile);
 
 import {
   listAdapterPlugins,
@@ -187,8 +191,37 @@ export async function loadExternalAdapterPackage(
   return adapterModule;
 }
 
+/**
+ * Ensure an npm-sourced adapter package exists on disk.
+ * If the package directory is missing (e.g. pruned by a prior --no-save install),
+ * reinstall it from the registry so reload/boot can proceed.
+ */
+async function ensurePackageOnDisk(record: AdapterPluginRecord): Promise<void> {
+  if (record.localPath) return; // local-path adapters are managed externally
+
+  const packageDir = resolvePackageDir(record);
+  const pkgJsonPath = path.join(packageDir, "package.json");
+  if (fs.existsSync(pkgJsonPath)) return; // already on disk
+
+  const pluginsDir = getAdapterPluginsDir();
+  const spec = record.version
+    ? `${record.packageName}@${record.version}`
+    : record.packageName;
+
+  logger.info(
+    { packageName: record.packageName, type: record.type, spec },
+    "Adapter package missing from disk — reinstalling from npm",
+  );
+
+  await execFileAsync("npm", ["install", spec], {
+    cwd: pluginsDir,
+    timeout: 120_000,
+  });
+}
+
 async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapterModule | null> {
   try {
+    await ensurePackageOnDisk(record);
     return await loadExternalAdapterPackage(record.packageName, record.localPath);
   } catch (err) {
     logger.warn(
@@ -208,6 +241,8 @@ export async function reloadExternalAdapter(
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
+
+  await ensurePackageOnDisk(record);
 
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
