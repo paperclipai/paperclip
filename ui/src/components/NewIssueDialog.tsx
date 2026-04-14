@@ -231,6 +231,9 @@ const statuses = [
   { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
   { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
   { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
+  { value: "blocked", label: "Blocked", color: issueStatusText.blocked ?? issueStatusTextDefault },
+  { value: "parked", label: "Parked", color: issueStatusText.parked ?? issueStatusTextDefault },
+  { value: "cancelled", label: "Cancelled", color: issueStatusText.cancelled ?? issueStatusTextDefault },
 ];
 
 const priorities = [
