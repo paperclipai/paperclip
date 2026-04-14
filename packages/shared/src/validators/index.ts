@@ -1,4 +1,15 @@
 export {
+  supportedLocaleSchema,
+  userPreferencesSchema,
+  patchUserPreferencesSchema,
+  i18nConfigSchema,
+  type SupportedLocale,
+  type UserPreferences,
+  type PatchUserPreferences,
+  type I18nConfig,
+} from "./user-preferences.js";
+
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,

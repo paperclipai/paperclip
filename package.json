@@ -26,6 +26,7 @@
     "release:stable": "./scripts/release.sh stable",
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
+    "check:i18n": "node cli/node_modules/tsx/dist/cli.mjs scripts/check-i18n.ts",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",

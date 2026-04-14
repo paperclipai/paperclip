@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "../constants.js";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
 import {
   DAILY_RETENTION_PRESETS,
@@ -24,6 +25,7 @@ export const backupRetentionPolicySchema = z.object({
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
+  defaultLocale: z.enum(SUPPORTED_LOCALES).default(DEFAULT_LOCALE),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),

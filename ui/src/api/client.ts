@@ -1,3 +1,5 @@
+import { getCurrentLocale } from "@/lib/locale-store";
+
 const BASE = "/api";
 
 export class ApiError extends Error {
@@ -18,6 +20,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!(body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  headers.set("x-paperclip-locale", getCurrentLocale());
 
   const res = await fetch(`${BASE}${path}`, {
     headers,

@@ -1,6 +1,8 @@
+import { getCurrentLocale } from "@/lib/locale-store";
+
 export type AuthSession = {
   session: { id: string; userId: string };
-  user: { id: string; email: string | null; name: string | null };
+  user: { id: string; email: string | null; name: string | null; source?: string | null };
 };
 
 function toSession(value: unknown): AuthSession | null {
@@ -20,6 +22,7 @@ function toSession(value: unknown): AuthSession | null {
       id: user.id,
       email: typeof user.email === "string" ? user.email : null,
       name: typeof user.name === "string" ? user.name : null,
+      source: typeof user.source === "string" ? user.source : null,
     },
   };
 }
@@ -28,7 +31,7 @@ async function authPost(path: string, body: Record<string, unknown>) {
   const res = await fetch(`/api/auth${path}`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-paperclip-locale": getCurrentLocale() },
     body: JSON.stringify(body),
   });
   const payload = await res.json().catch(() => null);
@@ -47,7 +50,7 @@ export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
       credentials: "include",
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", "x-paperclip-locale": getCurrentLocale() },
     });
     if (res.status === 401) return null;
     const payload = await res.json().catch(() => null);

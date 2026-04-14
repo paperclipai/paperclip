@@ -15,10 +15,12 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
+import { useLocale } from "@/context/LocaleContext";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings() {
+  const { t, locale, supportedLocales, localeOptionLabels, setLocalePreference, isUpdatingLocale } = useLocale();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -29,16 +31,16 @@ export function InstanceGeneralSettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+      setActionError(error instanceof Error ? error.message : t("settings.general.signOutFailed"));
     },
   });
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: t("common.instanceSettings") },
+      { label: t("common.general") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -52,12 +54,12 @@ export function InstanceGeneralSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(error instanceof Error ? error.message : t("settings.general.updateFailed"));
     },
   });
 
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("settings.general.loading")}</div>;
   }
 
   if (generalQuery.error) {
@@ -65,7 +67,7 @@ export function InstanceGeneralSettings() {
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : t("settings.general.loadFailed")}
       </div>
     );
   }
@@ -80,10 +82,10 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">{t("common.general")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide defaults that affect how operator-visible logs are displayed.
+          {t("settings.general.description")}
         </p>
       </div>
 
@@ -94,20 +96,76 @@ export function InstanceGeneralSettings() {
       )}
 
       <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">{t("settings.general.personalLanguageTitle")}</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              {t("settings.general.personalLanguageDescription")}
+            </p>
+          </div>
+          <label className="flex max-w-sm flex-col gap-2 text-sm">
+            <span className="text-muted-foreground">{t("common.language")}</span>
+            <select
+              value={locale}
+              disabled={isUpdatingLocale}
+              onChange={(event) => {
+                void setLocalePreference(event.target.value as typeof locale);
+              }}
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              aria-label={t("settings.general.personalLanguageTitle")}
+            >
+              {supportedLocales.map((entry) => (
+                <option key={entry} value={entry}>
+                  {localeOptionLabels[entry]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">{t("settings.general.defaultLanguageTitle")}</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              {t("settings.general.defaultLanguageDescription")}
+            </p>
+          </div>
+          <label className="flex max-w-sm flex-col gap-2 text-sm">
+            <span className="text-muted-foreground">{t("common.language")}</span>
+            <select
+              value={generalQuery.data?.defaultLocale ?? "en"}
+              disabled={updateGeneralMutation.isPending}
+              onChange={(event) =>
+                updateGeneralMutation.mutate({ defaultLocale: event.target.value as typeof locale })
+              }
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              aria-label={t("settings.general.defaultLanguageTitle")}
+            >
+              {supportedLocales.map((entry) => (
+                <option key={entry} value={entry}>
+                  {localeOptionLabels[entry]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">{t("settings.general.censorTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              {t("settings.general.censorDescription")}
             </p>
           </div>
           <ToggleSwitch
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle username log censoring"
+            aria-label={t("settings.general.censorAria")}
           />
         </div>
       </section>
@@ -115,17 +173,16 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">{t("settings.general.shortcutsTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
-              toggling panels. This is off by default.
+              {t("settings.general.shortcutsDescription")}
             </p>
           </div>
           <ToggleSwitch
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
+            aria-label={t("settings.general.shortcutsAria")}
           />
         </div>
       </section>
@@ -133,16 +190,14 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Backup retention</h2>
+            <h2 className="text-sm font-semibold">{t("settings.general.backupTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long to keep automatic database backups at each tier. Daily backups
-              are kept in full, then thinned to one per week and one per month. Backups are
-              compressed with gzip.
+              {t("settings.general.backupDescription")}
             </p>
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.general.daily")}</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -163,7 +218,7 @@ export function InstanceGeneralSettings() {
                       })
                     }
                   >
-                    <div className="text-sm font-medium">{days} days</div>
+                    <div className="text-sm font-medium">{t("settings.general.days", { count: days })}</div>
                   </button>
                 );
               })}
@@ -171,11 +226,11 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.general.weekly")}</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
+                const label = weeks === 1 ? t("settings.general.oneWeek") : t("settings.general.weeks", { count: weeks });
                 return (
                   <button
                     key={weeks}
@@ -201,11 +256,11 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.general.monthly")}</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
+                const label = months === 1 ? t("settings.general.oneMonth") : t("settings.general.months", { count: months });
                 return (
                   <button
                     key={months}
@@ -235,10 +290,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">AI feedback sharing</h2>
+            <h2 className="text-sm font-semibold">{t("settings.general.feedbackTitle")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Control whether thumbs up and thumbs down votes can send the voted AI output to
-              Paperclip Labs. Votes are always saved locally.
+              {t("settings.general.feedbackDescription")}
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -247,27 +301,26 @@ export function InstanceGeneralSettings() {
                 rel="noreferrer"
                 className="inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
-                Read our terms of service
+                {t("settings.general.termsLink")}
               </a>
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
             <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              No default is saved yet. The next thumbs up or thumbs down choice will ask once and
-              then save the answer here.
+              {t("settings.general.feedbackPromptSaved")}
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: t("settings.general.feedbackAllow"),
+                description: t("settings.general.feedbackAllowDescription"),
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: t("settings.general.feedbackDeny"),
+                description: t("settings.general.feedbackDenyDescription"),
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -299,11 +352,7 @@ export function InstanceGeneralSettings() {
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            {t("settings.general.feedbackDevHint")}
           </p>
         </div>
       </section>
@@ -311,9 +360,9 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
+            <h2 className="text-sm font-semibold">{t("common.signOut")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this Paperclip instance. You will be redirected to the login page.
+              {t("settings.general.signOutDescription")}
             </p>
           </div>
           <Button
@@ -323,7 +372,7 @@ export function InstanceGeneralSettings() {
             onClick={() => signOutMutation.mutate()}
           >
             <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+            {signOutMutation.isPending ? t("common.signingOut") : t("common.signOut")}
           </Button>
         </div>
       </section>

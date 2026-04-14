@@ -1,4 +1,5 @@
 export type { Company } from "./company.js";
+export type { I18nConfig, UserPreferences } from "./user-preferences.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,

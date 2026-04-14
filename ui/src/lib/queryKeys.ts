@@ -95,10 +95,16 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  i18n: {
+    config: ["i18n", "config"] as const,
+  },
   instance: {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+  },
+  userPreferences: {
+    current: ["user-preferences", "current"] as const,
   },
   health: ["health"] as const,
   secrets: {

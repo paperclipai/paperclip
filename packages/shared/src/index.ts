@@ -1,5 +1,8 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  SUPPORTED_LOCALES,
+  DEFAULT_LOCALE,
+  type SupportedLocale,
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
@@ -162,6 +165,8 @@ export {
 } from "./network-bind.js";
 
 export type {
+  I18nConfig,
+  UserPreferences,
   Company,
   FeedbackVote,
   FeedbackDataSharingPreference,
@@ -396,6 +401,11 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  supportedLocaleSchema,
+  userPreferencesSchema,
+  patchUserPreferencesSchema,
+  i18nConfigSchema,
+  type PatchUserPreferences,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
