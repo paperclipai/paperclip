@@ -498,6 +498,7 @@ export function createPluginToolRegistry(
             success: true,
             hasContent: !!result.content,
             hasError: !!result.error,
+            error: result.error ?? null,
           },
         }).catch((e) => log.warn({ err: e, toolName }, "failed to emit agent.tool.post_execute"));
       }
