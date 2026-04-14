@@ -2287,6 +2287,15 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
 
     const result = await heartbeat.listFileEventsForActiveRuns(companyId);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    for (const entry of Object.values(result)) {
+      entry.events = entry.events.map((event) =>
+        redactCurrentUserValue({
+          ...event,
+          payload: redactEventPayload(event.payload),
+        }, currentUserRedactionOptions),
+      );
+    }
     res.json({ runs: result });
   });
 

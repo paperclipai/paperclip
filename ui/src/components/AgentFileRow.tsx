@@ -4,7 +4,6 @@ import { FileCard, type FileEditEvent } from "./FileCard";
 interface AgentFileRowProps {
   agentName: string;
   issueTitle?: string;
-  issueId?: string | null;
   files: Map<string, FileEditEvent[]>;
   runStatus: string;
 }

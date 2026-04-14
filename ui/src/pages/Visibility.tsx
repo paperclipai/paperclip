@@ -58,9 +58,14 @@ export function Visibility() {
     staleTime: 0,
   });
 
-  const wsEvents = queryClient.getQueryData<Array<Record<string, unknown>>>(
-    queryKeys.visibilityFileEvents(selectedCompanyId!),
-  ) ?? [];
+  // Subscribe to WS-pushed file events via useQuery so the component re-renders
+  // when LiveUpdatesProvider appends events via setQueryData.
+  const { data: wsEvents = [] } = useQuery({
+    queryKey: queryKeys.visibilityFileEvents(selectedCompanyId!),
+    queryFn: () => [] as Array<Record<string, unknown>>,
+    enabled: !!selectedCompanyId,
+    staleTime: Infinity,
+  });
 
   const agentFiles = useMemo(() => {
     const map = new Map<string, { run: LiveRunForIssue | undefined; files: Map<string, FileEditEvent[]> }>();
@@ -148,7 +153,6 @@ export function Visibility() {
             key={runId}
             agentName={run?.agentName ?? "Unknown Agent"}
             issueTitle={run?.triggerDetail ?? undefined}
-            issueId={run?.issueId}
             files={files}
             runStatus={run?.status ?? "running"}
           />

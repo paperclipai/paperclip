@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 interface DiffViewProps {
@@ -26,33 +25,31 @@ export function DiffView({ lines, className }: DiffViewProps) {
   }
 
   return (
-    <ScrollArea className={cn("h-full", className)}>
-      <div
-        ref={containerRef}
-        onScroll={handleScroll}
-        className="h-full overflow-y-auto"
-      >
-        <pre className="p-2 text-xs font-mono leading-relaxed">
-          {lines.map((line, i) => {
-            const isAdd = line.startsWith("+");
-            const isRemove = line.startsWith("-");
-            return (
-              <div
-                key={i}
-                className={cn(
-                  "px-1 -mx-1 rounded-sm",
-                  isAdd && "bg-green-500/15 text-green-700 dark:text-green-400",
-                  isRemove && "bg-red-500/15 text-red-700 dark:text-red-400",
-                  !isAdd && !isRemove && "text-muted-foreground",
-                )}
-              >
-                {line || "\u00A0"}
-              </div>
-            );
-          })}
-          <div ref={bottomRef} />
-        </pre>
-      </div>
-    </ScrollArea>
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className={cn("h-full overflow-y-auto", className)}
+    >
+      <pre className="p-2 text-xs font-mono leading-relaxed">
+        {lines.map((line, i) => {
+          const isAdd = line.startsWith("+");
+          const isRemove = line.startsWith("-");
+          return (
+            <div
+              key={i}
+              className={cn(
+                "px-1 -mx-1 rounded-sm",
+                isAdd && "bg-green-500/15 text-green-700 dark:text-green-400",
+                isRemove && "bg-red-500/15 text-red-700 dark:text-red-400",
+                !isAdd && !isRemove && "text-muted-foreground",
+              )}
+            >
+              {line || "\u00A0"}
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </pre>
+    </div>
   );
 }
