@@ -3571,7 +3571,7 @@ export function heartbeatService(db: Db) {
     latestFailed: async (companyId: string) => {
       // Get the most recent run for each agent in the company
       // Note: DISTINCT ON is a PostgreSQL-specific feature.
-      const rows = await db.execute(sql`
+      const raw = await db.execute(sql`
         SELECT DISTINCT ON (agent_id)
           *
         FROM heartbeat_runs
@@ -3579,6 +3579,9 @@ export function heartbeatService(db: Db) {
         ORDER BY agent_id, created_at DESC
         LIMIT 500
       `);
+      
+      // db.execute may return rows directly (PGlite) or a QueryResult with .rows (node-postgres)
+      const rows: any[] = Array.isArray(raw) ? raw : (raw as any).rows ?? [];
       
       // Filter to only those whose most recent run was a failure
       const failedRows = rows.filter((r: any) => r.status === 'failed' || r.status === 'timed_out');
