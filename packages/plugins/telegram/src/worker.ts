@@ -436,10 +436,8 @@ function extractHumanText(chunk: string): string {
   const trimmed = chunk.trim();
   if (!trimmed) return "";
 
-  // Reject tool-result dumps immediately
-  if (isToolResultDump(trimmed)) return "";
-
-  // Fast path: single-line JSON event (Claude CLI stream)
+  // Fast path: single-line JSON event (Claude CLI stream). Parse before the
+  // generic tool-dump guard so long assistant/result JSON events are preserved.
   if (trimmed.startsWith("{")) {
     try {
       const event = JSON.parse(trimmed) as Record<string, unknown>;
@@ -449,6 +447,9 @@ function extractHumanText(chunk: string): string {
     }
   }
 
+  // Reject tool-result dumps immediately
+  if (isToolResultDump(trimmed)) return "";
+
   // Line-by-line processing
   const lines = chunk.split(/\r?\n/);
   const parts: string[] = [];
@@ -456,9 +457,6 @@ function extractHumanText(chunk: string): string {
   for (const line of lines) {
     const lt = line.trim();
     if (!lt) { parts.push(""); continue; }
-
-    // Skip escaped JSON / tool result lines
-    if (isToolResultDump(lt)) continue;
 
     // Try to parse as a Claude CLI JSON event
     if (lt.startsWith("{")) {
@@ -474,6 +472,9 @@ function extractHumanText(chunk: string): string {
         // Not JSON — treat as plain text
       }
     }
+
+    // Skip escaped JSON / tool result lines
+    if (isToolResultDump(lt)) continue;
 
     if (!isTechnicalTelegramNoise(line)) parts.push(line);
   }
@@ -505,7 +506,35 @@ function extractFromJsonEvent(event: Record<string, unknown>): string {
     }
   }
 
+  if (type === "assistant") {
+    const message = event.message as Record<string, unknown> | undefined;
+    const content = message?.content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((b: unknown) => (b as Record<string, unknown>)?.type === "text")
+        .map((b: unknown) => (b as Record<string, unknown>).text as string)
+        .join("");
+    }
+  }
+
+  if (type === "result") {
+    const result = event.result;
+    if (typeof result === "string") return result;
+  }
+
   return "";
+}
+
+function pushHumanChunk(chunks: string[], message: string): void {
+  if (!message.trim()) return;
+
+  const existing = chunks.join("");
+  // Claude emits both assistant.message text and a final result JSON with the
+  // same answer. Keep the fuller text, but do not send duplicate copies.
+  if (existing.trim() === message.trim()) return;
+  if (message.length > 100 && existing.includes(message)) return;
+
+  chunks.push(message);
 }
 
 function sanitizeAgentMessage(message: string): string {
@@ -883,7 +912,7 @@ async function askAgent(
         // human-readable assistant text (content_block_delta / plain text).
         if (event.eventType === "chunk" && event.stream === "stdout" && event.message) {
           const message = extractHumanText(event.message);
-          if (message.trim()) streamChunks.push(message);
+          pushHumanChunk(streamChunks, message);
         }
 
         // "done" event — agent completed.
