@@ -6,7 +6,8 @@ import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, relativeTime } from "../lib/utils";
+import { cn } from "../lib/utils";
+import { useI18n } from "../context/I18nContext";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
@@ -23,6 +24,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const { t } = useI18n();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
@@ -52,11 +54,11 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
+        {t("nav.agents")}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          <p className="text-sm text-muted-foreground">{t("active_agents.no_recent_runs")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
@@ -92,6 +94,7 @@ function AgentRunCard({
   hasOutput: boolean;
   isActive: boolean;
 }) {
+  const { formatRelativeTime, t } = useI18n();
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -114,7 +117,13 @@ function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>
+                {isActive
+                  ? t("active_agents.live_now")
+                  : run.finishedAt
+                    ? t("active_agents.finished_time", { time: formatRelativeTime(run.finishedAt) })
+                    : t("active_agents.started_time", { time: formatRelativeTime(run.createdAt) })}
+              </span>
             </div>
           </div>
 

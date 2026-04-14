@@ -1,10 +1,11 @@
 import { Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { translateActive } from "../lib/i18n";
 
 export function RunButton({
   onClick,
   disabled,
-  label = "Run now",
+  label,
   size = "sm",
 }: {
   onClick: () => void;
@@ -15,7 +16,7 @@ export function RunButton({
   return (
     <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">{label}</span>
+      <span className="hidden sm:inline">{label ?? translateActive("common.run_now")}</span>
     </Button>
   );
 }
@@ -37,7 +38,7 @@ export function PauseResumeButton({
     return (
       <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
         <Play className="h-3.5 w-3.5 sm:mr-1" />
-        <span className="hidden sm:inline">Resume</span>
+        <span className="hidden sm:inline">{translateActive("common.resume")}</span>
       </Button>
     );
   }
@@ -45,7 +46,7 @@ export function PauseResumeButton({
   return (
     <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">Pause</span>
+      <span className="hidden sm:inline">{translateActive("common.pause")}</span>
     </Button>
   );
 }

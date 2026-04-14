@@ -5,8 +5,10 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { useI18n } from "../context/I18nContext";
 
 export function InstanceExperimentalSettings() {
+  const { t } = useI18n();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -86,7 +88,7 @@ export function InstanceExperimentalSettings() {
             checked={enableIsolatedWorkspaces}
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle isolated workspaces experimental setting"
+            aria-label={t("instance_settings.toggle_isolated_workspaces")}
           />
         </div>
       </section>
@@ -104,7 +106,7 @@ export function InstanceExperimentalSettings() {
             checked={autoRestartDevServerWhenIdle}
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle guarded dev-server auto-restart"
+            aria-label={t("instance_settings.toggle_guarded_dev_server")}
           />
         </div>
       </section>

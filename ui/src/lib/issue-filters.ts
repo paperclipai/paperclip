@@ -1,4 +1,6 @@
 import type { Issue } from "@paperclipai/shared";
+import { translateActive } from "./i18n";
+import { statusDisplayName } from "./utils";
 
 export type IssueFilterState = {
   statuses: string[];
@@ -23,15 +25,17 @@ export const defaultIssueFilterState: IssueFilterState = {
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
-export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
-];
+export function issueQuickFilterPresets() {
+  return [
+    { label: translateActive("issues.quick_filter.all"), statuses: [] as string[] },
+    { label: translateActive("issues.quick_filter.active"), statuses: ["todo", "in_progress", "in_review", "blocked"] },
+    { label: translateActive("issues.quick_filter.backlog"), statuses: ["backlog"] },
+    { label: translateActive("issues.quick_filter.done"), statuses: ["done", "cancelled"] },
+  ];
+}
 
 export function issueFilterLabel(value: string): string {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return statusDisplayName(value);
 }
 
 export function issueFilterArraysEqual(a: string[], b: string[]): boolean {

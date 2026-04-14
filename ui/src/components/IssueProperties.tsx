@@ -17,13 +17,14 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatDate, cn, projectUrl } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { useI18n } from "../context/I18nContext";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timerRef.current), []);
@@ -46,7 +47,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? t("issue_props.copied") : t("issue_props.copy")}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -158,6 +159,7 @@ export function IssueProperties({
   onUpdate,
   inline,
 }: IssuePropertiesProps) {
+  const { t, formatRelativeTime } = useI18n();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -241,7 +243,7 @@ export function IssueProperties({
   };
 
   const projectName = (id: string | null) => {
-    if (!id) return id?.slice(0, 8) ?? "None";
+    if (!id) return id?.slice(0, 8) ?? t("common.none");
     const project = orderedProjects.find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
@@ -292,16 +294,16 @@ export function IssueProperties({
       return agentName(value.slice("agent:".length)) ?? value.slice("agent:".length, "agent:".length + 8);
     }
     if (value.startsWith("user:")) {
-      return userLabel(value.slice("user:".length)) ?? "User";
+      return userLabel(value.slice("user:".length)) ?? t("issue_props.user");
     }
     return value;
   };
   const reviewerTrigger = reviewerValues.length > 0
     ? <span className="text-sm break-words min-w-0">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{t("common.none")}</span>;
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{t("common.none")}</span>;
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
       return issue.executionState.currentStageType;
@@ -318,13 +320,13 @@ export function IssueProperties({
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         onClick={() => onUpdate({ status: "in_review" })}
       >
-        {stageType === "review" ? "Run review now" : "Run approval now"}
+        {stageType === "review" ? t("issue_props.run_review_now") : t("issue_props.run_approval_now")}
       </button>
     </PropertyRow>
   );
   const currentExecutionLabel = (() => {
     if (!issue.executionState?.currentStageType) return null;
-    const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
+    const stageLabel = issue.executionState.currentStageType === "review" ? t("issue_props.review") : t("issue_props.approval");
     const participant = issue.executionState.currentParticipant;
     const participantLabel = participant
       ? (participant.type === "agent"
@@ -332,9 +334,13 @@ export function IssueProperties({
         : userLabel(participant.userId ?? null))
       : null;
     if (issue.executionState.status === "changes_requested") {
-      return `${stageLabel} requested changes${participantLabel ? ` by ${participantLabel}` : ""}`;
+      return participantLabel
+        ? t("issue_props.changes_requested_by", { stage: stageLabel, participant: participantLabel })
+        : t("issue_props.changes_requested", { stage: stageLabel });
     }
-    return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
+    return participantLabel
+      ? t("issue_props.pending_with", { stage: stageLabel, participant: participantLabel })
+      : t("issue_props.pending_stage", { stage: stageLabel });
   })();
 
   const labelsTrigger = (issue.labels ?? []).length > 0 ? (
@@ -359,7 +365,7 @@ export function IssueProperties({
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No labels</span>
+      <span className="text-sm text-muted-foreground">{t("issue_props.no_labels")}</span>
     </>
   );
   const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
@@ -367,8 +373,8 @@ export function IssueProperties({
       type="button"
       className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
-      aria-label="Add label"
-      title="Add label"
+      aria-label={t("issue_props.add_label")}
+      title={t("issue_props.add_label")}
     >
       <Plus className="h-3 w-3" />
     </button>
@@ -378,7 +384,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
+        placeholder={t("issue_props.search_labels")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -416,7 +422,7 @@ export function IssueProperties({
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
+            placeholder={t("issue_props.new_label")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -432,7 +438,7 @@ export function IssueProperties({
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
+          {createLabel.isPending ? t("issue_props.creating") : t("issue_props.create_label")}
         </button>
       </div>
     </>
@@ -448,7 +454,7 @@ export function IssueProperties({
   ) : (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">Unassigned</span>
+      <span className="text-sm text-muted-foreground">{t("issue_props.unassigned")}</span>
     </>
   );
 
@@ -456,7 +462,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder={t("issue_props.search_assignees")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
@@ -469,7 +475,7 @@ export function IssueProperties({
           )}
           onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
         >
-          No assignee
+          {t("issue_props.no_assignee")}
         </button>
         {currentUserId && (
           <button
@@ -483,7 +489,7 @@ export function IssueProperties({
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
+            {t("issue_props.assign_to_me")}
           </button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
@@ -498,7 +504,7 @@ export function IssueProperties({
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
+            {creatorUserLabel ? t("issue_props.assign_to_name", { name: creatorUserLabel }) : t("issue_props.assign_to_requester")}
           </button>
         )}
         {sortedAgents
@@ -534,7 +540,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        placeholder={stageType === "review" ? t("issue_props.search_reviewers") : t("issue_props.search_approvers")}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         autoFocus={!inline}
@@ -547,7 +553,7 @@ export function IssueProperties({
           )}
           onClick={onClear}
         >
-          No {stageType === "review" ? "reviewers" : "approvers"}
+          {stageType === "review" ? t("issue_props.no_reviewers") : t("issue_props.no_approvers")}
         </button>
         {currentUserId && (
           <button
@@ -558,7 +564,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
+            {t("issue_props.assign_to_me")}
           </button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
@@ -570,7 +576,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${issue.createdByUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? creatorUserLabel : "Requester"}
+            {creatorUserLabel ? creatorUserLabel : t("issue_props.requester")}
           </button>
         )}
         {sortedAgents
@@ -609,7 +615,7 @@ export function IssueProperties({
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No project</span>
+      <span className="text-sm text-muted-foreground">{t("issue_props.no_project")}</span>
     </>
   );
 
@@ -617,7 +623,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search projects..."
+        placeholder={t("issue_props.search_projects")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -639,7 +645,7 @@ export function IssueProperties({
             setProjectOpen(false);
           }}
         >
-          No project
+          {t("issue_props.no_project")}
         </button>
         {orderedProjects
           .filter((p) => {
@@ -712,7 +718,7 @@ export function IssueProperties({
       {issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId.slice(0, 8)}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">{t("issue_props.no_parent")}</span>
   );
   const parentOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
@@ -734,7 +740,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={t("issue_props.search_issues")}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -750,7 +756,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
+          {t("issue_props.no_parent")}
         </button>
         {parentOptions.map((candidate) => (
           <button
@@ -786,7 +792,7 @@ export function IssueProperties({
       )}
     </div>
   ) : (
-    <span className="text-sm text-muted-foreground">No blockers</span>
+    <span className="text-sm text-muted-foreground">{t("issue_props.no_blockers")}</span>
   );
 
   const blockingIssues = issue.blocks ?? [];
@@ -817,7 +823,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={t("issue_props.search_issues")}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
@@ -830,7 +836,7 @@ export function IssueProperties({
           )}
           onClick={() => onUpdate({ blockedByIssueIds: [] })}
         >
-          No blockers
+          {t("issue_props.no_blockers")}
         </button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
@@ -858,7 +864,7 @@ export function IssueProperties({
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("issue_props.status")}>
           <StatusIcon
             status={issue.status}
             onChange={(status) => onUpdate({ status })}
@@ -866,7 +872,7 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
+        <PropertyRow label={t("issue_props.priority")}>
           <PriorityIcon
             priority={issue.priority}
             onChange={(priority) => onUpdate({ priority })}
@@ -876,7 +882,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Labels"
+          label={t("issue_props.labels")}
           open={labelsOpen}
           onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
           triggerContent={labelsTrigger}
@@ -889,7 +895,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Assignee"
+          label={t("issue_props.assignee")}
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
           triggerContent={assigneeTrigger}
@@ -909,7 +915,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Project"
+          label={t("issue_props.project")}
           open={projectOpen}
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
@@ -930,7 +936,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Parent"
+          label={t("issue_props.parent")}
           open={parentOpen}
           onOpenChange={(open) => {
             setParentOpen(open);
@@ -954,7 +960,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Blocked by"
+          label={t("issue_props.blocked_by")}
           open={blockedByOpen}
           onOpenChange={(open) => {
             setBlockedByOpen(open);
@@ -967,7 +973,7 @@ export function IssueProperties({
           {blockedByContent}
         </PropertyPicker>
 
-        <PropertyRow label="Blocking">
+        <PropertyRow label={t("issue_props.blocking")}>
           {blockingIssues.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
@@ -983,7 +989,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label={t("issue_props.sub_issues")}>
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1003,7 +1009,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-                Add sub-issue
+                {t("issue_props.add_sub_issue")}
               </button>
             ) : null}
           </div>
@@ -1011,7 +1017,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Reviewers"
+          label={t("issue_props.reviewers")}
           open={reviewersOpen}
           onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
           triggerContent={reviewerTrigger}
@@ -1030,7 +1036,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Approvers"
+          label={t("issue_props.approvers")}
           open={approversOpen}
           onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
           triggerContent={approverTrigger}
@@ -1048,13 +1054,13 @@ export function IssueProperties({
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
         {currentExecutionLabel && (
-          <PropertyRow label="Execution">
+          <PropertyRow label={t("issue_props.execution")}>
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
 
         {issue.requestDepth > 0 && (
-          <PropertyRow label="Depth">
+          <PropertyRow label={t("issue_props.depth")}>
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
@@ -1065,7 +1071,7 @@ export function IssueProperties({
           <Separator />
           <div className="space-y-1">
             {issue.currentExecutionWorkspace?.branchName && (
-              <PropertyRow label="Branch">
+              <PropertyRow label={t("issue_props.branch")}>
                 <TruncatedCopyable
                   value={issue.currentExecutionWorkspace.branchName}
                   icon={GitBranch}
@@ -1073,7 +1079,7 @@ export function IssueProperties({
               </PropertyRow>
             )}
             {issue.currentExecutionWorkspace?.cwd && (
-              <PropertyRow label="Folder">
+              <PropertyRow label={t("issue_props.folder")}>
                 <TruncatedCopyable
                   value={issue.currentExecutionWorkspace.cwd}
                   icon={FolderOpen}
@@ -1088,7 +1094,7 @@ export function IssueProperties({
 
       <div className="space-y-1">
         {(issue.createdByAgentId || issue.createdByUserId) && (
-          <PropertyRow label="Created by">
+          <PropertyRow label={t("issue_props.created_by")}>
             {issue.createdByAgentId ? (
               <Link
                 to={`/agents/${issue.createdByAgentId}`}
@@ -1099,26 +1105,26 @@ export function IssueProperties({
             ) : (
               <>
                 <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
+                <span className="text-sm">{creatorUserLabel ?? t("issue_props.user")}</span>
               </>
             )}
           </PropertyRow>
         )}
         {issue.startedAt && (
-          <PropertyRow label="Started">
+          <PropertyRow label={t("issue_props.started")}>
             <span className="text-sm">{formatDate(issue.startedAt)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
-          <PropertyRow label="Completed">
+          <PropertyRow label={t("issue_props.completed")}>
             <span className="text-sm">{formatDate(issue.completedAt)}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
+        <PropertyRow label={t("issue_props.created")}>
           <span className="text-sm">{formatDate(issue.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
-          <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
+        <PropertyRow label={t("issue_props.updated")}>
+          <span className="text-sm">{formatRelativeTime(issue.updatedAt)}</span>
         </PropertyRow>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
+import { useI18n } from "../../context/I18nContext";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
 import {
@@ -278,19 +279,19 @@ function isCommandTool(name: string, input: unknown): boolean {
   return Boolean(record && (typeof record.command === "string" || typeof record.cmd === "string"));
 }
 
-function displayToolName(name: string, input: unknown): string {
-  if (isCommandTool(name, input)) return "Executing command";
+function displayToolName(name: string, input: unknown, t?: (key: string) => string): string {
+  if (isCommandTool(name, input)) return t ? t("transcript.executing_command") : "Executing command";
   return humanizeLabel(name);
 }
 
-function summarizeToolResult(result: string | undefined, isError: boolean | undefined, density: TranscriptDensity): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result";
+function summarizeToolResult(result: string | undefined, isError: boolean | undefined, density: TranscriptDensity, t?: (key: string) => string): string {
+  if (!result) return isError ? (t ? t("transcript.tool_failed") : "Tool failed") : (t ? t("transcript.waiting_for_result") : "Waiting for result");
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {
       return truncate(structured.body.split("\n")[0] ?? structured.body, density === "compact" ? 84 : 140);
     }
-    if (structured.status === "completed") return "Completed";
+    if (structured.status === "completed") return t ? t("transcript.completed") : "Completed";
     if (structured.status === "failed" || structured.status === "error") {
       return structured.exitCode ? `Failed with exit code ${structured.exitCode}` : "Failed";
     }

@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { queryKeys } from "../lib/queryKeys";
-import { formatDateTime, relativeTime } from "../lib/utils";
+import { formatDateTime } from "../lib/utils";
+import { useI18n } from "../context/I18nContext";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -28,6 +29,7 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
 
 export function InstanceSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t, formatRelativeTime } = useI18n();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -193,7 +195,7 @@ export function InstanceSettings() {
               disableAllMutation.mutate(agents);
             }}
           >
-            {disableAllMutation.isPending ? "Disabling..." : "Disable All"}
+            {disableAllMutation.isPending ? t("instance_settings.disabling") : t("instance_settings.disable_all")}
           </Button>
         )}
       </div>
@@ -229,7 +231,7 @@ export function InstanceSettings() {
                           variant={agent.schedulerActive ? "default" : "outline"}
                           className="shrink-0 text-[10px] px-1.5 py-0"
                         >
-                          {agent.schedulerActive ? "On" : "Off"}
+                          {agent.schedulerActive ? t("instance_settings.on") : t("instance_settings.off")}
                         </Badge>
                         <Link
                           to={buildAgentHref(agent)}
@@ -248,14 +250,14 @@ export function InstanceSettings() {
                           title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
                         >
                           {agent.lastHeartbeatAt
-                            ? relativeTime(agent.lastHeartbeatAt)
+                            ? formatRelativeTime(agent.lastHeartbeatAt)
                             : "never"}
                         </span>
                         <span className="ml-auto flex items-center gap-1.5 shrink-0">
                           <Link
                             to={buildAgentHref(agent)}
                             className="text-muted-foreground hover:text-foreground"
-                            title="Full agent config"
+                            title={t("instance_settings.full_agent_config")}
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </Link>
@@ -266,7 +268,7 @@ export function InstanceSettings() {
                             disabled={saving}
                             onClick={() => toggleMutation.mutate(agent)}
                           >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
+                            {saving ? "..." : agent.heartbeatEnabled ? t("instance_settings.disable_timer_heartbeat") : t("instance_settings.enable_timer_heartbeat")}
                           </Button>
                         </span>
                       </div>

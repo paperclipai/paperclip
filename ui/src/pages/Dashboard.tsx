@@ -9,6 +9,7 @@ import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
+import { useI18n } from "../context/I18nContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
@@ -17,7 +18,7 @@ import { StatusIcon } from "../components/StatusIcon";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
-import { timeAgo } from "../lib/timeAgo";
+
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
@@ -34,6 +35,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
+  const { t, formatRelativeTime } = useI18n();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -47,8 +49,8 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("dashboard.title") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
@@ -168,14 +170,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
-          action="Get Started"
+          message={t("dashboard.welcome")}
+          action={t("dashboard.get_started")}
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message={t("dashboard.select_company")} />
     );
   }
 
@@ -194,14 +196,14 @@ export function Dashboard() {
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
             <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
+              {t("dashboard.no_agents")}
             </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
-            Create one here
+            {t("dashboard.create_one_here")}
           </button>
         </div>
       )}
@@ -216,15 +218,24 @@ export function Dashboard() {
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
                   <p className="text-sm font-medium text-red-50">
-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
+                    {t(
+                      data.budgets.activeIncidents === 1
+                        ? "dashboard.active_budget_incidents_one"
+                        : "dashboard.active_budget_incidents_other",
+                      { count: data.budgets.activeIncidents },
+                    )}
                   </p>
                   <p className="text-xs text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
+                    {t("dashboard.paused_agents_projects", {
+                      agents: data.budgets.pausedAgents,
+                      projects: data.budgets.pausedProjects,
+                      approvals: data.budgets.pendingApprovals,
+                    })}
                   </p>
                 </div>
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
-                Open budgets
+                {t("dashboard.open_budgets")}
               </Link>
             </div>
           ) : null}
@@ -233,67 +244,74 @@ export function Dashboard() {
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
+              label={t("dashboard.agents_enabled")}
               to="/agents"
               description={
                 <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
+                  {t("dashboard.running_paused_errors", {
+                    running: data.agents.running,
+                    paused: data.agents.paused,
+                    errors: data.agents.error,
+                  })}
                 </span>
               }
             />
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}
-              label="Tasks In Progress"
+              label={t("dashboard.tasks_in_progress")}
               to="/issues"
               description={
                 <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                  {t("dashboard.open_blocked", {
+                    open: data.tasks.open,
+                    blocked: data.tasks.blocked,
+                  })}
                 </span>
               }
             />
             <MetricCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
+              label={t("dashboard.month_spend")}
               to="/costs"
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                    ? t("dashboard.budget_utilization", {
+                        percent: data.costs.monthUtilizationPercent,
+                        budget: formatCents(data.costs.monthBudgetCents),
+                      })
+                    : t("common.unlimited_budget")}
                 </span>
               }
             />
             <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
+              label={t("dashboard.pending_approvals")}
               to="/approvals"
               description={
                 <span>
                   {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                    ? t("dashboard.budget_overrides_pending", { count: data.budgets.pendingApprovals })
+                    : t("dashboard.awaiting_board_review")}
                 </span>
               }
             />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.run_activity")} subtitle={t("dashboard.last_14_days")}>
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.issues_by_priority")} subtitle={t("dashboard.last_14_days")}>
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.issues_by_status")} subtitle={t("dashboard.last_14_days")}>
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.success_rate")} subtitle={t("dashboard.last_14_days")}>
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
@@ -310,7 +328,7 @@ export function Dashboard() {
             {recentActivity.length > 0 && (
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
+                  {t("dashboard.recent_activity")}
                 </h3>
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
@@ -330,11 +348,11 @@ export function Dashboard() {
             {/* Recent Tasks */}
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
+                {t("dashboard.recent_tasks")}
               </h3>
               {recentIssues.length === 0 ? (
                 <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                  <p className="text-sm text-muted-foreground">{t("dashboard.no_tasks")}</p>
                 </div>
               ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">
@@ -368,7 +386,7 @@ export function Dashboard() {
                             })()}
                             <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
-                              {timeAgo(issue.updatedAt)}
+                              {formatRelativeTime(issue.updatedAt)}
                             </span>
                           </span>
                         </span>

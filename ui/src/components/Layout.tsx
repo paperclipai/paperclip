@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { BookOpen, Languages, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -21,6 +21,7 @@ import { useDialog } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useI18n } from "../context/I18nContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -67,6 +68,7 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
+  const { locale, toggleLocale, t } = useI18n();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
@@ -81,6 +83,7 @@ export function Layout() {
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const nextThemeLabel = nextTheme === "dark" ? t("layout.switch_to_dark_mode") : t("layout.switch_to_light_mode");
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -318,7 +321,7 @@ export function Layout() {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Skip to Main Content
+        {t("layout.skip_to_main_content")}
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
@@ -328,7 +331,7 @@ export function Layout() {
             type="button"
             className="fixed inset-0 z-40 bg-black/50"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
+            aria-label={t("layout.close_sidebar")}
           />
         )}
 
@@ -352,7 +355,7 @@ export function Layout() {
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <span className="truncate">{t("layout.documentation")}</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -366,8 +369,8 @@ export function Layout() {
                   <Link
                     to={instanceSettingsTarget}
                     state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
+                    aria-label={t("layout.instance_settings")}
+                    title={t("layout.instance_settings")}
                     onClick={() => {
                       if (isMobile) setSidebarOpen(false);
                     }}
@@ -380,9 +383,23 @@ export function Layout() {
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
+                  onClick={toggleLocale}
+                  aria-label={t("layout.switch_language")}
+                  title={t("layout.switch_language")}
+                >
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium">
+                    <Languages className="h-4 w-4" />
+                    {locale === "en" ? t("layout.language_short_zh-CN") : t("layout.language_short_en")}
+                  </span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
                   onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
+                  aria-label={nextThemeLabel}
+                  title={nextThemeLabel}
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
@@ -411,7 +428,7 @@ export function Layout() {
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <span className="truncate">{t("layout.documentation")}</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -425,8 +442,8 @@ export function Layout() {
                   <Link
                     to={instanceSettingsTarget}
                     state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
+                    aria-label={t("layout.instance_settings")}
+                    title={t("layout.instance_settings")}
                     onClick={() => {
                       if (isMobile) setSidebarOpen(false);
                     }}
@@ -439,9 +456,23 @@ export function Layout() {
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
+                  onClick={toggleLocale}
+                  aria-label={t("layout.switch_language")}
+                  title={t("layout.switch_language")}
+                >
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium">
+                    <Languages className="h-4 w-4" />
+                    {locale === "en" ? t("layout.language_short_zh-CN") : t("layout.language_short_en")}
+                  </span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
                   onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
+                  aria-label={nextThemeLabel}
+                  title={nextThemeLabel}
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>

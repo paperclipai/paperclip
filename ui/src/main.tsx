@@ -12,6 +12,7 @@ import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
+import { I18nProvider } from "./context/I18nContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -40,31 +41,33 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <BrowserRouter>
-          <CompanyProvider>
-            <EditorAutocompleteProvider>
-              <ToastProvider>
-                <LiveUpdatesProvider>
-                  <TooltipProvider>
-                    <BreadcrumbProvider>
-                      <SidebarProvider>
-                        <PanelProvider>
-                          <PluginLauncherProvider>
-                            <DialogProvider>
-                              <App />
-                            </DialogProvider>
-                          </PluginLauncherProvider>
-                        </PanelProvider>
-                      </SidebarProvider>
-                    </BreadcrumbProvider>
-                  </TooltipProvider>
-                </LiveUpdatesProvider>
-              </ToastProvider>
-            </EditorAutocompleteProvider>
-          </CompanyProvider>
-        </BrowserRouter>
-      </ThemeProvider>
+      <I18nProvider>
+        <ThemeProvider>
+          <BrowserRouter>
+            <CompanyProvider>
+              <EditorAutocompleteProvider>
+                <ToastProvider>
+                  <LiveUpdatesProvider>
+                    <TooltipProvider>
+                      <BreadcrumbProvider>
+                        <SidebarProvider>
+                          <PanelProvider>
+                            <PluginLauncherProvider>
+                              <DialogProvider>
+                                <App />
+                              </DialogProvider>
+                            </PluginLauncherProvider>
+                          </PanelProvider>
+                        </SidebarProvider>
+                      </BreadcrumbProvider>
+                    </TooltipProvider>
+                  </LiveUpdatesProvider>
+                </ToastProvider>
+              </EditorAutocompleteProvider>
+            </CompanyProvider>
+          </BrowserRouter>
+        </ThemeProvider>
+      </I18nProvider>
     </QueryClientProvider>
   </StrictMode>
 );

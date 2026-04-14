@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import * as RouterDom from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { timeAgo } from "@/lib/timeAgo";
+import { useI18n } from "@/context/I18nContext";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
 import {
   fetchIssueDetail,
@@ -40,6 +40,7 @@ export function IssueQuicklookCard({
   linkState?: unknown;
   compact?: boolean;
 }) {
+  const { formatRelativeTime } = useI18n();
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
 
   return (
@@ -59,7 +60,7 @@ export function IssueQuicklookCard({
         <span>&middot;</span>
         <span>{issue.status.replace(/_/g, " ")}</span>
         <span>&middot;</span>
-        <span>{timeAgo(new Date(issue.updatedAt))}</span>
+        <span>{formatRelativeTime(new Date(issue.updatedAt))}</span>
       </div>
       {description ? (
         <p className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
@@ -95,6 +96,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   },
   ref,
 ) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const prefetchedState = issuePrefetch ? withIssueDetailHeaderSeed(state, issuePrefetch) : state;
@@ -175,7 +177,7 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load issue preview.</p>
+              <p className="text-xs text-muted-foreground">{t("issue_preview.unable_to_load")}</p>
             ) : null}
           </div>
         )}

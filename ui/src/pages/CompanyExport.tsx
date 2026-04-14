@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { useI18n } from "../context/I18nContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
@@ -581,6 +582,7 @@ export function CompanyExport() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: session, isFetched: isSessionFetched } = useQuery({
@@ -919,7 +921,7 @@ export function CompanyExport() {
   }
 
   if (!exportData) {
-    return <EmptyState icon={Package} message="Loading export data..." />;
+    return <EmptyState icon={Package} message={t("company_export.loading_export_data")} />;
   }
 
   const previewContent = selectedFile
@@ -953,7 +955,7 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
+              ? t("company_export.building_export")
               : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
           </Button>
         </div>
