@@ -4144,6 +4144,7 @@ export function heartbeatService(db: Db) {
               status: "todo",
               executionState: null,
             },
+            undefined,
             tx,
           );
           if (reopenedIssue) {
