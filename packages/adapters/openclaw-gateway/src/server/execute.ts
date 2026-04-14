@@ -327,7 +327,8 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    return parsed.toString();
+    // Strip trailing slash so agents can safely append /api/... without double-slash
+    return parsed.toString().replace(/\/$/, "");
   } catch {
     return null;
   }
