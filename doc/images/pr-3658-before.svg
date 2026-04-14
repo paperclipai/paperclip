@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">PR 3658 before screenshot</title>
+  <desc id="desc">Before change with hardcoded en-US formatting</desc>
+  <rect width="1200" height="420" fill="#0f172a"/>
+  <rect x="32" y="32" width="1136" height="356" rx="16" fill="#111827" stroke="#334155"/>
+  <text x="64" y="96" fill="#e2e8f0" font-size="36" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto">Before (hardcoded "en-US")</text>
+  <text x="64" y="150" fill="#94a3b8" font-size="24" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">Input timestamp: 2026-04-14T09:30:00.000Z</text>
+  <text x="64" y="220" fill="#f8fafc" font-size="56" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto">Apr 14, 2026, 9:30 AM</text>
+  <text x="64" y="286" fill="#94a3b8" font-size="24" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">Code: toLocaleString("en-US", { month, day, year, hour, minute })</text>
+</svg>
