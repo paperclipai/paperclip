@@ -38,6 +38,9 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockSecretService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
 
 function registerServiceMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -48,6 +51,7 @@ function registerServiceMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
+    secretService: () => mockSecretService,
   }));
 }
 

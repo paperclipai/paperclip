@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { mobileWebHandoffAuthPlugin } from "./mobile-web-handoff-plugin.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -23,7 +24,7 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+export type BetterAuthInstance = ReturnType<typeof betterAuth>;
 
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
@@ -97,6 +98,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    plugins: [mobileWebHandoffAuthPlugin(db)],
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
 

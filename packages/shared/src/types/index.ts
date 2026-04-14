@@ -1,4 +1,10 @@
 export type { Company } from "./company.js";
+export type { CompanyReadiness, CompanyReadinessReason } from "./company-readiness.js";
+export type {
+  CreateMobileWebHandoffRequest,
+  MobileWebHandoffResponse,
+  MobileWebHandoffTarget,
+} from "./mobile-web-handoff.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,

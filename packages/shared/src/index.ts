@@ -163,6 +163,11 @@ export {
 
 export type {
   Company,
+  CompanyReadiness,
+  CompanyReadinessReason,
+  CreateMobileWebHandoffRequest,
+  MobileWebHandoffResponse,
+  MobileWebHandoffTarget,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,

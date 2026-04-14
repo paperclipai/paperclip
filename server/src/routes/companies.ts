@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  type CompanyReadiness,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
@@ -22,6 +23,7 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  secretService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -34,6 +36,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const secrets = secretService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -46,6 +49,23 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw badRequest(`Invalid ${field} query value`);
     }
     return parsed;
+  }
+
+  function requestBaseUrl(req: Request) {
+    const forwardedProto = req.header("x-forwarded-proto");
+    const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
+    const host =
+      req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
+    if (!host) return "";
+    return `${proto}://${host}`;
+  }
+
+  function buildOnboardingUrl(req: Request, issuePrefix: string | null | undefined) {
+    const path = issuePrefix && issuePrefix.trim().length > 0
+      ? `/${issuePrefix}/onboarding`
+      : "/onboarding";
+    const baseUrl = requestBaseUrl(req);
+    return baseUrl ? `${baseUrl}${path}` : path;
   }
 
   function assertImportTargetAccess(
@@ -132,6 +152,39 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  router.get("/:companyId/readiness", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const company = await svc.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const [companyAgents, companySecrets] = await Promise.all([
+      agents.list(companyId),
+      secrets.list(companyId),
+    ]);
+
+    const reasons: CompanyReadiness["reasons"] = [];
+    if (companySecrets.length === 0) {
+      reasons.push("missing_secrets");
+    }
+    if (companyAgents.length === 0) {
+      reasons.push("no_agents_configured");
+    }
+
+    const payload: CompanyReadiness = {
+      companyId,
+      status: reasons.length === 0 ? "ready" : "not_ready",
+      reasons,
+      webSetupUrl: buildOnboardingUrl(req, company.issuePrefix),
+    };
+    res.json(payload);
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {

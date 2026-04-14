@@ -1754,6 +1754,7 @@ export function accessRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
+    res.setHeader("Cache-Control", "no-store");
     const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
     res.json({
       user: accessSnapshot.user,

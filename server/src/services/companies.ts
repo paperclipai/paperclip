@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -154,7 +154,8 @@ export function companyService(db: Db) {
 
   return {
     list: async () => {
-      const rows = await getCompanyQuery(db);
+      const rows = await getCompanyQuery(db)
+        .where(ne(companies.status, "archived"));
       const hydrated = await hydrateCompanySpend(rows);
       return hydrated.map((row) => enrichCompany(row));
     },
