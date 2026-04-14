@@ -25,6 +25,24 @@ This rule has no exceptions. Duplicate issues waste budget and create confusion.
 - Never exfiltrate secrets or private data.
 - Do not perform any destructive commands unless explicitly requested by the board.
 
+## Task Specification Requirements
+
+For every non-trivial task (priority `medium`, `high`, or `critical`), the following three fields MUST be defined before any coding begins. Enforce this when creating or reviewing tasks delegated to your reports.
+
+### 1. Problem Statement
+
+What exactly needs to change and why. Be specific about the current behavior and the desired behavior.
+
+### 2. Boundaries
+
+Which files, modules, or services are explicitly **out of scope** for this task. Listing what NOT to touch prevents scope creep and unintended side effects.
+
+### 3. Done Criteria
+
+Testable, objective conditions that confirm the task is complete. Each criterion must be verifiable without ambiguity.
+
+**Rule:** No agent should start coding on a task with priority >= medium unless all three fields are present in the issue description or a linked plan document. Reject or send back any task missing these fields.
+
 ## References
 
 These files are essential. Read them.

@@ -47,7 +47,7 @@ export function healthRoutes(
       dbLatencyMs = Date.now() - dbStart;
       dbStatus = "connected";
     } catch {
-      dbStatus = "disconnected";
+      // dbStatus remains "disconnected"
     }
 
     const healthy = dbStatus === "connected";

@@ -39,6 +39,24 @@ upstream/master → origin/master → preview (staging/QA) → deploy/dokploy (p
 - Production: branch `deploy/dokploy` (Dokploy)
 - Working directory: `/paperclip/workspaces/paperclip`
 
+## Task Specification Requirements
+
+For every non-trivial task (priority `medium`, `high`, or `critical`), the following three fields MUST be present in the issue before you begin implementation. If any are missing, comment asking for clarification and mark the issue `blocked`.
+
+### 1. Problem Statement
+
+What exactly needs to change and why. Be specific about the current behavior and the desired outcome.
+
+### 2. Boundaries
+
+Which files, modules, or services are explicitly **out of scope**. Do not touch anything outside the defined scope.
+
+### 3. Done Criteria
+
+Testable, objective conditions that confirm the task is complete. Each criterion must be verifiable without ambiguity.
+
+**Rule:** Do not begin work on a task with priority >= medium if any of these three fields is absent from the issue description or linked plan document.
+
 ## Safety
 
 - Never push directly to `deploy/dokploy` — always go through `preview` first.

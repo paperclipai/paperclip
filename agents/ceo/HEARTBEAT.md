@@ -45,6 +45,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 - **DEDUP CHECK (REQUIRED):** Before creating any new issue, ALWAYS search for existing issues with similar titles using `GET /api/companies/{companyId}/issues?q=<keywords>`. If a matching or very similar issue already exists, do NOT create a duplicate — instead update or comment on the existing one. This applies in both heartbeat and chat mode.
+- **SPEC CHECK (REQUIRED):** Before delegating any task with priority >= medium, verify the issue description includes all three mandatory spec fields: **Problem Statement**, **Boundaries**, and **Done Criteria**. Do not assign a task that is missing any of these — fill them in or ask the requester to clarify first.
 
 ## 7. Fact Extraction
 

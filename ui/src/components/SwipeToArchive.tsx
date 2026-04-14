@@ -13,7 +13,6 @@ interface SwipeToArchiveProps {
 const COMMIT_THRESHOLD = 0.32;
 const MAX_SWIPE = 0.88;
 const COMMIT_DELAY_MS = 140;
-const SELECTED_ROW_BACKGROUND = "hsl(var(--muted))";
 
 export function SwipeToArchive({
   children,
@@ -109,8 +108,7 @@ export function SwipeToArchive({
 
   const handleTouchEnd = () => {
     if (disabled || isCollapsing) return;
-    const shouldCommit =
-      widthRef.current > 0 && Math.abs(offsetX) >= widthRef.current * COMMIT_THRESHOLD;
+    const shouldCommit = widthRef.current > 0 && Math.abs(offsetX) >= widthRef.current * COMMIT_THRESHOLD;
     if (shouldCommit) {
       commitArchive();
       return;
@@ -118,7 +116,6 @@ export function SwipeToArchive({
     reset();
   };
 
-   
   const archiveReveal = widthRef.current > 0 ? Math.min(Math.abs(offsetX) / widthRef.current, 1) : 0; // eslint-disable-line react-hooks/refs
 
   return (
@@ -153,11 +150,10 @@ export function SwipeToArchive({
       </div>
       <div
         data-inbox-row-surface
-        className="relative bg-card will-change-transform"
+        className={cn("relative will-change-transform", selected ? "bg-zinc-100 dark:bg-zinc-800" : "bg-card")}
         style={{
           transform: `translate3d(${offsetX}px, 0, 0)`,
           transition: isDragging ? "none" : "transform 180ms ease-out",
-          backgroundColor: selected ? SELECTED_ROW_BACKGROUND : undefined,
         }}
       >
         {children}

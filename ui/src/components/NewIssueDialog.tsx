@@ -90,6 +90,7 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
+    { value: "xhigh", label: "X-High" },
   ],
   opencode_local: [
     { value: "", label: "Default" },
@@ -97,6 +98,7 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
+    { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
 } as const;
@@ -506,92 +508,91 @@ export function NewIssueDialog() {
 
     const draft = loadDraft();
     if (newIssueDefaults.title) {
-       
       setTitle(newIssueDefaults.title);
-       
+
       setDescription(newIssueDefaults.description ?? "");
-       
+
       setStatus(newIssueDefaults.status ?? "todo");
-       
+
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-       
+
       setProjectId(defaultProjectId);
-       
+
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
-       
+
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
-       
+
       setAssigneeModelOverride("");
-       
+
       setAssigneeThinkingEffort("");
-       
+
       setAssigneeChrome(false);
-       
+
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
-       
+
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
-       
+
       setTitle(draft.title);
-       
+
       setDescription(draft.description);
-       
+
       setStatus(draft.status || "todo");
-       
+
       setPriority(draft.priority);
-       
+
       setAssigneeValue(
         newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
           ? assigneeValueFromSelection(newIssueDefaults)
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
-       
+
       setProjectId(restoredProjectId);
-       
+
       setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
-       
+
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
-       
+
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
-       
+
       setAssigneeChrome(draft.assigneeChrome ?? false);
-       
+
       setExecutionWorkspaceMode(
         draft.executionWorkspaceMode ??
           (draft.useIsolatedExecutionWorkspace
             ? "isolated_workspace"
             : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
-       
+
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
       executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-       
+
       setStatus(newIssueDefaults.status ?? "todo");
-       
+
       setPriority(newIssueDefaults.priority ?? "");
-       
+
       setProjectId(defaultProjectId);
-       
+
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
-       
+
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
-       
+
       setAssigneeModelOverride("");
-       
+
       setAssigneeThinkingEffort("");
-       
+
       setAssigneeChrome(false);
-       
+
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
-       
+
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
@@ -600,11 +601,11 @@ export function NewIssueDialog() {
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
       setAssigneeOptionsOpen(false); // eslint-disable-line react-hooks/set-state-in-effect
-       
+
       setAssigneeModelOverride("");
-       
+
       setAssigneeThinkingEffort("");
-       
+
       setAssigneeChrome(false);
       return;
     }
@@ -616,7 +617,6 @@ export function NewIssueDialog() {
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
-       
       setAssigneeThinkingEffort("");
     }
   }, [supportsAssigneeOverrides, assigneeAdapterType, assigneeThinkingEffort]);
@@ -872,9 +872,9 @@ export function NewIssueDialog() {
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project)); // eslint-disable-line react-hooks/set-state-in-effect
-     
+
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
-     
+
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {

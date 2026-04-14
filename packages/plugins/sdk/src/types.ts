@@ -347,7 +347,11 @@ export interface PluginEventsClient {
    * @param fn - Async event handler
    * @returns An unsubscribe function that removes the handler
    */
-  on(name: PluginEventType | `plugin.${string}`, filter: EventFilter, fn: (event: PluginEvent) => Promise<void>): () => void;
+  on(
+    name: PluginEventType | `plugin.${string}`,
+    filter: EventFilter,
+    fn: (event: PluginEvent) => Promise<void>,
+  ): () => void;
 
   /**
    * Emit a plugin-namespaced event. Other plugins with `events.subscribe` can
@@ -872,6 +876,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
     priority?: Issue["priority"];
@@ -879,10 +884,7 @@ export interface PluginIssuesClient {
   }): Promise<Issue>;
   update(
     issueId: string,
-    patch: Partial<Pick<
-      Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
-    >>,
+    patch: Partial<Pick<Issue, "title" | "description" | "status" | "priority" | "assigneeAgentId">>,
     companyId: string,
   ): Promise<Issue>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
@@ -956,10 +958,14 @@ export interface AgentSessionSendResult {
  */
 export interface PluginAgentSessionsClient {
   /** Create a new conversational session with an agent. Requires `agent.sessions.create`. */
-  create(agentId: string, companyId: string, opts?: {
-    taskKey?: string;
-    reason?: string;
-  }): Promise<AgentSession>;
+  create(
+    agentId: string,
+    companyId: string,
+    opts?: {
+      taskKey?: string;
+      reason?: string;
+    },
+  ): Promise<AgentSession>;
 
   /** List active sessions for an agent owned by this plugin. Requires `agent.sessions.list`. */
   list(agentId: string, companyId: string): Promise<AgentSession[]>;
@@ -969,11 +975,15 @@ export interface PluginAgentSessionsClient {
    * Returns immediately with `{ runId }`. Events are delivered asynchronously.
    * Requires `agent.sessions.send`.
    */
-  sendMessage(sessionId: string, companyId: string, opts: {
-    prompt: string;
-    reason?: string;
-    onEvent?: (event: AgentSessionEvent) => void;
-  }): Promise<AgentSessionSendResult>;
+  sendMessage(
+    sessionId: string,
+    companyId: string,
+    opts: {
+      prompt: string;
+      reason?: string;
+      onEvent?: (event: AgentSessionEvent) => void;
+    },
+  ): Promise<AgentSessionSendResult>;
 
   /** Close a session, releasing resources. Requires `agent.sessions.close`. */
   close(sessionId: string, companyId: string): Promise<void>;
@@ -1007,10 +1017,7 @@ export interface PluginGoalsClient {
   }): Promise<Goal>;
   update(
     goalId: string,
-    patch: Partial<Pick<
-      Goal,
-      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
-    >>,
+    patch: Partial<Pick<Goal, "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId">>,
     companyId: string,
   ): Promise<Goal>;
 }
