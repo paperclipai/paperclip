@@ -198,6 +198,7 @@ describe("server adapter registry", () => {
       env: {
         OPENAI_API_KEY: "llm-token",
         PAPERCLIP_API_KEY: "agent-run-jwt",
+        PAPERCLIP_RUN_ID: "run-123",
       },
     });
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
@@ -254,6 +255,7 @@ describe("server adapter registry", () => {
         adapterConfig: {
           env: {
             PAPERCLIP_API_KEY: "explicit-agent-key",
+            PAPERCLIP_RUN_ID: "stale-run-id",
           },
         },
       },
@@ -268,6 +270,7 @@ describe("server adapter registry", () => {
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
     // No custom promptTemplate was set — Hermes must use its built-in default.
     // Setting promptTemplate here would replace the full default with just the auth guard text,
     // stripping assigned issue / workflow instructions.

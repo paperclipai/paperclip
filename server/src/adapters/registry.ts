@@ -212,6 +212,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       env: {
         ...existingEnv,
         ...(!explicitApiKey ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
+        PAPERCLIP_RUN_ID: ctx.runId,
       },
     };
 
