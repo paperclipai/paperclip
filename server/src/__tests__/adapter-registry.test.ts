@@ -209,7 +209,7 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
   });
 
-  it("preserves an explicit Hermes Paperclip API key while adding auth guidance", async () => {
+  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -237,8 +237,38 @@ describe("server adapter registry", () => {
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
-      "Never use a board, browser, or local-board session",
-    );
+    // No custom promptTemplate was set — Hermes must use its built-in default.
+    // Setting promptTemplate here would replace the full default with just the auth guard text,
+    // stripping assigned issue / workflow instructions.
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+  });
+
+  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    // Auth token is still injected.
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 });

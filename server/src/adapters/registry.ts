@@ -205,18 +205,26 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 
+    const patchedConfig: Record<string, unknown> = {
+      ...existingConfig,
+      env: {
+        ...existingEnv,
+        ...(!explicitApiKey ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
+      },
+    };
+
+    // Only inject the auth guard into promptTemplate when a custom template already exists.
+    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
+    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
+    if (promptTemplate) {
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+    }
+
     const patchedCtx = {
       ...ctx,
       agent: {
         ...ctx.agent,
-        adapterConfig: {
-          ...existingConfig,
-          env: {
-            ...existingEnv,
-            ...(!explicitApiKey ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
-          },
-          promptTemplate: promptTemplate ? `${authGuardPrompt}\n\n${promptTemplate}` : authGuardPrompt,
-        },
+        adapterConfig: patchedConfig,
       },
     };
 
