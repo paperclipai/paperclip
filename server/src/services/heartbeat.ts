@@ -543,14 +543,31 @@ function deriveProcessLossRetryContext(
   const taskKey = deriveTaskKey(contextSnapshot, null);
   const commentId = deriveCommentId(contextSnapshot, null);
   const approvalId = readNonEmptyString(contextSnapshot?.approvalId);
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const executionStage = parseObject(contextSnapshot?.executionStage);
   const issueIds = [
     ...readNonEmptyStringArray(contextSnapshot?.issueIds),
     ...readNonEmptyStringArray(contextSnapshot?.linkedIssueIds),
   ].filter((value, index, values) => values.indexOf(value) === index);
   const issueId = readNonEmptyString(contextSnapshot?.issueId) ?? issueIds[0] ?? null;
+  const referencedIssueIds = [issueId, ...issueIds].filter(
+    (value, index, values): value is string =>
+      typeof value === "string" && values.indexOf(value) === index,
+  );
+  const hasExecutionWakeContext =
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested" ||
+    Object.keys(executionStage).length > 0;
 
   return {
-    canRetry: Boolean(taskKey || commentId || approvalId || issueIds.length > 0),
+    canRetryWithoutAssignmentCheck: Boolean(
+      commentId ||
+      approvalId ||
+      hasExecutionWakeContext ||
+      (taskKey && taskKey !== issueId),
+    ),
+    referencedIssueIds,
     payload: {
       ...(issueId ? { issueId } : {}),
       ...(taskKey && taskKey !== issueId ? { taskKey } : {}),
@@ -558,6 +575,47 @@ function deriveProcessLossRetryContext(
       ...(approvalId ? { approvalId } : {}),
       ...(issueIds.length > 0 ? { issueIds } : {}),
     },
+  };
+}
+
+async function canRetryProcessLossRun(
+  db: Db,
+  agent: typeof agents.$inferSelect,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const retryContext = deriveProcessLossRetryContext(contextSnapshot);
+  if (retryContext.canRetryWithoutAssignmentCheck) {
+    return {
+      canRetry: true,
+      payload: retryContext.payload,
+    };
+  }
+
+  if (retryContext.referencedIssueIds.length === 0) {
+    return {
+      canRetry: false,
+      payload: retryContext.payload,
+    };
+  }
+
+  const activeAssignment = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.assigneeAgentId, agent.id),
+        inArray(issues.status, ["todo", "in_progress", "blocked"]),
+        isNull(issues.hiddenAt),
+        inArray(issues.id, retryContext.referencedIssueIds),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return {
+    canRetry: Boolean(activeAssignment),
+    payload: retryContext.payload,
   };
 }
 
@@ -2771,19 +2829,21 @@ export function heartbeatService(db: Db) {
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     now: Date,
+    retryContext?: { canRetry: boolean; payload: Record<string, unknown> },
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const retryContext = deriveProcessLossRetryContext(contextSnapshot);
-    if (!retryContext.canRetry) {
+    const resolvedRetryContext =
+      retryContext ?? (await canRetryProcessLossRun(db, agent, contextSnapshot));
+    if (!resolvedRetryContext.canRetry) {
       return null;
     }
 
-    const issueId = readNonEmptyString(retryContext.payload.issueId);
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(retryContext.payload, null);
+    const issueId = readNonEmptyString(resolvedRetryContext.payload.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(resolvedRetryContext.payload, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = {
       ...contextSnapshot,
-      ...retryContext.payload,
+      ...resolvedRetryContext.payload,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
@@ -3174,7 +3234,13 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const processLossRetryContext = deriveProcessLossRetryContext(parseObject(run.contextSnapshot));
+      const retryAgent =
+        tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1
+          ? await getAgent(run.agentId)
+          : null;
+      const processLossRetryContext = retryAgent
+        ? await canRetryProcessLossRun(db, retryAgent, parseObject(run.contextSnapshot))
+        : { canRetry: false, payload: {} };
       const shouldRetry =
         tracksLocalChild &&
         (!!run.processPid || !!run.processGroupId) &&
@@ -3196,10 +3262,7 @@ export function heartbeatService(db: Db) {
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
-        }
+        if (retryAgent) retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now, processLossRetryContext);
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
