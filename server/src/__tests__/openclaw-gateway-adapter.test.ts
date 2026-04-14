@@ -405,6 +405,7 @@ describe("openclaw gateway adapter execute", () => {
         buildContext(
           {
             url: gateway.url,
+            agentId: "main",
             headers: {
               "x-openclaw-token": "gateway-token",
             },
@@ -489,7 +490,7 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
+      expect(payload?.sessionKey).toBe("agent:main:paperclip:issue:issue-123");
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
@@ -519,6 +520,39 @@ describe("openclaw gateway adapter execute", () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
+  });
+
+  it("scopes fallback session keys to the configured OpenClaw agent", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            agentId: "michael",
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+          },
+          {
+            context: {
+              taskId: "task-123",
+              issueId: null,
+              wakeReason: "interval_elapsed",
+              issueIds: [],
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("agent:michael:paperclip");
+      expect(payload?.agentId).toBe("michael");
+    } finally {
+      await gateway.close();
+    }
   });
 
   it("returns adapter-managed runtime services from gateway result meta", async () => {

@@ -133,15 +133,28 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
+function buildAgentScopedSessionKey(agentId: string | null, suffix?: string): string | null {
+  const normalizedAgentId = nonEmpty(agentId);
+  if (!normalizedAgentId) return null;
+  return suffix ? `agent:${normalizedAgentId}:paperclip:${suffix}` : `agent:${normalizedAgentId}:paperclip`;
+}
+
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
+  configuredAgentId: string | null;
   runId: string;
   issueId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  const scopedBase = buildAgentScopedSessionKey(input.configuredAgentId);
+  const fallback = input.configuredSessionKey ?? scopedBase ?? "paperclip";
+  if (input.strategy === "run") {
+    return buildAgentScopedSessionKey(input.configuredAgentId, `run:${input.runId}`) ?? `paperclip:run:${input.runId}`;
+  }
+  if (input.strategy === "issue" && input.issueId) {
+    return buildAgentScopedSessionKey(input.configuredAgentId, `issue:${input.issueId}`)
+      ?? `paperclip:issue:${input.issueId}`;
+  }
   return fallback;
 }
 
@@ -1103,9 +1116,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
+    configuredAgentId,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
@@ -1123,7 +1138,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   agentParams.paperclip = paperclipPayload;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
