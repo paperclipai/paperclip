@@ -892,6 +892,81 @@ describeEmbeddedPostgres("issue update handoff routes", () => {
     expect(releaseActivity?.runId).toBeNull();
   });
 
+  it("allows local board release to clear terminal stale locks on an agent-assigned issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-14T20:00:00.000Z"),
+      finishedAt: new Date("2026-04-14T20:01:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Local board release should clear stale agent lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "builder",
+      executionLockedAt: new Date("2026-04-14T20:00:00.000Z"),
+      startedAt: new Date("2026-04-14T20:00:00.000Z"),
+    });
+
+    const res = await request(createRouteApp())
+      .post(`/api/issues/${issueId}/release`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    }));
+
+    await expect(getPersistedIssue(issueId)).resolves.toEqual(expect.objectContaining({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    }));
+  });
+
   it("rejects an agent PATCH when the run header belongs to a foreign live execution owner", async () => {
     const builderAgentId = randomUUID();
     const { companyId, issueId, qaAgentId, builderRunId } = await seedHandoffFixture({

@@ -2180,6 +2180,13 @@ export function issueService(db: Db) {
         const actorStillOwnsIssue =
           (actorAgentId != null && current.assigneeAgentId === actorAgentId) ||
           (actorUserId != null && current.assigneeUserId === actorUserId);
+        const actorIsBoardOperator = actorAgentId == null && actorUserId != null;
+        const issueHasTrackedRunLock = current.checkoutRunId != null || current.executionRunId != null;
+        const canBoardOperatorReleaseStaleAgentLocks =
+          actorIsBoardOperator &&
+          current.assigneeAgentId != null &&
+          current.assigneeUserId == null &&
+          issueHasTrackedRunLock;
         const {
           actorOwnsCheckout,
           actorOwnsExecution,
@@ -2192,7 +2199,8 @@ export function issueService(db: Db) {
           (actorAgentId != null || actorUserId != null) &&
           !actorStillOwnsIssue &&
           !actorOwnsCheckout &&
-          !actorOwnsExecution
+          !actorOwnsExecution &&
+          !canBoardOperatorReleaseStaleAgentLocks
         ) {
           throw conflict("Only assignee can release issue");
         }
@@ -2201,7 +2209,7 @@ export function issueService(db: Db) {
           updatedAt: new Date(),
         };
 
-        if (actorStillOwnsIssue) {
+        if (actorStillOwnsIssue || canBoardOperatorReleaseStaleAgentLocks) {
           if (!canClearAllTrackedLocks) {
             throw conflict("Issue still owned by active run", {
               issueId: current.id,

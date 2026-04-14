@@ -3090,6 +3090,76 @@ describeEmbeddedPostgres("issueService execution ownership handoffs", () => {
     );
   });
 
+  it("allows a board operator to release stale terminal locks on agent-assigned issues", async () => {
+    const companyId = randomUUID();
+    const boardUserId = "local-board";
+    const agentId = randomUUID();
+    const terminalRunId = randomUUID();
+    const terminalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Builder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId: terminalIssueId },
+      startedAt: new Date("2026-04-14T20:00:00.000Z"),
+      finishedAt: new Date("2026-04-14T20:01:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: terminalIssueId,
+      companyId,
+      title: "Board release clears terminal agent lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminalRunId,
+      executionRunId: terminalRunId,
+      executionAgentNameKey: "builder",
+      executionLockedAt: new Date("2026-04-14T20:00:00.000Z"),
+      startedAt: new Date("2026-04-14T20:00:00.000Z"),
+    });
+
+    const released = await svc.release(terminalIssueId, {
+      actorUserId: boardUserId,
+    });
+
+    expect(released).toEqual(
+      expect.objectContaining({
+        id: terminalIssueId,
+        status: "todo",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      }),
+    );
+  });
+
   it("does not overwrite a newer reroute when the prior run releases late", async () => {
     const companyId = randomUUID();
     const originalAgentId = randomUUID();
