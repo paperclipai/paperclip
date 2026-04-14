@@ -44,6 +44,8 @@ if [[ -f .env ]]; then
   if [[ "$RECREATE" != "s" && "$RECREATE" != "S" ]]; then
     info "Usando .env existente."
     ENV_READY=true
+    # Read PUBLIC_URL from existing .env so health check uses the correct URL
+    PUBLIC_URL=$(grep -E '^PAPERCLIP_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '"' || true)
   fi
 fi
 

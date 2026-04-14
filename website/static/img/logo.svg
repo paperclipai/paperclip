@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 32" fill="none">
+  <rect width="32" height="32" rx="8" fill="#B85C38"/>
+  <path d="M16 4L5 13v13a2 2 0 002 2h18a2 2 0 002-2V13L16 4z" fill="#F5E6CC" stroke="#5C3D2E" stroke-width="1.5"/>
+  <circle cx="16" cy="19" r="4" fill="#B85C38"/>
+  <path d="M14.5 17.5l1.5 2 1.5-2" stroke="#F5E6CC" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="23" cy="9" r="2.5" fill="#E8A838"/>
+  <path d="M23 5.5v-1M25.6 7.4l.7-.7M26 10.5h1M20.4 7.4l-.7-.7" stroke="#E8A838" stroke-width="0.8" stroke-linecap="round"/>
+  <text x="40" y="22" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#1a1a1a">Toca da IA</text>
+</svg>
