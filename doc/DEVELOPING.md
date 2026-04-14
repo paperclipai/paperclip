@@ -79,6 +79,29 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+## Test Commands
+
+Use the cheap local default unless you are specifically working on browser flows:
+
+```sh
+pnpm test
+```
+
+`pnpm test` runs the Vitest suite only. For interactive Vitest watch mode use:
+
+```sh
+pnpm test:watch
+```
+
+Browser suites stay separate:
+
+```sh
+pnpm test:e2e
+pnpm test:release-smoke
+```
+
+These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

@@ -81,7 +81,7 @@ export function Agents() {
   });
 
   const { data: runs } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,

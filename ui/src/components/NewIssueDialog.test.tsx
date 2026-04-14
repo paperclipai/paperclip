@@ -77,7 +77,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => toastState,
+  useToastActions: () => toastState,
 }));
 
 vi.mock("../api/issues", () => ({
