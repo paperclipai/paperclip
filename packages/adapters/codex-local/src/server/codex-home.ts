@@ -5,7 +5,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
-const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const SYMLINKED_SHARED_FILES = [] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 
 function nonEmpty(value: string | undefined): string | null {
@@ -64,6 +64,51 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   await fs.symlink(source, target);
 }
 
+function buildApiKeyAuthContents(apiKey: string): string {
+  return `${JSON.stringify(
+    {
+      auth_mode: "apikey",
+      OPENAI_API_KEY: apiKey,
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+async function syncManagedAuthFile(targetHome: string, sourceHome: string, apiKey: string | null): Promise<void> {
+  const target = path.join(targetHome, "auth.json");
+  if (apiKey) {
+    const desiredContents = buildApiKeyAuthContents(apiKey);
+    const existing = await fs.lstat(target).catch(() => null);
+    if (existing?.isFile()) {
+      const currentContents = await fs.readFile(target, "utf8").catch(() => null);
+      if (currentContents === desiredContents) {
+        await fs.chmod(target, 0o600).catch(() => {});
+        return;
+      }
+    }
+    if (existing) {
+      await fs.rm(target, { force: true });
+    }
+    await ensureParentDir(target);
+    await fs.writeFile(target, desiredContents, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(target, 0o600).catch(() => {});
+    return;
+  }
+
+  const source = path.join(sourceHome, "auth.json");
+  if (!(await pathExists(source))) {
+    await fs.rm(target, { force: true }).catch(() => {});
+    return;
+  }
+
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing && !existing.isSymbolicLink()) {
+    await fs.rm(target, { force: true });
+  }
+  await ensureSymlink(target, source);
+}
+
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
@@ -82,6 +127,7 @@ export async function prepareManagedCodexHome(
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await fs.mkdir(targetHome, { recursive: true });
+  await syncManagedAuthFile(targetHome, sourceHome, nonEmpty(env.OPENAI_API_KEY));
 
   for (const name of SYMLINKED_SHARED_FILES) {
     const source = path.join(sourceHome, name);

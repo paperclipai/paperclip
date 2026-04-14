@@ -47,6 +47,7 @@ When Paperclip is running inside a managed worktree instance (`PAPERCLIP_IN_WORK
 
 ## Manual Local CLI
 
+If `OPENAI_API_KEY` is present, Paperclip writes API-key auth into the effective managed `CODEX_HOME/auth.json` so Codex uses usage-based API authentication instead of inheriting a ChatGPT login session from `~/.codex/auth.json`.
 For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
 
 ```sh
