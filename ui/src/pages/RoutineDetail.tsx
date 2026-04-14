@@ -26,6 +26,7 @@ import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { timeAgo } from "../lib/timeAgo";
+import { formatDateTime } from "../lib/utils";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -175,7 +176,7 @@ function TriggerEditor({
         </div>
         <span className="text-xs text-muted-foreground">
           {trigger.kind === "schedule" && trigger.nextRunAt
-            ? `Next: ${new Date(trigger.nextRunAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+            ? `Next: ${formatDateTime(trigger.nextRunAt)}`
             : trigger.kind === "webhook"
               ? "Webhook"
               : "API"}
