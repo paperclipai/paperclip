@@ -3,6 +3,8 @@ import type { Db } from "@ironworksai/db";
 import { knowledgeService } from "../services/knowledge.js";
 import { logActivity } from "../services/activity-log.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { lookupPlaybook, reindexPage, reindexAllPlaybooks } from "../services/playbook-rag.js";
+import { auditAgentRun } from "../services/playbook-audit.js";
 
 function actorForService(actor: ReturnType<typeof getActorInfo>) {
   return {
@@ -161,6 +163,99 @@ export function knowledgeRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const result = await svc.seedDefaults(companyId);
     res.json(result);
+  });
+
+  // ===== RAG over playbooks =====
+  // Agents and UI call this to fetch top-K relevant chunks instead of
+  // loading full playbook bodies. See ~/.claude/standards/PLAYBOOK_STANDARD.md.
+
+  // Semantic lookup — returns top-K chunks by cosine similarity
+  router.post("/companies/:companyId/knowledge/lookup", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const body = req.body as {
+      query?: string;
+      department?: string;
+      ownerRole?: string;
+      documentType?: string;
+      topK?: number;
+    };
+    if (!body.query || typeof body.query !== "string" || body.query.trim().length === 0) {
+      res.status(400).json({ error: "query is required" });
+      return;
+    }
+    if (body.query.length > 1000) {
+      res.status(400).json({ error: "query too long (max 1000 chars)" });
+      return;
+    }
+    const topK = Math.min(Math.max(body.topK ?? 3, 1), 10);
+    const results = await lookupPlaybook(db, {
+      companyId,
+      query: body.query,
+      department: body.department,
+      ownerRole: body.ownerRole,
+      documentType: body.documentType ?? "playbook",
+      topK,
+    });
+    res.json({ results, topK, query: body.query });
+  });
+
+  // Reindex one page (admin or after playbook edit)
+  router.post("/knowledge/:pageId/reindex", async (req, res) => {
+    const pageId = req.params.pageId as string;
+    const page = await svc.getById(pageId);
+    if (!page) {
+      res.status(404).json({ error: "Page not found" });
+      return;
+    }
+    assertCompanyAccess(req, page.companyId);
+    const chunks = await reindexPage(db, pageId);
+    res.json({ pageId, chunks });
+  });
+
+  // Reindex all playbooks for a company (admin only — bulk rebuild)
+  router.post("/companies/:companyId/knowledge/reindex-all", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await reindexAllPlaybooks(db, companyId);
+    res.json(result);
+  });
+
+  // Manual playbook audit: judge whether an agent's output followed
+  // the relevant playbook discipline. Returns null if audit can't run
+  // (no playbook chunks, model unreachable, etc.). See playbook-audit.ts.
+  router.post("/companies/:companyId/knowledge/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const body = req.body as {
+      agentId?: string;
+      agentName?: string;
+      agentRole?: string;
+      agentDepartment?: string;
+      taskSummary?: string;
+      agentOutput?: string;
+    };
+    const required = ["agentId", "agentName", "agentRole", "taskSummary", "agentOutput"] as const;
+    for (const k of required) {
+      if (!body[k] || typeof body[k] !== "string") {
+        res.status(400).json({ error: `${k} is required` });
+        return;
+      }
+    }
+    const verdict = await auditAgentRun(db, {
+      companyId,
+      agentId: body.agentId!,
+      agentName: body.agentName!,
+      agentRole: body.agentRole!,
+      agentDepartment: body.agentDepartment ?? null,
+      taskSummary: body.taskSummary!,
+      agentOutput: body.agentOutput!,
+    });
+    if (!verdict) {
+      res.status(503).json({ error: "audit unavailable", reason: "no chunks or model unreachable" });
+      return;
+    }
+    res.json(verdict);
   });
 
   return router;

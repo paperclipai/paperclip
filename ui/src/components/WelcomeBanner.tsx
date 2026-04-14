@@ -18,12 +18,12 @@ const STEPS = [
   {
     icon: LayoutDashboard,
     title: "War Room",
-    description: "Your command center -- live agents, active issues, and cost overview at a glance.",
+    description: "Your command center -- live agents, active missions, and cost overview at a glance.",
     link: "/dashboard",
   },
   {
     icon: CircleDot,
-    title: "Issues",
+    title: "Missions",
     description: "Track work for both humans and AI agents. Create, assign, and monitor progress.",
     link: "/issues",
   },

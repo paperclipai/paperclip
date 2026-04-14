@@ -932,7 +932,7 @@ export function BoardBriefing() {
               <thead>
                 <tr className="border-b border-border text-left">
                   <th className="pb-2 pr-4 font-semibold text-muted-foreground">Department</th>
-                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Issues Done</th>
+                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Missions Done</th>
                   <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Total Cost</th>
                   <th className="pb-2 font-semibold text-muted-foreground text-right">Human-Hrs Equiv.</th>
                 </tr>
@@ -999,7 +999,7 @@ export function BoardBriefing() {
         </div>
 
         <div className="space-y-2">
-          <p className="text-xs font-medium text-muted-foreground">Issues Completed per Week</p>
+          <p className="text-xs font-medium text-muted-foreground">Missions Completed per Week</p>
           <WeeklyBarChart
             data={issueTrendWeeks.map((w) => ({ label: w.label, value: w.count }))}
           />

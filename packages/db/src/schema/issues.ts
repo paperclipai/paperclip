@@ -1,3 +1,20 @@
+/**
+ * ╔════════════════════════════════════════════════════════════════════╗
+ * ║  TERMINOLOGY: "Issue" (code/DB) <-> "Mission" (UI)                ║
+ * ╠════════════════════════════════════════════════════════════════════╣
+ * ║  This table stores what USERS see as "Missions" in the IronWorks  ║
+ * ║  UI. The code keeps the name "Issue"/"issues" for stability and   ║
+ * ║  to avoid a 200+ file refactor with zero user value.              ║
+ * ║                                                                    ║
+ * ║  Rule of thumb:                                                    ║
+ * ║    - Any user-facing string -> "Mission"/"Missions"                ║
+ * ║    - Any code identifier, API path, DB column -> "issue"/"issues"  ║
+ * ║                                                                    ║
+ * ║  See docs/TERMINOLOGY.md for the full mapping. When adding         ║
+ * ║  user-visible text here (error messages, validation), use          ║
+ * ║  "Mission" so it reads correctly in the UI.                        ║
+ * ╚════════════════════════════════════════════════════════════════════╝
+ */
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,

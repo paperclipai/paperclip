@@ -213,7 +213,7 @@ export function CsvImportDialog({ open, onClose, onImport, existingTitles = [] }
         <div className="flex items-center justify-between border-b border-border px-6 py-4">
           <div className="flex items-center gap-2">
             <Upload className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">Import Issues from CSV</h2>
+            <h2 className="text-lg font-semibold">Import Missions from CSV</h2>
           </div>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <X className="h-5 w-5" />

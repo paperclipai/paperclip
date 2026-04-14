@@ -17,7 +17,7 @@ export function SmartSuggestionsBanner({
         <Wand2 className="h-4 w-4 text-blue-400 shrink-0" />
         <p className="text-sm">
           <span className="font-medium">{autoResolvableCount} item{autoResolvableCount !== 1 ? "s" : ""}</span>
-          <span className="text-muted-foreground ml-1">can be auto-resolved (completed issues, resolved approvals)</span>
+          <span className="text-muted-foreground ml-1">can be auto-resolved (completed missions, resolved approvals)</span>
         </p>
       </div>
       <Button

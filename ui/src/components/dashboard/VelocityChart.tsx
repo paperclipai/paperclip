@@ -133,7 +133,7 @@ export function VelocityChart({ weeks, onWeekClick }: { weeks: VelocityWeek[]; o
           Cancelled
         </span>
         {onWeekClick && (
-          <span className="ml-auto text-[10px] text-muted-foreground/80">Click a bar to filter issues</span>
+          <span className="ml-auto text-[10px] text-muted-foreground/80">Click a bar to filter missions</span>
         )}
       </div>
     </div>

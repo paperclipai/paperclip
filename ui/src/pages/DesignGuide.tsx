@@ -359,7 +359,7 @@ export function DesignGuide() {
 
         <SubSection title="With icons">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
+            <Button><Plus /> New Mission</Button>
             <Button variant="outline"><Upload /> Upload</Button>
             <Button variant="destructive"><Trash2 /> Delete</Button>
             <Button size="sm"><Plus /> Add</Button>
@@ -654,7 +654,7 @@ export function DesignGuide() {
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
+              <SheetTitle>Mission Properties</SheetTitle>
               <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
@@ -740,7 +740,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>Mission List</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -1141,7 +1141,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title="Grouped List (Missions pattern)">
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />

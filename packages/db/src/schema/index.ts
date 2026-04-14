@@ -61,6 +61,7 @@ export { libraryFileEvents } from "./library_file_events.js";
 export { playbooks, playbookSteps } from "./playbooks.js";
 export { playbookRuns, playbookRunSteps } from "./playbook_runs.js";
 export { knowledgePages, knowledgePageRevisions } from "./knowledge_pages.js";
+export { knowledgeChunks } from "./knowledge_chunks.js";
 export { userInvites } from "./user_invites.js";
 export { companySubscriptions } from "./subscriptions.js";
 export { messagingBridges } from "./messaging_bridges.js";

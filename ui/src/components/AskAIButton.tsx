@@ -17,7 +17,7 @@ function getPageContext(pathname: string): string {
   const page = meaningful[0];
   const pageMap: Record<string, string> = {
     dashboard: "War Room",
-    issues: "Issues",
+    issues: "Missions",
     goals: "Goals",
     agents: "Agents",
     projects: "Projects",

@@ -20,7 +20,7 @@ import { CircleDot, Download, Plus } from "lucide-react";
 import { exportToCSV } from "../lib/exportCSV";
 
 export function Issues() {
-  usePageTitle("Issues");
+  usePageTitle("Missions");
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -88,14 +88,14 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        "Missions",
         `${location.pathname}${location.search}${location.hash}`,
       ),
     [location.pathname, location.search, location.hash],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
+    setBreadcrumbs([{ label: "Missions" }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -113,7 +113,7 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return <EmptyState icon={CircleDot} message="Select a company to view missions." />;
   }
 
   const totalIssues = issues?.length ?? 0;
@@ -125,7 +125,7 @@ export function Issues() {
       {/* Consistent header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">Issues</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Missions</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Track and manage tasks across your AI workforce.
           </p>
@@ -171,7 +171,7 @@ export function Issues() {
           </Button>
           <Button size="sm" onClick={() => openNewIssue()}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Issue
+            New Mission
           </Button>
         </div>
       </div>

@@ -256,7 +256,7 @@ function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinne
           <button
             onClick={() => onCreateIssue(msg.id)}
             className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-            title="Create issue from message"
+            title="Create mission from message"
           >
             <GitPullRequest className="h-3 w-3" />
           </button>

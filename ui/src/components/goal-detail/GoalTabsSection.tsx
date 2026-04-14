@@ -115,7 +115,7 @@ export function GoalTabsSection({
           </Button>
         </div>
         {goalIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No issues linked to this goal yet.</p>
+          <p className="text-sm text-muted-foreground">No missions linked to this goal yet.</p>
         ) : (
           <div className="border border-border rounded-lg divide-y divide-border">
             {goalIssues.map((issue: Issue) => (
@@ -351,7 +351,7 @@ export function GoalTabsSection({
         {goalActivity.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
             <History className="h-5 w-5" />
-            <p className="text-sm">No activity yet for this goal or its linked issues.</p>
+            <p className="text-sm">No activity yet for this goal or its linked missions.</p>
           </div>
         ) : (
           <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">

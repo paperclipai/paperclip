@@ -203,8 +203,8 @@ export function AnalysisTabContent({
                 <tr className="border-b border-border text-left">
                   <th className="pb-2 pr-4 font-semibold text-muted-foreground">#</th>
                   <th className="pb-2 pr-4 font-semibold text-muted-foreground">Agent</th>
-                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Issues Done</th>
-                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Cost / Issue</th>
+                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Missions Done</th>
+                  <th className="pb-2 pr-4 font-semibold text-muted-foreground text-right">Cost / Mission</th>
                   <th className="pb-2 font-semibold text-muted-foreground text-right">Score</th>
                 </tr>
               </thead>

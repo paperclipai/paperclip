@@ -311,7 +311,7 @@ export function PerformanceByProject({
             className="h-2.5 w-2.5 rounded-full"
             style={{ backgroundColor: selectedProject.color ?? "#6366f1" }}
           />
-          <span>{projectIssues.length} total issues</span>
+          <span>{projectIssues.length} total missions</span>
           <span>·</span>
           <span>
             {projectIssues.filter((i) => i.status === "done").length} done

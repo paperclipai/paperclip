@@ -402,7 +402,7 @@ export function AgentPerformance() {
       {/* Velocity Chart */}
       {velocity && velocity.length > 0 && (
         <div className="rounded-xl border border-border p-4 space-y-3">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Issue Velocity - Last 12 Weeks</h4>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Mission Velocity - Last 12 Weeks</h4>
           <VelocityChart data={velocity} />
         </div>
       )}

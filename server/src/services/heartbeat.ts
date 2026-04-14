@@ -2205,7 +2205,14 @@ export function heartbeatService(db: Db) {
     injectChannelPostingInstruction(context);
     injectConfidenceTagging(context);
     await injectQualityExamples(db, context, agent.id);
-    await injectOnboardingReplay(db, context, agent);
+    // Lazy context: when IRONWORKS_LAZY_CONTEXT=true, skip always-on injection
+    // of onboarding replay and recent documents. Agents fetch these on demand
+    // via the lookup endpoints (or via tools once tool routing is wired up).
+    // This cuts ~5-15k tokens off every heartbeat for established agents.
+    const lazyContext = process.env.IRONWORKS_LAZY_CONTEXT === "true";
+    if (!lazyContext) {
+      await injectOnboardingReplay(db, context, agent);
+    }
     await injectPendingMentions(db, context, agent);
     await injectPendingDeliberations(db, context, agent);
     await injectChannelHealth(db, context, agent);
@@ -2220,7 +2227,11 @@ export function heartbeatService(db: Db) {
       Number(agentRuntimeSnapshotForCtx?.totalInputTokens ?? 0),
     );
     await injectTaskTypeClassification(db, context, issueId, issueContext ? { title: issueContext.title ?? "" } : null);
-    await injectRecentDocuments(db, context, agent.id, agent.companyId);
+    // Lazy context flag also gates recent documents (always-on injection
+    // ~1-3k tokens per heartbeat). Agents fetch via knowledge endpoints.
+    if (!lazyContext) {
+      await injectRecentDocuments(db, context, agent.id, agent.companyId);
+    }
     await injectBatchedTasks(db, context, agent.id, agent.companyId, issueId);
     // issueContext does not include description column - web research uses context.issueTitle from context
     await injectWebResearch(db, context, agent.id, null);
