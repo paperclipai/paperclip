@@ -12,6 +12,7 @@ import {
   invites,
   joinRequests,
   principalPermissionGrants,
+  projectPermissionGrants,
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
@@ -1556,6 +1557,44 @@ export function accessRoutes(
         if (!grantsByCompany[g.companyId]) grantsByCompany[g.companyId] = [];
         grantsByCompany[g.companyId].push(g.permissionKey);
       }
+
+      // Also fetch project-level permission grants to derive effective company permissions
+      let projectGrants: { companyId: string; permissionKey: string }[] = [];
+      if (userId && companyIds.length > 0) {
+        projectGrants = await db
+          .select({
+            companyId: projectPermissionGrants.companyId,
+            permissionKey: projectPermissionGrants.permissionKey,
+          })
+          .from(projectPermissionGrants)
+          .where(
+            and(
+              eq(projectPermissionGrants.principalType, "user"),
+              eq(projectPermissionGrants.principalId, userId),
+            ),
+          );
+      }
+
+      const PROJECT_TO_COMPANY_PERM: Record<string, string> = {
+        "project:issues:create": "issues:manage",
+        "project:issues:edit": "issues:manage",
+        "project:issues:delete": "issues:manage",
+        "project:issues:assign": "tasks:assign",
+        "project:settings": "projects:manage",
+        "project:members:manage": "users:manage_permissions",
+        "project:agents:use": "agents:create",
+      };
+
+      for (const g of projectGrants) {
+        const mapped = PROJECT_TO_COMPANY_PERM[g.permissionKey];
+        if (mapped) {
+          if (!grantsByCompany[g.companyId]) grantsByCompany[g.companyId] = [];
+          if (!grantsByCompany[g.companyId].includes(mapped)) {
+            grantsByCompany[g.companyId].push(mapped);
+          }
+        }
+      }
+
       res.json({
         authenticated: true,
         type: "board",
