@@ -7460,7 +7460,8 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
+<<<<<<< HEAD
+    list: async (companyId: string, agentId?: string, limit: number = 200, offset?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
         .select(
@@ -7484,16 +7485,9 @@ export function heartbeatService(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      let rows;
-      if (limit !== undefined && offset !== undefined && offset > 0) {
-        rows = await query.limit(limit).offset(offset);
-      } else if (limit !== undefined) {
-        rows = await query.limit(limit);
-      } else if (offset !== undefined && offset > 0) {
-        rows = await query.offset(offset);
-      } else {
-        rows = await query;
-      }
+      const rows = offset !== undefined && offset > 0
+        ? await query.limit(limit).offset(offset)
+        : await query.limit(limit);
 
       return rows.map((row) => {
         const {
