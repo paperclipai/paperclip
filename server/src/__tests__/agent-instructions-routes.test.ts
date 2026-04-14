@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   resolveByReference: vi.fn(),
+  getChainOfCommand: vi.fn(),
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -45,12 +46,12 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+  syncInstructionsBundleConfigFromFilePath: (_agent, config) => config,
   workspaceOperationService: () => ({}),
 }));
 
 vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: vi.fn((_type: string) => ({ type: _type })),
+  findServerAdapter: vi.fn(),
   listAdapterModels: vi.fn(),
 }));
 
@@ -93,11 +94,14 @@ function makeAgent() {
 describe("agent instructions bundle routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),
       adapterConfig: patch.adapterConfig ?? {},
     }));
+    mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentInstructionsService.getBundle.mockResolvedValue({
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -258,6 +262,7 @@ describe("agent instructions bundle routes", () => {
         },
       });
 
+
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
@@ -298,6 +303,15 @@ describe("agent instructions bundle routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          command: "codex --profile engineer",
+        }),
+      }),
+      expect.any(Object),
+    );
     expect(res.body.adapterConfig).toMatchObject({
       command: "codex --profile engineer",
     });
@@ -305,5 +319,49 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("preserves adapter-agnostic keys when changing adapter type", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-4",
+        env: { CUSTOM_VAR: "custom_value", API_KEY: "secret123" },
+        cwd: "/custom/working/directory",
+        timeoutSec: 180,
+        graceSec: 30,
+        promptTemplate: "Custom prompt: {{input}}",
+        bootstrapPromptTemplate: "Bootstrap: {{context}}",
+      },
+    });
+
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterType: "claude_local", // Changing adapter type
+        adapterConfig: {
+          model: "claude-sonnet-4", // New model for new adapter
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "claude_local",
+        adapterConfig: expect.objectContaining({
+          model: "claude-sonnet-4",
+          // Adapter-agnostic keys should be preserved
+          env: { CUSTOM_VAR: "custom_value", API_KEY: "secret123" },
+          cwd: "/custom/working/directory",
+          timeoutSec: 180,
+          graceSec: 30,
+          promptTemplate: "Custom prompt: {{input}}",
+          bootstrapPromptTemplate: "Bootstrap: {{context}}",
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 });

@@ -189,6 +189,26 @@ export const agentsApi = {
       reason?: string | null;
       payload?: Record<string, unknown> | null;
       idempotencyKey?: string | null;
+      silentCompletion?: boolean;
+      onComplete?: {
+        agentId?: string | null;
+        source?: "timer" | "assignment" | "on_demand" | "automation" | null;
+        triggerDetail?: "manual" | "ping" | "callback" | "system" | null;
+        reason?: string | null;
+        payload?: Record<string, unknown> | null;
+        contextSnapshot?: Record<string, unknown> | null;
+        commentBody?: string | null;
+        issueStatus?: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled" | null;
+        createIssue?: {
+          title?: string | null;
+          description?: string | null;
+          status?: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled" | null;
+          priority?: "critical" | "high" | "medium" | "low" | null;
+          assignToAgentId?: string | null;
+          commentBody?: string | null;
+        } | null;
+        onlyOn?: Array<"succeeded" | "failed" | "cancelled" | "timed_out"> | null;
+      } | null;
     },
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
