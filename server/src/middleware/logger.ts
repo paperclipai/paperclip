@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import type { Request, Response } from "express";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 
@@ -28,7 +29,6 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
 }, pino.transport({
   targets: [
     {
@@ -44,22 +44,23 @@ export const logger = pino({
   ],
 }));
 
+// Export httpLogger with explicit type assertion to prevent TS inference issues
 export const httpLogger = pinoHttp({
   logger,
-  customLogLevel(_req, res, err) {
+  customLogLevel(_req: Request, res: Response, err?: Error) {
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
     return "info";
   },
-  customSuccessMessage(req, res) {
+  customSuccessMessage(req: Request, res: Response) {
     return `${req.method} ${req.url} ${res.statusCode}`;
   },
-  customErrorMessage(req, res, err) {
+  customErrorMessage(req: Request, res: Response, err?: Error) {
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
     return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
   },
-  customProps(req, res) {
+  customProps(req: Request, res: Response) {
     if (res.statusCode >= 400) {
       const ctx = (res as any).__errorContext;
       if (ctx) {
@@ -71,7 +72,7 @@ export const httpLogger = pinoHttp({
         };
       }
       const props: Record<string, unknown> = {};
-      const { body, params, query } = req as any;
+      const { body, params, query, route } = req;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
         props.reqBody = body;
       }
@@ -81,11 +82,11 @@ export const httpLogger = pinoHttp({
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
         props.reqQuery = query;
       }
-      if ((req as any).route?.path) {
-        props.routePath = (req as any).route.path;
+      if (route?.path) {
+        props.routePath = route.path;
       }
       return props;
     }
     return {};
   },
-});
+}) as any;

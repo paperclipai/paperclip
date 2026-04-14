@@ -47,7 +47,7 @@ cp .env.example .env
 # DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 ```
 
-Run migrations (once the migration generation issue is fixed) or use `drizzle-kit push`:
+Run migrations or use `drizzle-kit push`:
 
 ```sh
 DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
