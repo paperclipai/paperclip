@@ -75,9 +75,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }
       // In local_trusted mode, reject mutating requests without auth to prevent
       // silent misattribution to local-board (see AIU-307).
+      // Board UI (browser) requests include Origin or Referer headers —
+      // let those through as local_implicit so the existing boardMutationGuard
+      // can handle them. Headless requests (agent curl) without auth are blocked.
       if (opts.deploymentMode === "local_trusted" && !SAFE_METHODS.has(req.method.toUpperCase())) {
-        res.status(401).json({ error: "Authentication required for mutating requests" });
-        return;
+        const hasBrowserOrigin = Boolean(req.header("origin") || req.header("referer"));
+        if (!hasBrowserOrigin) {
+          res.status(401).json({ error: "Authentication required for mutating requests" });
+          return;
+        }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();

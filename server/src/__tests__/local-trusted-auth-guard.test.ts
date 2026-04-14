@@ -101,6 +101,68 @@ describe("local_trusted auth guard for mutating requests", () => {
     });
   });
 
+  it("allows POST with Origin header (board UI) as local_implicit", async () => {
+    const app = createApp("local_trusted");
+    const res = await request(app)
+      .post("/test")
+      .set("Origin", "http://localhost:3100")
+      .send({ data: "test" });
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+  });
+
+  it("allows PATCH with Origin header (board UI) as local_implicit", async () => {
+    const app = createApp("local_trusted");
+    const res = await request(app)
+      .patch("/test")
+      .set("Origin", "http://localhost:3100")
+      .send({ data: "test" });
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+  });
+
+  it("allows DELETE with Origin header (board UI) as local_implicit", async () => {
+    const app = createApp("local_trusted");
+    const res = await request(app)
+      .delete("/test")
+      .set("Origin", "http://localhost:3100");
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+  });
+
+  it("allows PUT with Referer header (board UI) as local_implicit", async () => {
+    const app = createApp("local_trusted");
+    const res = await request(app)
+      .put("/test")
+      .set("Referer", "http://localhost:3100/issues")
+      .send({ data: "test" });
+    expect(res.status).toBe(200);
+    expect(res.body.actor).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+  });
+
+  it("still rejects POST without Origin/Referer (agent curl)", async () => {
+    const app = createApp("local_trusted");
+    const res = await request(app).post("/test").send({ data: "test" });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Authentication required for mutating requests");
+  });
+
   it("attaches run ID to local-board actor on GET requests", async () => {
     const app = createApp("local_trusted");
     const res = await request(app)
