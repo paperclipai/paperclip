@@ -3,11 +3,17 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const inlineStyleParserEntry = path.resolve(
+  __dirname,
+  "./node_modules/inline-style-parser/cjs/index.js",
+);
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "inline-style-parser": inlineStyleParserEntry,
       lexical: path.resolve(__dirname, "./node_modules/lexical/Lexical.mjs"),
     },
   },

@@ -53,18 +53,18 @@ function isLinkedGitWorktreeCheckout(rootDir: string) {
   return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
 }
 
-if (!isLinkedGitWorktreeCheckout(repoRoot)) {
-  process.exit(0);
-}
+const linkedGitWorktreeCheckout = isLinkedGitWorktreeCheckout(repoRoot);
 
-const workspacePackagePaths = discoverWorkspacePackagePaths(repoRoot);
-const workspaceDirs = Array.from(
-  new Set(
-    Array.from(workspacePackagePaths.values())
-      .map((packagePath) => path.relative(repoRoot, packagePath))
-      .filter((workspaceDir) => workspaceDir.length > 0),
-  ),
-).sort();
+const workspacePackagePaths = linkedGitWorktreeCheckout ? discoverWorkspacePackagePaths(repoRoot) : new Map();
+const workspaceDirs = linkedGitWorktreeCheckout
+  ? Array.from(
+      new Set(
+        Array.from(workspacePackagePaths.values())
+          .map((packagePath) => path.relative(repoRoot, packagePath))
+          .filter((workspaceDir) => workspaceDir.length > 0),
+      ),
+    ).sort()
+  : [];
 
 function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
   const packageJson = readJsonFile(path.join(repoRoot, workspaceDir, "package.json"));
@@ -121,6 +121,42 @@ async function ensureWorkspaceLinksCurrent(workspaceDir: string) {
   );
 }
 
+async function ensureInlineStyleParserManifest() {
+  const pnpmStoreDir = path.join(repoRoot, "node_modules", ".pnpm");
+  if (!existsSync(pnpmStoreDir)) return;
+
+  const packageStoreEntry = readdirSync(pnpmStoreDir).find((entry) => entry.startsWith("inline-style-parser@"));
+  if (!packageStoreEntry) return;
+
+  const packageRoot = path.join(pnpmStoreDir, packageStoreEntry, "node_modules", "inline-style-parser");
+  if (!existsSync(packageRoot)) return;
+
+  const manifestPath = path.join(packageRoot, "package.json");
+  if (existsSync(manifestPath)) return;
+
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify(
+      {
+        name: "inline-style-parser",
+        version: packageStoreEntry.slice("inline-style-parser@".length),
+        main: "./cjs/index.js",
+        module: "./esm/index.mjs",
+        exports: {
+          import: "./esm/index.mjs",
+          require: "./cjs/index.js",
+          default: "./cjs/index.js",
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+}
+
 for (const workspaceDir of workspaceDirs) {
   await ensureWorkspaceLinksCurrent(workspaceDir);
 }
+
+await ensureInlineStyleParserManifest();
