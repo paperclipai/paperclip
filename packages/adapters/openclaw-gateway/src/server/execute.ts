@@ -131,10 +131,17 @@ function resolveSessionKey(input: {
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  agentId: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  // OpenClaw expects session keys in the format `agent:<agentId>:<rest>`.
+  // Without the agent prefix, OpenClaw defaults to agent "main" and rejects
+  // the request when a different agentId is specified in the payload.
+  const prefix = input.agentId ? `agent:${input.agentId}:` : "";
+  if (input.strategy === "run") return `${prefix}paperclip:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `${prefix}paperclip:issue:${input.issueId}`;
+  // For fallback/fixed keys, only prefix if the key doesn't already have the agent: prefix
+  if (prefix && !fallback.startsWith("agent:")) return `${prefix}${fallback}`;
   return fallback;
 }
 
@@ -336,7 +343,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = "./paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -397,7 +404,7 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
     "4) If issueId does not exist:",
-    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked",
+    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked&includeRoutineExecutions=true",
     "   - Pick in_progress first, then todo, then blocked, then execute step 3.",
     "",
     "Useful endpoints for issue work:",
@@ -1057,11 +1064,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentIdForKey = nonEmpty(ctx.config.agentId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    agentId: configuredAgentIdForKey,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);

@@ -9,7 +9,7 @@ import {
   updateRoutineTriggerSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, routineService } from "../services/index.js";
+import { accessService, agentService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 
@@ -17,6 +17,13 @@ export function routineRoutes(db: Db) {
   const router = Router();
   const svc = routineService(db);
   const access = accessService(db);
+  const agentsSvc = agentService(db);
+
+  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+    if (agent.role === "ceo") return true;
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -28,11 +35,16 @@ export function routineRoutes(db: Db) {
     }
   }
 
-  function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
+  async function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (assigneeAgentId && assigneeAgentId !== req.actor.agentId) {
+      // Check tasks:assign permission or CEO role (mirrors issues.ts assertCanAssignTasks)
+      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
+      if (allowedByGrant) return;
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
       throw forbidden("Agents can only manage routines assigned to themselves");
     }
   }
@@ -44,7 +56,14 @@ export function routineRoutes(db: Db) {
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (routine.assigneeAgentId !== req.actor.agentId) {
-      throw forbidden("Agents can only manage routines assigned to themselves");
+      // Check tasks:assign permission or CEO role (mirrors issues.ts assertCanAssignTasks)
+      const allowedByGrant = await access.hasPermission(routine.companyId, "agent", req.actor.agentId, "tasks:assign");
+      if (!allowedByGrant) {
+        const actorAgent = await agentsSvc.getById(req.actor.agentId);
+        if (!actorAgent || actorAgent.companyId !== routine.companyId || !canCreateAgentsLegacy(actorAgent)) {
+          throw forbidden("Agents can only manage routines assigned to themselves");
+        }
+      }
     }
     return routine;
   }
@@ -59,7 +78,7 @@ export function routineRoutes(db: Db) {
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
-    assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
+    await assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
