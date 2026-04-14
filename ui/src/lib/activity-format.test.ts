@@ -1,8 +1,10 @@
+import { createTranslator } from "@paperclipai/i18n";
 import type { Agent } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import { formatActivityVerb, formatIssueActivityAction } from "./activity-format";
 
 describe("activity formatting", () => {
+  const { t } = createTranslator("en");
   const agentMap = new Map<string, Agent>([
     ["agent-reviewer", { id: "agent-reviewer", name: "Reviewer Bot" } as Agent],
     ["agent-approver", { id: "agent-approver", name: "Approver Bot" } as Agent],
@@ -16,8 +18,8 @@ describe("activity formatting", () => {
       removedBlockedByIssues: [],
     };
 
-    expect(formatActivityVerb("issue.blockers_updated", details)).toBe("added blocker PAP-22 to");
-    expect(formatIssueActivityAction("issue.blockers_updated", details)).toBe("added blocker PAP-22");
+    expect(formatActivityVerb(t, "issue.blockers_updated", details)).toBe("added blocker PAP-22 to");
+    expect(formatIssueActivityAction(t, "issue.blockers_updated", details)).toBe("added blocker PAP-22");
   });
 
   it("formats reviewer activity using agent names", () => {
@@ -28,8 +30,8 @@ describe("activity formatting", () => {
       removedParticipants: [],
     };
 
-    expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("added reviewer Reviewer Bot to");
-    expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("added reviewer Reviewer Bot");
+    expect(formatActivityVerb(t, "issue.reviewers_updated", details, { agentMap })).toBe("added reviewer Reviewer Bot to");
+    expect(formatIssueActivityAction(t, "issue.reviewers_updated", details, { agentMap })).toBe("added reviewer Reviewer Bot");
   });
 
   it("formats approver removals using user-aware labels", () => {
@@ -40,8 +42,8 @@ describe("activity formatting", () => {
       ],
     };
 
-    expect(formatActivityVerb("issue.approvers_updated", details)).toBe("removed approver Board from");
-    expect(formatIssueActivityAction("issue.approvers_updated", details)).toBe("removed approver Board");
+    expect(formatActivityVerb(t, "issue.approvers_updated", details)).toBe("removed approver Board from");
+    expect(formatIssueActivityAction(t, "issue.approvers_updated", details)).toBe("removed approver Board");
   });
 
   it("falls back to updated wording when reviewers are both added and removed", () => {
@@ -54,7 +56,7 @@ describe("activity formatting", () => {
       ],
     };
 
-    expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
-    expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
+    expect(formatActivityVerb(t, "issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
+    expect(formatIssueActivityAction(t, "issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
 });

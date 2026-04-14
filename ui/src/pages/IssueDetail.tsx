@@ -232,7 +232,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
   }
   if (evt.actorType === "system") return <Identity name={t("common.system")} size="sm" />;
   if (evt.actorType === "user") return <Identity name={t("common.board")} size="sm" />;
-  return <Identity name={id || "Unknown"} size="sm" />;
+  return <Identity name={id || t("common.unknown")} size="sm" />;
 }
 
 function IssueSectionSkeleton({
@@ -2275,7 +2275,7 @@ export function IssueDetail() {
                   {activity.slice(0, 20).map((evt) => (
                     <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <ActorIdentity evt={evt} agentMap={agentMap} />
-                      <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId })}</span>
+                      <span>{formatIssueActivityAction(t, evt.action, evt.details, { agentMap, currentUserId })}</span>
                       <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                     </div>
                   ))}

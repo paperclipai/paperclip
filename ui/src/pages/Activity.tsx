@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { formatActivityEntityTypeLabel } from "../lib/activity-format";
 import {
   Select,
   SelectContent,
@@ -111,7 +112,7 @@ export function Activity() {
             <SelectItem value="all">{t("activity.allTypes")}</SelectItem>
             {entityTypes.map((type) => (
               <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
+                {formatActivityEntityTypeLabel(t, type)}
               </SelectItem>
             ))}
           </SelectContent>
