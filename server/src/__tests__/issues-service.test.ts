@@ -1182,3 +1182,366 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 });
+
+describeEmbeddedPostgres("issueService.listComments cursor pagination", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comments-cursor-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("returns comments after a given comment ID cursor in ascending order", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const comment1Id = randomUUID();
+    const comment2Id = randomUUID();
+    const comment3Id = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Insert comments with explicit timestamps to test cursor pagination
+    await db.insert(issueComments).values([
+      {
+        id: comment1Id,
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: new Date("2026-04-01T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T10:00:00.000Z"),
+      },
+      {
+        id: comment2Id,
+        companyId,
+        issueId,
+        body: "Second comment",
+        createdAt: new Date("2026-04-01T11:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T11:00:00.000Z"),
+      },
+      {
+        id: comment3Id,
+        companyId,
+        issueId,
+        body: "Third comment",
+        createdAt: new Date("2026-04-01T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T12:00:00.000Z"),
+      },
+    ]);
+
+    // Fetch comments after the first comment using cursor (afterCommentId)
+    const commentsAfterFirst = await svc.listComments(issueId, {
+      afterCommentId: comment1Id,
+      order: "asc",
+    });
+
+    // Should return only comment2 and comment3 (not comment1)
+    expect(commentsAfterFirst.length).toBe(2);
+    expect(commentsAfterFirst.map((c) => c.id)).toEqual([comment2Id, comment3Id]);
+    expect(commentsAfterFirst[0]!.body).toBe("Second comment");
+    expect(commentsAfterFirst[1]!.body).toBe("Third comment");
+  });
+
+  it("returns comments before a given comment ID cursor in descending order", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const comment1Id = randomUUID();
+    const comment2Id = randomUUID();
+    const comment3Id = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: comment1Id,
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: new Date("2026-04-01T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T10:00:00.000Z"),
+      },
+      {
+        id: comment2Id,
+        companyId,
+        issueId,
+        body: "Second comment",
+        createdAt: new Date("2026-04-01T11:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T11:00:00.000Z"),
+      },
+      {
+        id: comment3Id,
+        companyId,
+        issueId,
+        body: "Third comment",
+        createdAt: new Date("2026-04-01T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T12:00:00.000Z"),
+      },
+    ]);
+
+    // Fetch comments before the third comment using cursor (afterCommentId) in desc order
+    const commentsBeforeThird = await svc.listComments(issueId, {
+      afterCommentId: comment3Id,
+      order: "desc",
+    });
+
+    // Should return comment2 and comment1 in descending order (newest to oldest)
+    expect(commentsBeforeThird.length).toBe(2);
+    expect(commentsBeforeThird.map((c) => c.id)).toEqual([comment2Id, comment1Id]);
+  });
+
+  it("respects limit parameter with cursor pagination", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const comment1Id = randomUUID();
+    const comment2Id = randomUUID();
+    const comment3Id = randomUUID();
+    const comment4Id = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: comment1Id,
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: new Date("2026-04-01T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T10:00:00.000Z"),
+      },
+      {
+        id: comment2Id,
+        companyId,
+        issueId,
+        body: "Second comment",
+        createdAt: new Date("2026-04-01T11:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T11:00:00.000Z"),
+      },
+      {
+        id: comment3Id,
+        companyId,
+        issueId,
+        body: "Third comment",
+        createdAt: new Date("2026-04-01T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T12:00:00.000Z"),
+      },
+      {
+        id: comment4Id,
+        companyId,
+        issueId,
+        body: "Fourth comment",
+        createdAt: new Date("2026-04-01T13:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T13:00:00.000Z"),
+      },
+    ]);
+
+    // Fetch only 1 comment after the first using cursor with limit
+    const limitedComments = await svc.listComments(issueId, {
+      afterCommentId: comment1Id,
+      order: "asc",
+      limit: 1,
+    });
+
+    expect(limitedComments.length).toBe(1);
+    expect(limitedComments[0]!.id).toBe(comment2Id);
+  });
+
+  it("returns empty array when cursor comment ID does not exist", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "Some comment",
+      createdAt: new Date("2026-04-01T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T10:00:00.000Z"),
+    });
+
+    // Using a non-existent comment ID as cursor should return empty array
+    const commentsAfterNonExistent = await svc.listComments(issueId, {
+      afterCommentId: randomUUID(),
+      order: "asc",
+    });
+
+    expect(commentsAfterNonExistent).toEqual([]);
+  });
+
+  it("returns all comments when no cursor is provided", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: new Date("2026-04-01T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId,
+        body: "Second comment",
+        createdAt: new Date("2026-04-01T11:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T11:00:00.000Z"),
+      },
+    ]);
+
+    // Without cursor, should return all comments
+    const allComments = await svc.listComments(issueId, {});
+
+    expect(allComments.length).toBe(2);
+  });
+
+  it("handles comments with same createdAt timestamp using ID tiebreaker", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    // Use predictable UUIDs so we can verify ordering (UUIDs are compared lexicographically)
+    const comment1Id = "00000000-0000-0000-0000-000000000001";
+    const comment2Id = "00000000-0000-0000-0000-000000000002";
+    const comment3Id = "00000000-0000-0000-0000-000000000003";
+    const sameTimestamp = new Date("2026-04-01T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue for comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Insert comments with the exact same timestamp
+    await db.insert(issueComments).values([
+      {
+        id: comment1Id,
+        companyId,
+        issueId,
+        body: "Comment A",
+        createdAt: sameTimestamp,
+        updatedAt: sameTimestamp,
+      },
+      {
+        id: comment2Id,
+        companyId,
+        issueId,
+        body: "Comment B",
+        createdAt: sameTimestamp,
+        updatedAt: sameTimestamp,
+      },
+      {
+        id: comment3Id,
+        companyId,
+        issueId,
+        body: "Comment C",
+        createdAt: sameTimestamp,
+        updatedAt: sameTimestamp,
+      },
+    ]);
+
+    // Fetch comments after comment1 - should use ID tiebreaker
+    const commentsAfterFirst = await svc.listComments(issueId, {
+      afterCommentId: comment1Id,
+      order: "asc",
+    });
+
+    expect(commentsAfterFirst.length).toBe(2);
+    expect(commentsAfterFirst.map((c) => c.id)).toEqual([comment2Id, comment3Id]);
+  });
+});

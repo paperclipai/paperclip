@@ -2046,15 +2046,17 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        // Convert Date to ISO string to avoid TypeError when interpolating into SQL
+        const anchorCreatedAtIso = anchor.createdAt.toISOString();
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAtIso}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAtIso}::timestamptz AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAtIso}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAtIso}::timestamptz AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }
