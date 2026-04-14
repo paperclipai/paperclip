@@ -52,8 +52,8 @@ export function AuthPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });
     },
-    onError: () => {
-      setError(t("auth.errors.failed", "Authentication failed"));
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : t("auth.errors.failed", "Authentication failed"));
     },
   });
 

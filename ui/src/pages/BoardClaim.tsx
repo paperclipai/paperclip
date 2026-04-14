@@ -56,7 +56,7 @@ export function BoardClaimPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">{t("boardClaim.unavailable.title", "Claim challenge unavailable")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            {t("boardClaim.unavailable.detail", "Challenge is invalid or expired.")}
+            {statusQuery.error instanceof Error ? statusQuery.error.message : t("boardClaim.unavailable.detail", "Challenge is invalid or expired.")}
           </p>
         </div>
       </div>
@@ -110,7 +110,7 @@ export function BoardClaimPage() {
 
         {claimMutation.error && (
           <p className="mt-3 text-sm text-destructive">
-            {t("boardClaim.claim.error", "Failed to claim board ownership")}
+            {claimMutation.error instanceof Error ? claimMutation.error.message : t("boardClaim.claim.error", "Failed to claim board ownership")}
           </p>
         )}
 

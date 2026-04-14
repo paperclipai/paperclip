@@ -95,23 +95,50 @@ export function relativeTime(date: Date | string, locale: string | null | undefi
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
 
-  if (resolvedLocale === "zh-CN") {
-    if (diffSec < 60) return "刚刚";
-    const diffMin = Math.round(diffSec / 60);
-    if (diffMin < 60) return `${diffMin} 分钟前`;
-    const diffHr = Math.round(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} 小时前`;
-    const diffDay = Math.round(diffHr / 24);
-    if (diffDay < 30) return `${diffDay} 天前`;
-    return formatDate(date, resolvedLocale);
+  if (diffSec < 60) {
+    return translate("relativeTime.justNow", { locale: resolvedLocale, fallback: "just now" });
   }
 
-  if (diffSec < 60) return "just now";
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) {
+    return translate("relativeTime.minutesAgo", {
+      locale: resolvedLocale,
+      fallback: "{{count}}m ago",
+      values: { count: diffMin },
+    });
+  }
+
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) {
+    return translate("relativeTime.hoursAgo", {
+      locale: resolvedLocale,
+      fallback: "{{count}}h ago",
+      values: { count: diffHr },
+    });
+  }
+
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
-  return formatDate(date, resolvedLocale);
+  if (diffDay < 7) {
+    return translate("relativeTime.daysAgo", {
+      locale: resolvedLocale,
+      fallback: "{{count}}d ago",
+      values: { count: diffDay },
+    });
+  }
+
+  const diffWeek = Math.round(diffDay / 7);
+  if (diffWeek < 5) {
+    return translate("relativeTime.weeksAgo", {
+      locale: resolvedLocale,
+      fallback: "{{count}}w ago",
+      values: { count: diffWeek },
+    });
+  }
+
+  const diffMonth = Math.round(diffDay / 30);
+  return translate("relativeTime.monthsAgo", {
+    locale: resolvedLocale,
+    fallback: "{{count}}mo ago",
+    values: { count: diffMonth },
+  });
 }
