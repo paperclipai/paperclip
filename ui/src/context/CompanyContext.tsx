@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
 import { companiesApi } from "../api/companies";
 import { ApiError } from "../api/client";
+import { useBoardAccess } from "../hooks/use-board-access";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
@@ -37,6 +38,7 @@ const CompanyContext = createContext<CompanyContextValue | null>(null);
 
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
+  const { authResolved, hasBoardAccess } = useBoardAccess();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
 
@@ -53,6 +55,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       }
     },
     retry: false,
+    enabled: hasBoardAccess,
   });
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
@@ -119,8 +122,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       selectedCompanyId,
       selectedCompany,
       selectionSource,
-      loading: isLoading,
-      error: error as Error | null,
+      loading: !authResolved || (hasBoardAccess && isLoading),
+      error: hasBoardAccess ? (error as Error | null) : null,
       setSelectedCompanyId,
       reloadCompanies,
       createCompany,
@@ -130,6 +133,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       selectedCompanyId,
       selectedCompany,
       selectionSource,
+      authResolved,
+      hasBoardAccess,
       isLoading,
       error,
       setSelectedCompanyId,

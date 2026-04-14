@@ -462,6 +462,15 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   }
+
+  const requestedPort = config.port;
+  const listenPort = await detectPort(requestedPort);
+  if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
+    config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
+  }
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  }
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -478,11 +487,13 @@ export async function startServer(): Promise<StartedServer> {
     const {
       createBetterAuthHandler,
       createBetterAuthInstance,
+      deriveEffectiveAuthBaseUrl,
       deriveAuthTrustedOrigins,
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
-    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
+    const effectiveAuthBaseUrl = deriveEffectiveAuthBaseUrl(config, listenPort);
+    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, effectiveAuthBaseUrl);
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
       .map((value) => value.trim())
@@ -492,6 +503,7 @@ export async function startServer(): Promise<StartedServer> {
       {
         authBaseUrlMode: config.authBaseUrlMode,
         authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+        effectiveAuthBaseUrl: effectiveAuthBaseUrl ?? null,
         trustedOrigins: effectiveTrustedOrigins,
         trustedOriginsSource: {
           derived: derivedTrustedOrigins.length,
@@ -500,7 +512,7 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins, effectiveAuthBaseUrl);
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
@@ -573,15 +585,7 @@ export async function startServer(): Promise<StartedServer> {
   } catch (err) {
     logger.error({ err }, "failed to align COO coordinator startup defaults");
   }
-  
-  const requestedPort = config.port;
-  const listenPort = await detectPort(requestedPort);
-  if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
-    config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
-  }
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
-  }
+
   maybePersistWorktreeRuntimePorts({
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,

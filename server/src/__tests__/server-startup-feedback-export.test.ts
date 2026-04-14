@@ -171,6 +171,7 @@ vi.mock("../board-claim.js", () => ({
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: vi.fn(() => ({})),
+  deriveEffectiveAuthBaseUrl: vi.fn(() => undefined),
   deriveAuthTrustedOrigins: vi.fn(() => []),
   resolveBetterAuthSession: vi.fn(async () => null),
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),

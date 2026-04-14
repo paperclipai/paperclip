@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { adaptersApi } from "@/api/adapters";
 import { setDisabledAdapterTypes } from "@/adapters/disabled-store";
 import { syncExternalAdapters } from "@/adapters/registry";
+import { useBoardAccess } from "@/hooks/use-board-access";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -17,10 +18,12 @@ import { queryKeys } from "@/lib/queryKeys";
  * Call this at the top of any component that renders adapter menus.
  */
 export function useDisabledAdaptersSync(): Set<string> {
+  const { hasBoardAccess } = useBoardAccess();
   const { data: adapters } = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
+    enabled: hasBoardAccess,
   });
 
   // Eagerly register external adapter types in the UI registry so that

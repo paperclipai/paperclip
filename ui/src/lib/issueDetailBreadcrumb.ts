@@ -13,6 +13,7 @@ type IssueDetailLocationState = {
 
 const ISSUE_DETAIL_SOURCE_QUERY_PARAM = "from";
 const ISSUE_DETAIL_BREADCRUMB_HREF_QUERY_PARAM = "fromHref";
+const LEGACY_ISSUE_IDENTIFIER_QUERY_PARAM = "identifier";
 const ISSUE_DETAIL_STORAGE_KEY_PREFIX = "paperclip:issue-detail-breadcrumb:";
 
 function isIssueDetailBreadcrumb(value: unknown): value is IssueDetailBreadcrumb {
@@ -149,6 +150,14 @@ export function rememberIssueDetailLocationState(issuePathId: string, state: unk
 
 export function createIssueDetailPath(issuePathId: string): string {
   return `/issues/${issuePathId}`;
+}
+
+export function readLegacyIssueDetailIdentifier(search?: string): string | null {
+  if (!search) return null;
+  const params = new URLSearchParams(search);
+  const identifier = params.get(LEGACY_ISSUE_IDENTIFIER_QUERY_PARAM)?.trim();
+  if (!identifier || identifier.includes("/")) return null;
+  return identifier;
 }
 
 export function hasLegacyIssueDetailQuery(search?: string): boolean {

@@ -4,6 +4,7 @@ import {
   createIssueDetailLocationState,
   createIssueDetailPath,
   hasLegacyIssueDetailQuery,
+  readLegacyIssueDetailIdentifier,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
   rememberIssueDetailLocationState,
@@ -52,6 +53,13 @@ describe("issueDetailBreadcrumb", () => {
   it("can detect legacy query-based breadcrumb links", () => {
     expect(hasLegacyIssueDetailQuery("?from=inbox&fromHref=%2Finbox%2Fmine")).toBe(true);
     expect(hasLegacyIssueDetailQuery("?q=test")).toBe(false);
+  });
+
+  it("reads legacy issue identifiers from query params", () => {
+    expect(readLegacyIssueDetailIdentifier("?identifier=PAP-465")).toBe("PAP-465");
+    expect(readLegacyIssueDetailIdentifier("?identifier=%20%20COMA-64%20")).toBe("COMA-64");
+    expect(readLegacyIssueDetailIdentifier("?identifier=bad/path")).toBeNull();
+    expect(readLegacyIssueDetailIdentifier("?q=test")).toBeNull();
   });
 
   it("restores the exact breadcrumb href from the query fallback", () => {

@@ -25,6 +25,20 @@ export type BetterAuthSessionResult = {
 
 type BetterAuthInstance = ReturnType<typeof betterAuth>;
 
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "0.0.0.0";
+}
+
+export function deriveEffectiveAuthBaseUrl(config: Config, port: number): string | undefined {
+  const explicitBaseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  if (explicitBaseUrl) return explicitBaseUrl;
+  if (config.deploymentMode !== "authenticated") return undefined;
+  if (config.deploymentExposure !== "private") return undefined;
+  if (!isLoopbackHost(config.host)) return undefined;
+  return `http://localhost:${port}`;
+}
+
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(rawHeaders)) {
@@ -42,8 +56,8 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
-export function deriveAuthTrustedOrigins(config: Config): string[] {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+export function deriveAuthTrustedOrigins(config: Config, baseUrlOverride?: string): string[] {
+  const baseUrl = baseUrlOverride ?? (config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined);
   const trustedOrigins = new Set<string>();
 
   if (baseUrl) {
@@ -65,8 +79,13 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+export function createBetterAuthInstance(
+  db: Db,
+  config: Config,
+  trustedOrigins?: string[],
+  baseUrlOverride?: string,
+): BetterAuthInstance {
+  const baseUrl = baseUrlOverride ?? (config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined);
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -74,7 +93,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
+  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config, baseUrl);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;

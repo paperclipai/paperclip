@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
-import { useLocation, useSearchParams } from "@/lib/router";
+import { Navigate, useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -9,7 +9,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { createIssueDetailLocationState, createIssueDetailPath, readLegacyIssueDetailIdentifier } from "../lib/issueDetailBreadcrumb";
 import { describeIssueUpdateError } from "../lib/issue-update-errors";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -29,6 +29,8 @@ export function Issues() {
   const archiveClosedConfirmUntilRef = useRef(0);
 
   const initialSearch = searchParams.get("q") ?? "";
+  const legacyIssueIdentifier = readLegacyIssueDetailIdentifier(location.search);
+  const legacyIssueRedirectPath = legacyIssueIdentifier ? createIssueDetailPath(legacyIssueIdentifier) : null;
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const handleSearchChange = useCallback((search: string) => {
     const trimmedSearch = search.trim();
@@ -49,19 +51,19 @@ export function Issues() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
   });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
   });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
     refetchInterval: 5000,
   });
 
@@ -104,7 +106,7 @@ export function Issues() {
         excludeRecoverySourcesWithOpenSuccessors: true,
         ...(showClosed ? {} : { status: OPEN_ISSUE_STATUSES }),
       }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
   });
 
   const updateIssue = useMutation({
@@ -157,6 +159,10 @@ export function Issues() {
     archiveClosedConfirmUntilRef.current = 0;
     archiveClosedIssues.mutate();
   }, [archiveClosedIssues, pushToast]);
+
+  if (legacyIssueRedirectPath) {
+    return <Navigate to={legacyIssueRedirectPath} replace />;
+  }
 
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select a company to view issues." />;

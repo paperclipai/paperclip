@@ -50,6 +50,7 @@ import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
+import { createIssueDetailPath, readLegacyIssueDetailIdentifier } from "./lib/issueDetailBreadcrumb";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
@@ -263,6 +264,9 @@ function CompanyRootRedirect() {
 function UnprefixedBoardRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
+  const legacyIssueIdentifier = location.pathname === "/issues"
+    ? readLegacyIssueDetailIdentifier(location.search)
+    : null;
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
@@ -279,6 +283,10 @@ function UnprefixedBoardRedirect() {
       return <Navigate to="/onboarding" replace />;
     }
     return <NoCompaniesStartPage />;
+  }
+
+  if (legacyIssueIdentifier) {
+    return <Navigate to={`/${targetCompany.issuePrefix}${createIssueDetailPath(legacyIssueIdentifier)}`} replace />;
   }
 
   return (
