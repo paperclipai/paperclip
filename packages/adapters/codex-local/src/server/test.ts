@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
+import { buildCodexExecArgs } from "./codex-args.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
