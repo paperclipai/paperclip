@@ -16,6 +16,9 @@ import { test, expect, request as pwRequest, type APIRequestContext } from "@pla
  * Agent auth flow:
  *   - Board request (local_trusted auto-auth) handles setup/teardown.
  *   - Agent-specific actions use API keys + heartbeat run IDs.
+ *   - Executor checkout reuses the assignment/change-request run when one
+ *     already owns issue execution; invoking a second run would correctly
+ *     conflict with the live execution lock.
  *   - Reviewers/approvers invoke heartbeat runs (gets run IDs) then PATCH
  *     directly without checkout (checkout would force in_progress, breaking
  *     the in_review state the signoff policy requires).
@@ -42,10 +45,24 @@ interface TestContext {
   issueIds: string[];
 }
 
-interface IssueRunLockState {
-  assigneeAgentId: string | null;
-  checkoutRunId: string | null;
-  executionRunId: string | null;
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function readConflictLockIds(body: string) {
+  try {
+    const parsed = JSON.parse(body) as { details?: Record<string, unknown> };
+    return {
+      checkoutRunId: readString(parsed.details?.checkoutRunId),
+      executionRunId: readString(parsed.details?.executionRunId),
+    };
+  } catch {
+    return { checkoutRunId: null, executionRunId: null };
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Create an authenticated APIRequestContext for an agent (token set, no run ID yet). */
@@ -64,15 +81,44 @@ async function invokeHeartbeat(board: APIRequestContext, agentId: string): Promi
   return run.id;
 }
 
-async function getIssueRunLockState(board: APIRequestContext, issueId: string): Promise<IssueRunLockState> {
+async function getIssueForCheckout(board: APIRequestContext, issueId: string): Promise<Record<string, unknown>> {
   const res = await board.get(`${BASE_URL}/api/issues/${issueId}`);
   expect(res.ok()).toBe(true);
-  const issue = await res.json();
-  return {
-    assigneeAgentId: issue.assigneeAgentId ?? null,
-    checkoutRunId: issue.checkoutRunId ?? null,
-    executionRunId: issue.executionRunId ?? null,
-  };
+  return await res.json();
+}
+
+async function getActiveRunForCheckout(
+  board: APIRequestContext,
+  issueId: string,
+): Promise<Record<string, unknown> | null> {
+  const res = await board.get(`${BASE_URL}/api/issues/${issueId}/active-run`);
+  expect(res.ok()).toBe(true);
+  return await res.json();
+}
+
+async function resolveCheckoutRunId(board: APIRequestContext, agent: AgentAuth, issueId: string): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const [issue, activeRun] = await Promise.all([
+      getIssueForCheckout(board, issueId),
+      getActiveRunForCheckout(board, issueId),
+    ]);
+    const activeRunId = readString(activeRun?.id);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (
+      issue.status === "in_progress" &&
+      issue.assigneeAgentId === agent.agentId &&
+      activeRunId &&
+      activeRunAgentId === agent.agentId
+    ) {
+      return activeRunId;
+    }
+
+    if (attempt < 9) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  return invokeHeartbeat(board, agent.agentId);
 }
 
 /** PATCH an issue as an agent with a fresh heartbeat run ID. */
@@ -97,44 +143,94 @@ async function agentCheckoutAndPatch(
   issueId: string,
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
+  retryDepth = 0,
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
-  // Checkout (sets executionRunId so PATCH is allowed)
-  const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
-    headers: { "X-Paperclip-Run-Id": runId },
-    data: { agentId: agent.agentId, expectedStatuses },
-  });
-  if (!checkoutRes.ok()) {
-    if (checkoutRes.status() === 409) {
-      const issueRunLock = await getIssueRunLockState(board, issueId);
-      const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
-      const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-        headers: { "X-Paperclip-Run-Id": lockedRunId ?? runId },
-        data: patchData,
-      });
-      if (res.ok() && issueRunLock.assigneeAgentId === agent.agentId) {
-        return res;
-      }
-    }
-    // If agent checkout fails (e.g. run expired), fall back to board checkout
-    // then PATCH with the agent's identity
+  async function agentCheckout(runId: string) {
+    return agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
+      headers: { "X-Paperclip-Run-Id": runId },
+      data: { agentId: agent.agentId, expectedStatuses },
+    });
+  }
+
+  async function agentPatchWithRun(runId: string) {
+    return agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": runId },
+      data: patchData,
+    });
+  }
+
+  async function boardCheckoutAndPatch() {
     const boardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
       data: { agentId: agent.agentId, expectedStatuses },
     });
     if (!boardCheckout.ok()) {
-      throw new Error(`Board checkout failed: ${await boardCheckout.text()}`);
+      const body = await boardCheckout.text();
+      const lockIds = readConflictLockIds(body);
+      if ((lockIds.checkoutRunId || lockIds.executionRunId) && retryDepth < 10) {
+        await sleep(150);
+        return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+      }
+      throw new Error(`Board checkout failed: ${body}`);
     }
     // Board PATCH (executor mark-done triggers signoff regardless of actor)
-    const res = await board.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    return board.patch(`${BASE_URL}/api/issues/${issueId}`, {
       data: patchData,
     });
-    return res;
+  }
+
+  let checkoutRunId = await resolveCheckoutRunId(board, agent, issueId);
+  // Checkout (sets executionRunId so PATCH is allowed)
+  let checkoutRes = await agentCheckout(checkoutRunId);
+  let checkoutBody = checkoutRes.ok() ? "" : await checkoutRes.text();
+  if (!checkoutRes.ok()) {
+    const activeRun = await getActiveRunForCheckout(board, issueId);
+    const activeRunId = readString(activeRun?.id);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (activeRunId && activeRunAgentId === agent.agentId && activeRunId !== checkoutRunId) {
+      checkoutRunId = activeRunId;
+      checkoutRes = await agentCheckout(checkoutRunId);
+      checkoutBody = checkoutRes.ok() ? "" : await checkoutRes.text();
+    }
+  }
+  if (!checkoutRes.ok()) {
+    const activeRun = await getActiveRunForCheckout(board, issueId);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (activeRun && activeRunAgentId !== agent.agentId && retryDepth < 5) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+    }
+    const lockIds = readConflictLockIds(checkoutBody);
+    if ((lockIds.checkoutRunId || lockIds.executionRunId) && retryDepth < 10) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+    }
+    if (activeRun) {
+      throw new Error(`Agent checkout failed: ${checkoutBody}`);
+    }
+
+    // If no run owns execution anymore, fall back to board checkout then PATCH.
+    // Board checkout must not bypass a live execution lock.
+    return boardCheckoutAndPatch();
   }
   // PATCH with agent identity
-  const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
-    data: patchData,
-  });
+  let res = await agentPatchWithRun(checkoutRunId);
+  if (res.status() === 409) {
+    const activeRun = await getActiveRunForCheckout(board, issueId);
+    const activeRunId = readString(activeRun?.id);
+    const activeRunAgentId = readString(activeRun?.agentId);
+    if (activeRunId && activeRunAgentId === agent.agentId) {
+      checkoutRunId = activeRunId;
+      checkoutRes = await agentCheckout(checkoutRunId);
+      if (checkoutRes.ok()) {
+        res = await agentPatchWithRun(checkoutRunId);
+      }
+    } else if (activeRunId && retryDepth < 5) {
+      await sleep(150);
+      return agentCheckoutAndPatch(board, agent, issueId, expectedStatuses, patchData, retryDepth + 1);
+    } else if (!activeRunId) {
+      return boardCheckoutAndPatch();
+    }
+  }
   return res;
 }
 
@@ -367,10 +463,12 @@ test.describe("Signoff execution policy", () => {
     const issueId = issue.id;
 
     // Executor marks done → routes to reviewer
-    await agentCheckoutAndPatch(
+    const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
       { status: "done", comment: "Done." },
     );
+    expect(doneRes.ok()).toBe(true);
+    expect((await doneRes.json()).status).toBe("in_review");
 
     // Reviewer tries to approve without comment → should fail
     const noCommentRes = await agentPatch(

@@ -136,7 +136,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        // Local agent JWTs carry a signed run id. Do not let an unsigned
+        // request header replace it.
+        runId: claims.run_id || undefined,
         source: "agent_jwt",
       };
       next();

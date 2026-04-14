@@ -6,6 +6,8 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  checkout: vi.fn(),
+  release: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -23,6 +25,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  promoteDeferredIssueWakeupForIssue: vi.fn(async () => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -172,6 +175,8 @@ describe("issue comment reopen routes", () => {
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
+    mockIssueService.checkout.mockReset();
+    mockIssueService.release.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
@@ -199,7 +204,25 @@ describe("issue comment reopen routes", () => {
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
-    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockImplementation(async (runId: string) => {
+      if (runId === "run-1") {
+        return {
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          status: "running",
+        };
+      }
+      if (runId === "run-2") {
+        return {
+          id: "run-2",
+          companyId: "company-1",
+          agentId: "33333333-3333-4333-8333-333333333333",
+          status: "running",
+        };
+      }
+      return null;
+    });
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
@@ -285,6 +308,10 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.objectContaining({
+        actorAgentId: null,
+        actorRunId: null,
+      }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -319,7 +346,13 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
+        actorAgentId: null,
+        actorUserId: "local-board",
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      }),
+      expect.objectContaining({
+        actorAgentId: null,
+        actorRunId: null,
       }),
     );
   });
@@ -375,6 +408,10 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      {
+        actorAgentId: null,
+        actorRunId: null,
+      },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -403,7 +440,15 @@ describe("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      expect.objectContaining({
+        actorAgentId: null,
+        actorUserId: "local-board",
+        status: "todo",
+      }),
+      expect.objectContaining({
+        actorAgentId: null,
+        actorRunId: null,
+      }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
@@ -526,6 +571,10 @@ describe("issue comment reopen routes", () => {
           lastDecisionOutcome: "approved",
         }),
       }),
+      {
+        actorAgentId: null,
+        actorRunId: null,
+      },
       mockTx,
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
@@ -598,6 +647,11 @@ describe("issue comment reopen routes", () => {
             agentId: "22222222-2222-4222-8222-222222222222",
           }),
         }),
+      }),
+      expect.objectContaining({
+        actorAgentId: "22222222-2222-4222-8222-222222222222",
+        actorRunId: "run-1",
+        requireCheckoutOwnership: true,
       }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -678,6 +732,122 @@ describe("issue comment reopen routes", () => {
             allowedActions: ["address_changes", "resubmit"],
           }),
         }),
+      }),
+    );
+  });
+
+  it("keeps authenticated board run headers audit-only on comment reopen", async () => {
+    const closedIssue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...closedIssue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "board-user",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: true,
+        runId: "untrusted-board-run",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopening", reopen: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorUserId: "board-user",
+      }),
+      {
+        actorAgentId: null,
+        actorRunId: null,
+      },
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Reopening",
+      expect.objectContaining({ runId: null }),
+    );
+    expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        runId: null,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        runId: null,
+      }),
+    );
+  });
+
+  it("keeps authenticated board run headers audit-only on checkout and release activity", async () => {
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.checkout.mockResolvedValue({
+      ...issue,
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    });
+    mockIssueService.release.mockResolvedValue({
+      ...issue,
+      status: "todo",
+      assigneeAgentId: null,
+    });
+
+    const actor = {
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: true,
+      runId: "untrusted-board-run",
+    };
+    const app = await installActor(createApp(), actor);
+
+    const checkoutRes = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/checkout")
+      .send({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        expectedStatuses: ["todo"],
+      });
+
+    expect(checkoutRes.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.checked_out",
+        runId: null,
+      }),
+    );
+
+    const releaseRes = await request(app).post("/api/issues/11111111-1111-4111-8111-111111111111/release").send({});
+
+    expect(releaseRes.status).toBe(200);
+    expect(mockIssueService.release).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        actorAgentId: null,
+        actorRunId: null,
+        actorUserId: "board-user",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.released",
+        runId: null,
       }),
     );
   });
