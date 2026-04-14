@@ -430,6 +430,13 @@ if [ "$phase" = "idle" ]; then
     exit 2
   fi
 
+  # If HEAD already contains upstream (ahead-only, no new upstream commits),
+  # there is nothing to pull. Preserve local commits untouched.
+  if git merge-base --is-ancestor "$UPSTREAM/$UPSTREAM_BRANCH" HEAD; then
+    log "Already up to date with $UPSTREAM/$UPSTREAM_BRANCH (HEAD is ahead-only at $(git rev-parse --short HEAD))"
+    exit 2
+  fi
+
   log "Update available: $(git rev-parse --short HEAD) -> $(git rev-parse --short "$UPSTREAM/$UPSTREAM_BRANCH")"
   echo "$LOCAL" > "$ROLLBACK_REF_FILE"
 
@@ -517,13 +524,31 @@ if [ "$phase" = "swapping" ]; then
   fi
 
   log "Advancing live repo to $UPSTREAM/$UPSTREAM_BRANCH..."
-  if ! git merge "$UPSTREAM/$UPSTREAM_BRANCH" --ff-only 2>>"$LOG_FILE"; then
-    log "ERROR: Fast-forward failed on live repo"
-    systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
-    [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
-    restore_heartbeats
-    full_cleanup
-    exit 1
+  # Three cases:
+  #   1. HEAD is ancestor of upstream  → fast-forward
+  #   2. Upstream is ancestor of HEAD  → shouldn't reach here (caught in build phase)
+  #   3. Diverged                      → rebase local commits on top of upstream
+  if git merge-base --is-ancestor HEAD "$UPSTREAM/$UPSTREAM_BRANCH"; then
+    if ! git merge "$UPSTREAM/$UPSTREAM_BRANCH" --ff-only 2>>"$LOG_FILE"; then
+      log "ERROR: Fast-forward failed on live repo"
+      systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
+      [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
+      restore_heartbeats
+      full_cleanup
+      exit 1
+    fi
+  else
+    log "Live repo has local commits diverged from $UPSTREAM/$UPSTREAM_BRANCH — rebasing local commits on top"
+    if ! git rebase "$UPSTREAM/$UPSTREAM_BRANCH" 2>>"$LOG_FILE"; then
+      log "ERROR: Rebase conflicts on live repo — aborting rebase and rolling back"
+      git rebase --abort 2>>"$LOG_FILE" || true
+      systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
+      [ -f "$STATE_DIR/stash-flag" ] && { git stash pop 2>>"$LOG_FILE" || true; rm -f "$STATE_DIR/stash-flag"; }
+      restore_heartbeats
+      full_cleanup
+      exit 1
+    fi
+    log "Rebase complete. New HEAD: $(git rev-parse --short HEAD)"
   fi
 
   if [ -f "$STATE_DIR/stash-flag" ]; then
