@@ -2284,6 +2284,28 @@ export function heartbeatService(db: Db) {
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    const competingDeferredWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, run.companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.agentId} <> ${run.agentId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (competingDeferredWake) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
     if (queuedRun) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
