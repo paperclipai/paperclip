@@ -2785,7 +2785,7 @@ function RunsTab({
         observer.unobserve(currentTarget);
       }
     };
-  }, [hasNextPage, fetchNextPage]);
+  }, [hasNextPage, fetchNextPage, isMobile]);
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;

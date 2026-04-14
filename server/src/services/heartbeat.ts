@@ -3557,13 +3557,13 @@ export function heartbeatService(db: Db) {
 
       const rows = await db
         .select({
-          date: sql<string>`DATE(${heartbeatRuns.createdAt})`.as("date"),
+          date: sql<string>`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`.as("date"),
           status: heartbeatRuns.status,
           count: sql<number>`count(*)`.as("count"),
         })
         .from(heartbeatRuns)
         .where(condition)
-        .groupBy(sql`DATE(${heartbeatRuns.createdAt})`, heartbeatRuns.status);
+        .groupBy(sql`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`, heartbeatRuns.status);
       
       return rows.map(r => ({ ...r, count: Number(r.count) }));
     },
@@ -3577,6 +3577,7 @@ export function heartbeatService(db: Db) {
         FROM heartbeat_runs
         WHERE company_id = ${companyId}
         ORDER BY agent_id, created_at DESC
+        LIMIT 500
       `);
       
       // Filter to only those whose most recent run was a failure
@@ -3612,6 +3613,10 @@ export function heartbeatService(db: Db) {
         logCompressed: row.log_compressed,
         stdoutExcerpt: row.stdout_excerpt,
         externalRunId: row.external_run_id,
+        processPid: row.process_pid,
+        processStartedAt: row.process_started_at,
+        retryOfRunId: row.retry_of_run_id,
+        processLossRetryCount: row.process_loss_retry_count,
       }));
     },
 
