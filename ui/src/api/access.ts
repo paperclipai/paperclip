@@ -95,6 +95,9 @@ type CompanyInviteCreated = {
 };
 
 export const accessApi = {
+  claimBootstrapAdmin: () =>
+    api.post<{ claimed: true; userId: string }>("/bootstrap/claim", {}),
+
   createCompanyInvite: (
     companyId: string,
     input: {

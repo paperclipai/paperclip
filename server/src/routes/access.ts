@@ -9,12 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, eq, isNull, desc } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
   authUsers,
   companies,
+  instanceUserRoles,
   invites,
   joinRequests
 } from "@paperclipai/db";
@@ -77,6 +78,16 @@ function createClaimSecret() {
   return `pcp_claim_${randomBytes(24).toString("hex")}`;
 }
 
+type InitialInstanceAdminClaimResult =
+  | {
+      status: "claimed";
+      role: typeof instanceUserRoles.$inferSelect;
+    }
+  | {
+      status: "already_claimed";
+      existingUserId: string | null;
+    };
+
 export function companyInviteExpiresAt(nowMs: number = Date.now()) {
   return new Date(nowMs + COMPANY_INVITE_TTL_MS);
 }
@@ -88,6 +99,41 @@ function tokenHashesMatch(left: string, right: string) {
     leftBytes.length === rightBytes.length &&
     timingSafeEqual(leftBytes, rightBytes)
   );
+}
+
+export async function claimInitialInstanceAdmin(
+  tx: Db,
+  userId: string
+): Promise<InitialInstanceAdminClaimResult> {
+  await tx.execute(
+    sql`lock table ${instanceUserRoles} in share row exclusive mode`
+  );
+
+  const existingAdmin = await tx
+    .select({ userId: instanceUserRoles.userId })
+    .from(instanceUserRoles)
+    .where(eq(instanceUserRoles.role, "instance_admin"))
+    .then((rows) => rows[0] ?? null);
+  if (existingAdmin) {
+    return {
+      status: "already_claimed",
+      existingUserId: existingAdmin.userId
+    };
+  }
+
+  const role = await tx
+    .insert(instanceUserRoles)
+    .values({
+      userId,
+      role: "instance_admin"
+    })
+    .returning()
+    .then((rows) => rows[0]);
+
+  return {
+    status: "claimed",
+    role
+  };
 }
 
 function requestBaseUrl(req: Request) {
@@ -1635,6 +1681,31 @@ export function accessRoutes(
     throw conflict("Board claim challenge is no longer available");
   });
 
+  router.post("/bootstrap/claim", async (req, res) => {
+    if (opts.deploymentMode !== "authenticated") {
+      throw notFound("Bootstrap claim is only available in authenticated mode");
+    }
+    if (
+      req.actor.type !== "board" ||
+      req.actor.source !== "session" ||
+      !req.actor.userId
+    ) {
+      throw unauthorized("Sign in before claiming instance admin");
+    }
+
+    const result = await db.transaction((tx) =>
+      claimInitialInstanceAdmin(tx as unknown as Db, req.actor.userId as string)
+    );
+    if (result.status === "already_claimed") {
+      throw conflict("Initial instance admin has already been claimed");
+    }
+
+    res.status(201).json({
+      claimed: true,
+      userId: req.actor.userId
+    });
+  });
+
   router.post(
     "/cli-auth/challenges",
     validate(createCliAuthChallengeSchema),
@@ -2180,19 +2251,35 @@ export function accessRoutes(
           );
         }
         const userId = req.actor.userId ?? "local-board";
-        const existingAdmin = await access.isInstanceAdmin(userId);
-        if (!existingAdmin) {
-          await access.promoteInstanceAdmin(userId);
+        const bootstrapClaim = await db.transaction(async (tx) => {
+          const claimed = await claimInitialInstanceAdmin(tx as unknown as Db, userId);
+          if (claimed.status === "already_claimed") return claimed;
+          const updatedInvite = await tx
+            .update(invites)
+            .set({ acceptedAt: new Date(), updatedAt: new Date() })
+            .where(
+              and(
+                eq(invites.id, invite.id),
+                isNull(invites.acceptedAt),
+                isNull(invites.revokedAt)
+              )
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!updatedInvite) {
+            throw conflict("Bootstrap invite has already been used");
+          }
+          return {
+            status: "claimed" as const,
+            updatedInvite
+          };
+        });
+        if (bootstrapClaim.status === "already_claimed") {
+          throw conflict("Initial instance admin has already been claimed");
         }
-        const updatedInvite = await db
-          .update(invites)
-          .set({ acceptedAt: new Date(), updatedAt: new Date() })
-          .where(eq(invites.id, invite.id))
-          .returning()
-          .then((rows) => rows[0] ?? invite);
         res.status(202).json({
-          inviteId: updatedInvite.id,
-          inviteType: updatedInvite.inviteType,
+          inviteId: bootstrapClaim.updatedInvite.id,
+          inviteType: bootstrapClaim.updatedInvite.inviteType,
           bootstrapAccepted: true,
           userId
         });
