@@ -209,6 +209,37 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
   });
 
+  it("passes the original Hermes context through when authToken is absent", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const ctx = {
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            PAPERCLIP_API_KEY: "server-level-key",
+          },
+          promptTemplate: "Existing prompt",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+    };
+
+    await adapter.execute(ctx);
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+  });
+
   it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
     const adapter = requireServerAdapter("hermes_local");
 

@@ -180,6 +180,8 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
+// intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
 const hermesLocalAdapter: ServerAdapterModule = {
