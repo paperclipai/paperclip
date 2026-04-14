@@ -15,7 +15,6 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
-import { buildCodexExecArgs } from "./codex-args.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -120,7 +119,9 @@ export async function testEnvironment(
         code: "codex_native_auth_present",
         level: "info",
         message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+        detail: codexAuth.email
+          ? `Logged in as ${codexAuth.email}.`
+          : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
       });
     } else {
       checks.push({
