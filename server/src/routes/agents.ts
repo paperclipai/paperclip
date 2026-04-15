@@ -231,7 +231,12 @@ export function agentRoutes(db: Db) {
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    return hasCompanyAccess(req, companyId);
+    try {
+      assertCompanyAccess(req, companyId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function buildSkippedWakeupResponse(
