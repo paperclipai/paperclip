@@ -2,11 +2,9 @@ export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
 };
 
-const ROLES_WITH_CREATE_AGENTS = new Set(["ceo", "cto", "cmo", "coo"]);
-
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
   return {
-    canCreateAgents: ROLES_WITH_CREATE_AGENTS.has(role),
+    canCreateAgents: role === "ceo",
   };
 }
 
