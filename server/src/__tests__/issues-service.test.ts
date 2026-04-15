@@ -1607,8 +1607,7 @@ describeEmbeddedPostgres("issueService.scheduledFor auto-backlog and tick", () =
 
   it("demotes a todo issue with future scheduledFor to backlog on create", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const created = await svc.create({
-      companyId,
+    const created = await svc.create(companyId, {
       title: "Future scheduled issue",
       status: "todo",
       priority: "medium",
@@ -1627,8 +1626,7 @@ describeEmbeddedPostgres("issueService.scheduledFor auto-backlog and tick", () =
 
   it("does not demote a todo issue with past scheduledFor", async () => {
     const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const created = await svc.create({
-      companyId,
+    const created = await svc.create(companyId, {
       title: "Past scheduled issue",
       status: "todo",
       priority: "medium",
@@ -1645,8 +1643,7 @@ describeEmbeddedPostgres("issueService.scheduledFor auto-backlog and tick", () =
   });
 
   it("demotes to backlog when updating a todo issue with future scheduledFor", async () => {
-    const created = await svc.create({
-      companyId,
+    const created = await svc.create(companyId, {
       title: "Update scheduled issue",
       status: "todo",
       priority: "medium",
