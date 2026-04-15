@@ -90,9 +90,8 @@ export function EnvVarEditor({
       if (row.source === "secret") {
         if (row.secretId) {
           rec[key] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
-        } else {
-          rec[key] = { type: "plain", value: row.plainValue };
         }
+        continue;
       } else {
         rec[key] = { type: "plain", value: row.plainValue };
       }
@@ -137,21 +136,22 @@ export function EnvVarEditor({
       .slice(0, 64);
   }
 
-  async function sealRow(index: number) {
+  async function createSecretForRow(index: number) {
     const row = rows[index];
     if (!row) return;
     const key = row.key.trim();
-    const plain = row.plainValue;
-    if (!key || plain.length === 0) return;
+    if (!key) return;
 
     const suggested = defaultSecretName(key) || "secret";
     const name = window.prompt("Secret name", suggested)?.trim();
     if (!name) return;
+    const secretValue = row.plainValue.length > 0 ? row.plainValue : window.prompt("Secret value", "") ?? "";
+    if (secretValue.length === 0) return;
 
     try {
       setSealError(null);
-      const created = await onCreateSecret(name, plain);
-      updateRow(index, { source: "secret", secretId: created.id });
+      const created = await onCreateSecret(name, secretValue);
+      updateRow(index, { source: "secret", secretId: created.id, plainValue: "" });
     } catch (error) {
       setSealError(error instanceof Error ? error.message : "Failed to create secret");
     }
@@ -203,9 +203,9 @@ export function EnvVarEditor({
                 <button
                   type="button"
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
-                  onClick={() => sealRow(index)}
-                  disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  onClick={() => createSecretForRow(index)}
+                  disabled={!row.key.trim()}
+                  title="Create a new secret for this environment variable"
                 >
                   New
                 </button>
@@ -221,7 +221,7 @@ export function EnvVarEditor({
                 <button
                   type="button"
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
-                  onClick={() => sealRow(index)}
+                  onClick={() => createSecretForRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
                   title="Store value as secret and replace with reference"
                 >
