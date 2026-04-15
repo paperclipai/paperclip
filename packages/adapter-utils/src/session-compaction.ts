@@ -3,6 +3,13 @@ export interface SessionCompactionPolicy {
   maxSessionRuns: number;
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
+  /**
+   * When true, rotate the session as soon as the task associated with the most
+   * recent run on this session reaches a terminal status (`done` or
+   * `cancelled`). Sessions whose prior task is still `todo`, `in_progress`, or
+   * `blocked` are preserved so interrupted work can resume.
+   */
+  rotateOnTaskCompletion: boolean;
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -25,6 +32,7 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 200,
   maxRawInputTokens: 2_000_000,
   maxSessionAgeHours: 72,
+  rotateOnTaskCompletion: true,
 };
 
 // Adapters with native context management still participate in session resume,
@@ -34,6 +42,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
   maxSessionAgeHours: 0,
+  rotateOnTaskCompletion: true,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -128,11 +137,13 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
+  const rotateOnTaskCompletion = readBoolean(compaction.rotateOnTaskCompletion);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
+  if (rotateOnTaskCompletion !== undefined) explicit.rotateOnTaskCompletion = rotateOnTaskCompletion;
 
   return explicit;
 }
@@ -156,6 +167,8 @@ export function resolveSessionCompactionPolicy(
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
+      rotateOnTaskCompletion:
+        explicitOverride.rotateOnTaskCompletion ?? basePolicy.rotateOnTaskCompletion,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -169,7 +182,12 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours" | "rotateOnTaskCompletion"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return (
+    policy.maxSessionRuns > 0 ||
+    policy.maxRawInputTokens > 0 ||
+    policy.maxSessionAgeHours > 0 ||
+    policy.rotateOnTaskCompletion
+  );
 }

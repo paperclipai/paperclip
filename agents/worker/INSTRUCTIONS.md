@@ -26,6 +26,11 @@ Every code change ships with tests:
 - Ref: `docs/TESTING.md`
 - Existing: `action_economy`, `action_systems`, `active_modifiers`, `character_progression`, `combat_systems`, `core_mechanics`, `damage_systems`, `equipment_systems`, `form_transformation`, `healing_systems`, `inventory_systems`, `local_map_generation`, `movement_terrain_systems`, `skill_systems`, `spatial_index`, `spell_systems`, `status_effect_systems`
 
+## Comments
+
+- Preserve existing `//!` module docs, `///` item docs, and WHY-comments when editing a file. Don't strip them.
+- When writing new code: add `///` doc comments to public structs/enums/functions. Inline comments only for non-obvious WHY (invariant, ordering, PF2e rule cite, workaround) — not for restating what the code does.
+
 ## Standards
 
 - `bevy::log` not `println!`

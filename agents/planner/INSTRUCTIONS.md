@@ -22,7 +22,7 @@ Routine-driven, not task-driven. Ignore empty inbox — always run the loop.
 6. **CLAUDE.md hierarchy** — when the codebase scan reveals that a subdirectory has accumulated enough rules or conventions (3+), create a `CLAUDE.md` in that directory. CLAUDE.md files are hierarchical — deeper files only load when agents work in that directory, reducing context for everyone else. Keep each file focused on rules/conventions for that area, not implementation details or bug history. Existing hierarchy:
    - `CLAUDE.md` (root) — project rules, dev commands, agent pipeline
    - `src/CLAUDE.md` — general Rust/Bevy rules
-   - `src/systems/vision_system/CLAUDE.md`, `combat/`, `observers/`, `world_generation/`
+   - `src/systems/vision_system/CLAUDE.md`, `combat/`, `observers/`, `world_generation/`, `lock_interaction/`, `ability_mechanics/`, `rendering/`
 
 ## Outputs
 

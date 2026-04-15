@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -55,17 +56,57 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  collapsed,
+  onToggleCollapsed,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  collapsed: boolean;
+  onToggleCollapsed: (status: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
+  if (collapsed) {
+    return (
+      <div
+        ref={setNodeRef}
+        className={`flex flex-col min-w-[44px] w-[44px] shrink-0 rounded-md border border-transparent transition-colors ${
+          isOver ? "bg-accent/40 border-accent" : "hover:bg-muted/40"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => onToggleCollapsed(status)}
+          className="flex flex-col items-center gap-2 py-2 w-full"
+          title={`Expand ${statusLabel(status)} (${issues.length})`}
+        >
+          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          <StatusIcon status={status} />
+          <span className="text-xs text-muted-foreground/60 tabular-nums">
+            {issues.length}
+          </span>
+          <span
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+          >
+            {statusLabel(status)}
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col min-w-[260px] w-[260px] shrink-0">
-      <div className="flex items-center gap-2 px-2 py-2 mb-1">
+      <button
+        type="button"
+        onClick={() => onToggleCollapsed(status)}
+        className="flex items-center gap-2 px-2 py-2 mb-1 hover:bg-muted/40 rounded-md text-left"
+        title={`Collapse ${statusLabel(status)}`}
+      >
+        <ChevronDown className="w-4 h-4 text-muted-foreground" />
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {statusLabel(status)}
@@ -73,7 +114,7 @@ function KanbanColumn({
         <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
           {issues.length}
         </span>
-      </div>
+      </button>
       <div
         ref={setNodeRef}
         className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors ${
@@ -187,6 +228,34 @@ export function KanbanBoard({
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [collapsedColumns, setCollapsedColumns] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("paperclip.kanban.collapsedColumns");
+      return raw ? new Set<string>(JSON.parse(raw)) : new Set(["done", "cancelled"]);
+    } catch {
+      return new Set(["done", "cancelled"]);
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "paperclip.kanban.collapsedColumns",
+        JSON.stringify(Array.from(collapsedColumns)),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [collapsedColumns]);
+
+  const toggleColumnCollapsed = (status: string) => {
+    setCollapsedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -261,6 +330,8 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            collapsed={collapsedColumns.has(status)}
+            onToggleCollapsed={toggleColumnCollapsed}
           />
         ))}
       </div>

@@ -29,6 +29,15 @@ Review changed files. Optimize, improve, ensure quality. Fix everything directly
 
 3. Fix directly. IP fixes > quality fixes.
 4. Large refactors (multi-file, architectural) → file Paperclip issue for Coordinator.
+5. `PATCH /api/issues/{issueId}` with `{"status":"done","comment":"<summary>"}`. Every task exits `done` — whether you fixed things or found nothing to fix. A comment without a status change is not completion.
+
+## Comments
+
+Doc comments and WHY-comments are load-bearing documentation in this codebase — treat them the same as code.
+
+- **Preserve**: `//!` module docs, `///` item docs (struct/enum/fn/field), inline WHY-comments (invariants, ordering constraints, PF2e rule citations, bug workarounds), section headers.
+- **Remove only**: `// does X` narration that restates the code, stale ticket refs (`// added for #123`), commented-out code blocks.
+- Stripping comments is never an "improvement". If a comment is wrong, fix it; don't delete it.
 
 ## Restrictions
 
@@ -37,7 +46,7 @@ Review changed files. Optimize, improve, ensure quality. Fix everything directly
 - No git commits (board)
 - No new features — only improve existing code
 - No refactoring without clear improvement (perf, readability, correctness)
-- Nothing to improve → mark done, don't create busywork
+- Don't create busywork when there's nothing to fix
 
 ## Completion Comment Format
 

@@ -885,6 +885,23 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  /**
+   * Return the issueId associated with a heartbeat run, if any, by looking up
+   * its wakeup request payload. Returns null for runs that fired without a
+   * task context (generic heartbeats).
+   */
+  async function resolveRunIssueId(runId: string): Promise<string | null> {
+    const [row] = await db
+      .select({
+        payloadIssueId: sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`,
+      })
+      .from(heartbeatRuns)
+      .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+      .where(eq(heartbeatRuns.id, runId))
+      .limit(1);
+    return row?.payloadIssueId ?? null;
+  }
+
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
     sessionId: string | null;
@@ -960,6 +977,18 @@ export function heartbeatService(db: Db) {
         `(threshold ${formatCount(policy.maxRawInputTokens)})`;
     } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
       reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    } else if (policy.rotateOnTaskCompletion && latestRun) {
+      const priorIssueId = await resolveRunIssueId(latestRun.id);
+      if (priorIssueId) {
+        const [priorIssue] = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, priorIssueId))
+          .limit(1);
+        if (priorIssue && (priorIssue.status === "done" || priorIssue.status === "cancelled")) {
+          reason = `prior task completed (status=${priorIssue.status})`;
+        }
+      }
     }
 
     if (!reason || !latestRun) {
@@ -2308,12 +2337,7 @@ export function heartbeatService(db: Db) {
       if (!taskContext) {
         // Agent woken without a specific task — find their first todo assignment
         const firstTodo = await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            description: issues.description,
-          })
+          .select()
           .from(issues)
           .where(
             and(
