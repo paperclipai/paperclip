@@ -156,6 +156,7 @@ export type {
   AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
+  FileEditEventData,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
