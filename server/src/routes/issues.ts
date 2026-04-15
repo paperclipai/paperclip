@@ -46,7 +46,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
@@ -460,6 +460,28 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function normalizeIssueAssigneeAgentReference(
+    companyId: string,
+    rawAssigneeAgentId: string | null | undefined,
+  ) {
+    if (rawAssigneeAgentId === undefined || rawAssigneeAgentId === null) {
+      return rawAssigneeAgentId;
+    }
+
+    const raw = rawAssigneeAgentId.trim();
+    if (raw.length === 0) {
+      return rawAssigneeAgentId;
+    }
+
+    const resolved = await agentsSvc.resolveByReference(companyId, raw);
+    if (resolved.ambiguous) {
+      throw conflict("Agent shortname is ambiguous in this company. Use the agent ID.");
+    }
+    if (!resolved.agent) {
+      throw notFound("Agent not found");
+    }
+    return resolved.agent.id;
+  }
   function toValidTimestamp(value: Date | string | null | undefined) {
     if (!value) return null;
     const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -485,7 +507,6 @@ export function issueRoutes(
     if (params.comment.authorAgentId && params.comment.authorAgentId === params.activeRun.agentId) return false;
     return commentCreatedAtMs >= activeRunStartedAtMs;
   }
-
   async function getClosedIssueExecutionWorkspace(issue: { executionWorkspaceId?: string | null }) {
     if (!issue.executionWorkspaceId) return null;
     const workspace = await executionWorkspacesSvc.getById(issue.executionWorkspaceId);
@@ -1356,6 +1377,10 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      existing.companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
     const existingRelations =
       Array.isArray(req.body.blockedByIssueIds)
         ? await svc.getRelationSummaries(existing.id)
@@ -1368,7 +1393,7 @@ export function issueRoutes(
       ...updateFields
     } = req.body;
     const requestedAssigneeAgentId =
-      req.body.assigneeAgentId === undefined ? existing.assigneeAgentId : (req.body.assigneeAgentId as string | null);
+      normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const effectiveReopenRequested =
       reopenRequested ||
       (!!commentBody &&
@@ -1431,14 +1456,16 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    if (normalizedAssigneeAgentId !== undefined) {
+      updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
-        assigneeAgentId:
-          req.body.assigneeAgentId === undefined ? undefined : (req.body.assigneeAgentId as string | null),
+        assigneeAgentId: normalizedAssigneeAgentId,
         assigneeUserId:
           req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
       },
@@ -1527,8 +1554,7 @@ export function issueRoutes(
             issueId: id,
             companyId: existing.companyId,
             assigneePatch: {
-              assigneeAgentId:
-                req.body.assigneeAgentId === undefined ? "__omitted__" : req.body.assigneeAgentId,
+              assigneeAgentId: normalizedAssigneeAgentId === undefined ? "__omitted__" : normalizedAssigneeAgentId,
               assigneeUserId:
                 req.body.assigneeUserId === undefined ? "__omitted__" : req.body.assigneeUserId,
             },
@@ -1682,7 +1708,13 @@ export function issueRoutes(
       if (tc && actor.agentId) {
         const actorAgent = await agentsSvc.getById(actor.agentId);
         if (actorAgent) {
-          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+          const model = typeof actorAgent.adapterConfig?.model === "string" ? actorAgent.adapterConfig.model : undefined;
+          trackAgentTaskCompleted(tc, {
+            agentRole: actorAgent.role,
+            agentId: actorAgent.id,
+            adapterType: actorAgent.adapterType,
+            model,
+          });
         }
       }
     }
@@ -1721,6 +1753,10 @@ export function issueRoutes(
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
+      req.body.status !== undefined;
+    const statusChangedFromBlockedToTodo =
+      existing.status === "blocked" &&
+      issue.status === "todo" &&
       req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
@@ -1775,7 +1811,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusChangedFromBlockedToTodo) && issue.assigneeAgentId) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",

@@ -95,6 +95,10 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
+async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
+  await db?.$client?.end?.({ timeout: 0 });
+}
+
 async function createControlledGatewayServer() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -225,6 +229,7 @@ describe("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterAll(async () => {
+    await closeDbClient(db);
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });
@@ -761,6 +766,169 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 20_000);
 
+  it("defers mentioned-agent wakes while another agent is actively executing the same issue", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const mentionedAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: primaryAgentId,
+          companyId,
+          name: "Primary Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: mentionedAgentId,
+          companyId,
+          name: "Mentioned Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Prevent concurrent mention execution",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: primaryAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryRun = await heartbeat.wakeup(primaryAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(primaryRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const mentionComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "@Mentioned Agent please inspect this after the current run.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const mentionRun = await heartbeat.wakeup(mentionedAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_comment_mentioned",
+        payload: { issueId, commentId: mentionComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: mentionComment.id,
+          wakeCommentId: mentionComment.id,
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(mentionRun).toBeNull();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
+
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, mentionedAgentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        return runs.length === 1 && runs[0]?.status === "succeeded";
+      }, 90_000);
+
+      const mentionedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, mentionedAgentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+
+      expect(mentionedRuns).toHaveLength(1);
+      expect(mentionedRuns[0]?.contextSnapshot).toMatchObject({
+        issueId,
+        wakeReason: "issue_comment_mentioned",
+      });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

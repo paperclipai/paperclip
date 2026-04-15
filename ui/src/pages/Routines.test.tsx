@@ -46,7 +46,7 @@ vi.mock("../context/BreadcrumbContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../api/routines", () => ({

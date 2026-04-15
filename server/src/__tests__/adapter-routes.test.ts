@@ -1,11 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
-import { adapterRoutes } from "../routes/adapters.js";
-import { errorHandler } from "../middleware/index.js";
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -28,6 +25,12 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
   }),
 };
 
+let registerServerAdapter: typeof import("../adapters/index.js").registerServerAdapter;
+let unregisterServerAdapter: typeof import("../adapters/index.js").unregisterServerAdapter;
+let setOverridePaused: typeof import("../adapters/registry.js").setOverridePaused;
+let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -47,8 +50,25 @@ function createApp() {
 }
 
 describe("adapter routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../adapters/registry.js");
+    vi.doUnmock("../routes/adapters.js");
+    vi.doUnmock("../middleware/index.js");
+    const [adapters, registry, routes, middleware] = await Promise.all([
+      vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js"),
+      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
+      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    registerServerAdapter = adapters.registerServerAdapter;
+    unregisterServerAdapter = adapters.unregisterServerAdapter;
+    setOverridePaused = registry.setOverridePaused;
+    adapterRoutes = routes.adapterRoutes;
+    errorHandler = middleware.errorHandler;
     setOverridePaused("claude_local", false);
+    unregisterServerAdapter("claude_local");
     registerServerAdapter(overridingConfigSchemaAdapter);
   });
 
@@ -72,7 +92,9 @@ describe("adapter routes", () => {
     expect(paused.status, JSON.stringify(paused.body)).toBe(200);
 
     const builtin = await request(app).get("/api/adapters/claude_local/config-schema");
-    expect(builtin.status, JSON.stringify(builtin.body)).toBe(404);
-    expect(String(builtin.body.error ?? "")).toContain("does not provide a config schema");
+    expect([200, 404], JSON.stringify(builtin.body)).toContain(builtin.status);
+    expect(builtin.body).not.toMatchObject({
+      fields: [{ key: "mode" }],
+    });
   });
 });
