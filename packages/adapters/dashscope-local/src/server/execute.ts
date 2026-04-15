@@ -42,14 +42,12 @@ interface CallDashScopeOptions {
   topP?: number;
   maxTokens?: number;
   timeoutSec?: number;
-  baseUrl?: string;
+  baseUrl: string;
 }
 
 /**
- * Call DashScope API
- * Supports both:
- * - Standard endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
- * - Coding Plan endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions
+ * Call DashScope Coding Plan API
+ * Uses OpenAI compatible format: https://coding.dashscope.aliyuncs.com/v1/chat/completions
  */
 async function callDashScopeAPI(
   apiKey: string,
@@ -57,34 +55,17 @@ async function callDashScopeAPI(
   messages: DashScopeMessage[],
   options: CallDashScopeOptions,
 ): Promise<{ response: DashScopeResponse; latencyMs: number }> {
-  // Auto-detect endpoint mode based on baseUrl
-  const isCodingPlan = options.baseUrl?.includes('coding.dashscope');
+  // Coding Plan endpoint (OpenAI compatible format)
+  const url = new URL(`${options.baseUrl}/chat/completions`);
   
-  // Select endpoint based on mode
-  const url = isCodingPlan
-    ? new URL(`${options.baseUrl}/chat/completions`) // Coding Plan: OpenAI compatible format
-    : new URL("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"); // Pay-as-you-go
-  
-  // Build request body based on mode
-  const requestBody = isCodingPlan
-    ? {
-        // Coding Plan: OpenAI compatible format
-        model,
-        messages,
-        temperature: options.temperature,
-        max_tokens: options.maxTokens,
-        top_p: options.topP,
-      }
-    : {
-        // Pay-as-you-go: DashScope native format
-        model,
-        input: { messages },
-        parameters: {
-          ...(options.temperature !== undefined && { temperature: options.temperature }),
-          ...(options.topP !== undefined && { top_p: options.topP }),
-          ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
-        },
-      };
+  // Build request body in OpenAI compatible format
+  const requestBody = {
+    model,
+    messages,
+    temperature: options.temperature,
+    max_tokens: options.maxTokens,
+    top_p: options.topP,
+  };
 
   const body = JSON.stringify(requestBody);
   const startTime = Date.now();
@@ -104,7 +85,7 @@ async function callDashScopeAPI(
       res.on("end", () => {
         const latencyMs = Date.now() - startTime;
         if (res.statusCode !== 200) {
-          reject(new Error(`DashScope API error: ${res.statusCode} ${res.statusMessage}\n${responseData}`));
+          reject(new Error(`DashScope Coding Plan API error: ${res.statusCode} ${res.statusMessage}\n${responseData}`));
           return;
         }
         try {
@@ -119,7 +100,7 @@ async function callDashScopeAPI(
     req.on("error", reject);
     req.on("timeout", () => {
       req.destroy();
-      reject(new Error(`DashScope API timeout after ${options.timeoutSec ?? 120}s`));
+      reject(new Error(`DashScope Coding Plan API timeout after ${options.timeoutSec ?? 120}s`));
     });
 
     req.write(body);
@@ -165,7 +146,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const { runId, agent, config, context, onLog, authToken } = ctx;
 
   const model = asString(config.model, "");
-  const baseUrl = asString(config.baseUrl, ""); // Read baseUrl config for Coding Plan support
+  const baseUrl = asString(config.baseUrl, "https://coding.dashscope.aliyuncs.com/v1"); // Default to Coding Plan endpoint
   const temperature = asNumber(config.temperature, 0.7);
   const topP = asNumber(config.topP, 0.8);
   const maxTokens = asNumber(config.maxTokens, 0);
@@ -209,15 +190,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorMessage: "Model not specified. Set config.model to a valid DashScope model (e.g., qwen-max, qwen-plus).",
+      errorMessage: "Model not specified. Set config.model to a valid DashScope model (e.g., qwen3.5-plus, qwen3-max).",
       errorCode: "invalid_config",
     };
   }
 
-  // Log configuration (dynamic based on baseUrl)
-  const isCodingPlan = baseUrl.includes('coding.dashscope');
-  await onLog("stdout", `[paperclip] Using ${isCodingPlan ? 'Coding Plan' : 'DashScope standard'} endpoint\n`);
-  await onLog("stdout", `[paperclip] Endpoint: ${isCodingPlan ? baseUrl + '/chat/completions' : 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation'}\n`);
+  // Log configuration
+  await onLog("stdout", `[paperclip] Using DashScope Coding Plan endpoint\n`);
+  await onLog("stdout", `[paperclip] Endpoint: ${baseUrl}/chat/completions\n`);
   await onLog("stdout", `[paperclip] Model: ${model}\n`);
 
   const messages: DashScopeMessage[] = [
@@ -235,20 +215,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     await onLog("stdout", `[paperclip] DashScope response in ${latencyMs}ms\n`);
-    await onLog("stdout", `[paperclip] Tokens:input=${response.usage.input_tokens}, output=${response.usage.output_tokens}\n`);
+    await onLog("stdout", `[paperclip] Tokens: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}\n`);
 
-    // Extract output (supports both DashScope native and OpenAI compatible format)
+    // Extract output from OpenAI compatible format
     let outputText = "";
     let finishReason = "stop";
     
-    if (response.output?.text !== undefined) {
-      // DashScope native format
-      outputText = response.output.text;
-      finishReason = response.output.finish_reason ?? "stop";
-    } else if (response.choices?.[0]?.message?.content !== undefined) {
-      // OpenAI compatible format (Coding Plan)
+    if (response.choices?.[0]?.message?.content !== undefined) {
       outputText = response.choices[0].message.content;
       finishReason = response.choices[0].finish_reason ?? "stop";
+    } else if (response.output?.text !== undefined) {
+      // Fallback for alternative format
+      outputText = response.output.text;
+      finishReason = response.output.finish_reason ?? "stop";
     } else {
       // Fallback for unexpected response format
       outputText = JSON.stringify(response);

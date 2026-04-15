@@ -67,8 +67,8 @@ export function DashScopeLocalConfigFields({
       </Field>
 
       <Field 
-        label="API Base URL (optional)" 
-        hint="Leave empty for standard endpoint. Set to https://coding.dashscope.aliyuncs.com/v1 for Coding Plan subscription"
+        label="API Base URL" 
+        hint="DashScope Coding Plan endpoint"
       >
         <DraftInput
           value={effectiveBaseUrl}
@@ -79,7 +79,7 @@ export function DashScopeLocalConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="Leave empty for standard endpoint"
+          placeholder="https://coding.dashscope.aliyuncs.com/v1"
         />
       </Field>
 
@@ -127,8 +127,8 @@ export function DashScopeLocalConfigFields({
       <div className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground mt-4">
         <p className="font-medium mb-1">配置说明:</p>
         <ul className="list-disc list-inside space-y-1 mb-2">
-          <li><strong>按量付费模式:</strong> Base URL 留空，使用普通 API Key (sk-xxx)</li>
-          <li><strong>Coding Plan 订阅:</strong> Base URL 设为 <code className="bg-muted px-1 rounded">https://coding.dashscope.aliyuncs.com/v1</code>，使用订阅密钥 (sk-sp-xxx)</li>
+          <li><strong>Base URL:</strong> <code className="bg-muted px-1 rounded">https://coding.dashscope.aliyuncs.com/v1</code></li>
+          <li><strong>API Key:</strong> 使用订阅密钥 (sk-sp-xxx)</li>
         </ul>
         <p className="font-medium mt-2">推荐模型:</p>
         <ul className="list-disc list-inside space-y-1">

@@ -17,11 +17,12 @@ export const configFields = [
   },
   { 
     key: "baseUrl", 
-    label: "API Base URL (optional)", 
+    label: "API Base URL", 
     type: "text", 
-    required: false,
-    placeholder: "Leave empty for standard endpoint",
-    help: "Leave empty to use standard DashScope endpoint"
+    required: true,
+    placeholder: "https://coding.dashscope.aliyuncs.com/v1",
+    help: "DashScope Coding Plan endpoint",
+    default: "https://coding.dashscope.aliyuncs.com/v1"
   },
   { 
     key: "temperature", 
