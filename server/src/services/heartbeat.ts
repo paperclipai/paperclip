@@ -4938,8 +4938,8 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
-      const query = db
+    list: async (companyId: string, agentId?: string, limit: number = 200, offset?: number) => {
+      let query = db
         .select(heartbeatRunListColumns)
         .from(heartbeatRuns)
         .where(
@@ -4947,12 +4947,141 @@ export function heartbeatService(db: Db) {
             ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(limit);
 
-      const rows = limit ? await query.limit(limit) : await query;
+      if (offset !== undefined && offset > 0) {
+        query = query.offset(offset) as any;
+      }
+
+      const rows = await query;
       return rows.map((row) => ({
         ...row,
         resultJson: summarizeHeartbeatRunResultJson(row.resultJson),
+      }));
+    },
+
+    stats: async (companyId: string, agentId?: string) => {
+      const now = new Date();
+      // Calculate 14 days ago for the trailing activity window
+      const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+      
+      const condition = agentId 
+        ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), gt(heartbeatRuns.createdAt, fourteenDaysAgo))
+        : and(eq(heartbeatRuns.companyId, companyId), gt(heartbeatRuns.createdAt, fourteenDaysAgo));
+
+      const rows = await db
+        .select({
+          date: sql<string>`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`.as("date"),
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`.as("count"),
+        })
+        .from(heartbeatRuns)
+        .where(condition)
+        .groupBy(sql`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`, heartbeatRuns.status);
+      
+      return rows.map(r => ({ ...r, count: Number(r.count) }));
+    },
+
+    latestFailed: async (companyId: string) => {
+      // Get the most recent run for each agent in the company
+      // Note: DISTINCT ON is a PostgreSQL-specific feature.
+      const raw = await db.execute(sql`
+        SELECT DISTINCT ON (agent_id)
+          id,
+          company_id,
+          agent_id,
+          invocation_source,
+          trigger_detail,
+          status,
+          started_at,
+          finished_at,
+          error,
+          wakeup_request_id,
+          exit_code,
+          signal,
+          usage_json,
+          CASE
+            WHEN result_json IS NULL THEN NULL
+            WHEN jsonb_typeof(result_json) != 'object' THEN NULL
+            ELSE
+              jsonb_strip_nulls(
+                jsonb_build_object(
+                  'summary', substring(result_json->>'summary', 1, 1024),
+                  'result', substring(result_json->>'result', 1, 1024),
+                  'message', substring(result_json->>'message', 1, 1024),
+                  'error', substring(result_json->>'error', 1, 1024),
+                  'total_cost_usd', result_json->'total_cost_usd',
+                  'cost_usd', result_json->'cost_usd',
+                  'costUsd', result_json->'costUsd'
+                )
+              )
+          END as result_json,
+          session_id_before,
+          session_id_after,
+          log_store,
+          log_ref,
+          log_bytes,
+          log_sha256,
+          log_compressed,
+          stdout_excerpt,
+          stderr_excerpt,
+          error_code,
+          external_run_id,
+          process_pid,
+          process_group_id,
+          process_started_at,
+          retry_of_run_id,
+          process_loss_retry_count,
+          context_snapshot,
+          created_at,
+          updated_at
+        FROM heartbeat_runs
+        WHERE company_id = ${companyId}
+        ORDER BY agent_id, created_at DESC
+        LIMIT 500
+      `);
+      
+      // db.execute may return rows directly (PGlite) or a QueryResult with .rows (node-postgres)
+      const rows: any[] = Array.isArray(raw) ? raw : (raw as any).rows ?? [];
+      
+      // Filter to only those whose most recent run was a failure
+      const failedRows = rows.filter((r: any) => r.status === 'failed' || r.status === 'timed_out');
+      
+      // We need to map snake_case to camelCase since execute() returns raw sql rows
+      return failedRows.map((row: any) => ({
+        id: row.id,
+        companyId: row.company_id,
+        agentId: row.agent_id,
+        status: row.status,
+        errorCode: row.error_code,
+        error: row.error,
+        stderrExcerpt: row.stderr_excerpt,
+        invocationSource: row.invocation_source,
+        triggerDetail: row.trigger_detail,
+        contextSnapshot: row.context_snapshot,
+        resultJson: summarizeHeartbeatRunResultJson(row.result_json),
+        logStore: row.log_store,
+        logRef: row.log_ref,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        wakeupRequestId: row.wakeup_request_id,
+        exitCode: row.exit_code,
+        signal: row.signal,
+        usageJson: row.usage_json,
+        sessionIdBefore: row.session_id_before,
+        sessionIdAfter: row.session_id_after,
+        logBytes: row.log_bytes,
+        logSha256: row.log_sha256,
+        logCompressed: row.log_compressed,
+        stdoutExcerpt: row.stdout_excerpt,
+        externalRunId: row.external_run_id,
+        processPid: row.process_pid,
+        processStartedAt: row.process_started_at,
+        retryOfRunId: row.retry_of_run_id,
+        processLossRetryCount: row.process_loss_retry_count,
       }));
     },
 

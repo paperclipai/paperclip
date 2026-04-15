@@ -2223,13 +2223,47 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/heartbeat-runs/stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.query.agentId as string | undefined;
+    const stats = await heartbeat.stats(companyId, agentId);
+    res.json(stats);
+  });
+
+  router.get("/companies/:companyId/heartbeat-runs/latest-failed", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runs = await heartbeat.latestFailed(companyId);
+    res.json(runs);
+  });
+
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const offsetParam = req.query.offset as string | undefined;
+    
+    let limit = 200;
+    if (limitParam !== undefined) {
+      limit = parseInt(limitParam, 10);
+      if (isNaN(limit) || limit < 1 || limit > 1000) {
+        res.status(400).json({ error: "Invalid limit. Must be an integer between 1 and 1000." });
+        return;
+      }
+    }
+
+    let offset: number | undefined;
+    if (offsetParam !== undefined) {
+      offset = parseInt(offsetParam, 10);
+      if (isNaN(offset) || offset < 0) {
+        res.status(400).json({ error: "Invalid offset. Must be a non-negative integer." });
+        return;
+      }
+    }
+    
+    const runs = await heartbeat.list(companyId, agentId, limit, offset);
     res.json(runs);
   });
 

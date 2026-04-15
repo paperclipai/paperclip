@@ -106,7 +106,6 @@ import {
   getInboxKeyboardSelectionIndex,
   getInboxWorkItems,
   getInboxSearchSupplementIssues,
-  getLatestFailedRunsByAgent,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
   groupInboxWorkItems,
@@ -800,9 +799,9 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
+  const { data: latestFailedRuns, isLoading: isRunsLoading } = useQuery({
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "latest-failed"],
+    queryFn: () => heartbeatsApi.latestFailed(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -911,10 +910,10 @@ export function Inbox() {
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
+      (latestFailedRuns ?? []).filter(
         (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
       ),
-    [heartbeatRuns, dismissedAtByKey],
+    [latestFailedRuns, dismissedAtByKey],
   );
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();

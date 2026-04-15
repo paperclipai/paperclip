@@ -4,43 +4,78 @@ import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
-export function parseClaudeStreamJson(stdout: string) {
+export async function parseClaudeStreamJson(stdoutStream: AsyncIterable<string>) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  let buffer = "";
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const event = parseJson(line);
-    if (!event) continue;
+  for await (const chunk of stdoutStream) {
+    buffer += chunk;
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
 
-    const type = asString(event.type, "");
-    if (type === "system" && asString(event.subtype, "") === "init") {
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-      model = asString(event.model, model);
-      continue;
-    }
+      const line = rawLine.trim();
+      if (!line) continue;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    if (type === "assistant") {
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-      const message = parseObject(event.message);
-      const content = Array.isArray(message.content) ? message.content : [];
-      for (const entry of content) {
-        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-        const block = entry as Record<string, unknown>;
-        if (asString(block.type, "") === "text") {
-          const text = asString(block.text, "");
-          if (text) assistantTexts.push(text);
-        }
+      const type = asString(event.type, "");
+      if (type === "system" && asString(event.subtype, "") === "init") {
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+        model = asString(event.model, model);
+        continue;
       }
-      continue;
-    }
 
-    if (type === "result") {
-      finalResult = event;
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+      if (type === "assistant") {
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+        const message = parseObject(event.message);
+        const content = Array.isArray(message.content) ? message.content : [];
+        for (const entry of content) {
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+          const block = entry as Record<string, unknown>;
+          if (asString(block.type, "") === "text") {
+            const text = asString(block.text, "");
+            if (text) assistantTexts.push(text);
+          }
+        }
+        continue;
+      }
+
+      if (type === "result") {
+        finalResult = event;
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+      }
+    }
+  }
+
+  // Process any remaining data in the buffer after the stream ends
+  if (buffer.trim()) {
+    const event = parseJson(buffer.trim());
+    if (event) {
+      const type = asString(event.type, "");
+      if (type === "system" && asString(event.subtype, "") === "init") {
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+        model = asString(event.model, model);
+      } else if (type === "assistant") {
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+        const message = parseObject(event.message);
+        const content = Array.isArray(message.content) ? message.content : [];
+        for (const entry of content) {
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+          const block = entry as Record<string, unknown>;
+          if (asString(block.type, "") === "text") {
+            const text = asString(block.text, "");
+            if (text) assistantTexts.push(text);
+          }
+        }
+      } else if (type === "result") {
+        finalResult = event;
+        sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+      }
     }
   }
 

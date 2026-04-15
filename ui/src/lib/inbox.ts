@@ -984,7 +984,7 @@ export function computeInboxBadgeData({
   approvals,
   joinRequests,
   dashboard,
-  heartbeatRuns,
+  latestFailedRuns,
   mineIssues,
   dismissedAlerts,
   dismissedAtByKey,
@@ -992,7 +992,7 @@ export function computeInboxBadgeData({
   approvals: Approval[];
   joinRequests: JoinRequest[];
   dashboard: DashboardSummary | undefined;
-  heartbeatRuns: HeartbeatRun[];
+  latestFailedRuns: HeartbeatRun[];
   mineIssues: Issue[];
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
@@ -1002,7 +1002,7 @@ export function computeInboxBadgeData({
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
+  const failedRuns = latestFailedRuns.filter(
     (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
   ).length;
   const visibleJoinRequests = joinRequests.filter(

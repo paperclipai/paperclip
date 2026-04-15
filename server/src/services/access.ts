@@ -48,8 +48,12 @@ export function accessService(db: Db) {
     principalId: string,
     permissionKey: PermissionKey,
   ): Promise<boolean> {
-    const membership = await getMembership(companyId, principalType, principalId);
-    if (!membership || membership.status !== "active") return false;
+    // Agents are not tracked in company_memberships (they have their own table
+    // with a company_id FK), so skip the membership gate for agent principals.
+    if (principalType !== "agent") {
+      const membership = await getMembership(companyId, principalType, principalId);
+      if (!membership || membership.status !== "active") return false;
+    }
     const grant = await db
       .select({ id: principalPermissionGrants.id })
       .from(principalPermissionGrants)

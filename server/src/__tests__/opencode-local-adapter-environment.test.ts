@@ -1,10 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-opencode-local/server";
 
 describe("opencode_local environment diagnostics", () => {
+  let originalXdgConfigHome: string | undefined;
+  let originalHome: string | undefined;
+  let tempConfigDir: string;
+
+  beforeEach(async () => {
+    originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    originalHome = process.env.HOME;
+    
+    tempConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-mock-config-"));
+    process.env.XDG_CONFIG_HOME = tempConfigDir;
+    process.env.HOME = tempConfigDir;
+  });
+
+  afterEach(async () => {
+    if (originalXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+    }
+
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+
+    await fs.rm(tempConfigDir, { recursive: true, force: true });
+  });
+
   it("reports a missing working directory as an error when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
@@ -18,6 +47,9 @@ describe("opencode_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "opencode_local",
       config: {
+        env: {
+          XDG_CONFIG_HOME: tempConfigDir,
+        },
         command: process.execPath,
         cwd,
       },
@@ -41,6 +73,7 @@ describe("opencode_local environment diagnostics", () => {
           command: process.execPath,
           cwd,
           env: {
+            XDG_CONFIG_HOME: tempConfigDir,
             OPENAI_API_KEY: "",
           },
         },
@@ -79,6 +112,9 @@ describe("opencode_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "opencode_local",
         config: {
+        env: {
+          XDG_CONFIG_HOME: tempConfigDir,
+        },
           command: fakeOpencode,
           cwd,
         },

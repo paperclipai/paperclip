@@ -174,6 +174,11 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
+## Learnings
+
+- 2026-03-15: When using Drizzle `db.execute` for raw SQL in this repo, ensure you test the return type (it may return raw rows directly instead of a `QueryResult` object with a `.rows` property depending on the database driver).
+- 2026-03-15: When implementing `IntersectionObserver` for infinite scrolling with React Query, ensure `isFetchingNextPage` is checked inside the callback but NOT included in the React `useEffect` dependency array, otherwise it causes an infinite fetch loop.
+
 ## 11. Fork-Specific: HenkDz/paperclip
 
 This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
