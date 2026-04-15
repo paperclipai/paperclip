@@ -1,5 +1,6 @@
 ---
 name: paperclip-create-agent
+model: claude-sonnet-4-6
 description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
@@ -142,3 +143,12 @@ Before sending a hire request:
 
 For endpoint payload shapes and full examples, read:
 `skills/paperclip-create-agent/references/api-reference.md`
+
+---
+
+## NEVER
+
+- **NEVER** create an agent with a timer heartbeat by default — timer-based wakeups run on schedule regardless of whether there's work to do; most agents should use assignment-based or on-demand wakeups only; a timer heartbeat burns heartbeat budget every interval even when the agent's queue is empty
+- **NEVER** submit a hire request without verifying the reporting line is within the same company — cross-company reporting violates Paperclip's governance model and causes the hire request to be rejected during the approval flow; always confirm `company_id` matches before submitting
+- **NEVER** hard-code secrets in the agent prompt or config payload — agent prompts and configs are stored in Paperclip's control plane and visible to admins; treat them like code: use adapter-level secret injection, not plain-text values in the hire request body
+- **NEVER** reuse a prompt verbatim from another agent without scoping it to the new role — generic prompts cause agents to behave identically to existing hires, making it impossible to distinguish their work in audit trails; each hire needs a role-specific, operationally scoped prompt

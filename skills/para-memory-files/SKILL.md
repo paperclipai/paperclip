@@ -1,5 +1,6 @@
 ---
 name: para-memory-files
+model: claude-sonnet-4-6
 description: >
   File-based memory system using Tiago Forte's PARA method. Use this skill whenever
   you need to store, retrieve, update, or organize knowledge across sessions. Covers
@@ -102,3 +103,10 @@ Vectors + BM25 + reranking finds things even when the wording differs.
 ## Planning
 
 Keep plans in timestamped files in `plans/` at the project root (outside personal memory so other agents can access them). Use `qmd` to search plans. Plans go stale -- if a newer plan exists, do not confuse yourself with an older version. If you notice staleness, update the file to note what it is supersededBy.
+
+## NEVER
+
+- **NEVER delete or overwrite a fact in `items.yaml`** — WHY: PARA memory is append-only by design; deleting a fact removes traceability of how a belief was formed, and future agents have no way to know the old value existed, causing silent context divergence across sessions
+- **NEVER use absolute hardcoded paths** (e.g., `/Users/projetsjsl/`) in memory files — WHY: memory files are shared across machines and agents via `$AGENT_HOME`; hardcoded paths break portability silently, causing file reads to fail on any system where the username or home directory differs
+- **NEVER move an entity folder without updating `index.md`** — WHY: `qmd` indexes from `index.md` as the root manifest; a moved folder not reflected in the index becomes orphaned — its facts exist on disk but are invisible to semantic search and recall
+- **NEVER write to `$AGENT_HOME/MEMORY.md` during the same session that reads it without marking the section as updated** — WHY: multiple agents running in parallel may read the same MEMORY.md at session start; an agent that silently overwrites a section mid-session causes the next reader to get a stale-then-overwritten hybrid that appears consistent but contains merged contradictions

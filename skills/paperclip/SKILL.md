@@ -1,5 +1,6 @@
 ---
 name: paperclip
+model: claude-sonnet-4-6
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
@@ -539,3 +540,12 @@ If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+
+---
+
+## NEVER
+
+- **NEVER** hard-code `PAPERCLIP_API_URL` or `PAPERCLIP_API_KEY` in code — these are injected automatically per-heartbeat as environment variables; hard-coding them means the agent uses stale credentials after rotation and fails silently rather than getting fresh values
+- **NEVER** perform domain work (writing code, research, analysis) in the same heartbeat function as Paperclip coordination — Paperclip skills handle task status and delegation only; mixing domain work creates unaccountable heartbeats where token costs and failures can't be attributed to a specific task
+- **NEVER** skip reading `PAPERCLIP_WAKE_PAYLOAD_JSON` when it's present — this variable contains the compact issue summary and ordered comment batch for the current wake; ignoring it and doing broad API fetches instead wastes rate limit and heartbeat budget on redundant network calls
+- **NEVER** update task status to `done` before verifying the actual work product exists — Paperclip's governance tracks completion via status changes; marking done without verification creates audit gaps that only surface during approvals when the board asks for evidence that doesn't exist
