@@ -122,15 +122,28 @@ export async function createApp(
   // logs, abuse detection) groups every user behind the same proxy into
   // a single bucket.
   //
-  // Accepted values (see Express docs):
-  //   - number  — trust N hops of proxies (e.g. "1" for a single ingress)
-  //   - "true"  — trust all proxies (use only when deployment guarantees
-  //               X-Forwarded-For cannot be spoofed)
-  //   - unset / "" / "false" / "0" — disable (default)
+  // Accepted values (strict — anything else is an error so we never
+  // silently escalate to trust-all):
+  //   - positive integer — trust N hops of proxies (e.g. "1" for a
+  //     single ingress)
+  //   - "true"            — trust all proxies. Only safe when the
+  //     deployment guarantees X-Forwarded-For cannot be spoofed.
+  //   - unset / "" / "false" / "0" — disabled (default)
   const trustProxy = process.env.TRUST_PROXY;
   if (trustProxy && trustProxy !== "false" && trustProxy !== "0") {
-    const parsed = Number.parseInt(trustProxy, 10);
-    app.set("trust proxy", Number.isFinite(parsed) && parsed > 0 ? parsed : true);
+    if (trustProxy === "true") {
+      app.set("trust proxy", true);
+    } else {
+      const parsed = Number.parseInt(trustProxy, 10);
+      if (Number.isFinite(parsed) && parsed > 0 && String(parsed) === trustProxy) {
+        app.set("trust proxy", parsed);
+      } else {
+        throw new Error(
+          `Invalid TRUST_PROXY value "${trustProxy}". ` +
+            `Expected a positive integer (e.g. "1") or "true".`,
+        );
+      }
+    }
   }
 
   app.use(express.json({
