@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   companySkills as companySkillsTable,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -3913,6 +3914,19 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Post-classification: quota-aware agent pausing
+      const quotaClassification = adapterResult.errorCode;
+      if (
+        agent.adapterType === "claude_local" &&
+        (quotaClassification === "quota_warning" || quotaClassification === "quota_exhausted")
+      ) {
+        try {
+          await handleQuotaPause(agent.companyId, quotaClassification, adapterResult.errorMeta);
+        } catch (quotaErr) {
+          logger.warn({ err: quotaErr, runId, companyId: agent.companyId }, "quota pause handler failed");
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4954,6 +4968,100 @@ export function heartbeatService(db: Db) {
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Quota-aware agent pausing
+  // ---------------------------------------------------------------------------
+
+  const SLACK_QUOTA_CHANNEL = "D0AJUUME0QN";
+
+  async function sendSlackQuotaDm(text: string) {
+    const token = process.env.SLACK_BOT_TOKEN;
+    if (!token) {
+      logger.warn("SLACK_BOT_TOKEN not set; skipping quota Slack DM");
+      return;
+    }
+    try {
+      const resp = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channel: SLACK_QUOTA_CHANNEL, text }),
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status }, "Slack quota DM request failed");
+      }
+    } catch (err) {
+      logger.warn({ err }, "Failed to send Slack quota DM");
+    }
+  }
+
+  async function handleQuotaPause(
+    companyId: string,
+    classification: "quota_warning" | "quota_exhausted",
+    meta: Record<string, unknown> | undefined,
+  ) {
+    // Fetch company name for the Slack message
+    const company = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    const companyName = company?.name ?? companyId;
+
+    // List all agents in this company with adapter type claude_local that are not already paused/terminated
+    const companyAgents = await db
+      .select({ id: agents.id, status: agents.status, adapterType: agents.adapterType })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const toPause = companyAgents.filter(
+      (a) =>
+        a.adapterType === "claude_local" &&
+        a.status !== "paused" &&
+        a.status !== "terminated" &&
+        a.status !== "pending_approval",
+    );
+
+    for (const a of toPause) {
+      await db
+        .update(agents)
+        .set({
+          status: "paused",
+          pauseReason: "system",
+          pausedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, a.id));
+    }
+
+    const count = toPause.length;
+
+    if (classification === "quota_warning") {
+      const pct = typeof meta?.sevenDayPercent === "number" ? meta.sevenDayPercent : "90+";
+      await sendSlackQuotaDm(
+        `⚠️ Weekly quota at ${pct}% for ${companyName}. Paused ${count} claude_local agents.`,
+      );
+    } else {
+      const resetTime = typeof meta?.quotaResetTime === "string" ? meta.quotaResetTime : null;
+      const resetTz = typeof meta?.quotaResetTimezone === "string" ? meta.quotaResetTimezone : null;
+      const resetLabel = resetTime
+        ? resetTz
+          ? `${resetTime} (${resetTz})`
+          : resetTime
+        : "unknown";
+      await sendSlackQuotaDm(
+        `🛑 Quota exhausted for ${companyName}. Resets ${resetLabel}. Paused ${count} claude_local agents.`,
+      );
+    }
+
+    logger.info(
+      { companyId, classification, pausedCount: count },
+      "quota-aware agent pause completed",
+    );
   }
 
   return {
