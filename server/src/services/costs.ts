@@ -162,6 +162,34 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
     },
 
+    byIssue: async (companyId: string, range?: CostDateRange) => {
+      const conditions = [
+        eq(costEvents.companyId, companyId),
+        eq(issues.companyId, companyId),
+        isNotNull(costEvents.issueId),
+      ];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const costCentsExpr = sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`;
+
+      return db
+        .select({
+          issueId: costEvents.issueId,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          costCents: costCentsExpr,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .innerJoin(issues, eq(costEvents.issueId, issues.id))
+        .where(and(...conditions))
+        .groupBy(costEvents.issueId, issues.identifier, issues.title)
+        .orderBy(desc(costCentsExpr));
+    },
+
     byProvider: async (companyId: string, range?: CostDateRange) => {
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));

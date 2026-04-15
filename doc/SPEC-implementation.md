@@ -109,6 +109,28 @@ A lightweight scheduler/worker in the server process handles:
 
 Separate queue infrastructure is not required for V1.
 
+### 6.3.1 Heartbeat runs, in-process scheduler, and wake automation
+
+**Timer scheduler:** On a fixed interval (configurable; default 30s), the server evaluates per-agent heartbeat policy (`adapter_config.heartbeat`: `enabled`, `intervalSec`, `wakeOnDemand`, etc.), enqueues `heartbeat_runs` when due, and starts the next queued run per agent subject to max concurrency (V1: one active run per agent). Skips apply when the agent is paused/terminated, a run is already active, or budget hard-stop blocks invocation.
+
+**Routine triggers:** The same interval drives cron-style routine triggers (`routine_triggers`); a firing trigger enqueues work through the same heartbeat queue (no separate job queue).
+
+**Stuck / orphaned runs:** Runs left in `running` without an in-memory execution handle (e.g. after process crash or server restart) are periodically reaped: marked `failed` with a process-lost style error, agent status updated, and queued work resumed. Local child-process adapters may record a detached-pid warning when the OS process still exists but the server lost the handle.
+
+**Cancellation:** Board or control-plane actions cancel in-flight or queued runs (agent pause, budget scope cancel, explicit cancel); process adapter uses SIGTERM then SIGKILL after grace. Run and wakeup request rows move to terminal `cancelled` / failed states consistently.
+
+**Operator visibility:** Failed or timed-out heartbeat runs surface on the company dashboard / sidebar badge counts so operators notice agent errors without reading raw logs.
+
+**Wake-on-assignment and issue-driven wakes:** Issue mutations enqueue agent wakeups (new `heartbeat_runs` via `agent_wakeup_requests`) with reasons carried in the run payload and wake context. Examples include:
+
+- **Assignee / assignment:** Creating an issue with an agent assignee; updating assignee; moving from `backlog` to an active status with an assignee; checkout (`issue_assigned`, `issue_checked_out`, `issue_status_changed` as applicable).
+- **Comments and mentions:** New comments on an issue (excluding self-comments from the assignee), `@`-mentions of agents, reopen via comment.
+- **Dependencies:** When all blocking issues for a dependent issue are `done`, wake the dependent’s assignee (`issue_blockers_resolved`). When all children of a parent reach a terminal state, wake the parent’s assignee (`issue_children_completed`).
+- **Execution policy:** Stage transitions may enqueue wakes for the current execution participant.
+- **Routines:** When a routine execution issue is dispatched, the assignee is woken like an assignment.
+
+Each run stores the wakeup **source** on `heartbeat_runs.invocation_source` (see §7.8).
+
 ## 7. Canonical Data Model (V1)
 
 All core tables include `id`, `created_at`, `updated_at` unless noted.
@@ -231,7 +253,8 @@ Invariants:
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `agent_id` uuid fk not null
-- `invocation_source` enum: `scheduler | manual | callback`
+- `invocation_source` text not null — wakeup **source** for this run: `timer` (scheduled interval), `assignment` (assign/checkout-driven), `on_demand` (manual invoke / default), `automation` (issue comments, blockers resolved, children completed, mentions, routine dispatch, etc.). Aligns with `agent_wakeup_requests.source`.
+- `trigger_detail` text null — e.g. `manual` vs `system` disambiguation where needed
 - `status` enum: `queued | running | succeeded | failed | cancelled | timed_out`
 - `started_at` timestamptz null
 - `finished_at` timestamptz null

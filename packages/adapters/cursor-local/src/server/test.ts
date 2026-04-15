@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { applyOpenRouterOpenAiEnvMapping } from "@paperclipai/adapter-utils";
 import {
   asString,
   asStringArray,
@@ -118,6 +119,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  applyOpenRouterOpenAiEnvMapping(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
@@ -144,6 +146,18 @@ export async function testEnvironment(
       level: "info",
       message: "CURSOR_API_KEY is set for Cursor authentication.",
       detail: `Detected in ${source}.`,
+    });
+  } else if (
+    isNonEmpty(env.OPENAI_API_KEY) ||
+    isNonEmpty(process.env.OPENAI_API_KEY) ||
+    isNonEmpty(env.OPENROUTER_API_KEY) ||
+    isNonEmpty(process.env.OPENROUTER_API_KEY)
+  ) {
+    checks.push({
+      code: "cursor_openai_compatible_api_key_present",
+      level: "info",
+      message: "OpenAI-compatible API credentials are set (including OpenRouter mapping where applicable).",
+      detail: "Detected OPENAI_API_KEY and/or OPENROUTER_API_KEY in adapter config or server environment.",
     });
   } else {
     const cursorHome = isNonEmpty(env.CURSOR_HOME) ? env.CURSOR_HOME : undefined;

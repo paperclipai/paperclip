@@ -138,6 +138,20 @@ export async function testEnvironment(
     });
   }
 
+  const configOpenRouterKey = env.OPENROUTER_API_KEY;
+  const hostOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  if (isNonEmpty(configOpenRouterKey) || isNonEmpty(hostOpenRouterKey)) {
+    const source = isNonEmpty(configOpenRouterKey) ? "adapter config env" : "server environment";
+    checks.push({
+      code: "claude_openrouter_key_present_not_mapped",
+      level: "info",
+      message:
+        "OPENROUTER_API_KEY is set, but Claude Code does not use Paperclip's OpenRouter→OpenAI-compatible env mapping.",
+      detail: `Detected in ${source}.`,
+      hint: "Claude uses Anthropic (API key, subscription, or Bedrock). For OpenRouter-routed OpenAI-compatible CLIs, use codex_local, cursor, opencode_local, or pi_local.",
+    });
+  }
+
   const canRunProbe =
     checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
   if (canRunProbe) {

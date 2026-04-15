@@ -609,6 +609,51 @@ export function issueService(db: Db) {
     }
   }
 
+  const MAX_ISSUE_PARENT_WALK = 64;
+
+  /**
+   * Enforces company-scoped parent links and prevents parent/child cycles.
+   * Cross-company parents are rejected (FK alone does not tie parent.company_id).
+   */
+  async function assertValidIssueParentLink(
+    dbOrTx: DbReader,
+    companyId: string,
+    parentId: string | null | undefined,
+    options: { childIssueId?: string } = {},
+  ) {
+    if (!parentId) return;
+    const parent = await dbOrTx
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, parentId))
+      .then((rows) => rows[0] ?? null);
+    if (!parent || parent.companyId !== companyId) {
+      throw unprocessable("Parent issue not found");
+    }
+    const childIssueId = options.childIssueId;
+    if (!childIssueId) return;
+    if (parentId === childIssueId) {
+      throw unprocessable("Issue cannot be its own parent");
+    }
+    const visited = new Set<string>();
+    let cursor: string | null = parentId;
+    for (let depth = 0; depth < MAX_ISSUE_PARENT_WALK; depth++) {
+      if (!cursor) break;
+      const currentId: string = cursor;
+      if (currentId === childIssueId) {
+        throw unprocessable("Invalid parent: would create a cycle in the issue hierarchy");
+      }
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      const nextRow: { parentId: string | null } | null = await dbOrTx
+        .select({ parentId: issues.parentId })
+        .from(issues)
+        .where(eq(issues.id, currentId))
+        .then((rows) => rows[0] ?? null);
+      cursor = nextRow?.parentId ?? null;
+    }
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -1406,6 +1451,16 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
+        let parentGoalId: string | null = null;
+        if (issueData.parentId) {
+          await assertValidIssueParentLink(tx, companyId, issueData.parentId);
+          const parentRow = await tx
+            .select({ goalId: issues.goalId })
+            .from(issues)
+            .where(eq(issues.id, issueData.parentId))
+            .then((rows) => rows[0] ?? null);
+          parentGoalId = parentRow?.goalId ?? null;
+        }
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
@@ -1513,7 +1568,7 @@ export function issueService(db: Db) {
             projectId: issueData.projectId,
             goalId: issueData.goalId,
             projectGoalId,
-            defaultGoalId: defaultCompanyGoal?.id ?? null,
+            defaultGoalId: parentGoalId ?? defaultCompanyGoal?.id ?? null,
           }),
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
           ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
@@ -1649,6 +1704,9 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (issueData.parentId !== undefined) {
+          await assertValidIssueParentLink(tx, existing.companyId, issueData.parentId, { childIssueId: id });
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),

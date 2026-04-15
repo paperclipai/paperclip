@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { applyOpenRouterOpenAiEnvMapping } from "@paperclipai/adapter-utils";
 import {
   asString,
   parseObject,
@@ -101,6 +102,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  applyOpenRouterOpenAiEnvMapping(env);
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
 
   const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");

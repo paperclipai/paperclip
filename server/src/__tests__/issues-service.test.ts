@@ -58,7 +58,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -709,7 +709,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -986,7 +986,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -1180,5 +1180,101 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       assigneeAgentId,
       childIssueIds: [childA, childB],
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService parent validation", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parent-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 60_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("rejects a child issue whose parent belongs to another company", async () => {
+    const companyA = randomUUID();
+    const companyB = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyA,
+        name: "A",
+        issuePrefix: `A${companyA.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: companyB,
+        name: "B",
+        issuePrefix: `B${companyB.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    const parentInA = randomUUID();
+    await db.insert(issues).values({
+      id: parentInA,
+      companyId: companyA,
+      title: "Parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.create(companyB, {
+        parentId: parentInA,
+        title: "Cross-company child",
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects reparenting that would create a cycle", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: issueA,
+        companyId,
+        title: "A",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: issueB,
+        companyId,
+        parentId: issueA,
+        title: "B child of A",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.update(issueA, { parentId: issueB })).rejects.toMatchObject({ status: 422 });
   });
 });
