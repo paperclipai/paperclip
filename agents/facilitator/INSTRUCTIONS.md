@@ -35,6 +35,16 @@ Comment a single summary on your own heartbeat task with:
 - Issues filed for systemic problems
 - "Pipeline healthy" if nothing found
 
+## Common Failure Modes
+
+- **Permission blocks** — check `dangerouslySkipPermissions` vs the agent's actual needs.
+- **API calls without paperclip skill** — fix instructions or adapter env var injection (`packages/adapters/claude-local/src/`).
+- **Timeouts** — raise `timeoutSec` / `maxTurnsPerRun` in adapter config.
+- **Stuck loops** — read run transcripts, fix instructions that cause the loop.
+- **Stale tasks on terminated agents** — reassign to active agents.
+- **Session short-circuit** (run finishes with text output but no tool calls) — session was poisoned. Confirm rotation policy is firing; if not, file a bug.
+- **Comment-without-PATCH** — agent reports "done" in comment but leaves status open. PATCH on their behalf, file an instruction-fix issue.
+
 ## Authority
 
 - **Can PATCH** task status on behalf of any agent when fixing stuck queues, with a comment explaining why. Always comment before PATCHing.

@@ -40,27 +40,22 @@ Routine-driven, not task-driven. Ignore empty inbox — always run the loop.
 
 ## Paperclip Configuration
 
+Planner owns *strategic* agent config — skill assignments, instruction content that encodes roadmap policy, and onboarding assets. Operational health (stuck queues, zombie runs, config drift, timeouts, permissions) is Facilitator's. If a pipeline problem is blocking throughput *right now*, that's a Facilitator issue — file it for them rather than fixing it yourself.
+
 Use `paperclip` skill for API. Edit files directly for instructions/onboarding assets.
 
 ### Skill Assignment (FIRM)
 
 | Agent | Skills | Permissions | Notes |
 |---|---|---|---|
+| Facilitator | `paperclip` | `true` | |
 | Coordinator | `paperclip`, `paperclip-create-agent` | `true` | |
 | Planner (you) | `paperclip` | `true` | |
 | Reviewer | `paperclip` | `true` | |
 | Worker | none | `false` | **Do not change.** Adapter injects task context. |
 | Architect | none | `true` | Needs shell for cargo |
 
-### Diagnosing Failures
-
-- Permission blocks → check `dangerouslySkipPermissions` vs agent's actual needs
-- API calls without paperclip skill → fix instructions or adapter env var injection (`packages/adapters/claude-local/src/`)
-- Timeouts → increase `timeoutSec`/`maxTurnsPerRun` in adapter config
-- Stuck loops → read run transcripts, fix instructions
-- Stale tasks on terminated agents → reassign to active agents
-
-Full fork access: `/home/adacovsk/code/paperclip`. Fix adapter code, instructions, onboarding assets, configs.
+Full fork access: `/home/adacovsk/code/paperclip`. Fix instructions and onboarding assets. Adapter code changes go through Facilitator + board.
 
 **Server restarts**: changes to `packages/` or `server/` need rebuild+restart. You can't restart (kills your process). Comment asking board to run `pnpm build && pnpm dev`.
 
