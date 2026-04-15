@@ -2656,7 +2656,7 @@ export function accessRoutes(
   async function assertCompanyPermission(
     req: Request,
     companyId: string,
-    permissionKey: any
+    permissionKey: PermissionKey
   ) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {

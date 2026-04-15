@@ -286,6 +286,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function sendMessage(message: unknown): void {
     if (!running) return;
+    // IPC protocol boundary: message shape is runtime-determined by JSON-RPC framing
     const serialized = serializeMessage(message as any);
     stdoutStream.write(serialized);
   }
@@ -1029,6 +1030,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       // Propagate specific error codes from handler errors (e.g.
       // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED) — fall back to
       // WORKER_ERROR for untyped exceptions.
+      // IPC protocol boundary: error code is a runtime property on unknown thrown values
       const errorCode =
         typeof (err as any)?.code === "number"
           ? (err as any).code
@@ -1429,6 +1431,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       handleHostRequest(message as JsonRpcRequest).catch((err) => {
         // Unhandled error in the async handler — send error response
         const errorMessage = err instanceof Error ? err.message : String(err);
+        // IPC protocol boundary: error code is a runtime property on unknown thrown values
         const errorCode = (err as any)?.code ?? PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
         try {
           sendMessage(
