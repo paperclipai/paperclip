@@ -15,6 +15,7 @@ function makeAgent(id: string, name: string): Agent {
     title: null,
     icon: null,
     status: "idle",
+    groupId: null,
     reportsTo: null,
     capabilities: null,
     adapterType: "process",

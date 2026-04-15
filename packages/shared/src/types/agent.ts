@@ -52,6 +52,15 @@ export interface AgentAccessState {
   grants: PrincipalPermissionGrant[];
 }
 
+export interface AgentGroup {
+  id: string;
+  companyId: string;
+  name: string;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface AgentChainOfCommandEntry {
   id: string;
   name: string;
@@ -68,6 +77,7 @@ export interface Agent {
   title: string | null;
   icon: string | null;
   status: AgentStatus;
+  groupId: string | null;
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
