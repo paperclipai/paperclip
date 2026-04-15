@@ -214,20 +214,24 @@ export function agentRoutes(db: Db) {
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
-    return assertCanCreateAgentsForCompany(req, companyId);
+    // Reading agent configurations, skills, and config revisions is a
+    // read-only operation available to any company member. Mutations and
+    // environment probes still gate on agents:create via
+    // assertCanCreateAgentsForCompany / assertCanUpdateAgent.
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      return actorAgent;
+    }
+    return null;
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-      return access.canUser(companyId, req.actor.userId, "agents:create");
-    }
-    if (!req.actor.agentId) return false;
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    return allowedByGrant || canCreateAgents(actorAgent);
+    return hasCompanyAccess(req, companyId);
   }
 
   async function buildSkippedWakeupResponse(
@@ -800,7 +804,7 @@ export function agentRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+      await assertCanCreateAgentsForCompany(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
