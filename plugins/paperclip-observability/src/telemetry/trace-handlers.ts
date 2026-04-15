@@ -704,7 +704,7 @@ export async function handleIssueCreatedTraces(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
-  const issueId = String(p.id ?? "");
+  const issueId = String(p.id ?? event.entityId ?? "");
   if (!issueId) return;
 
   const identifier = String(p.identifier ?? "");
@@ -918,9 +918,10 @@ export async function handleIssueUpdatedTraces(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
+  const prev = (p._previous as Record<string, unknown>) ?? {};
   const status = String(p.status ?? "unknown");
-  const previousStatus = String(p.previousStatus ?? "");
-  const issueId = String(p.id ?? "");
+  const previousStatus = String(p.previousStatus ?? prev.status ?? "");
+  const issueId = String(p.id ?? event.entityId ?? "");
   const assigneeAgentId = String(p.assigneeAgentId ?? "");
   const assigneeAgentName = String(p.assigneeAgentName ?? p.executionAgentNameKey ?? "");
 
@@ -930,7 +931,7 @@ export async function handleIssueUpdatedTraces(
     : ctx.tracer;
 
   // Hoist assignee change fields needed before and after execution span creation
-  const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? "");
+  const previousAssigneeAgentId = String(p.previousAssigneeAgentId ?? prev.assigneeAgentId ?? "");
   const previousAssigneeAgentName = String(p.previousAssigneeAgentName ?? "");
 
   // Start span when issue transitions to in_progress
@@ -940,61 +941,75 @@ export async function handleIssueUpdatedTraces(
     const identifier = String(p.identifier ?? "");
     const title = String(p.title ?? "");
 
-    // End existing lifecycle span (from issue.created) before creating execution
-    // span, to avoid leaking a dangling span. Make execution span a child of the
-    // lifecycle span for proper trace continuity.
-    let executionParentCtx: ReturnType<typeof context.active> | undefined;
-    const existingSpan = ctx.activeIssueSpans.get(issueId);
-    if (existingSpan) {
-      executionParentCtx = trace.setSpan(context.active(), existingSpan);
-      existingSpan.setAttribute("paperclip.issue.status", "in_progress");
-      existingSpan.setStatus({ code: SpanStatusCode.OK });
-      existingSpan.end();
-    }
+    // If an execution span was already created (e.g. by handleRunStartedTraces
+    // last-resort when the run started before checkout), skip creation to avoid
+    // overwriting the persisted span that existing run spans are linked to.
+    const existingPersisted = await ctx.state
+      .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
+      .catch(() => null);
+    const alreadyHasExecSpan =
+      existingPersisted &&
+      typeof existingPersisted === "object" &&
+      "traceId" in (existingPersisted as Record<string, unknown>);
 
-    // Fallback: use server-propagated trace context so the execution span
-    // is not orphaned when the plugin missed the original issue.created event.
-    if (!executionParentCtx) {
-      executionParentCtx = parentCtxFromServerTrace(event);
-    }
+    if (!alreadyHasExecSpan) {
+      // End existing lifecycle span (from issue.created) before creating execution
+      // span, to avoid leaking a dangling span. Make execution span a child of the
+      // lifecycle span for proper trace continuity.
+      let executionParentCtx: ReturnType<typeof context.active> | undefined;
+      const existingSpan = ctx.activeIssueSpans.get(issueId);
+      if (existingSpan) {
+        executionParentCtx = trace.setSpan(context.active(), existingSpan);
+        existingSpan.setAttribute("paperclip.issue.status", "in_progress");
+        existingSpan.setStatus({ code: SpanStatusCode.OK });
+        existingSpan.end();
+      }
 
-    const span = executionParentCtx
-      ? tracer.startSpan(
-          "paperclip.issue.execution",
-          {
+      // Fallback: use server-propagated trace context so the execution span
+      // is not orphaned when the plugin missed the original issue.created event.
+      if (!executionParentCtx) {
+        executionParentCtx = parentCtxFromServerTrace(event);
+      }
+
+      const spanAttrsExec = {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.identifier": identifier,
+        "paperclip.issue.title": title,
+        "paperclip.issue.priority": String(p.priority ?? "medium"),
+        "paperclip.issue.status": status,
+        "paperclip.project.id": projectId,
+        "paperclip.project.name": projectName,
+        "paperclip.goal.id": String(p.goalId ?? ""),
+        "paperclip.agent.name": assigneeAgentName,
+        "gen_ai.agent.id": assigneeAgentId,
+        "gen_ai.agent.name": assigneeAgentName,
+      };
+
+      const span = executionParentCtx
+        ? tracer.startSpan(
+            "paperclip.issue.execution",
+            { kind: SpanKind.INTERNAL, attributes: spanAttrsExec },
+            executionParentCtx,
+          )
+        : tracer.startSpan("paperclip.issue.execution", {
             kind: SpanKind.INTERNAL,
-            attributes: {
-              "paperclip.issue.id": issueId,
-              "paperclip.issue.identifier": identifier,
-              "paperclip.issue.title": title,
-              "paperclip.issue.priority": String(p.priority ?? "medium"),
-              "paperclip.issue.status": status,
-              "paperclip.project.id": projectId,
-              "paperclip.project.name": projectName,
-              "paperclip.goal.id": String(p.goalId ?? ""),
-              "paperclip.agent.name": assigneeAgentName,
-              "gen_ai.agent.id": assigneeAgentId,
-              "gen_ai.agent.name": assigneeAgentName,
-            },
+            attributes: spanAttrsExec,
+          });
+
+      span.end();
+
+      await ctx.state
+        .set(
+          { scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" },
+          {
+            traceId: span.spanContext().traceId,
+            spanId: span.spanContext().spanId,
+            traceFlags: span.spanContext().traceFlags,
+            startTime: Date.now(),
           },
-          executionParentCtx,
         )
-      : tracer.startSpan("paperclip.issue.execution", {
-          kind: SpanKind.INTERNAL,
-          attributes: {
-            "paperclip.issue.id": issueId,
-            "paperclip.issue.identifier": identifier,
-            "paperclip.issue.title": title,
-            "paperclip.issue.priority": String(p.priority ?? "medium"),
-            "paperclip.issue.status": status,
-            "paperclip.project.id": projectId,
-            "paperclip.project.name": projectName,
-            "paperclip.goal.id": String(p.goalId ?? ""),
-            "paperclip.agent.name": assigneeAgentName,
-            "gen_ai.agent.id": assigneeAgentId,
-            "gen_ai.agent.name": assigneeAgentName,
-          },
-        });
+        .catch(() => {});
+    }
 
     // Populate agentIssueMap so run/cost spans can look up business context
     if (assigneeAgentId) {
@@ -1004,28 +1019,6 @@ export async function handleIssueUpdatedTraces(
         projectId,
       });
     }
-
-    // End the execution span immediately so it appears in the trace backend
-    // right away. Child spans (runs, costs) will link to this span via the
-    // persisted traceId/spanId in plugin state — they don't need the span
-    // object to be open. This avoids long-lived spans that never get exported
-    // by the BatchSpanProcessor.
-    span.end();
-
-    // Do NOT store in activeIssueSpans — the span is already ended.
-    // The done/cancelled handler will clean up persisted state instead.
-
-    await ctx.state
-      .set(
-        { scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" },
-        {
-          traceId: span.spanContext().traceId,
-          spanId: span.spanContext().spanId,
-          traceFlags: span.spanContext().traceFlags,
-          startTime: Date.now(),
-        },
-      )
-      .catch(() => {});
   }
 
   // --- Add spans for all status transitions (checkout, release, blocked, etc.) ---
