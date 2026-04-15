@@ -1253,7 +1253,7 @@ export function issueService(db: Db) {
 
     getById: async (raw: string) => {
       const id = raw.trim();
-      if (/^[A-Z]+-\d+$/i.test(id)) {
+      if (/^[A-Z][A-Z0-9]*-\d+$/i.test(id)) {
         return getIssueByIdentifier(id);
       }
       if (!isUuidLike(id)) {
