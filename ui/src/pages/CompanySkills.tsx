@@ -499,7 +499,7 @@ function SkillAuthSection({
   hasAuth: boolean;
 }) {
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const [editing, setEditing] = useState(false);
   const [token, setToken] = useState("");
 
