@@ -779,4 +779,4 @@ export async function ensurePostgresDatabase(
 export type Db = ReturnType<typeof createDb>;
 
 /** A drizzle Db instance or the transaction object passed inside `db.transaction(tx => ...)`. */
-export type DbOrTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
