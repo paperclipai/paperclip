@@ -54,6 +54,45 @@ test.describe("Onboarding wizard", () => {
       page.locator("h3", { hasText: "Give it something to do" })
     ).toBeVisible({ timeout: 30_000 });
 
+    const baseUrl = page.url().split("/").slice(0, 3).join("/");
+    if (SKIP_LLM) {
+      const companiesAfterAgentRes = await page.request.get(`${baseUrl}/api/companies`);
+      expect(companiesAfterAgentRes.ok()).toBe(true);
+      const companiesAfterAgent = await companiesAfterAgentRes.json();
+      const companyAfterAgent = companiesAfterAgent.find(
+        (c: { name: string }) => c.name === COMPANY_NAME
+      );
+      expect(companyAfterAgent).toBeTruthy();
+
+      const agentsAfterCreateRes = await page.request.get(
+        `${baseUrl}/api/companies/${companyAfterAgent.id}/agents`
+      );
+      expect(agentsAfterCreateRes.ok()).toBe(true);
+      const agentsAfterCreate = await agentsAfterCreateRes.json();
+      const ceoAgentAfterCreate = agentsAfterCreate.find(
+        (a: { name: string }) => a.name === AGENT_NAME
+      );
+      expect(ceoAgentAfterCreate).toBeTruthy();
+
+      const disableWakeRes = await page.request.patch(
+        `${baseUrl}/api/agents/${ceoAgentAfterCreate.id}?companyId=${encodeURIComponent(companyAfterAgent.id)}`,
+        {
+          data: {
+            runtimeConfig: {
+              heartbeat: {
+                enabled: false,
+                intervalSec: 300,
+                wakeOnDemand: false,
+                cooldownSec: 10,
+                maxConcurrentRuns: 1,
+              },
+            },
+          },
+        }
+      );
+      expect(disableWakeRes.ok()).toBe(true);
+    }
+
     const taskTitleInput = page.locator(
       'input[placeholder="e.g. Research competitor pricing"]'
     );
@@ -73,8 +112,6 @@ test.describe("Onboarding wizard", () => {
     await page.getByRole("button", { name: "Create & Open Issue" }).click();
 
     await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
-
-    const baseUrl = page.url().split("/").slice(0, 3).join("/");
 
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
     expect(companiesRes.ok()).toBe(true);
@@ -128,6 +165,17 @@ test.describe("Onboarding wizard", () => {
         const issue = await res.json();
         expect(["in_progress", "done"]).toContain(issue.status);
       }).toPass({ timeout: 120_000, intervals: [5_000] });
+    } else {
+      await expect
+        .poll(async () => {
+          const runsRes = await page.request.get(
+            `${baseUrl}/api/companies/${company.id}/heartbeat-runs?agentId=${ceoAgent.id}`
+          );
+          expect(runsRes.ok()).toBe(true);
+          const runs = await runsRes.json();
+          return Array.isArray(runs) ? runs.length : -1;
+        }, { timeout: 10_000, intervals: [500, 1_000, 2_000] })
+        .toBe(0);
     }
   });
 });

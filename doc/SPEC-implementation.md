@@ -395,6 +395,8 @@ Side effects:
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
 
+Detailed ownership, execution, blocker, and crash-recovery semantics are documented in `doc/execution-semantics.md`.
+
 ## 8.3 Approval Status
 
 - `pending -> approved | rejected | cancelled`

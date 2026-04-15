@@ -665,10 +665,18 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Terminal states: `done`, `cancelled`
 
+- `backlog` = not ready to execute yet.
+- `todo` = ready to execute, but not actively checked out yet.
+- `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
+- `in_review` = waiting on review or approval action, not active execution.
+- `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
+- `done` = completed.
+- `cancelled` = intentionally abandoned.
 - `in_progress` requires an assignee (use checkout).
 - `started_at` is auto-set on `in_progress`.
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
+- `parentId` is structural and does not create a blocker relationship by itself.
 
 ---
 
