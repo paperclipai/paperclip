@@ -24,6 +24,10 @@ Approved/Scheduled are tracked via linked approval state + task metadata.
 
 ## Required Metadata per Marketing Item
 Include these fields in issue description/body:
+- Lane (content_lane)
+- Content type (content_type)
+- Dependencies (internal issue IDs or external blockers)
+- Due window (start/end + timezone)
 - Platform: LinkedIn | X | Website
 - Post Type: Insight | Case Study | Launch | Thread | Blog
 - Draft Text
