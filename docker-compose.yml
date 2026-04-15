@@ -3,6 +3,13 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
+    env:
+      - OLLAMA_RESPONSE_TIMEOUT: 900
+      - OLLAMA_LOAD_TIMEOUT: 900
+      - OLLAMA_TIMEOUT: 900
+      - DISABLE_TELEMETRY: 1
+      - DISABLE_ERROR_REPORTING: 1
+      - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1
     volumes:
       - ${OLLAMA_DATA_DIR}:/root/.ollama
     ports:
