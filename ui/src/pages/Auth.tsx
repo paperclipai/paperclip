@@ -5,6 +5,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Sparkles } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
@@ -70,6 +71,7 @@ export function AuthPage() {
 
   return (
     <div className="fixed inset-0 flex bg-background">
+      <ThemeToggle className="absolute top-4 right-4 z-10 text-muted-foreground" />
       {/* Left half — form */}
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
