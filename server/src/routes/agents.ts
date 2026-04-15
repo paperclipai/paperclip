@@ -1094,6 +1094,83 @@ export function agentRoutes(db: Db) {
     res.json(health);
   });
 
+  router.get("/instance/katya-rss-latest", async (req, res) => {
+    assertBoard(req);
+    const memoryDir = path.join(process.env.HOME ?? "", ".openclaw", "agents", "katya", "memory");
+    try {
+      const files = await readdir(memoryDir);
+      const rssFiles = files
+        .filter((f) => f.match(/^\d{4}-\d{2}-\d{2}(-rss|-rss-proof)\.md$/) && !f.includes("deleted"))
+        .sort()
+        .reverse();
+
+      if (rssFiles.length === 0) {
+        res.json({ content: null, date: null, filename: null });
+        return;
+      }
+
+      const latest = rssFiles[0]!;
+      const filePath = path.join(memoryDir, latest);
+      const content = await readFile(filePath, "utf8");
+      const dateMatch = latest.match(/^(\d{4}-\d{2}-\d{2})/);
+      const fileStat = await stat(filePath);
+      res.json({
+        content,
+        date: dateMatch ? dateMatch[1] : null,
+        filename: latest,
+        lastModified: fileStat.mtime.toISOString(),
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json({ content: null, date: null, filename: null });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.get("/instance/katya-daily-notes", async (req, res) => {
+    assertBoard(req);
+    const memoryDir = path.join(process.env.HOME ?? "", ".openclaw", "agents", "katya", "memory");
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    try {
+      const results: Array<{ date: string; content: string }> = [];
+      for (const date of [today, yesterday]) {
+        const filePath = path.join(memoryDir, `${date}.md`);
+        try {
+          const content = await readFile(filePath, "utf8");
+          results.push({ date, content });
+        } catch {
+          // file not found for this date — skip
+        }
+      }
+      res.json(results);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json([]);
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.get("/instance/handoffs-latest", async (req, res) => {
+    assertBoard(req);
+    const filePath = path.join(process.env.HOME ?? "", "life", "projects", "pelergy", "ops", "handoffs.md");
+    try {
+      const content = await readFile(filePath, "utf8");
+      const fileStat = await stat(filePath);
+      res.json({ content, lastModified: fileStat.mtime.toISOString() });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json({ content: null, lastModified: null });
+        return;
+      }
+      throw error;
+    }
+  });
+
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

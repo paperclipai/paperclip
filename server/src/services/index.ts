@@ -27,6 +27,24 @@ export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { notifyKatyaPublishApproved, type NotifyKatyaPublishApprovedInput } from "./katya-publish-hook.js";
+export {
+  buildKatyaBlockerEscalationTemplate,
+  buildKatyaMetadataTemplate,
+  buildKatyaOutreachHardeningTemplate,
+  compareKatyaApprovalStatus,
+  computeKatyaDueState,
+  computeKatyaSelfManagementScoreboard,
+  detectKatyaBehindSchedule,
+  isBlockerEscalationComplete,
+  type KatyaApprovalStatus,
+  type KatyaMetadataTemplate,
+  type KatyaDueStateSummary,
+  type KatyaBlockerEscalationMetadata,
+  type KatyaSelfManagementScoreboard,
+  type KatyaBehindScheduleState,
+  type KatyaOutreachHardening,
+  type KatyaOutreachQuotas,
+} from "./katya-autonomy.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

@@ -77,4 +77,10 @@ export const heartbeatsApi = {
     api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
   listOpenclawCronJobs: () =>
     api.get<OpenclawCronJob[]>("/instance/openclaw-cron-jobs"),
+  katyaRssLatest: () =>
+    api.get<{ content: string | null; date: string | null; filename: string | null; lastModified: string | null }>("/instance/katya-rss-latest"),
+  katyaDailyNotes: () =>
+    api.get<Array<{ date: string; content: string }>>("/instance/katya-daily-notes"),
+  handoffsLatest: () =>
+    api.get<{ content: string | null; lastModified: string | null }>("/instance/handoffs-latest"),
 };
