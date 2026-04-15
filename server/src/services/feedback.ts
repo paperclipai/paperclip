@@ -322,24 +322,6 @@ async function* readRunLogLines(store: RunLogStore, handle: RunLogHandle): Async
   }
 }
 
-async function parseRunLogEntries(lines: AsyncIterableIterator<string>) {
-  const entries: Array<{ ts: string; stream: string; chunk: string }> = [];
-  for await (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    try {
-      const parsed = JSON.parse(line) as { ts?: unknown; stream?: unknown; chunk?: unknown };
-      const ts = asString(parsed.ts) ?? new Date(0).toISOString();
-      const stream = asString(parsed.stream) ?? "stdout";
-      const chunk = typeof parsed.chunk === "string" ? parsed.chunk : "";
-      entries.push({ ts, stream, chunk });
-    } catch {
-      // Keep malformed lines out of the normalized bundle but preserve the raw log file separately.
-    }
-  }
-  return entries;
-}
-
 function captureStatusFromFiles(files: FeedbackTraceBundleFile[]): FeedbackTraceBundleCaptureStatus {
   const sources = new Set(files.map((file) => file.source));
   if (sources.has("codex_session")) return "full";
@@ -1456,27 +1438,37 @@ async function buildFeedbackTraceBundleFromRow(
         .from(heartbeatRunEvents)
         .where(eq(heartbeatRunEvents.runId, run.id))
         .orderBy(asc(heartbeatRunEvents.seq));
-      let logEntries: Array<{ ts: string; stream: string; chunk: string }> = [];
       let logText = "";
-      if (run.logStore === "local_file" && run.logRef) {
-        async function* teeLog() {
-          for await (const line of readRunLogLines(getRunLogStore(), { store: "local_file", logRef: run.logRef! })) {
-            if (logText.length < MAX_TRACE_FILE_CHARS) {
+      let stdoutStreamConsumed = false;
+
+      async function* getStdoutStream(): AsyncIterableIterator<string> {
+        if (!(run.logStore === "local_file" && run.logRef)) return;
+        for await (const line of readRunLogLines(getRunLogStore(), { store: "local_file", logRef: run.logRef! })) {
+          if (logText.length < MAX_TRACE_FILE_CHARS) {
+            const remaining = MAX_TRACE_FILE_CHARS - logText.length;
+            if (line.length + 1 > remaining) {
+              logText += line.slice(0, remaining) + (remaining > 0 ? "\n" : "");
+            } else {
               logText += line + "\n";
             }
-            yield line;
+          }
+          
+          const rawLine = line.trim();
+          if (!rawLine) continue;
+          try {
+            const parsed = JSON.parse(rawLine) as { stream?: unknown; chunk?: unknown };
+            const stream = typeof parsed.stream === "string" ? parsed.stream : "stdout";
+            const chunk = typeof parsed.chunk === "string" ? parsed.chunk : "";
+            if (stream === "stdout") {
+              yield chunk;
+            }
+          } catch {
+            // Keep malformed lines out
           }
         }
-        logEntries = await parseRunLogEntries(teeLog());
       }
-      
-      async function* getStdoutStream(): AsyncIterableIterator<string> {
-        for (const entry of logEntries) {
-          if (entry.stream === "stdout") {
-            yield entry.chunk;
-          }
-        }
-      }
+
+      const stdoutStream = getStdoutStream();
 
       paperclipRun = sanitizeFeedbackValue(
         {
@@ -1532,17 +1524,6 @@ async function buildFeedbackTraceBundleFromRow(
         contents: `${JSON.stringify(sanitizedEvents, null, 2)}\n`,
       }));
 
-      if (logText) {
-        files.push(makeBundleFile({
-          path: "paperclip/run-log.ndjson",
-          contentType: "application/x-ndjson",
-          source: "paperclip_run_log",
-          contents: `${sanitizeFeedbackText(logText, state, "bundle.paperclipRun.log", MAX_TRACE_FILE_CHARS)}\n`,
-        }));
-      } else {
-        appendNote(notes, "run_log_missing");
-      }
-
       if (run.adapterType === "codex_local") {
         const adapter = await buildCodexTraceFiles({
           companyId: row.companyId,
@@ -1554,9 +1535,10 @@ async function buildFeedbackTraceBundleFromRow(
         rawAdapterTrace = adapter.raw;
         normalizedAdapterTrace = adapter.normalized;
       } else if (run.adapterType === "claude_local") {
+        stdoutStreamConsumed = true;
         const adapter = await buildClaudeTraceFiles({
           sessionId: run.sessionIdAfter ?? run.sessionIdBefore,
-          stdoutStream: getStdoutStream(),
+          stdoutStream,
           state,
           notes,
         });
@@ -1564,9 +1546,10 @@ async function buildFeedbackTraceBundleFromRow(
         rawAdapterTrace = adapter.raw;
         normalizedAdapterTrace = adapter.normalized;
       } else if (run.adapterType === "opencode_local") {
+        stdoutStreamConsumed = true;
         const adapter = await buildOpenCodeTraceFiles({
           sessionId: run.sessionIdAfter ?? run.sessionIdBefore,
-          stdoutStream: getStdoutStream(),
+          stdoutStream,
           state,
           notes,
         });
@@ -1575,6 +1558,24 @@ async function buildFeedbackTraceBundleFromRow(
         normalizedAdapterTrace = adapter.normalized;
       } else {
         appendNote(notes, "adapter_specific_trace_not_supported");
+      }
+
+      if (!stdoutStreamConsumed) {
+        // Drain stream to populate logText
+        for await (const _ of stdoutStream) {}
+      }
+
+      if (logText) {
+        files.push(makeBundleFile({
+          path: "paperclip/run-log.ndjson",
+          contentType: "application/x-ndjson",
+          source: "paperclip_run_log",
+          contents: `${sanitizeFeedbackText(logText, state, "bundle.paperclipRun.log", MAX_TRACE_FILE_CHARS)}\n`,
+        }));
+      } else {
+        if (run.logStore === "local_file" && run.logRef) {
+          appendNote(notes, "run_log_missing");
+        }
       }
     }
   }
