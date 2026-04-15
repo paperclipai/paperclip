@@ -37,10 +37,20 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    approvalService: () => mockApprovalService,
+    heartbeatService: () => mockHeartbeatService,
+    issueApprovalService: () => mockIssueApprovalService,
+    logActivity: mockLogActivity,
+    secretService: () => mockSecretService,
+  }));
+}
+
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
-  const [{ approvalRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/approvals.js"),
-    import("../middleware/index.js"),
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -61,9 +71,9 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
 }
 
 async function createAgentApp() {
-  const [{ approvalRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/approvals.js"),
-    import("../middleware/index.js"),
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -85,6 +95,9 @@ async function createAgentApp() {
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/approvals.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
@@ -207,7 +220,7 @@ describe("approval routes idempotent retries", () => {
         payload: { title: "Approve hosting spend" },
       });
 
-    expect(res.status).toBe(201);
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({

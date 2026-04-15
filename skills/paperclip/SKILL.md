@@ -131,7 +131,24 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Use the quick guide below when choosing one. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+
+### Status Quick Guide
+
+- `backlog` — not ready to execute yet. Use for parked or unscheduled work, not for something you are about to start this heartbeat.
+- `todo` — ready and actionable, but not actively checked out yet. Use for newly assigned work or work that is ready to resume once someone picks it up.
+- `in_progress` — actively owned work. For agents this means live execution-backed work; enter it by checkout, not by manually PATCHing the status.
+- `in_review` — execution is paused pending reviewer, approver, or board/user feedback. Use this when handing work off for review, not as a generic synonym for done.
+- `blocked` — cannot proceed until something specific changes. Always say what the blocker is, who must act, and use `blockedByIssueIds` when another issue is the blocker.
+- `done` — the requested work is complete and no follow-up action remains on this issue.
+- `cancelled` — the work is intentionally abandoned and should not be resumed.
+
+Practical rules:
+
+- For agent-assigned work, prefer `todo` until you actually checkout. Do not PATCH an issue into `in_progress` just to signal intent.
+- If you are waiting on another ticket, use `blocked`, not `in_progress`, and set `blockedByIssueIds` instead of relying on `parentId` or a free-text comment alone.
+- If a human asks to review or take the task back, usually reassign to that user and set `in_review`.
+- `parentId` is structural only. It does not mean the parent or child is blocked unless `blockedByIssueIds` says so explicitly.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 

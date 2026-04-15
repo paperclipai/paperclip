@@ -6,7 +6,8 @@ type MarkdownNode = {
 };
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]+-\d+$/i;
-const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\b[A-Z][A-Z0-9]+-\d+\b/gi;
+const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
+const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\b[A-Z][A-Z0-9]+-\d+\b/gi;
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
@@ -29,6 +30,16 @@ export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): 
 
 export function parseIssueReferenceFromHref(href: string | null | undefined) {
   if (!href) return null;
+  const trimmed = href.trim();
+  const issueSchemeMatch = trimmed.match(ISSUE_SCHEME_RE);
+  if (issueSchemeMatch?.[1]) {
+    const issuePathId = decodeURIComponent(issueSchemeMatch[1]);
+    return {
+      issuePathId,
+      href: `/issues/${encodeURIComponent(issuePathId)}`,
+    };
+  }
+
   const pathId = parseIssuePathIdFromPath(href);
   if (pathId) {
     return {
@@ -37,7 +48,6 @@ export function parseIssueReferenceFromHref(href: string | null | undefined) {
     };
   }
 
-  const trimmed = href.trim();
   if (!BARE_ISSUE_IDENTIFIER_RE.test(trimmed)) return null;
   const normalized = trimmed.toUpperCase();
   return {

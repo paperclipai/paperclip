@@ -875,6 +875,83 @@ describe("issue execution policy transitions", () => {
       // coderAgentId is the returnAssignee, so QA should be selected
       expect(result.patch.assigneeAgentId).toBe(qaAgentId);
     });
+
+    it("skips a self-review-only stage and completes the workflow", () => {
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done",
+      });
+
+      expect(result.patch).toMatchObject({
+        executionState: {
+          status: "completed",
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[0].id],
+        },
+      });
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+    });
+
+    it("skips a self-review-only review stage and advances to approval", () => {
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+        {
+          type: "approval",
+          participants: [{ type: "user", userId: ctoUserId }],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done",
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: ctoUserId,
+        executionState: {
+          status: "pending",
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: ctoUserId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [policy.stages[0].id],
+        },
+      });
+    });
   });
 
   describe("changes requested with no return assignee", () => {

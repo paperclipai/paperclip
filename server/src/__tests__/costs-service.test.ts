@@ -71,24 +71,26 @@ const mockBudgetService = vi.hoisted(() => ({
   resolveIncident: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  budgetService: () => mockBudgetService,
-  costService: () => mockCostService,
-  financeService: () => mockFinanceService,
-  companyService: () => mockCompanyService,
-  agentService: () => mockAgentService,
-  heartbeatService: () => mockHeartbeatService,
-  logActivity: mockLogActivity,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    budgetService: () => mockBudgetService,
+    costService: () => mockCostService,
+    financeService: () => mockFinanceService,
+    companyService: () => mockCompanyService,
+    agentService: () => mockAgentService,
+    heartbeatService: () => mockHeartbeatService,
+    logActivity: mockLogActivity,
+  }));
 
-vi.mock("../services/quota-windows.js", () => ({
-  fetchAllQuotaWindows: mockFetchAllQuotaWindows,
-}));
+  vi.doMock("../services/quota-windows.js", () => ({
+    fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+}
 
 async function createApp() {
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/costs.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -103,8 +105,8 @@ async function createApp() {
 
 async function createAppWithActor(actor: any) {
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/costs.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -124,7 +126,12 @@ async function loadCostParsers() {
 
 beforeEach(() => {
   vi.resetModules();
-  vi.resetAllMocks();
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/quota-windows.js");
+  vi.doUnmock("../routes/costs.js");
+  vi.doUnmock("../middleware/index.js");
+  registerModuleMocks();
+  vi.clearAllMocks();
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",
     name: "Paperclip",

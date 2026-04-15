@@ -4388,7 +4388,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-          labelIds: [],
+          labelIds: manifestIssue.labelIds ?? [],
         });
       }
     }

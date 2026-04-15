@@ -19,16 +19,14 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
-function registerRouteMocks() {
-  vi.doMock("../services/activity.js", () => ({
-    activityService: () => mockActivityService,
-  }));
+vi.mock("../services/activity.js", () => ({
+  activityService: () => mockActivityService,
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    issueService: () => mockIssueService,
-    heartbeatService: () => mockHeartbeatService,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  issueService: () => mockIssueService,
+  heartbeatService: () => mockHeartbeatService,
+}));
 
 async function createApp() {
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
@@ -55,7 +53,6 @@ async function createApp() {
 describe("activity routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
     vi.clearAllMocks();
   });
 

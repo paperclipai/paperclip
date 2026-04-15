@@ -146,6 +146,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
   });
 
+  it("rewrites issue scheme links to internal issue links", () => {
+    const html = renderMarkdown("See issue://PAP-1310 and issue://:PAP-1311.", [
+      { identifier: "PAP-1310", status: "done" },
+      { identifier: "PAP-1311", status: "blocked" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1310"');
+    expect(html).toContain('href="/issues/PAP-1311"');
+    expect(html).toContain(">issue://PAP-1310<");
+    expect(html).toContain(">issue://:PAP-1311<");
+    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-red-600");
+  });
+
   it("linkifies issue identifiers inside inline code spans", () => {
     const html = renderMarkdown("Reference `PAP-1271` here.", [
       { identifier: "PAP-1271", status: "done" },
