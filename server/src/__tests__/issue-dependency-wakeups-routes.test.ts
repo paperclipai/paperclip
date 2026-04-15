@@ -158,6 +158,131 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it("does not wake a blocked issue on status change while blockers are still unresolved", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-2",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Blocked child",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-2",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Blocked child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{
+        id: "issue-1",
+        identifier: "PAP-101",
+        title: "Still blocked",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+      }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/issue-2").send({ status: "todo" });
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockWakeup).not.toHaveBeenCalled();
+    });
+  });
+
+  it("wakes a blocked issue on status change after all blockers are done", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-2",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Blocked child",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-2",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Blocked child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{
+        id: "issue-1",
+        identifier: "PAP-101",
+        title: "Done blocker",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+      }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/issue-2").send({ status: "todo" });
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_status_changed",
+          payload: expect.objectContaining({
+            issueId: "issue-2",
+            mutation: "update",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "issue-2",
+            source: "issue.status_change",
+          }),
+        }),
+      );
+    });
+  });
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",
