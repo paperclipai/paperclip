@@ -1,4 +1,5 @@
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { IssueRelationType } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -10,7 +11,7 @@ export const issueRelations = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     relatedIssueId: uuid("related_issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
-    type: text("type").$type<"blocks">().notNull(),
+    type: text("type").$type<IssueRelationType>().notNull(),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

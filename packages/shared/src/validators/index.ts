@@ -147,6 +147,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  createIssueRelationSchema,
   type CreateIssue,
   type CreateIssueLabel,
   type UpdateIssue,
@@ -158,6 +159,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type CreateIssueRelation,
 } from "./issue.js";
 
 export {

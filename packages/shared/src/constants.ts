@@ -138,7 +138,7 @@ export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
-export const ISSUE_RELATION_TYPES = ["blocks"] as const;
+export const ISSUE_RELATION_TYPES = ["blocks", "blocked_by", "related", "duplicate"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
