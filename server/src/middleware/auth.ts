@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import type { Request, RequestHandler } from "express";
+import type { Request, Response, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -18,15 +20,40 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+async function resolveRunIdHeader(db: Db, req: Request, res: Response) {
+  const raw = req.header("x-paperclip-run-id");
+  const runId = raw?.trim();
+  if (!runId) return undefined;
+
+  if (!UUID_RE.test(runId)) {
+    res.status(400).json({ error: "Invalid X-Paperclip-Run-Id header" });
+    return null;
+  }
+
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+
+  if (!run) {
+    res.status(400).json({ error: "Unknown X-Paperclip-Run-Id header" });
+    return null;
+  }
+
+  return run.id;
+}
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = await resolveRunIdHeader(db, req, res);
+    if (runIdHeader === null) return;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
