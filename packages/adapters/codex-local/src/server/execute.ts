@@ -410,7 +410,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let instructionsChars = 0;
   if (instructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const rawInstructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      // Rewrite backtick-quoted relative ./ file references to absolute paths
+      // so the LLM doesn't try to read them from cwd
+      const instructionsContents = instructionsDir
+        ? rawInstructionsContents.replace(/`\.\/([^`/]+\.md)`/g, `\`${instructionsDir}$1\``)
+        : rawInstructionsContents;
       instructionsPrefix =
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
