@@ -409,6 +409,31 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+
+    // Prevent agents in an active run from commenting on completed issues that
+    // belong to a different task.  This catches stray cross-issue comments where
+    // an agent LLM accidentally addresses the wrong issue ID.
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    if (isClosed && req.actor.runId) {
+      const run = await heartbeat.getRun(req.actor.runId);
+      if (run) {
+        const runIssueId =
+          run.contextSnapshot &&
+          typeof run.contextSnapshot === "object" &&
+          typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (runIssueId && runIssueId !== issue.id) {
+          res.status(409).json({
+            error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
+            runIssueId,
+            targetIssueId: issue.id,
+          });
+          return false;
+        }
+      }
+    }
+
     if (issue.status !== "in_progress" || issue.assigneeAgentId !== actorAgentId) {
       return true;
     }
