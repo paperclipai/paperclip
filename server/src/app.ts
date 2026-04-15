@@ -297,8 +297,20 @@ export async function createApp(
         }),
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
-      // short cache so operators who swap them out see the new version reasonably fast.
-      app.use(express.static(uiDist, { maxAge: "1h" }));
+      // short cache so operators who swap them out see the new version
+      // reasonably fast. Override for `index.html` specifically — it is
+      // served by this middleware for `/` and `/index.html`, and it must
+      // never outlive the asset hashes it points at.
+      app.use(
+        express.static(uiDist, {
+          maxAge: "1h",
+          setHeaders(res, filePath) {
+            if (path.basename(filePath) === "index.html") {
+              res.set("Cache-Control", "no-cache");
+            }
+          },
+        }),
+      );
       // SPA fallback. Only for non-asset routes — if the browser asks for
       // /assets/something.js that doesn't exist, we must NOT serve the HTML
       // shell: the browser would try to load it as a JavaScript module, fail
