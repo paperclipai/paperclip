@@ -94,7 +94,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
     }),
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false,
+      // SECURITY: Email verification configurable via PAPERCLIP_AUTH_REQUIRE_EMAIL_VERIFICATION (GHSA-68qg-g8mg-6pr7)
+      // Defaults to false for backward compatibility; set to true when email sending is configured
+      requireEmailVerification: config.authRequireEmailVerification,
       disableSignUp: config.authDisableSignUp,
     },
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),

@@ -14,6 +14,9 @@ export const cliAuthChallenges = pgTable(
     requestedCompanyId: uuid("requested_company_id").references(() => companies.id, { onDelete: "set null" }),
     pendingKeyHash: text("pending_key_hash").notNull(),
     pendingKeyName: text("pending_key_name").notNull(),
+    // SECURITY: Track challenge creator to prevent self-approval (GHSA-68qg-g8mg-6pr7)
+    // Null for anonymous challenge creation (backwards compatible)
+    createdByUserId: text("created_by_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     approvedByUserId: text("approved_by_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     boardApiKeyId: uuid("board_api_key_id").references(() => boardApiKeys.id, { onDelete: "set null" }),
     approvedAt: timestamp("approved_at", { withTimezone: true }),
@@ -24,6 +27,7 @@ export const cliAuthChallenges = pgTable(
   },
   (table) => ({
     secretHashIdx: index("cli_auth_challenges_secret_hash_idx").on(table.secretHash),
+    createdByIdx: index("cli_auth_challenges_created_by_idx").on(table.createdByUserId),
     approvedByIdx: index("cli_auth_challenges_approved_by_idx").on(table.approvedByUserId),
     requestedCompanyIdx: index("cli_auth_challenges_requested_company_idx").on(table.requestedCompanyId),
   }),

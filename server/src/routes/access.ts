@@ -1639,7 +1639,12 @@ export function accessRoutes(
     "/cli-auth/challenges",
     validate(createCliAuthChallengeSchema),
     async (req, res) => {
-      const created = await boardAuth.createCliAuthChallenge(req.body);
+      // SECURITY: Track who created the challenge for self-approval prevention (GHSA-68qg-g8mg-6pr7)
+      const createdByUserId = req.actor?.type === "board" ? req.actor.userId : null;
+      const created = await boardAuth.createCliAuthChallenge({
+        ...req.body,
+        createdByUserId,
+      });
       const approvalPath = buildCliAuthApprovalPath(
         created.challenge.id,
         created.challengeSecret,
@@ -1697,6 +1702,34 @@ export function accessRoutes(
       }
 
       const userId = req.actor.userId ?? "local-board";
+
+      // SECURITY: Prevent self-approval of CLI challenges (GHSA-68qg-g8mg-6pr7)
+      // Fetch challenge details to check if this is a self-approval attempt
+      const challengeDetails = await boardAuth.describeCliAuthChallenge(id, req.body.token);
+      if (!challengeDetails) {
+        throw notFound("CLI auth challenge not found");
+      }
+
+      // Block self-approval: if challenge was created by this user, reject
+      if (
+        challengeDetails.createdByUserId &&
+        challengeDetails.createdByUserId === userId
+      ) {
+        throw forbidden("Cannot approve your own CLI challenge (self-approval not allowed)");
+      }
+
+      // Also require that approver has some existing relationship with the system
+      // (instance admin or membership in at least one company)
+      const isLocalMode = isLocalImplicit(req);
+      if (!isLocalMode && !req.actor.isInstanceAdmin) {
+        const companyIds = req.actor.companyIds ?? [];
+        if (companyIds.length === 0) {
+          throw forbidden(
+            "CLI challenge approval requires instance admin status or membership in at least one company"
+          );
+        }
+      }
+
       const approved = await boardAuth.approveCliAuthChallenge(
         id,
         req.body.token,

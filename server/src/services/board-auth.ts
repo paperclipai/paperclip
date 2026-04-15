@@ -160,6 +160,7 @@ export function boardAuthService(db: Db) {
     clientName?: string | null;
     requestedAccess: "board" | "instance_admin_required";
     requestedCompanyId?: string | null;
+    createdByUserId?: string | null;
   }) {
     const challengeSecret = createCliAuthSecret();
     const pendingBoardToken = createBoardApiToken();
@@ -180,6 +181,8 @@ export function boardAuthService(db: Db) {
         requestedCompanyId: input.requestedCompanyId?.trim() || null,
         pendingKeyHash: hashBearerToken(pendingBoardToken),
         pendingKeyName,
+        // SECURITY: Track challenge creator for self-approval prevention (GHSA-68qg-g8mg-6pr7)
+        createdByUserId: input.createdByUserId ?? null,
         expiresAt,
       })
       .returning()
@@ -236,6 +239,8 @@ export function boardAuthService(db: Db) {
       requestedAccess: challenge.requestedAccess as "board" | "instance_admin_required",
       requestedCompanyId: challenge.requestedCompanyId ?? null,
       requestedCompanyName: company?.name ?? null,
+      // SECURITY: Include createdByUserId for self-approval prevention (GHSA-68qg-g8mg-6pr7)
+      createdByUserId: challenge.createdByUserId ?? null,
       approvedAt: challenge.approvedAt?.toISOString() ?? null,
       cancelledAt: challenge.cancelledAt?.toISOString() ?? null,
       expiresAt: challenge.expiresAt.toISOString(),

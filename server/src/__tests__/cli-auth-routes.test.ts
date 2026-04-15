@@ -116,6 +116,16 @@ describe("cli auth routes", () => {
   });
 
   it("approves a CLI auth challenge for a signed-in board user", async () => {
+    // Mock describeCliAuthChallenge to return challenge info (required for self-approval check)
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
+      id: "challenge-1",
+      status: "pending",
+      command: "paperclipai company import",
+      clientName: "paperclipai cli",
+      requestedAccess: "board",
+      requestedCompanyId: "company-1",
+      createdByUserId: null, // Anonymous challenge creation - different user can approve
+    });
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -161,6 +171,16 @@ describe("cli auth routes", () => {
   });
 
   it("logs approve activity for instance admins without company memberships", async () => {
+    // Mock describeCliAuthChallenge to return challenge info (required for self-approval check)
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
+      id: "challenge-2",
+      status: "pending",
+      command: "paperclipai company import",
+      clientName: "paperclipai cli",
+      requestedAccess: "instance_admin_required",
+      requestedCompanyId: null,
+      createdByUserId: null, // Anonymous challenge creation
+    });
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {

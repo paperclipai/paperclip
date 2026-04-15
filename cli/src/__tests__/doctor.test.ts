@@ -45,6 +45,7 @@ function createTempConfig(): string {
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      requireEmailVerification: false,
     },
     telemetry: {
       enabled: true,

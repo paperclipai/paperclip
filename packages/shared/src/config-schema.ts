@@ -60,6 +60,7 @@ export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
   disableSignUp: z.boolean().default(false),
+  requireEmailVerification: z.boolean().optional().default(false),
 });
 
 export const storageLocalDiskConfigSchema = z.object({
@@ -114,6 +115,7 @@ export const paperclipConfigSchema = z
     auth: authConfigSchema.default({
       baseUrlMode: "auto",
       disableSignUp: false,
+      requireEmailVerification: false,
     }),
     storage: storageConfigSchema.default({
       provider: "local_disk",

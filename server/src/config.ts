@@ -60,6 +60,7 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  authRequireEmailVerification: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -208,10 +209,19 @@ export function loadConfig(): Config {
     fileConfig?.auth?.baseUrlMode ??
     (authPublicBaseUrl ? "explicit" : "auto");
   const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+  // SECURITY: Signup is disabled by default (GHSA-68qg-g8mg-6pr7)
+  // Set PAPERCLIP_AUTH_DISABLE_SIGN_UP=false or auth.disableSignUp: false in config to enable
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
-      : (fileConfig?.auth?.disableSignUp ?? false);
+      : (fileConfig?.auth?.disableSignUp ?? true);
+  const requireEmailVerificationFromEnv = process.env.PAPERCLIP_AUTH_REQUIRE_EMAIL_VERIFICATION;
+  // SECURITY: Email verification is disabled by default but recommended for production (GHSA-68qg-g8mg-6pr7)
+  // Set PAPERCLIP_AUTH_REQUIRE_EMAIL_VERIFICATION=true to enable (requires email sending configuration)
+  const authRequireEmailVerification: boolean =
+    requireEmailVerificationFromEnv !== undefined
+      ? requireEmailVerificationFromEnv === "true"
+      : (fileConfig?.auth?.requireEmailVerification ?? false);
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -295,6 +305,7 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    authRequireEmailVerification,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(

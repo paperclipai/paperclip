@@ -68,6 +68,7 @@ export function buildPresetServerConfig(
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      requireEmailVerification: false,
     },
   };
 }
@@ -101,11 +102,13 @@ export function buildCustomServerConfig(input: BaseServerInput & {
         ? {
           baseUrlMode: "explicit",
           disableSignUp: false,
+          requireEmailVerification: false,
           publicBaseUrl: input.publicBaseUrl,
         }
         : {
           baseUrlMode: "auto",
           disableSignUp: false,
+          requireEmailVerification: false,
         },
   };
 }

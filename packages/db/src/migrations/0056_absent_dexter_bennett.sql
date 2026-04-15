@@ -1,0 +1,3 @@
+ALTER TABLE "cli_auth_challenges" ADD COLUMN "created_by_user_id" text;--> statement-breakpoint
+ALTER TABLE "cli_auth_challenges" ADD CONSTRAINT "cli_auth_challenges_created_by_user_id_user_id_fk" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "cli_auth_challenges_created_by_idx" ON "cli_auth_challenges" USING btree ("created_by_user_id");
