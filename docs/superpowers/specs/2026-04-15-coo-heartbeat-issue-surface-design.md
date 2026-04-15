@@ -170,6 +170,17 @@ Comments remain available for:
 
 Comments no longer serve as the default “poke the agent” mechanism.
 
+### 4. Comment-triggered wake matrix
+
+To avoid ambiguity, V1 should define comment-driven wake behavior by actor/origin:
+
+- board / COO comment on a standard issue: no wake, including no assignee auto-wake and no wake from board-authored `@mentions`
+- board-copilot-thread message: unchanged from the existing copilot flow; these messages may still wake the thread assignee because they are an execution surface, not normal durable issue chatter
+- agent-authored comment on a standard issue: unchanged in V1, including existing non-COO coordination behavior such as current agent-side mention/assignee wake paths
+- structural system wake triggered by issue mutation: unchanged and governed by the automatic mutation rules above, not by the comment rules
+
+This design intentionally removes comment-driven wake behavior only from the COO-on-standard-issue path.
+
 ## Smart Target Selection
 
 Target selection should be conservative.
@@ -178,6 +189,7 @@ Default behavior:
 
 - if the issue has an assignee, preselect the assignee
 - if the issue has no assignee, require explicit target selection
+- the API should support the same default by allowing `targetAgentId` to be omitted and resolving to the current assignee server-side
 
 Explicit override behavior:
 
@@ -218,15 +230,28 @@ Recommended route shape:
 
 - `POST /api/issues/:id/heartbeat`
 
+Actor policy:
+
+- board-only route
+- agent-authenticated callers must not use this route to wake peers through issue context
+- plugin/system orchestration that needs peer wake behavior should continue through existing internal services or the current agent wake path with explicit authorization rules
+
 Request fields:
 
-- `targetAgentId`
+- `targetAgentId` optional
 - `reason` nullable, but required when `targetAgentId` is not the assignee
 - optional metadata such as `source: "issue_detail"` and small UI context flags
+
+Request semantics:
+
+- if `targetAgentId` is omitted and the issue has an assignee, the server resolves the target to the current assignee
+- if `targetAgentId` is omitted and the issue has no assignee, return a validation error requiring explicit target selection
+- if `targetAgentId` is provided and does not match the assignee, require `reason`
 
 Server responsibilities:
 
 - load the issue and enforce company access
+- require board actor access for this route
 - validate the target against company scope
 - validate the non-assignee reason rule
 - build heartbeat context from issue data
