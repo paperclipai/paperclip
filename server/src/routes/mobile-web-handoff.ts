@@ -5,7 +5,7 @@ import type {
   CreateMobileWebHandoffRequest,
   MobileWebHandoffResponse,
 } from "@paperclipai/shared";
-import { agentService, companyService, mobileWebHandoffService } from "../services/index.js";
+import { agentService, companyService, mobileWebHandoffService, projectService } from "../services/index.js";
 import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
@@ -13,16 +13,18 @@ const createMobileWebHandoffBodySchema = z.discriminatedUnion("target", [
   z.object({
     target: z.literal("onboarding"),
     companyId: z.string().trim().min(1).optional(),
-    returnUrl: z.string().trim().url().optional(),
   }),
   z.object({
     target: z.literal("agent_configuration"),
     companyId: z.string().trim().min(1),
     agentId: z.string().trim().min(1),
   }),
+  z.object({
+    target: z.literal("project_configuration"),
+    companyId: z.string().trim().min(1),
+    projectId: z.string().trim().min(1),
+  }),
 ]);
-
-const ALLOWED_RETURN_URL = "clipios://onboarding-complete";
 
 function requestBaseUrl(req: Request) {
   const forwardedProto = req.header("x-forwarded-proto");
@@ -58,6 +60,7 @@ export function mobileWebHandoffRoutes(db: Db) {
   const router = Router();
   const companies = companyService(db);
   const agents = agentService(db);
+  const projects = projectService(db);
   const handoffs = mobileWebHandoffService(db);
 
   router.post("/", async (req, res) => {
@@ -71,10 +74,6 @@ export function mobileWebHandoffRoutes(db: Db) {
     let companyId: string | null = body.companyId ?? null;
     let targetPath = "/onboarding";
 
-    if (body.target === "onboarding" && body.returnUrl && body.returnUrl !== ALLOWED_RETURN_URL) {
-      throw badRequest("Unsupported returnUrl");
-    }
-
     if (body.companyId) {
       const requestedCompanyId = body.companyId;
       companyId = requestedCompanyId;
@@ -87,12 +86,7 @@ export function mobileWebHandoffRoutes(db: Db) {
 
       if (body.target === "onboarding") {
         targetPath = buildOnboardingTargetPath(company.issuePrefix);
-        if (body.returnUrl) {
-          const targetUrl = new URL(targetPath, "http://paperclip.local");
-          targetUrl.searchParams.set("returnUrl", body.returnUrl);
-          targetPath = `${targetUrl.pathname}${targetUrl.search}`;
-        }
-      } else {
+      } else if (body.target === "agent_configuration") {
         if (!body.agentId) {
           throw badRequest("Missing agentId");
         }
@@ -103,6 +97,17 @@ export function mobileWebHandoffRoutes(db: Db) {
           return;
         }
         targetPath = `/${company.issuePrefix}/agents/${agent.urlKey ?? agent.id}/configuration`;
+      } else {
+        if (!body.projectId) {
+          throw badRequest("Missing projectId");
+        }
+        const projectId = body.projectId;
+        const project = await projects.getById(projectId);
+        if (!project || project.companyId !== requestedCompanyId) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
+        targetPath = `/${company.issuePrefix}/projects/${project.urlKey ?? project.id}/configuration`;
       }
     }
 

@@ -24,6 +24,8 @@ import {
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { resolveProjectWorkspaceRepoAuthEnv } from "./project-workspace-repo-auth.js";
+import { secretService } from "./secrets.js";
 
 export function resolveShell(): string {
   return process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
@@ -496,11 +498,12 @@ async function executeProcess(input: {
   };
 }
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
+    env: opts?.env,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -706,13 +709,14 @@ async function recordGitOperation(
     phase: "worktree_prepare" | "worktree_cleanup";
     args: string[];
     cwd: string;
+    env?: NodeJS.ProcessEnv;
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
     failureLabel?: string | null;
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    return runGit(input.args, input.cwd, { env: input.env });
   }
 
   let stdout = "";
@@ -728,6 +732,7 @@ async function recordGitOperation(
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: input.env,
       });
       stdout = result.stdout;
       stderr = result.stderr;
@@ -2078,6 +2083,23 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
   return refs;
 }
 
+export async function resolveProjectWorkspaceRepoAuthAdapterEnv(input: {
+  db: Db;
+  companyId: string;
+  repoUrl: string | null;
+  metadata: Record<string, unknown> | null | undefined;
+}): Promise<Record<string, string>> {
+  const env = await resolveProjectWorkspaceRepoAuthEnv({
+    companyId: input.companyId,
+    repoUrl: input.repoUrl,
+    metadata: input.metadata,
+    secrets: secretService(input.db),
+  });
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+}
+
 export async function releaseRuntimeServicesForRun(runId: string) {
   const acquired = runtimeServiceLeasesByRun.get(runId) ?? [];
   runtimeServiceLeasesByRun.delete(runId);
@@ -2317,7 +2339,12 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           created: false,
         },
         config: { workspaceRuntime: runtimeConfig.workspaceRuntime },
-        adapterEnv: {},
+        adapterEnv: await resolveProjectWorkspaceRepoAuthAdapterEnv({
+          db,
+          companyId: row.companyId,
+          repoUrl: row.repoUrl ?? null,
+          metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+        }),
       });
       if (refs.length > 0) restarted += refs.filter((ref) => !ref.reused).length;
     } catch {

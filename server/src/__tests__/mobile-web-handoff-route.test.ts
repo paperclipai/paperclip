@@ -14,9 +14,14 @@ const mockMobileWebHandoffService = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   agentService: () => mockAgentService,
+  projectService: () => mockProjectService,
   mobileWebHandoffService: () => mockMobileWebHandoffService,
 }));
 
@@ -68,6 +73,29 @@ function createAgent(overrides: Record<string, unknown> = {}) {
     createdAt: now,
     updatedAt: now,
     urlKey: "cto",
+    ...overrides,
+  };
+}
+
+function createProject(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-03-19T02:00:00.000Z");
+  return {
+    id: "project-1",
+    companyId: "company-1",
+    name: "Get Rich",
+    description: null,
+    status: "backlog",
+    goalId: null,
+    goalIds: [],
+    leadAgentId: null,
+    targetDate: null,
+    color: null,
+    env: null,
+    executionWorkspacePolicy: null,
+    archivedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    urlKey: "get-rich",
     ...overrides,
   };
 }
@@ -149,39 +177,6 @@ describe("mobile web handoff routes", () => {
     });
   });
 
-  it("passes through the fixed onboarding return url", async () => {
-    mockCompanyService.getById.mockResolvedValue({
-      id: "company-1",
-      issuePrefix: "PAP",
-    });
-    mockMobileWebHandoffService.create.mockResolvedValue({
-      token: "token-123",
-      expiresAt: new Date("2026-04-13T16:00:00.000Z"),
-    });
-    const app = await createApp({
-      type: "board",
-      userId: "user-1",
-      source: "remote_auth",
-      companyIds: ["company-1"],
-      isInstanceAdmin: false,
-    });
-
-    const res = await request(app)
-      .post("/api/mobile-web-handoff")
-      .send({
-        target: "onboarding",
-        companyId: "company-1",
-        returnUrl: "clipios://onboarding-complete",
-      });
-
-    expect(res.status).toBe(200);
-    expect(mockMobileWebHandoffService.create).toHaveBeenCalledWith({
-      userId: "user-1",
-      targetPath: "/PAP/onboarding?returnUrl=clipios%3A%2F%2Fonboarding-complete",
-      companyId: "company-1",
-    });
-  });
-
   it("creates an agent configuration handoff", async () => {
     mockCompanyService.getById.mockResolvedValue(createCompany());
     mockAgentService.getById.mockResolvedValue(createAgent());
@@ -213,24 +208,35 @@ describe("mobile web handoff routes", () => {
     });
   });
 
-  it("rejects unsupported return urls", async () => {
+  it("creates a project configuration handoff", async () => {
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockProjectService.getById.mockResolvedValue(createProject());
+    mockMobileWebHandoffService.create.mockResolvedValue({
+      token: "token-123",
+      expiresAt: new Date("2026-04-13T16:00:00.000Z"),
+    });
     const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "remote_auth",
-      companyIds: [],
+      companyIds: ["company-1"],
       isInstanceAdmin: false,
     });
 
     const res = await request(app)
       .post("/api/mobile-web-handoff")
       .send({
-        target: "onboarding",
-        returnUrl: "https://example.com/callback",
+        target: "project_configuration",
+        companyId: "company-1",
+        projectId: "project-1",
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Unsupported returnUrl");
+    expect(res.status).toBe(200);
+    expect(mockMobileWebHandoffService.create).toHaveBeenCalledWith({
+      userId: "user-1",
+      targetPath: "/PAP/projects/get-rich/configuration",
+      companyId: "company-1",
+    });
   });
 
   it("returns 404 when the requested company is missing", async () => {
@@ -272,6 +278,29 @@ describe("mobile web handoff routes", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Agent not found");
+  });
+
+  it("returns 404 when the requested project is missing", async () => {
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+    mockProjectService.getById.mockResolvedValue(null);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "remote_auth",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/mobile-web-handoff")
+      .send({
+        target: "project_configuration",
+        companyId: "company-1",
+        projectId: "project-1",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Project not found");
   });
 
   it("rejects unauthorized company access", async () => {

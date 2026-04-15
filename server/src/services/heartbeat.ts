@@ -52,6 +52,7 @@ import { issueService } from "./issues.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { resolveProjectWorkspaceRepoAuthEnv } from "./project-workspace-repo-auth.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -220,6 +221,8 @@ async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
+  metadata?: Record<string, unknown> | null;
+  secretsSvc: ReturnType<typeof secretService>;
 }): Promise<{ cwd: string; warning: string | null }> {
   const cwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
@@ -256,8 +259,17 @@ async function ensureManagedProjectWorkspace(input: {
   }
 
   try {
+    const authEnv = await resolveProjectWorkspaceRepoAuthEnv({
+      companyId: input.companyId,
+      repoUrl: input.repoUrl,
+      metadata: input.metadata,
+      secrets: input.secretsSvc,
+    });
     await execFile("git", ["clone", input.repoUrl, cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      env: {
+        ...sanitizeRuntimeServiceBaseEnv(process.env),
+        ...authEnv,
+      },
       timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
     });
     return { cwd, warning: null };
@@ -1614,6 +1626,8 @@ export function heartbeatService(db: Db) {
               companyId: agent.companyId,
               projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
               repoUrl: readNonEmptyString(workspace.repoUrl),
+              metadata: (workspace.metadata as Record<string, unknown> | null) ?? null,
+              secretsSvc,
             });
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
@@ -1686,6 +1700,8 @@ export function heartbeatService(db: Db) {
         companyId: agent.companyId,
         projectId: workspaceProjectId,
         repoUrl: null,
+        metadata: null,
+        secretsSvc,
       });
       return {
         cwd: managedWorkspace.cwd,

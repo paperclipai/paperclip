@@ -12,8 +12,13 @@ import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
+import {
+  resolveProjectWorkspaceRepoAuthAdapterEnv,
+  startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForProjectWorkspace,
+} from "../services/workspace-runtime.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { normalizeProjectWorkspaceRepoAuthMetadata } from "../services/project-workspace-repo-auth.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -191,7 +196,16 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const workspace = await svc.createWorkspace(id, req.body);
+    const payload = { ...req.body };
+    if (payload.metadata !== undefined) {
+      payload.metadata = await normalizeProjectWorkspaceRepoAuthMetadata({
+        companyId: existing.companyId,
+        repoUrl: typeof payload.repoUrl === "string" ? payload.repoUrl : null,
+        metadata: payload.metadata as Record<string, unknown> | null | undefined,
+        secrets: secretsSvc,
+      });
+    }
+    const workspace = await svc.createWorkspace(id, payload);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
       return;
@@ -229,12 +243,24 @@ export function projectRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
-      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-      if (!workspaceExists) {
+      const existingWorkspace = (await svc.listWorkspaces(id)).find((workspace) => workspace.id === workspaceId) ?? null;
+      if (!existingWorkspace) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }
-      const workspace = await svc.updateWorkspace(id, workspaceId, req.body);
+      const payload = { ...req.body };
+      if (payload.metadata !== undefined) {
+        payload.metadata = await normalizeProjectWorkspaceRepoAuthMetadata({
+          companyId: existing.companyId,
+          repoUrl:
+            typeof payload.repoUrl === "string"
+              ? payload.repoUrl
+              : existingWorkspace.repoUrl,
+          metadata: payload.metadata as Record<string, unknown> | null | undefined,
+          secrets: secretsSvc,
+        });
+      }
+      const workspace = await svc.updateWorkspace(id, workspaceId, payload);
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });
         return;
@@ -345,7 +371,12 @@ export function projectRoutes(db: Db) {
               created: false,
             },
             config: { workspaceRuntime: runtimeConfig },
-            adapterEnv: {},
+            adapterEnv: await resolveProjectWorkspaceRepoAuthAdapterEnv({
+              db,
+              companyId: project.companyId,
+              repoUrl: workspace.repoUrl,
+              metadata: workspace.metadata,
+            }),
             onLog,
           });
           runtimeServiceCount = startedServices.length;

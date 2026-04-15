@@ -1,10 +1,10 @@
-export type MobileWebHandoffTarget = "onboarding" | "agent_configuration";
+export type MobileWebHandoffTarget = "onboarding" | "agent_configuration" | "project_configuration";
 
 export interface CreateMobileWebHandoffRequest {
   target: MobileWebHandoffTarget;
   companyId?: string;
   agentId?: string;
-  returnUrl?: string;
+  projectId?: string;
 }
 
 export interface MobileWebHandoffResponse {

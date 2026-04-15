@@ -104,12 +104,6 @@ export function OnboardingWizard() {
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
-  const onboardingReturnUrl = useMemo(() => {
-    const params = new URLSearchParams(location.search);
-    const candidate = params.get("returnUrl")?.trim();
-    if (!candidate) return null;
-    return candidate === "clipios://onboarding-complete" ? candidate : null;
-  }, [location.search]);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
@@ -138,7 +132,7 @@ export function OnboardingWizard() {
   }, [
     effectiveOnboardingOpen,
     effectiveOnboardingOptions.companyId,
-    effectiveOnboardingOptions.initialStep
+    effectiveOnboardingOptions.initialStep,
   ]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
@@ -422,10 +416,6 @@ export function OnboardingWizard() {
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
       setSelectedCompanyId(createdCompanyId);
-      if (onboardingReturnUrl) {
-        window.location.assign(onboardingReturnUrl);
-        return;
-      }
       reset();
       closeOnboarding();
       navigate(

@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "@/lib/router";
+import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -8,13 +8,23 @@ import { queryKeys } from "../lib/queryKeys";
 
 export function CliAuthPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const params = useParams();
   const [searchParams] = useSearchParams();
   const challengeId = (params.id ?? "").trim();
   const token = (searchParams.get("token") ?? "").trim();
-  const currentPath = useMemo(
+  const isAuthReturn = (searchParams.get("authReturn") ?? "").trim() === "1";
+  const basePath = useMemo(
     () => `/cli-auth/${encodeURIComponent(challengeId)}${token ? `?token=${encodeURIComponent(token)}` : ""}`,
     [challengeId, token],
+  );
+  const authReturnPath = useMemo(
+    () => `${basePath}${token ? "&" : "?"}authReturn=1`,
+    [basePath, token],
+  );
+  const [isReturningFromAuth, setIsReturningFromAuth] = useState(isAuthReturn);
+  const [returnStartedAt, setReturnStartedAt] = useState<number | null>(
+    isAuthReturn ? Date.now() : null,
   );
 
   const sessionQuery = useQuery({
@@ -28,24 +38,96 @@ export function CliAuthPage() {
     enabled: challengeId.length > 0 && token.length > 0,
     retry: false,
   });
+  const { data: session, isFetching: isSessionFetching, refetch: refetchSession } = sessionQuery;
+  const { data: challenge, isFetching: isChallengeFetching, refetch: refetchChallenge } = challengeQuery;
 
   const approveMutation = useMutation({
     mutationFn: () => accessApi.approveCliAuthChallenge(challengeId, token),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await challengeQuery.refetch();
+      await refetchChallenge();
     },
   });
 
   const cancelMutation = useMutation({
     mutationFn: () => accessApi.cancelCliAuthChallenge(challengeId, token),
     onSuccess: async () => {
-      await challengeQuery.refetch();
+      await refetchChallenge();
     },
   });
 
+  useEffect(() => {
+    if (!isAuthReturn) return;
+    setIsReturningFromAuth(true);
+    setReturnStartedAt((current) => current ?? Date.now());
+  }, [isAuthReturn]);
+
+  useEffect(() => {
+    if (!isReturningFromAuth) return;
+
+    void refetchSession();
+    void refetchChallenge();
+
+    const interval = window.setInterval(() => {
+      void refetchSession();
+      void refetchChallenge();
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [isReturningFromAuth, refetchSession, refetchChallenge]);
+
+  useEffect(() => {
+    if (!isReturningFromAuth || !challenge) return;
+    if (!session || challenge.requiresSignIn) return;
+
+    setIsReturningFromAuth(false);
+    setReturnStartedAt(null);
+    navigate(basePath, { replace: true });
+  }, [isReturningFromAuth, challenge, session, navigate, basePath]);
+
   if (!challengeId || !token) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid CLI auth URL.</div>;
+  }
+
+  const returnElapsedMs = returnStartedAt == null ? 0 : Date.now() - returnStartedAt;
+  const showReconnectFallback = returnElapsedMs >= 6_000;
+  const isReconnectPending =
+    isReturningFromAuth &&
+    (isSessionFetching ||
+      isChallengeFetching ||
+      !session ||
+      !challenge ||
+      challenge.requiresSignIn);
+
+  if (isReconnectPending) {
+    return (
+      <div className="mx-auto max-w-xl py-10">
+        <div className="rounded-lg border border-border bg-card p-6">
+          <h1 className="text-xl font-semibold">Finishing sign-in...</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Reconnecting your Paperclip session so we can approve the CLI request.
+          </p>
+          {showReconnectFallback && (
+            <>
+              <p className="mt-4 text-sm text-muted-foreground">
+                Still reconnecting your session. This can take a few seconds after returning from sign-in.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-4"
+                onClick={() => {
+                  void refetchSession();
+                  void refetchChallenge();
+                }}
+              >
+                Retry
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    );
   }
 
   if (sessionQuery.isLoading || challengeQuery.isLoading) {
@@ -60,12 +142,22 @@ export function CliAuthPage() {
           <p className="mt-2 text-sm text-muted-foreground">
             {challengeQuery.error instanceof Error ? challengeQuery.error.message : "Challenge is invalid or expired."}
           </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-4"
+            onClick={() => {
+              void refetchSession();
+              void refetchChallenge();
+            }}
+          >
+            Retry
+          </Button>
         </div>
       </div>
     );
   }
 
-  const challenge = challengeQuery.data;
   if (!challenge) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">CLI auth challenge unavailable.</div>;
   }
@@ -101,7 +193,7 @@ export function CliAuthPage() {
     );
   }
 
-  if (challenge.requiresSignIn || !sessionQuery.data) {
+  if (challenge.requiresSignIn || !session) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
@@ -110,7 +202,7 @@ export function CliAuthPage() {
             Sign in or create an account, then return to this page to approve the CLI access request.
           </p>
           <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
+            <Link to={`/auth?next=${encodeURIComponent(authReturnPath)}`}>Sign in / Create account</Link>
           </Button>
         </div>
       </div>
