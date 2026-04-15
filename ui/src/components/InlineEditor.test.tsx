@@ -164,6 +164,62 @@ describe("InlineEditor", () => {
     });
     outside.remove();
   });
+
+  it("syncs a new multiline value while focused when the user has not edited locally", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<InlineEditor value="" multiline onSave={onSave} />);
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]');
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("");
+
+    act(() => {
+      textarea!.focus();
+    });
+
+    act(() => {
+      root.render(<InlineEditor value="Loaded description" multiline onSave={onSave} />);
+    });
+
+    expect(textarea?.value).toBe("Loaded description");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("preserves focused multiline local edits when the prop value changes underneath them", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<InlineEditor value="Original" multiline onSave={onSave} />);
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]');
+    expect(textarea).not.toBeNull();
+
+    act(() => {
+      textarea!.focus();
+    });
+    act(() => {
+      setNativeTextareaValue(textarea!, "Local draft");
+    });
+
+    act(() => {
+      root.render(<InlineEditor value="Remote update" multiline onSave={onSave} />);
+    });
+
+    expect(textarea?.value).toBe("Local draft");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });
 
 describe("queueContainedBlurCommit", () => {

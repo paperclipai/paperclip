@@ -23,6 +23,11 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectExecutionWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
+import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -95,6 +100,12 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
+      companyId: existing.companyId,
+      executionWorkspaceId: existing.id,
+      sourceIssueId: existing.sourceIssueId,
+    });
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
@@ -428,6 +439,13 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectExecutionWorkspaceCommandPaths({
+        config: req.body.config,
+        metadata: req.body.metadata,
+      }),
+    );
     const patch: Record<string, unknown> = {
       ...(req.body.name === undefined ? {} : { name: req.body.name }),
       ...(req.body.cwd === undefined ? {} : { cwd: req.body.cwd }),

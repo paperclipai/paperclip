@@ -29,7 +29,8 @@ import {
   readIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { fetchIssueDetail, getCachedIssueDetail } from "../lib/issueDetailCache";
+import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
@@ -896,22 +897,15 @@ export function IssueDetail() {
     () => readIssueDetailHeaderSeed(location.state) ?? readIssueDetailHeaderSeed(resolvedIssueDetailState),
     [location.state, resolvedIssueDetailState],
   );
-  const cachedIssue = useMemo(
-    () =>
-      issueId
-        ? getCachedIssueDetail(queryClient, issueId, issueHeaderSeed ? {
-            id: issueHeaderSeed.id,
-            identifier: issueHeaderSeed.identifier,
-          } : null)
-        : undefined,
-    [issueHeaderSeed, issueId, queryClient],
-  );
 
   const { data: issue, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.detail(issueId!),
-    queryFn: () => fetchIssueDetail(queryClient, issueId!),
+    ...getIssueDetailQueryOptions(queryClient, issueId!, {
+      placeholderIssue: issueHeaderSeed ? {
+        id: issueHeaderSeed.id,
+        identifier: issueHeaderSeed.identifier,
+      } : null,
+    }),
     enabled: !!issueId,
-    initialData: () => cachedIssue,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {

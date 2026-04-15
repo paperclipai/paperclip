@@ -196,6 +196,90 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
   });
 
+  it("derives approval attribution from the authenticated actor on approve", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-4",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-4/approve")
+      .send({ decidedByUserId: "forged-user", decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
+  });
+
+  it("derives approval attribution from the authenticated actor on reject", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-5",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-5",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-5/reject")
+      .send({ decidedByUserId: "forged-user", decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
+  });
+
+  it("derives approval attribution from the authenticated actor on request revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-6",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-6",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-6/request-revision")
+      .send({ decidedByUserId: "forged-user", decisionNote: "Need changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
+      "approval-6",
+      "user-1",
+      "Need changes",
+    );
+  });
+
   it("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",

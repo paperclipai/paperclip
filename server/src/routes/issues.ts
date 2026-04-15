@@ -48,6 +48,10 @@ import {
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectIssueWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
@@ -1323,6 +1327,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1373,6 +1378,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
