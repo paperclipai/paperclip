@@ -13,8 +13,9 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  OrgNode,
 } from "@paperclipai/shared";
-export type { AdapterModel };
+export type { AdapterModel, OrgNode };
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -39,14 +40,6 @@ export interface ClaudeLoginResult {
   loginUrl: string | null;
   stdout: string;
   stderr: string;
-}
-
-export interface OrgNode {
-  id: string;
-  name: string;
-  role: string;
-  status: string;
-  reports: OrgNode[];
 }
 
 export interface AgentHireResponse {
