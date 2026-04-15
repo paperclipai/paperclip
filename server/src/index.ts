@@ -554,7 +554,13 @@ export async function startServer(): Promise<StartedServer> {
       : runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  // Only derive PAPERCLIP_API_URL from the listen host/port when the
+  // operator hasn't configured one explicitly. Any deployment behind a
+  // reverse proxy or with a public URL needs to advertise that URL to
+  // adapters/sandboxes, not the internal listen address.
+  if (!process.env.PAPERCLIP_API_URL) {
+    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  }
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
