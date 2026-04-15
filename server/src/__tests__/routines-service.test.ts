@@ -80,6 +80,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         contextSnapshot?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
+    cancelRun?: (runId: string) => Promise<unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -153,6 +154,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             .where(eq(issues.id, issueId));
           return { id: queuedRunId };
         },
+        cancelRun: opts?.cancelRun,
       },
     });
     const issueSvc = issueService(db);
@@ -762,6 +764,154 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.companyId, companyId));
       expect(wakeupRequests).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_issue_created_update_explodes();
+      `));
+    }
+  });
+
+  it("cancels claimed running wakeup artifacts when post-wakeup run finalization fails", async () => {
+    const cancelledRunIds: string[] = [];
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const wakeupRequest = await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          reason: wakeupOpts.reason ?? null,
+          payload: wakeupOpts.payload ?? null,
+          status: "queued",
+          requestedByActorType: wakeupOpts.requestedByActorType ?? null,
+          requestedByActorId: wakeupOpts.requestedByActorId ?? null,
+        }).returning().then((rows) => rows[0]);
+
+        const runningRun = await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "running",
+          wakeupRequestId: wakeupRequest.id,
+          startedAt: new Date(),
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        }).returning().then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            runId: runningRun.id,
+            status: "claimed",
+            claimedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        await db
+          .update(issues)
+          .set({
+            executionRunId: runningRun.id,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_execution_deferred",
+          payload: { issueId },
+          status: "deferred_issue_execution",
+        });
+        return { id: runningRun.id };
+      },
+      cancelRun: async (runId) => {
+        cancelledRunIds.push(runId);
+        const run = await db
+          .select({ wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        const finishedAt = new Date();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt,
+            error: "Cancelled because routine dispatch finalization failed",
+            errorCode: "cancelled",
+          })
+          .where(eq(heartbeatRuns.id, runId));
+        if (run?.wakeupRequestId) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt,
+              error: "Cancelled because routine dispatch finalization failed",
+            })
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+        }
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionLockedAt: null,
+          })
+          .where(eq(issues.executionRunId, runId));
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_issue_created_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run issue_created finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_issue_created_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'issue_created')
+      EXECUTE FUNCTION routine_run_issue_created_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "manual" }),
+      ).rejects.toThrow(/issue_created finalization exploded/i);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([]);
+
+      const runs = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toEqual([{ id: cancelledRunIds[0], status: "cancelled" }]);
+
+      const wakeupRequests = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeupRequests).toEqual([{ status: "cancelled" }]);
+
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.status} in ('queued', 'running')`);
+      expect(activeRuns).toEqual([]);
+      expect(cancelledRunIds).toHaveLength(1);
     } finally {
       await db.execute(sql.raw(`
         DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
