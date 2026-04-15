@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+import { asNonEmptyString } from "./type-coercion.js";
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -649,6 +651,25 @@ export async function ensureAbsoluteDirectory(
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not create working directory "${cwd}": ${reason}`);
   }
+}
+
+/**
+ * Resolve an adapter's per-user skills home directory. Honours `config.env.HOME`
+ * when set to a non-empty string, otherwise falls back to `os.homedir()`, then
+ * joins the provided path segments (e.g. `".claude", "skills"` or
+ * `".pi", "agent", "skills"`).
+ */
+export function resolveAdapterSkillsHome(
+  config: Record<string, unknown>,
+  ...segments: string[]
+): string {
+  const env =
+    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const configuredHome = asNonEmptyString(env.HOME);
+  const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
+  return path.join(home, ...segments);
 }
 
 export async function resolvePaperclipSkillsDir(
