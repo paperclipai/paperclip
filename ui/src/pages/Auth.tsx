@@ -9,11 +9,16 @@ import { Sparkles } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
 
+function resolveAuthMode(rawValue: string | null): AuthMode {
+  return rawValue === "sign_up" ? "sign_up" : "sign_in";
+}
+
 export function AuthPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [mode, setMode] = useState<AuthMode>("sign_in");
+  const requestedMode = useMemo(() => resolveAuthMode(searchParams.get("mode")), [searchParams]);
+  const [mode, setMode] = useState<AuthMode>(requestedMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -31,6 +36,11 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     }
   }, [session, navigate, nextPath]);
+
+  useEffect(() => {
+    setMode(requestedMode);
+    setError(null);
+  }, [requestedMode]);
 
   const mutation = useMutation({
     mutationFn: async () => {

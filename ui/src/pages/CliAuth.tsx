@@ -12,9 +12,16 @@ export function CliAuthPage() {
   const [searchParams] = useSearchParams();
   const challengeId = (params.id ?? "").trim();
   const token = (searchParams.get("token") ?? "").trim();
+  const authMode = searchParams.get("authMode") === "sign_up" ? "sign_up" : "sign_in";
   const currentPath = useMemo(
-    () => `/cli-auth/${encodeURIComponent(challengeId)}${token ? `?token=${encodeURIComponent(token)}` : ""}`,
-    [challengeId, token],
+    () => {
+      const query = new URLSearchParams();
+      if (token) query.set("token", token);
+      if (authMode === "sign_up") query.set("authMode", authMode);
+      const suffix = query.toString();
+      return `/cli-auth/${encodeURIComponent(challengeId)}${suffix ? `?${suffix}` : ""}`;
+    },
+    [authMode, challengeId, token],
   );
 
   const sessionQuery = useQuery({
@@ -110,7 +117,7 @@ export function CliAuthPage() {
             Sign in or create an account, then return to this page to approve the CLI access request.
           </p>
           <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
+            <Link to={`/auth?next=${encodeURIComponent(currentPath)}&mode=${encodeURIComponent(authMode)}`}>Sign in / Create account</Link>
           </Button>
         </div>
       </div>

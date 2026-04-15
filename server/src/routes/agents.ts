@@ -800,7 +800,7 @@ export function agentRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+      assertCompanyAccess(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
