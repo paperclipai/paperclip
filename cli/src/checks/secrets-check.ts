@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
 function decodeMasterKey(raw: string): Buffer | null {

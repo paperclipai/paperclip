@@ -1,5 +1,5 @@
 import type { PaperclipConfig } from "../config/schema.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {

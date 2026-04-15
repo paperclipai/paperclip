@@ -1,6 +1,6 @@
 import type { PaperclipConfig } from "../config/schema.js";
 import { checkPort } from "../utils/net.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 
 export async function portCheck(config: PaperclipConfig): Promise<CheckResult> {
   const port = config.server.port;

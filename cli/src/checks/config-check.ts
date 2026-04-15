@@ -1,5 +1,5 @@
 import { readConfig, configExists, resolveConfigPath } from "../config/store.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 
 export function configCheck(configPath?: string): CheckResult {
   const filePath = resolveConfigPath(configPath);
