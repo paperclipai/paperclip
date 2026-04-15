@@ -4,9 +4,10 @@ import { cn } from "@/lib/utils";
 interface DiffViewProps {
   lines: string[];
   className?: string;
+  showLineNumbers?: boolean;
 }
 
-export function DiffView({ lines, className }: DiffViewProps) {
+export function DiffView({ lines, className, showLineNumbers = false }: DiffViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -39,13 +40,18 @@ export function DiffView({ lines, className }: DiffViewProps) {
             <div
               key={i}
               className={cn(
-                "px-1 -mx-1 rounded-sm",
+                "px-1 -mx-1 rounded-sm flex",
                 isAdd && "bg-green-500/15 text-green-700 dark:text-green-400",
                 isRemove && "bg-red-500/15 text-red-700 dark:text-red-400",
                 !isAdd && !isRemove && "text-muted-foreground",
               )}
             >
-              {line || "\u00A0"}
+              {showLineNumbers && (
+                <span className="select-none w-8 shrink-0 text-right pr-2 text-muted-foreground/50">
+                  {i + 1}
+                </span>
+              )}
+              <span className="flex-1">{line || "\u00A0"}</span>
             </div>
           );
         })}
