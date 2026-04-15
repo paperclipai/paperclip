@@ -74,9 +74,12 @@ async function initRedis(): Promise<void> {
   const sub = new (Redis as any)(url) as SubscribeClient;
   attachErrorLogger(pub, "publisher");
   attachErrorLogger(sub, "subscriber");
-  redisPub = pub;
-  redisSub = sub;
-  await sub.subscribe(CHANNEL);
+  // Install the message listener and complete the subscription BEFORE
+  // publishing anything. If we assigned redisPub first, the publisher
+  // could race the subscribe(): events published in that narrow window
+  // land in Redis on a channel this replica isn't yet listening to,
+  // and if subscribe() then throws, redisPub stays non-null until the
+  // outer .catch() runs — more events go to Redis with no local sub.
   sub.on("message", (_channel: unknown, message: unknown) => {
     try {
       const envelope = JSON.parse(message as string) as {
@@ -97,6 +100,12 @@ async function initRedis(): Promise<void> {
       // delivery for everyone else.
     }
   });
+  await sub.subscribe(CHANNEL);
+  // Only expose the publisher once we're actually receiving from the
+  // channel. If subscribe() threw above we would never reach this line
+  // and redisPub would stay null — the outer .catch() handles the log.
+  redisPub = pub;
+  redisSub = sub;
 }
 
 // Non-blocking best-effort init on module load. If ioredis isn't
