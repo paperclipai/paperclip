@@ -221,7 +221,6 @@ export function issueRoutes(
       ? run.issueCommentStatus
       : null;
   }
-
   async function listQaCommentsForIssue(input: { issueId: string; companyId: string; limit: number }) {
     if (typeof (svc as { listComments?: unknown }).listComments !== "function") {
       return [] as IssueComment[];
@@ -451,7 +450,6 @@ export function issueRoutes(
     }
     return { issue: input.issue, mergeStatus: mergeResult.status };
   }
-
   async function computeIssueQaGateSafe(
     issue: {
       id: string;

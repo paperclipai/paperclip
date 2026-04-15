@@ -48,7 +48,6 @@ import {
   parseSchedulerHeartbeatPolicy,
   secretService,
   syncInstructionsBundleConfigFromFilePath,
-  parseSchedulerHeartbeatPolicy,
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";

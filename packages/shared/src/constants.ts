@@ -53,7 +53,6 @@ export type BoardBriefSnapshotSource = (typeof BOARD_BRIEF_SNAPSHOT_SOURCES)[num
 
 export const BOARD_BRIEF_ALERT_EVENT_STATUSES = ["active", "resolved"] as const;
 export type BoardBriefAlertEventStatus = (typeof BOARD_BRIEF_ALERT_EVENT_STATUSES)[number];
-
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 

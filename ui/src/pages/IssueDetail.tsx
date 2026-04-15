@@ -1603,7 +1603,6 @@ export function IssueDetail() {
               )}
             </div>
           )}
-
           <div className="flex items-center justify-end">
             <Button
               size="sm"

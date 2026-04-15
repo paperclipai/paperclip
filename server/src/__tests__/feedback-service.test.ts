@@ -35,7 +35,6 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres feedback service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
-
 describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;

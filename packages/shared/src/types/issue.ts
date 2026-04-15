@@ -217,7 +217,6 @@ export interface IssueMergeStatus {
   createdByRuntime: boolean | null;
   branchProvenanceSource: string | null;
 }
-
 export interface IssueQaReviewState {
   codeQuality: IssueQaReviewDimension;
   errorHandling: IssueQaReviewDimension;

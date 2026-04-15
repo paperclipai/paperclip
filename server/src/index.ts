@@ -702,7 +702,6 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "executive summary scheduler tick failed");
         });
-
       void boardBriefDelivery
         .tickCriticalAlerts(new Date())
         .then((result) => {

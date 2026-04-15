@@ -51,18 +51,17 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
-
-const mockRoadmapEpicService = vi.hoisted(() => ({
-  listPausedEpicIds: vi.fn(),
-  pauseEpic: vi.fn(),
-  resumeEpic: vi.fn(),
-}));
-
 const mockExecutiveSummaryService = vi.hoisted(() => ({
   listKpis: vi.fn(),
   replaceKpis: vi.fn(),
   buildExecutiveSummary: vi.fn(),
   tickDaily: vi.fn(),
+}));
+
+const mockRoadmapEpicService = vi.hoisted(() => ({
+  listPausedEpicIds: vi.fn(),
+  pauseEpic: vi.fn(),
+  resumeEpic: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({

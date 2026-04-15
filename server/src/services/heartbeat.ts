@@ -6403,7 +6403,6 @@ export function heartbeatService(db: Db) {
 
     cancelExecutionScopeWork: (scope: BudgetEnforcementScope, reason?: string) =>
       cancelExecutionScopeWorkInternal(scope, reason),
-
     cancelBudgetScopeWork,
 
     getActiveRunForAgent: async (agentId: string) => {

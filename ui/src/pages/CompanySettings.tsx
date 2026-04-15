@@ -112,7 +112,6 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
   });
-
   const feedbackSharingMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       companiesApi.update(selectedCompanyId!, {
