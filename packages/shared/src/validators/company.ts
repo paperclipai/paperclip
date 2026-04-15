@@ -22,6 +22,7 @@ export const updateCompanySchema = createCompanySchema
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     dailyExecutiveSummaryEnabled: z.boolean().optional(),
+    criticalBoardAlertsEmailEnabled: z.boolean().optional(),
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,

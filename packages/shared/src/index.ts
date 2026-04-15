@@ -1,6 +1,30 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { LEGACY_AGENT_ROLE_ALIASES, canonicalizeAgentRole, normalizeAgentRoleInput } from "./agent-role.js";
 export {
+  BOARD_BRIEF_HEALTH_TONES,
+  BOARD_BRIEF_FRESHNESS_STATUSES,
+  BOARD_BRIEF_CONFIDENCE_LEVELS,
+  BOARD_BRIEF_ACTION_SEVERITIES,
+  BOARD_BRIEF_ACTION_KINDS,
+  BOARD_BRIEF_INCIDENT_SEVERITIES,
+  BOARD_BRIEF_INCIDENT_TYPES,
+  BOARD_BRIEF_OUTPUT_KINDS,
+  BOARD_BRIEF_SNAPSHOT_SOURCES,
+  BOARD_BRIEF_ALERT_EVENT_STATUSES,
+} from "./constants.js";
+export type {
+  BoardBriefHealthTone,
+  BoardBriefFreshnessStatus,
+  BoardBriefConfidenceLevel,
+  BoardBriefActionSeverity,
+  BoardBriefActionKind,
+  BoardBriefIncidentSeverity,
+  BoardBriefIncidentType,
+  BoardBriefOutputKind,
+  BoardBriefSnapshotSource,
+  BoardBriefAlertEventStatus,
+} from "./constants.js";
+export {
   COMPANY_STATUSES,
   EXECUTIVE_SUMMARY_SEND_STATUSES,
   COMPANY_KPI_TRENDS,
@@ -158,6 +182,18 @@ export {
   type PluginBridgeErrorCode,
 } from "./constants.js";
 
+export type {
+  BoardBrief,
+  BoardBriefTotals,
+  BoardBriefHealth,
+  BoardBriefFreshnessEntry,
+  BoardBriefFocusArea,
+  BoardBriefActionItem,
+  BoardBriefIncident,
+  BoardBriefOutput,
+  BoardBriefSnapshot,
+  BoardBriefAlertEvent,
+} from "./types/board-brief.js";
 export type {
   Company,
   CompanyKpi,
@@ -655,6 +691,17 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./validators/index.js";
+export {
+  boardBriefFreshnessEntrySchema,
+  boardBriefHealthSchema,
+  boardBriefFocusAreaSchema,
+  boardBriefActionItemSchema,
+  boardBriefIncidentSchema,
+  boardBriefOutputSchema,
+  boardBriefSchema,
+  boardBriefSnapshotSchema,
+  boardBriefAlertEventSchema,
+} from "./validators/board-brief.js";
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";

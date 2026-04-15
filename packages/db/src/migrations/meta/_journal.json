@@ -421,6 +421,13 @@
       "when": 1775985167264,
       "tag": "0059_plain_wendell_rand",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776232391526,
+      "tag": "0060_chief_kree",
+      "breakpoints": true
     }
   ]
 }

@@ -22,7 +22,7 @@ export interface DashboardFocusArea {
 
 export interface DashboardAttentionItem {
   key: string;
-  kind: "issue" | "run" | "approval" | "join_request";
+  kind: "issue" | "run" | "approval" | "join_request" | "output";
   entityId: string;
   title: string;
   reason: string;

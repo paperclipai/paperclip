@@ -7,6 +7,53 @@ export type ExecutiveSummarySendStatus = (typeof EXECUTIVE_SUMMARY_SEND_STATUSES
 export const COMPANY_KPI_TRENDS = ["up", "down", "flat", "none"] as const;
 export type CompanyKpiTrend = (typeof COMPANY_KPI_TRENDS)[number];
 
+export const BOARD_BRIEF_HEALTH_TONES = ["healthy", "watch", "at_risk", "blocked"] as const;
+export type BoardBriefHealthTone = (typeof BOARD_BRIEF_HEALTH_TONES)[number];
+
+export const BOARD_BRIEF_FRESHNESS_STATUSES = ["fresh", "stale", "unknown"] as const;
+export type BoardBriefFreshnessStatus = (typeof BOARD_BRIEF_FRESHNESS_STATUSES)[number];
+
+export const BOARD_BRIEF_CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
+export type BoardBriefConfidenceLevel = (typeof BOARD_BRIEF_CONFIDENCE_LEVELS)[number];
+
+export const BOARD_BRIEF_ACTION_SEVERITIES = ["low", "medium", "high", "critical"] as const;
+export type BoardBriefActionSeverity = (typeof BOARD_BRIEF_ACTION_SEVERITIES)[number];
+
+export const BOARD_BRIEF_ACTION_KINDS = [
+  "issue",
+  "run",
+  "approval",
+  "join_request",
+  "output",
+  "budget",
+  "agent",
+] as const;
+export type BoardBriefActionKind = (typeof BOARD_BRIEF_ACTION_KINDS)[number];
+
+export const BOARD_BRIEF_INCIDENT_SEVERITIES = ["low", "medium", "high", "critical"] as const;
+export type BoardBriefIncidentSeverity = (typeof BOARD_BRIEF_INCIDENT_SEVERITIES)[number];
+
+export const BOARD_BRIEF_INCIDENT_TYPES = [
+  "budget_incident",
+  "approval_aging",
+  "join_request_aging",
+  "stale_issue",
+  "blocked_issue_aging",
+  "stale_agent",
+  "failed_run_spike",
+  "cost_telemetry_stale",
+] as const;
+export type BoardBriefIncidentType = (typeof BOARD_BRIEF_INCIDENT_TYPES)[number];
+
+export const BOARD_BRIEF_OUTPUT_KINDS = ["work_product", "document_revision"] as const;
+export type BoardBriefOutputKind = (typeof BOARD_BRIEF_OUTPUT_KINDS)[number];
+
+export const BOARD_BRIEF_SNAPSHOT_SOURCES = ["daily_digest", "critical_alert", "manual"] as const;
+export type BoardBriefSnapshotSource = (typeof BOARD_BRIEF_SNAPSHOT_SOURCES)[number];
+
+export const BOARD_BRIEF_ALERT_EVENT_STATUSES = ["active", "resolved"] as const;
+export type BoardBriefAlertEventStatus = (typeof BOARD_BRIEF_ALERT_EVENT_STATUSES)[number];
+
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 

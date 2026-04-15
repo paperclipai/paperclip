@@ -12,6 +12,7 @@ export { approvalsApi } from "./approvals";
 export { costsApi } from "./costs";
 export { activityApi } from "./activity";
 export { dashboardApi } from "./dashboard";
+export { boardBriefApi } from "./boardBrief";
 export { executiveSummaryApi } from "./executiveSummary";
 export { heartbeatsApi } from "./heartbeats";
 export { instanceSettingsApi } from "./instanceSettings";

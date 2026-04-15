@@ -23,6 +23,7 @@ import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { boardBriefRoutes } from "./routes/board-brief.js";
 import { copilotRoutes } from "./routes/copilot.js";
 import { roadmapRoutes } from "./routes/roadmap.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
@@ -167,6 +168,7 @@ export async function createApp(
   api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(boardBriefRoutes(db));
   api.use(copilotRoutes(db));
   api.use(roadmapRoutes({ db }));
   api.use(sidebarBadgeRoutes(db));

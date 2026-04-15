@@ -51,6 +51,7 @@ export function companyService(db: Db) {
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
     feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     dailyExecutiveSummaryEnabled: companies.dailyExecutiveSummaryEnabled,
+    criticalBoardAlertsEmailEnabled: companies.criticalBoardAlertsEmailEnabled,
     dailyExecutiveSummaryLastSentAt: companies.dailyExecutiveSummaryLastSentAt,
     dailyExecutiveSummaryLastStatus: companies.dailyExecutiveSummaryLastStatus,
     dailyExecutiveSummaryLastError: companies.dailyExecutiveSummaryLastError,
