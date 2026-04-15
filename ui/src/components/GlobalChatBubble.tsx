@@ -77,6 +77,27 @@ export function GlobalChatBubble() {
     }
   };
 
+  // Ctrl+Shift+C → open / cycle agent; Esc → close
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "c" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        if (!isOpen) {
+          handleOpen();
+        } else if (agents.length > 1) {
+          const currentIdx = agents.findIndex((a) => a.id === selectedAgentId);
+          const nextIdx = (currentIdx + 1) % agents.length;
+          handleSelectAgent(agents[nextIdx]!.id);
+        }
+      }
+      if (e.key === "Escape" && isOpen) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, agents, selectedAgentId]);
+
   // Close agent picker on outside click
   useEffect(() => {
     if (!agentPickerOpen) return;
