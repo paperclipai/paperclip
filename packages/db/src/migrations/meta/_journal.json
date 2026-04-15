@@ -351,6 +351,13 @@
       "when": 1776032322659,
       "tag": "0049_breezy_black_widow",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1776280308432,
+      "tag": "0050_tricky_miss_america",
+      "breakpoints": true
     }
   ]
 }

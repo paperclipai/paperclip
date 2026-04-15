@@ -77,6 +77,7 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    groupId: z.string().uuid().nullable().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -133,3 +134,17 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const createAgentGroupSchema = z.object({
+  name: z.string().min(1).max(100),
+  sortOrder: z.number().int().nonnegative().optional().default(0),
+});
+
+export type CreateAgentGroup = z.infer<typeof createAgentGroupSchema>;
+
+export const updateAgentGroupSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  sortOrder: z.number().int().nonnegative().optional(),
+});
+
+export type UpdateAgentGroup = z.infer<typeof updateAgentGroupSchema>;

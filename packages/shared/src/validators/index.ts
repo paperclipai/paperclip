@@ -103,6 +103,10 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  createAgentGroupSchema,
+  updateAgentGroupSchema,
+  type CreateAgentGroup,
+  type UpdateAgentGroup,
 } from "./agent.js";
 
 export {

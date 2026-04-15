@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentGroup,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -201,3 +202,19 @@ export interface AvailableSkill {
   description: string;
   isPaperclipManaged: boolean;
 }
+
+export const agentGroupsApi = {
+  list: (companyId: string) =>
+    api.get<AgentGroup[]>(`/companies/${companyId}/agent-groups`),
+  create: (companyId: string, data: { name: string; sortOrder?: number }) =>
+    api.post<AgentGroup>(`/companies/${companyId}/agent-groups`, data),
+  update: (companyId: string, groupId: string, data: { name?: string; sortOrder?: number }) =>
+    api.patch<AgentGroup>(`/companies/${companyId}/agent-groups/${groupId}`, data),
+  delete: (companyId: string, groupId: string) =>
+    api.delete<{ ok: boolean }>(`/companies/${companyId}/agent-groups/${groupId}`),
+};
+
+export const agentGroupMembershipApi = {
+  assignAgent: (agentId: string, groupId: string | null) =>
+    api.patch<Agent>(`/agents/${agentId}`, { groupId }),
+};

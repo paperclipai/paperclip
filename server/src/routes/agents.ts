@@ -22,6 +22,8 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  createAgentGroupSchema,
+  updateAgentGroupSchema,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -30,6 +32,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentGroupService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -86,6 +89,7 @@ export function agentRoutes(db: Db) {
 
   const router = Router();
   const svc = agentService(db);
+  const agentGroups = agentGroupService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -2540,6 +2544,67 @@ export function agentRoutes(db: Db) {
     });
 
     res.json({ message: msg, runId: run?.id ?? null });
+  });
+
+  // Agent Groups CRUD — /companies/:companyId/agent-groups
+  router.get("/companies/:companyId/agent-groups", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const groups = await agentGroups.list(companyId);
+    res.json(groups);
+  });
+
+  router.post("/companies/:companyId/agent-groups", validate(createAgentGroupSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const group = await agentGroups.create(companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent_group.created",
+      entityType: "agent_group",
+      entityId: group.id,
+      details: { name: group.name },
+    });
+    res.status(201).json(group);
+  });
+
+  router.patch("/companies/:companyId/agent-groups/:groupId", validate(updateAgentGroupSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const groupId = req.params.groupId as string;
+    assertCompanyAccess(req, companyId);
+    const group = await agentGroups.update(companyId, groupId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent_group.updated",
+      entityType: "agent_group",
+      entityId: groupId,
+      details: req.body as Record<string, unknown>,
+    });
+    res.json(group);
+  });
+
+  router.delete("/companies/:companyId/agent-groups/:groupId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const groupId = req.params.groupId as string;
+    assertCompanyAccess(req, companyId);
+    const group = await agentGroups.delete(companyId, groupId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent_group.deleted",
+      entityType: "agent_group",
+      entityId: groupId,
+      details: { name: group.name },
+    });
+    res.json({ ok: true });
   });
 
   return router;

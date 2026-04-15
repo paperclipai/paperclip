@@ -59,6 +59,7 @@ const mockAdapter = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentGroupService: () => ({ list: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), delete: vi.fn(), getById: vi.fn() }),
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
