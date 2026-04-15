@@ -1,28 +1,6 @@
 import pc from "picocolors";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function asNumber(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value === null || value === undefined) return "";
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
+import { asRecord, asString, asNumber, stringifyUnknown } from "@paperclipai/adapter-utils";
 
 function printUserMessage(messageRaw: unknown): void {
   if (typeof messageRaw === "string") {

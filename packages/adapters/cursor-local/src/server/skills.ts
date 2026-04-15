@@ -13,19 +13,16 @@ import {
   readInstalledSkillTargets,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
+import { asNonEmptyString } from "@paperclipai/adapter-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function resolveCursorSkillsHome(config: Record<string, unknown>) {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
-  const configuredHome = asString(env.HOME);
+  const configuredHome = asNonEmptyString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
   return path.join(home, ".cursor", "skills");
 }

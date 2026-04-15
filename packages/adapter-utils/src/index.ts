@@ -56,3 +56,11 @@ export {
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export { firstNonEmptyLine, commandLooksLike, summarizeStatus } from "./probe-helpers.js";
 export { parseCommaArgs, parseEnvVars, parseEnvBindings, parseJsonObject } from "./config-parser.js";
+export {
+  asString,
+  asNonEmptyString,
+  asNumber,
+  asRecord,
+  stringifyUnknown,
+  safeJsonParse,
+} from "./type-coercion.js";
