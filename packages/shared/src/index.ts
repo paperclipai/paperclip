@@ -205,6 +205,7 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  OrgNode,
   AssetImage,
   Project,
   ProjectCodebase,

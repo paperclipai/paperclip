@@ -58,6 +58,7 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  OrgNode,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";

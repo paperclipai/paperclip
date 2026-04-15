@@ -4,15 +4,8 @@
  * Pure SVG output — no browser/Playwright needed. PNG via sharp.
  */
 
-export interface OrgNode {
-  id: string;
-  name: string;
-  role: string;
-  status: string;
-  reports: OrgNode[];
-  /** Populated by collapseTree: the flattened list of hidden descendants for avatar grid rendering. */
-  collapsedReports?: OrgNode[];
-}
+import type { OrgNode } from "@paperclipai/shared";
+export type { OrgNode };
 
 export type OrgChartStyle = "monochrome" | "nebula" | "circuit" | "warmth" | "schematic";
 
