@@ -1379,6 +1379,114 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("rejects creating a blocked issue without blocker relations", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Broken blocked issue",
+        status: "blocked",
+        priority: "medium",
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("normalizes a blocked issue to todo when the last blocker is removed without an explicit status", async () => {
+    const companyId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Blocked worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    await svc.update(blockedId, {
+      blockedByIssueIds: [blockerId],
+    });
+
+    const updated = await svc.update(blockedId, {
+      blockedByIssueIds: [],
+    });
+
+    expect(updated?.status).toBe("todo");
+  });
+
+  it("keeps an explicit non-blocked status when clearing the last blocker", async () => {
+    const companyId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+      },
+    ]);
+
+    await svc.update(blockedId, {
+      blockedByIssueIds: [blockerId],
+    });
+
+    const updated = await svc.update(blockedId, {
+      status: "in_review",
+      blockedByIssueIds: [],
+    });
+
+    expect(updated?.status).toBe("in_review");
+  });
+
   it("optionally includes blockedBy and blocks summaries in list results", async () => {
     const companyId = randomUUID();
     const blockerAssigneeUserId = randomUUID();

@@ -77,6 +77,7 @@ If you change schema/API behavior, update all impacted layers:
 - Approval gates for governed actions
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
+- Same-issue recovery is the default for stuck work; successor issues are exceptional board-controlled recovery only
 
 4. Update documentation after every change.
 Documentation is part of the change. Every code, behavior, command, or workflow change must be reflected in the relevant docs before hand-off.

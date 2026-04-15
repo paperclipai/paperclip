@@ -21,17 +21,17 @@ describe("issuesApi.list", () => {
     mockGet.mockResolvedValue([]);
   });
 
-  it("excludes blocked recovery sources with open successors by default", async () => {
+  it("does not exclude recovery sources with open successors by default", async () => {
     await issuesApi.list("company-1");
+
+    expect(mockGet).toHaveBeenCalledWith("/companies/company-1/issues");
+  });
+
+  it("allows callers to opt into excluding recovery source issues", async () => {
+    await issuesApi.list("company-1", { excludeRecoverySourcesWithOpenSuccessors: true });
 
     expect(mockGet).toHaveBeenCalledWith(
       "/companies/company-1/issues?excludeRecoverySourcesWithOpenSuccessors=true",
     );
-  });
-
-  it("allows callers to opt back into recovery source issues", async () => {
-    await issuesApi.list("company-1", { excludeRecoverySourcesWithOpenSuccessors: false });
-
-    expect(mockGet).toHaveBeenCalledWith("/companies/company-1/issues");
   });
 });

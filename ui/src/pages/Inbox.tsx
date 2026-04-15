@@ -26,6 +26,7 @@ import {
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { IssueBoardStateSummary } from "../components/IssueBoardStateSummary";
 import { IssueRow } from "../components/IssueRow";
 import { SwipeToArchive } from "../components/SwipeToArchive";
 
@@ -215,10 +216,6 @@ export function InboxIssueMetaLeading({
       )}
     </>
   );
-}
-
-function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -1981,7 +1978,7 @@ export function Inbox() {
                         showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                       />
                     }
-                    mobileMeta={issueActivityText(issue).toLowerCase()}
+                    mobileMeta={<IssueBoardStateSummary issue={issue} />}
                     unreadState={
                       isUnread ? "visible" : isFading ? "fading" : "hidden"
                     }
@@ -2011,6 +2008,7 @@ export function Inbox() {
                         />
                       ) : undefined
                     }
+                    trailingMeta={<IssueBoardStateSummary issue={issue} className="max-w-[220px] justify-end" />}
                   />
                 );
 

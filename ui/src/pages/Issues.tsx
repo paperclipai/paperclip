@@ -94,8 +94,6 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
-      "exclude-recovery-sources-open-successors",
-      "true",
       "show-closed",
       showClosed ? "true" : "false",
     ],
@@ -103,7 +101,6 @@ export function Issues() {
       issuesApi.list(selectedCompanyId!, {
         participantAgentId,
         includeRelations: true,
-        excludeRecoverySourcesWithOpenSuccessors: true,
         ...(showClosed ? {} : { status: OPEN_ISSUE_STATUSES }),
       }),
     enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
@@ -180,7 +177,6 @@ export function Issues() {
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialSearch={initialSearch}
-      excludeRecoverySourcesWithOpenSuccessors
       onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId ? { participantAgentId } : undefined}

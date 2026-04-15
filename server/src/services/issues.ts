@@ -110,6 +110,17 @@ function applyStatusSideEffects(
   return patch;
 }
 
+function assertBlockedStatusMatchesRelations(status: string | undefined, blockedByIssueIds: string[]) {
+  if (status === "blocked" && blockedByIssueIds.length === 0) {
+    throw unprocessable("Blocked issues require at least one blocker relation");
+  }
+}
+
+function normalizeStatusAfterLastBlockerRemoval(explicitStatus: string | undefined) {
+  if (explicitStatus && explicitStatus !== "blocked") return explicitStatus;
+  return "todo";
+}
+
 function deriveRecoveryDispositionStatus(disposition: IssueRecoveryDisposition) {
   return RECOVERY_DISPOSITION_COMPLETE_STATUS[disposition];
 }
@@ -1373,6 +1384,24 @@ export function issueService(db: Db) {
     );
   }
 
+  async function listBlockedByIssueIds(
+    issueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ) {
+    const rows = await dbOrTx
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    return rows.map((row: { blockerIssueId: string }) => row.blockerIssueId);
+  }
+
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
       .select({ status: heartbeatRuns.status })
@@ -2286,6 +2315,8 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const finalBlockedByIssueIds = [...new Set(blockedByIssueIds ?? [])];
+      assertBlockedStatusMatchesRelations(issueData.status, finalBlockedByIssueIds);
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -2435,7 +2466,7 @@ export function issueService(db: Db) {
           await syncBlockedByIssueIds(
             issue.id,
             companyId,
-            blockedByIssueIds,
+            finalBlockedByIssueIds,
             {
               agentId: issueData.createdByAgentId ?? null,
               userId: issueData.createdByUserId ?? null,
@@ -2555,33 +2586,53 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      if (recovery) {
-        applyIssueLifecyclePatch(patch, issueData.status);
-      } else {
-        applyStatusSideEffects(issueData.status, patch);
-        if (issueData.status && issueData.status !== "done") {
-          patch.completedAt = null;
-        }
-        if (issueData.status && issueData.status !== "cancelled") {
-          patch.cancelledAt = null;
-        }
-        if (issueData.status && issueData.status !== "in_progress") {
-          patch.checkoutRunId = null;
-          // Fix B: also clear the execution lock when leaving in_progress
-          patch.executionRunId = null;
-          patch.executionAgentNameKey = null;
-          patch.executionLockedAt = null;
-        }
-      }
-      if (assigneeWillChange) {
-        patch.checkoutRunId = null;
-        // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
-        patch.executionRunId = null;
-        patch.executionAgentNameKey = null;
-        patch.executionLockedAt = null;
-      }
-
       const runUpdate = async (tx: any) => {
+        const currentBlockedByIssueIds = await listBlockedByIssueIds(id, existing.companyId, tx);
+        const finalBlockedByIssueIds = blockedByIssueIds !== undefined
+          ? [...new Set(blockedByIssueIds)]
+          : currentBlockedByIssueIds;
+        let resolvedStatus = issueData.status ?? existing.status;
+        if (resolvedStatus === "blocked" && finalBlockedByIssueIds.length === 0) {
+          if (issueData.status === "blocked") {
+            throw unprocessable("Blocked issues require at least one blocker relation");
+          }
+          resolvedStatus = normalizeStatusAfterLastBlockerRemoval(issueData.status);
+        }
+        assertBlockedStatusMatchesRelations(resolvedStatus, finalBlockedByIssueIds);
+        if (issueData.status === undefined && resolvedStatus !== existing.status) {
+          assertTransition(existing.status, resolvedStatus);
+        }
+
+        const patchForTx: Partial<typeof issues.$inferInsert> = {
+          ...patch,
+        };
+        if (resolvedStatus !== existing.status || issueData.status !== undefined) {
+          patchForTx.status = resolvedStatus;
+        }
+        if (recovery) {
+          applyIssueLifecyclePatch(patchForTx, resolvedStatus);
+        } else {
+          applyStatusSideEffects(patchForTx.status, patchForTx);
+          if (patchForTx.status && patchForTx.status !== "done") {
+            patchForTx.completedAt = null;
+          }
+          if (patchForTx.status && patchForTx.status !== "cancelled") {
+            patchForTx.cancelledAt = null;
+          }
+          if (patchForTx.status && patchForTx.status !== "in_progress") {
+            patchForTx.checkoutRunId = null;
+            patchForTx.executionRunId = null;
+            patchForTx.executionAgentNameKey = null;
+            patchForTx.executionLockedAt = null;
+          }
+        }
+        if (assigneeWillChange) {
+          patchForTx.checkoutRunId = null;
+          patchForTx.executionRunId = null;
+          patchForTx.executionAgentNameKey = null;
+          patchForTx.executionLockedAt = null;
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -2591,7 +2642,7 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
-        patch.goalId = resolveNextIssueGoalId({
+        patchForTx.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,
           currentProjectGoalId,
@@ -2602,7 +2653,7 @@ export function issueService(db: Db) {
         });
         const updated = await tx
           .update(issues)
-          .set(patch)
+          .set(patchForTx)
           .where(eq(issues.id, id))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
@@ -2614,7 +2665,7 @@ export function issueService(db: Db) {
           await syncBlockedByIssueIds(
             updated.id,
             existing.companyId,
-            blockedByIssueIds,
+            finalBlockedByIssueIds,
             {
               agentId: actorAgentId ?? null,
               userId: actorUserId ?? null,

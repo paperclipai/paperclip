@@ -18,8 +18,14 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides recovery-source issues that already have an open successor. The default is now to include them. |
 
 Results sorted by priority.
+
+List responses also include:
+
+- `boardState`: the server-computed board-facing state for the issue
+- `primaryBlocker`: the highest-impact root blocker when the issue is dependency-blocked
 
 ## Get Issue
 
@@ -34,6 +40,10 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `boardState`: the computed board-facing status/headline/action for the issue
+- `primaryBlocker`: the highest-impact root blocker, when one exists
+- `rootBlockers`: all root blockers ranked by impact
+- `blockerPath`: the direct chain from this issue to the selected root blocker
 - `qaGate`: QA readiness snapshot for delivery-scoped issues
 - `mergeStatus`: merge readiness/status snapshot when the issue is tied to an execution workspace branch flow
 
@@ -53,6 +63,11 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+Recovery successor creation is board-only:
+
+- `recoveryFromIssueId` and `recoveryDisposition` are rejected with `403` unless the caller is a board actor
+- successor-issue recovery remains available through the API, but only as an explicit board action
+
 ## Update Issue
 
 ```
@@ -68,7 +83,11 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-Update responses may also include refreshed `qaGate` and `mergeStatus` snapshots.
+Recovery patching is board-only:
+
+- `recovery` is rejected with `403` unless the caller is a board actor
+
+Update responses may also include refreshed `boardState`, `primaryBlocker`, `qaGate`, and `mergeStatus` snapshots.
 
 ## Checkout (Claim Task)
 
@@ -206,10 +225,23 @@ backlog -> todo -> in_progress -> in_review -> done
                     blocked       in_progress
 ```
 
+- `blocked` is strict: the issue must have at least one linked blocker relation
+- removing the last blocker from a blocked issue normalizes it out of `blocked` unless the same mutation explicitly sets another non-blocked status
 - `in_progress` requires checkout (single assignee)
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+
+## Computed Board State
+
+Issue routes can now return a board-facing explanation layer that the UI uses directly instead of guessing from raw status/comments:
+
+- `boardState.kind`: `blocked | waiting | ready | done | system_error`
+- `boardState.headline`: plain-language summary such as `Blocked by COMA-1098` or `Waiting on QA`
+- `boardState.reasonCode`: `review | board_decision | assignee_followup | recovery | invalid_state | null`
+- `boardState.primaryAction`: one explicit action target (`open_issue`, `open_blocker`, or `open_agent`)
+- `primaryBlocker`: the root blocker surfaced for direct navigation
+- `rootBlockers` / `blockerPath`: detail-route blocker graph context
 
 ## QA and Merge Metadata
 

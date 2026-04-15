@@ -1,11 +1,14 @@
 import type {
+  IssueBoardStateKind,
   IssueExecutionDecisionOutcome,
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueNextActionType,
   IssueRecoveryDisposition,
   IssueOriginKind,
   IssuePriority,
+  IssueStallReasonCode,
   IssueStatus,
   IssueRelationType,
 } from "../constants.js";
@@ -128,6 +131,42 @@ export interface IssueRelation {
 export interface IssueRecoveryTransition {
   successorIssueId: string;
   disposition: IssueRecoveryDisposition;
+}
+
+export interface IssueBoardStateAction {
+  type: IssueNextActionType;
+  label: string;
+  targetEntity: "issue" | "agent";
+  targetId: string;
+}
+
+export interface IssueBoardState {
+  kind: IssueBoardStateKind;
+  headline: string;
+  reasonCode: IssueStallReasonCode | null;
+  actorType: "issue" | "agent" | "board" | "system" | null;
+  actorId: string | null;
+  primaryAction: IssueBoardStateAction | null;
+}
+
+export interface IssuePrimaryBlocker {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  blockedIssueCount: number;
+  pathLength: number;
+}
+
+export interface IssueRootBlocker extends IssuePrimaryBlocker {}
+
+export interface IssueBlockerPathNode {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
 }
 
 export interface IssueExecutionStagePrincipal {
@@ -279,6 +318,10 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   recoverySource?: IssueRelationIssueSummary | null;
   recoverySuccessor?: IssueRelationIssueSummary | null;
+  boardState?: IssueBoardState | null;
+  primaryBlocker?: IssuePrimaryBlocker | null;
+  rootBlockers?: IssueRootBlocker[];
+  blockerPath?: IssueBlockerPathNode[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;

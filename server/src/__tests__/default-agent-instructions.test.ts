@@ -26,13 +26,14 @@ describe("loadDefaultAgentInstructionsBundle", () => {
 
     expect(ceoBundle["AGENTS.md"]).toContain("You are the CEO.");
     expect(ceoBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
-    expect(cooBundle["AGENTS.md"]).toContain("A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state.");
+    expect(cooBundle["AGENTS.md"]).toContain("Same-issue recovery is the default for stuck execution.");
     expect(cooBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(engineerBundle["AGENTS.md"]).toContain("Never move a delivery issue from `In Progress` to `Done`.");
     expect(engineerBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(qaBundle["AGENTS.md"]).toContain("Only QA and Release Engineer moves a delivery issue from `In Review` to `Done`.");
     expect(qaBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
-    expect(defaultBundle["AGENTS.md"]).toContain("[RECOVERED BY REISSUE]");
+    expect(defaultBundle["AGENTS.md"]).toContain("[POISONED SESSION]");
+    expect(defaultBundle["AGENTS.md"]).toContain("Successor issues linked by `recovered_by` are exceptional board-controlled recovery only;");
     expect(defaultBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
   });
 

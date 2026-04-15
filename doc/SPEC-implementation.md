@@ -217,6 +217,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- `blocked` requires at least one explicit blocker relation; it is reserved for real dependency-blocked work
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`
@@ -389,6 +390,10 @@ Allowed transitions:
 - `in_progress -> in_review | blocked | done | cancelled`
 - `in_review -> in_progress | done | cancelled`
 - `blocked -> todo | in_progress | cancelled`
+
+Normalization rule:
+
+- when the last blocker relation is removed from a blocked issue, the service must normalize the issue out of `blocked` unless the same mutation explicitly sets another non-blocked status
 - terminal: `done`, `cancelled`
 
 Side effects:
@@ -540,6 +545,7 @@ Dashboard payload must include:
 
 - active/running/paused/error agent counts
 - open/in-progress/blocked/done issue counts
+- issue detail and list surfaces must expose a server-computed board-facing state (`boardState`, `primaryBlocker`, and for detail views `rootBlockers` / `blockerPath`) so the board sees the current problem and next click without interpreting raw status/comments manually
 - month-to-date spend and budget utilization
 - pending approvals count
 

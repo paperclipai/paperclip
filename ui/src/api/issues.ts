@@ -43,8 +43,6 @@ export const issuesApi = {
     },
   ) => {
     const params = new URLSearchParams();
-    const excludeRecoverySourcesWithOpenSuccessors =
-      filters?.excludeRecoverySourcesWithOpenSuccessors ?? true;
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
@@ -60,7 +58,7 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeClosed) params.set("includeClosed", "true");
     if (filters?.includeRelations) params.set("includeRelations", "true");
-    if (excludeRecoverySourcesWithOpenSuccessors) {
+    if (filters?.excludeRecoverySourcesWithOpenSuccessors) {
       params.set("excludeRecoverySourcesWithOpenSuccessors", "true");
     }
     if (filters?.q) params.set("q", filters.q);

@@ -18,13 +18,13 @@ import {
   extractRoadmapEpicIdsFromIssue,
   pickRoadmapOverviewField,
 } from "../lib/roadmapEpicStyles";
-import { formatDate, cn } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueRow } from "./IssueRow";
+import { IssueBoardStateSummary } from "./IssueBoardStateSummary";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1214,7 +1214,7 @@ export function IssuesList({
                             )}
                           </>
                         )}
-                        mobileMeta={timeAgo(issue.updatedAt)}
+                        mobileMeta={<IssueBoardStateSummary issue={issue} />}
                         desktopTrailing={(
                           <>
                             {issueEpicIds.length > 0 && !viewState.epicId && (
@@ -1371,7 +1371,7 @@ export function IssuesList({
                             </Popover>
                           </>
                         )}
-                        trailingMeta={formatDate(issue.createdAt)}
+                        trailingMeta={<IssueBoardStateSummary issue={issue} className="max-w-[220px] justify-end" />}
                       />
                       {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>

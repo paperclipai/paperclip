@@ -530,6 +530,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const operationsAgentId = randomUUID();
     const workerAgentId = randomUUID();
     const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
     const completedRunId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
@@ -580,16 +581,33 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       contextSnapshot: { issueId },
     });
 
-    await db.insert(issues).values({
-      id: issueId,
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked assigned issue without recovery truth",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: completedRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
       companyId,
-      title: "Blocked assigned issue without recovery truth",
-      status: "blocked",
-      priority: "high",
-      assigneeAgentId: workerAgentId,
-      executionRunId: completedRunId,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
     });
 
     const run = await heartbeat.wakeup(operationsAgentId, {
@@ -643,13 +661,19 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       .where(eq(agentWakeupRequests.companyId, companyId))
       .orderBy(asc(agentWakeupRequests.createdAt));
 
-    expect(persistedIssues).toHaveLength(1);
-    expect(persistedIssues[0]).toMatchObject({
+    const persistedIssue = persistedIssues.find((issue) => issue.id === issueId);
+    expect(persistedIssue).toMatchObject({
       id: issueId,
       assigneeAgentId: workerAgentId,
       status: "blocked",
     });
-    expect(relations).toHaveLength(0);
+    expect(relations).toEqual([
+      expect.objectContaining({
+        issueId: blockerIssueId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      }),
+    ]);
     expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-recovery]"))).toBe(true);
     expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-assignment]"))).toBe(false);
     expect(

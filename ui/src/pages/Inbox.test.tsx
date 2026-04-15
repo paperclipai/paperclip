@@ -5,6 +5,7 @@ import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IssueBoardStateSummary } from "../components/IssueBoardStateSummary";
 import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
@@ -247,6 +248,47 @@ describe("InboxIssueTrailingColumns", () => {
     });
 
     expect(container.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("IssueBoardStateSummary in inbox rows", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("renders the computed waiting headline used by inbox issue rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueBoardStateSummary
+          issue={createIssue({
+            status: "in_review",
+            boardState: {
+              kind: "waiting",
+              headline: "Waiting on QA",
+              reasonCode: "review",
+              actorType: "agent",
+              actorId: "agent-qa",
+              primaryAction: null,
+            },
+          })}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Waiting on QA");
 
     act(() => {
       root.unmount();
