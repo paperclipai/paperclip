@@ -854,7 +854,7 @@ export function issueService(db: Db) {
         companyId,
         issueId: blockerIssueId,
         relatedIssueId: issueId,
-        type: "blocks",
+        type: "blocks" as const,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
       })),
