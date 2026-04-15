@@ -150,6 +150,13 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+// SharpAPI fork: QA gate for close-to-done transitions.
+// Issues labeled with any of these can only be closed by an agent whose role === "qa".
+// Engineers must set status to "in_review" and @-mention QA for verification.
+// Refactor/docs-labeled issues are exempt and may self-close.
+const QA_GATED_LABEL_NAMES = new Set(["bug", "customer-report", "feature", "integrity-monitored"]);
+const QA_GATE_ENFORCER_ROLE = "qa";
+
 function shouldImplicitlyReopenCommentForAgent(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -1514,6 +1521,33 @@ export function issueRoutes(
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+
+    // SharpAPI QA Gate: block non-QA agents from closing gated issues to `done`.
+    // Users/board actors bypass this gate (they can still close directly).
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      actor.actorType === "agent" &&
+      actor.agentId
+    ) {
+      const gatedLabels = ((existing as { labels?: Array<{ name: string }> }).labels ?? []).filter(
+        (l) => QA_GATED_LABEL_NAMES.has(l.name),
+      );
+      if (gatedLabels.length > 0) {
+        const actorAgent = await agentsSvc.getById(actor.agentId);
+        if (actorAgent?.role !== QA_GATE_ENFORCER_ROLE) {
+          res.status(403).json({
+            error: `QA gate: issues labeled ${gatedLabels.map((l) => l.name).join(", ")} can only be closed to 'done' by an agent with role='${QA_GATE_ENFORCER_ROLE}'. Set status to 'in_review' and @-mention QA for verification.`,
+            qaGate: {
+              gatedLabels: gatedLabels.map((l) => l.name),
+              requiredRole: QA_GATE_ENFORCER_ROLE,
+              actorRole: actorAgent?.role ?? null,
+            },
+          });
+          return;
+        }
       }
     }
 
