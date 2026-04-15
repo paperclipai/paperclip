@@ -1,18 +1,25 @@
 /**
  * @fileoverview Plugin UI static file serving route
  *
- * Serves plugin UI bundles from the plugin's dist/ui/ directory under the
- * `/_plugins/:pluginId/ui/*` namespace. This is specified in PLUGIN_SPEC.md
+ * Serves plugin UI bundles from the plugin's dist root directory under the
+ * `/_plugins/:pluginId/*` namespace. This is specified in PLUGIN_SPEC.md
  * §19.0.3 (Bundle Serving).
  *
+ * The route serves any file within the plugin's dist root (the parent of the
+ * declared UI directory, e.g. `dist/`). This allows plugin UI modules that
+ * were compiled with `tsc` (which preserves relative imports across
+ * directories) to load sibling files such as `../constants.js` — the host
+ * plugin loader rewrites these relative specifiers to absolute URLs pointing
+ * at `/_plugins/:pluginId/<file>`, which this route resolves correctly.
+ *
  * Plugin UI bundles are pre-built ESM that the host serves as static assets.
- * The host dynamically imports the plugin's UI entry module from this path,
- * resolves the named export declared in `ui.slots[].exportName`, and mounts
- * it into the extension slot.
+ * The host dynamically imports the plugin's UI entry module from
+ * `/_plugins/:pluginId/ui/<entryFile>`, resolves the named export declared in
+ * `ui.slots[].exportName`, and mounts it into the extension slot.
  *
  * Security:
  * - Path traversal is prevented by resolving the requested path and verifying
- *   it stays within the plugin's UI directory.
+ *   it stays within the plugin's dist root directory.
  * - Only plugins in 'ready' status have their UI served.
  * - Only plugins that declare `entrypoints.ui` serve UI bundles.
  *
@@ -195,11 +202,17 @@ export interface PluginUiStaticRouteOptions {
 /**
  * Create an Express router that serves plugin UI static files.
  *
- * This route handles `GET /_plugins/:pluginId/ui/*` requests by:
+ * This route handles `GET /_plugins/:pluginId/*` requests by:
  * 1. Looking up the plugin in the registry by ID or key
  * 2. Verifying the plugin is in 'ready' status with UI declared
- * 3. Resolving the file path within the plugin's dist/ui/ directory
+ * 3. Resolving the file path within the plugin's dist root directory
  * 4. Serving the file with appropriate cache headers
+ *
+ * The "dist root" is the parent of the plugin's declared UI directory. For
+ * a plugin with `entrypoints.ui = "./dist/ui/"`, the dist root is `./dist/`.
+ * Files are served from this root so that relative imports that ascend above
+ * the `ui/` subdirectory (e.g. `../constants.js`) can be fetched after the
+ * plugin loader rewrites them to absolute URLs.
  *
  * @param db - Database connection for plugin registry lookups
  * @param options - Configuration options
@@ -211,21 +224,24 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
   const log = logger.child({ service: "plugin-ui-static" });
 
   /**
-   * GET /_plugins/:pluginId/ui/*
+   * GET /_plugins/:pluginId/*
    *
-   * Serve a static file from a plugin's UI bundle directory.
+   * Serve a static file from a plugin's dist root directory.
    *
    * The :pluginId parameter accepts either:
    * - Database UUID
    * - Plugin key (e.g., "acme.linear")
    *
-   * The wildcard captures the relative file path within the UI directory.
+   * The wildcard captures the relative file path within the dist root.
+   * UI entry files are accessed at `ui/<entryFile>` (e.g. `ui/index.js`).
+   * Sibling dist files (e.g. `constants.js`) are accessible at their
+   * path relative to the dist root.
    *
    * Cache strategy:
    * - Content-hashed filenames → immutable, 1-year max-age
    * - Other files → must-revalidate with ETag
    */
-  router.get("/_plugins/:pluginId/ui/*filePath", async (req, res) => {
+  router.get("/_plugins/:pluginId/*filePath", async (req, res) => {
     const { pluginId } = req.params;
 
     // Extract the relative file path from the named wildcard.
@@ -319,8 +335,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
             return;
           }
 
-          // Proxy the request to the dev server
-          const targetUrl = new URL(rawFilePath, devUiUrl.endsWith("/") ? devUiUrl : devUiUrl + "/");
+          // Proxy the request to the dev server.
+          // Dev servers typically serve the bundle from their root (e.g.
+          // `http://localhost:5173/index.js`). The `ui/` path prefix is a
+          // host-side convention (the route used to be `/_plugins/:id/ui/*`);
+          // strip it before proxying so dev servers don't need to serve files
+          // under a `ui/` sub-path.
+          const devFilePath = rawFilePath.startsWith("ui/")
+            ? rawFilePath.slice(3)
+            : rawFilePath;
+          const targetUrl = new URL(devFilePath, devUiUrl.endsWith("/") ? devUiUrl : devUiUrl + "/");
 
           // SSRF protection: only allow http/https and localhost targets for dev proxy
           if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
@@ -390,7 +414,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       // Config lookup failure is non-fatal — fall through to static serving
     }
 
-    // Step 3: Resolve the plugin's UI directory
+    // Step 3: Resolve the plugin's UI directory, then derive the dist root.
+    //
+    // The dist root is the parent of the declared UI directory. For example,
+    // if `entrypoints.ui = "./dist/ui/"` then:
+    //   uiDir   = <packageRoot>/dist/ui/
+    //   distRoot = <packageRoot>/dist/
+    //
+    // Files are served from the dist root so that sibling dist files (e.g.
+    // `../constants.js` relative to the ui/ entry) are reachable when the
+    // plugin loader rewrites relative imports to absolute URLs.
     const uiDir = resolvePluginUiDir(
       options.localPluginDir,
       plugin.packageName,
@@ -407,8 +440,11 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       return;
     }
 
+    // The dist root is one level above the ui/ directory.
+    const distRoot = path.dirname(uiDir);
+
     // Step 4: Resolve the requested file path and prevent traversal (including symlinks)
-    const resolvedFilePath = path.resolve(uiDir, rawFilePath);
+    const resolvedFilePath = path.resolve(distRoot, rawFilePath);
 
     // Step 5: Check that the file exists and is a regular file
     let fileStat: fs.Stats;
@@ -421,17 +457,19 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Security: resolve symlinks via realpathSync and verify containment.
     // This prevents symlink-based traversal that string-based startsWith misses.
+    // Containment is checked against distRoot (not uiDir) since we now serve
+    // from the broader dist directory.
     let realFilePath: string;
-    let realUiDir: string;
+    let realDistRoot: string;
     try {
       realFilePath = fs.realpathSync(resolvedFilePath);
-      realUiDir = fs.realpathSync(uiDir);
+      realDistRoot = fs.realpathSync(distRoot);
     } catch {
       res.status(404).json({ error: "File not found" });
       return;
     }
 
-    const relative = path.relative(realUiDir, realFilePath);
+    const relative = path.relative(realDistRoot, realFilePath);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
       res.status(403).json({ error: "Access denied" });
       return;

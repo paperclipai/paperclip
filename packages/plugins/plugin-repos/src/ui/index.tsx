@@ -1,6 +1,10 @@
 import { usePluginData, useHostContext, type PluginPageProps, type PluginSidebarProps, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 import type { ReposData, EnrichedRepo } from "../worker.js";
-import { PAGE_ROUTE } from "../constants.js";
+
+// Inline constant to avoid relative imports crossing the ui/ directory boundary.
+// Blob-URL-based dynamic import (used by the plugin loader) cannot resolve
+// relative paths that go outside the module's own directory.
+const PAGE_ROUTE = "repos";
 
 // ---------------------------------------------------------------------------
 // Helpers
