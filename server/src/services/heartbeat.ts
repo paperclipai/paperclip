@@ -18,6 +18,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
+  companies,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -3854,6 +3855,22 @@ export function heartbeatService(db: Db) {
       return;
     }
 
+    const [company] = await db.select().from(companies).where(eq(companies.id, agent.companyId)).limit(1);
+    if (!company || company.status !== "active") {
+      await setRunStatus(runId, "failed", {
+        error: `Company is ${company?.status ?? "not found"}`,
+        errorCode: "company_not_active",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: `Company is ${company?.status ?? "not found"}`,
+      });
+      const failedRun = await getRun(runId);
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      return;
+    }
+
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
@@ -6088,7 +6105,12 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const allAgents = await db
+        .select({ agent: agents })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(eq(companies.status, "active"))
+        .then((rows) => rows.map((r) => r.agent));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
