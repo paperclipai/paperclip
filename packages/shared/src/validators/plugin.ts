@@ -17,9 +17,7 @@ import {
   PLUGIN_API_ROUTE_METHODS,
 } from "../constants.js";
 
-// ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
-// ---------------------------------------------------------------------------
 
 /**
  * Permissive validator for JSON Schema objects. Accepts any `Record<string, unknown>`
@@ -40,9 +38,7 @@ export const jsonSchemaSchema = z.record(z.unknown()).refine(
   { message: "Must be a valid JSON Schema object (requires at least a 'type', '$ref', or composition keyword)" },
 );
 
-// ---------------------------------------------------------------------------
 // Manifest sub-type schemas
-// ---------------------------------------------------------------------------
 
 /**
  * Validates a {@link PluginJobDeclaration} — a scheduled job declared in the
@@ -399,7 +395,6 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
 
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
-// ---------------------------------------------------------------------------
 
 /**
  * Zod schema for {@link PaperclipPluginManifestV1} — the complete runtime
@@ -699,9 +694,7 @@ export const pluginManifestV1Schema = z.object({
 
 export type PluginManifestV1Input = z.infer<typeof pluginManifestV1Schema>;
 
-// ---------------------------------------------------------------------------
 // Plugin installation / registration request
-// ---------------------------------------------------------------------------
 
 /**
  * Schema for installing (registering) a plugin.
@@ -717,9 +710,7 @@ export const installPluginSchema = z.object({
 
 export type InstallPlugin = z.infer<typeof installPluginSchema>;
 
-// ---------------------------------------------------------------------------
 // Plugin config (instance configuration) schemas
-// ---------------------------------------------------------------------------
 
 /**
  * Schema for creating or updating a plugin's instance configuration.
@@ -742,9 +733,7 @@ export const patchPluginConfigSchema = z.object({
 
 export type PatchPluginConfig = z.infer<typeof patchPluginConfigSchema>;
 
-// ---------------------------------------------------------------------------
 // Plugin status update
-// ---------------------------------------------------------------------------
 
 /**
  * Schema for updating a plugin's lifecycle status. Used by the lifecycle
@@ -759,9 +748,7 @@ export const updatePluginStatusSchema = z.object({
 
 export type UpdatePluginStatus = z.infer<typeof updatePluginStatusSchema>;
 
-// ---------------------------------------------------------------------------
 // Plugin uninstall
-// ---------------------------------------------------------------------------
 
 /** Schema for the uninstall request. `removeData` controls hard vs soft delete. */
 export const uninstallPluginSchema = z.object({
@@ -770,9 +757,7 @@ export const uninstallPluginSchema = z.object({
 
 export type UninstallPlugin = z.infer<typeof uninstallPluginSchema>;
 
-// ---------------------------------------------------------------------------
 // Plugin state (key-value storage) schemas
-// ---------------------------------------------------------------------------
 
 /**
  * Schema for a plugin state scope key — identifies the exact location where

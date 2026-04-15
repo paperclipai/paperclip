@@ -103,7 +103,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
           try {
             fs.chmodSync(keyFilePath, 0o600);
           } catch {
-            // best effort
+            // chmod may be unsupported on non-POSIX filesystems (e.g. Windows); mode 0o600 was already set via writeFileSync
           }
         },
         repairHint: "Run with --repair to create a local encrypted secrets key file",

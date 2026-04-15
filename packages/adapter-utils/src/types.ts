@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // Minimal adapter-facing interfaces (no drizzle dependency)
-// ---------------------------------------------------------------------------
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
@@ -23,9 +21,7 @@ export interface AdapterRuntime {
   taskKey: string | null;
 }
 
-// ---------------------------------------------------------------------------
 // Execution types (moved from server/src/adapters/types.ts)
-// ---------------------------------------------------------------------------
 
 export interface UsageSummary {
   inputTokens: number;
@@ -245,9 +241,7 @@ export interface HireApprovedHookResult {
   detail?: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
 // Quota window types — used by adapters that can report provider quota/rate-limit state
-// ---------------------------------------------------------------------------
 
 /** a single rate-limit or usage window returned by a provider quota API */
 export interface QuotaWindow {
@@ -276,9 +270,7 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
-// ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
-// ---------------------------------------------------------------------------
 
 export interface ConfigFieldOption {
   label: string;
@@ -382,9 +374,7 @@ export interface ServerAdapterModule {
   requiresMaterializedRuntimeSkills?: boolean;
 }
 
-// ---------------------------------------------------------------------------
 // UI types (moved from ui/src/adapters/types.ts)
-// ---------------------------------------------------------------------------
 
 export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean }
@@ -401,18 +391,14 @@ export type TranscriptEntry =
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 
-// ---------------------------------------------------------------------------
 // CLI types (moved from cli/src/adapters/types.ts)
-// ---------------------------------------------------------------------------
 
 export interface CLIAdapterModule {
   type: string;
   formatStdoutEvent: (line: string, debug: boolean) => void;
 }
 
-// ---------------------------------------------------------------------------
 // UI config form values (moved from ui/src/components/AgentConfigForm.tsx)
-// ---------------------------------------------------------------------------
 
 export interface CreateConfigValues {
   adapterType: string;
