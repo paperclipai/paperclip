@@ -12,6 +12,7 @@ export {
 export type {
   ServerAdapterModule,
   AdapterExecutionContext,
+  ExecutionSegment,
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterEnvironmentCheckLevel,

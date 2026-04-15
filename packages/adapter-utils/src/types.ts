@@ -61,6 +61,24 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+/**
+ * One segment of a multi-phase adapter execution (e.g. cheap preflight + primary).
+ *
+ * When an adapter uses smart model routing, it reports each execution phase as
+ * a separate segment so the server can record truthful per-model cost events
+ * instead of collapsing everything into one fake model.
+ */
+export interface ExecutionSegment {
+  phase: "cheap_preflight" | "primary" | string;
+  provider?: string | null;
+  biller?: string | null;
+  model?: string | null;
+  billingType?: AdapterBillingType | null;
+  usage?: UsageSummary;
+  costUsd?: number | null;
+  summary?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -92,6 +110,17 @@ export interface AdapterExecutionResult {
       description?: string;
     }>;
   } | null;
+  /**
+   * Optional segmented execution report for multi-model runs (smart model routing).
+   *
+   * When present, the server writes one cost_events row per segment that has
+   * cost or token usage.  The top-level `provider`/`model`/`usage` fields are
+   * kept as the summary view (typically the primary phase).
+   *
+   * When absent, the server falls back to the existing single-result behavior —
+   * no change for adapters that do not use routing.
+   */
+  executionSegments?: ExecutionSegment[];
 }
 
 export interface AdapterSessionCodec {

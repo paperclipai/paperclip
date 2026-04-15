@@ -1,6 +1,6 @@
 # 2026-04-06 Smart Model Routing
 
-Status: Proposed
+Status: Phase 1 complete (contract + server plumbing)
 Date: 2026-04-06
 Audience: Product and engineering
 Related:

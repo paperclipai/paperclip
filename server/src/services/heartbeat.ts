@@ -23,7 +23,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
-import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
+import type { AdapterExecutionResult, ExecutionSegment, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
@@ -519,7 +519,7 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function normalizeLedgerBillingType(value: unknown): BillingType {
+export function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
     case "api":
@@ -539,11 +539,11 @@ function normalizeLedgerBillingType(value: unknown): BillingType {
   }
 }
 
-function resolveLedgerBiller(result: AdapterExecutionResult): string {
+export function resolveLedgerBiller(result: Pick<AdapterExecutionResult, "biller" | "provider">): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
+export function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
@@ -625,7 +625,7 @@ export function buildExplicitResumeSessionOverride(input: {
   };
 }
 
-function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTotals | null {
+export function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTotals | null {
   if (!usage) return null;
   return {
     inputTokens: Math.max(0, Math.floor(asNumber(usage.inputTokens, 0))),
@@ -2937,6 +2937,13 @@ export function heartbeatService(db: Db) {
     normalizedUsage?: UsageTotals | null,
   ) {
     await ensureRuntimeState(agent);
+
+    // When segmented execution is present, create per-segment cost events.
+    // The top-level usage/provider/model fields are treated as the summary
+    // (typically the primary phase) and still drive runtime state aggregation.
+    const segments = result.executionSegments;
+    const hasSegments = segments != null && segments.length > 0;
+
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
@@ -2944,8 +2951,6 @@ export function heartbeatService(db: Db) {
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
-    const provider = result.provider ?? "unknown";
-    const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
     await db
@@ -2964,15 +2969,50 @@ export function heartbeatService(db: Db) {
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
+    const costs = costService(db, budgetHooks);
+
+    if (hasSegments) {
+      // Segmented execution: write one cost_events row per segment that has
+      // cost or token usage, so the ledger reflects truthful per-model costs.
+      for (const segment of segments) {
+        const segUsage = normalizeUsageTotals(segment.usage);
+        const segInputTokens = segUsage?.inputTokens ?? 0;
+        const segOutputTokens = segUsage?.outputTokens ?? 0;
+        const segCachedInputTokens = segUsage?.cachedInputTokens ?? 0;
+        const segBillingType = normalizeLedgerBillingType(segment.billingType);
+        const segCostCents = normalizeBilledCostCents(segment.costUsd, segBillingType);
+        const segHasUsage = segInputTokens > 0 || segOutputTokens > 0 || segCachedInputTokens > 0;
+
+        if (segCostCents > 0 || segHasUsage) {
+          await costs.createEvent(agent.companyId, {
+            heartbeatRunId: run.id,
+            agentId: agent.id,
+            issueId: ledgerScope.issueId,
+            projectId: ledgerScope.projectId,
+            provider: segment.provider ?? result.provider ?? "unknown",
+            biller: resolveLedgerBiller({
+              biller: segment.biller ?? result.biller,
+              provider: segment.provider ?? result.provider,
+            }),
+            billingType: segBillingType,
+            model: segment.model ?? result.model ?? "unknown",
+            inputTokens: segInputTokens,
+            cachedInputTokens: segCachedInputTokens,
+            outputTokens: segOutputTokens,
+            costCents: segCostCents,
+            occurredAt: new Date(),
+          });
+        }
+      }
+    } else if (additionalCostCents > 0 || hasTokenUsage) {
+      // Single-result path (existing behavior, unchanged for non-routed adapters).
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
-        provider,
-        biller,
+        provider: result.provider ?? "unknown",
+        biller: resolveLedgerBiller(result),
         billingType,
         model: result.model ?? "unknown",
         inputTokens,
@@ -3784,8 +3824,32 @@ export function heartbeatService(db: Db) {
               ? "timed_out"
               : "failed";
 
+      // Build execution segments metadata for usageJson when adapter reports
+      // multi-model routing.  This preserves the segment breakdown in run
+      // metadata so transcript/debug views can show per-phase cost and model.
+      const executionSegmentsJson =
+        adapterResult.executionSegments != null && adapterResult.executionSegments.length > 0
+          ? adapterResult.executionSegments.map((seg) => ({
+              phase: seg.phase,
+              provider: readNonEmptyString(seg.provider) ?? readNonEmptyString(adapterResult.provider) ?? "unknown",
+              biller: resolveLedgerBiller({
+                biller: seg.biller ?? adapterResult.biller,
+                provider: seg.provider ?? adapterResult.provider,
+              }),
+              model: readNonEmptyString(seg.model) ?? readNonEmptyString(adapterResult.model) ?? "unknown",
+              billingType: normalizeLedgerBillingType(seg.billingType),
+              ...(seg.usage ? {
+                inputTokens: seg.usage.inputTokens ?? 0,
+                outputTokens: seg.usage.outputTokens ?? 0,
+                cachedInputTokens: seg.usage.cachedInputTokens ?? 0,
+              } : {}),
+              ...(seg.costUsd != null ? { costUsd: seg.costUsd } : {}),
+              ...(seg.summary ? { summary: seg.summary } : {}),
+            }))
+          : null;
+
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        normalizedUsage || adapterResult.costUsd != null || executionSegmentsJson != null
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -3807,6 +3871,7 @@ export function heartbeatService(db: Db) {
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              ...(executionSegmentsJson ? { executionSegments: executionSegmentsJson } : {}),
             } as Record<string, unknown>)
           : null;
 
