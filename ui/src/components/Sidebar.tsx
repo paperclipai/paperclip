@@ -100,7 +100,7 @@ export function Sidebar() {
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/visibility" label="Visibility" icon={Eye} />
+          <SidebarNavItem to="/visibility" label="Visibility" icon={Eye} liveCount={liveRunCount} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
