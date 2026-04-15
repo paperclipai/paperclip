@@ -48,6 +48,10 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+type RoutineHeartbeatDeps = IssueAssignmentWakeupDeps & {
+  cancelRun?: (runId: string) => Promise<unknown>;
+};
+
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -399,13 +403,13 @@ function formatRoutineFailureDescription(input: {
 export function routineService(
   db: Db,
   deps: {
-    heartbeat?: IssueAssignmentWakeupDeps;
+    heartbeat?: RoutineHeartbeatDeps;
     pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
-  const heartbeat = deps.heartbeat ?? heartbeatService(db, {
+  const heartbeat: RoutineHeartbeatDeps = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
 
@@ -790,26 +794,87 @@ export function routineService(
   async function cleanupIssueWakeupArtifacts(input: {
     companyId: string;
     issueId: string;
-  }) {
+  }): Promise<boolean> {
     try {
-      const queuedRuns = await db
+      const liveRuns = await db
         .select({
           id: heartbeatRuns.id,
           wakeupRequestId: heartbeatRuns.wakeupRequestId,
+          status: heartbeatRuns.status,
         })
         .from(heartbeatRuns)
         .where(
           and(
             eq(heartbeatRuns.companyId, input.companyId),
-            eq(heartbeatRuns.status, "queued"),
+            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
           ),
         );
 
+      const queuedRuns = liveRuns.filter((run) => run.status === "queued");
+      const runningRuns = liveRuns.filter((run) => run.status === "running");
       const runIds = queuedRuns.map((run) => run.id);
       const wakeupRequestIds = queuedRuns
         .map((run) => run.wakeupRequestId)
         .filter((id): id is string => Boolean(id));
+
+      await db
+        .delete(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            inArray(agentWakeupRequests.status, ["coalesced", "deferred_issue_execution"]),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+          ),
+        );
+
+      for (const run of runningRuns) {
+        if (heartbeat.cancelRun) {
+          await heartbeat.cancelRun(run.id);
+          continue;
+        }
+
+        const finishedAt = new Date();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt,
+            error: "Cancelled because routine dispatch finalization failed",
+            errorCode: "cancelled",
+            updatedAt: finishedAt,
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, input.companyId),
+              eq(heartbeatRuns.id, run.id),
+              eq(heartbeatRuns.status, "running"),
+            ),
+          );
+        if (run.wakeupRequestId) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt,
+              error: "Cancelled because routine dispatch finalization failed",
+              updatedAt: finishedAt,
+            })
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+        }
+      }
+
+      if (runningRuns.length > 0) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
+      }
 
       if (runIds.length > 0) {
         await db
@@ -832,11 +897,13 @@ export function routineService(
             or(...wakeupRequestFilters),
           ),
         );
+      return true;
     } catch (err) {
       logger.error(
         { err, companyId: input.companyId, issueId: input.issueId },
-        "failed to clean up queued routine issue wakeup artifacts",
+        "failed to clean up routine issue wakeup artifacts",
       );
+      return false;
     }
   }
 
@@ -847,11 +914,12 @@ export function routineService(
     if (issueIds.length === 0) return;
     try {
       for (const issueId of issueIds) {
-        await cleanupIssueWakeupArtifacts({ companyId: input.companyId, issueId });
+        const cleaned = await cleanupIssueWakeupArtifacts({ companyId: input.companyId, issueId });
+        if (!cleaned) continue;
+        await db
+          .delete(issues)
+          .where(and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)));
       }
-      await db
-        .delete(issues)
-        .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, issueIds)));
     } catch (err) {
       logger.error(
         { err, routineId: input.routineId, issueIds },
@@ -1121,11 +1189,13 @@ export function routineService(
           return updated ?? createdRun;
         } catch (error) {
           if (createdIssue) {
-            await cleanupIssueWakeupArtifacts({
+            const cleaned = await cleanupIssueWakeupArtifacts({
               companyId: input.routine.companyId,
               issueId: createdIssue.id,
             });
-            await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+            if (cleaned) {
+              await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+            }
           }
           let failureReason = error instanceof Error ? error.message : String(error);
           let failureIssue: Awaited<ReturnType<typeof createAutomatedFailureIssue>> | null = null;
