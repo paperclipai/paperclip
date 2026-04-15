@@ -710,6 +710,30 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
+// Estimate cost from token usage when adapter doesn't report dollar cost (e.g. subscription plans).
+// Prices are per 1M tokens in USD. Cached input tokens priced at ~12.5% of input.
+const TOKEN_PRICING: Record<string, { input: number; cachedInput: number; output: number }> = {
+  "claude-opus-4-6":   { input: 15.0,  cachedInput: 1.875, output: 75.0 },
+  "claude-sonnet-4-6": { input: 3.0,   cachedInput: 0.375, output: 15.0 },
+  "gpt-5.3-codex":     { input: 1.75,  cachedInput: 0.175, output: 14.0 },
+  "gpt-5.4":           { input: 2.5,   cachedInput: 0.25,  output: 15.0 },
+  "glm-5.1":           { input: 1.4,   cachedInput: 0.26,  output: 4.0  },
+
+};
+const DEFAULT_PRICING = { input: 1.0, cachedInput: 0.3, output: 5.0 };
+
+function estimateCostCentsFromTokens(
+  model: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  const p = TOKEN_PRICING[model] ?? DEFAULT_PRICING;
+  const usd =
+    (inputTokens * p.input + cachedInputTokens * p.cachedInput + outputTokens * p.output) /
+    1_000_000;
+  return Math.max(0, Math.round(usd * 100));
+}
 
 async function resolveLedgerScopeForRun(
   db: Db,
@@ -3135,7 +3159,13 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    let additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    // Estimate cost from tokens when billed cost is zero (e.g. subscription plans)
+    if (additionalCostCents === 0 && hasTokenUsage) {
+      additionalCostCents = estimateCostCentsFromTokens(
+        result.model ?? "unknown", inputTokens, cachedInputTokens, outputTokens,
+      );
+    }
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
