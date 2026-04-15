@@ -431,9 +431,9 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          previousCheckoutRunId: ownership.adoptedFromRunId,
+          previousRunId: ownership.adoptedFromRunId,
           checkoutRunId: runId,
-          reason: "stale_checkout_run",
+          reason: ownership.adoptedReason ?? "stale_checkout_run",
         },
       });
     }

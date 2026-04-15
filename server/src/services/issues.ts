@@ -909,6 +909,47 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function adoptRecoverableExecutionRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedExecutionRunId: string;
+  }) {
+    if (input.expectedExecutionRunId !== input.actorRunId) {
+      const stale = await isTerminalOrMissingHeartbeatRun(input.expectedExecutionRunId);
+      if (!stale) return null;
+    }
+
+    const now = new Date();
+    const adopted = await db
+      .update(issues)
+      .set({
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          eq(issues.executionRunId, input.expectedExecutionRunId),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+
+    return adopted;
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -1901,6 +1942,7 @@ export function issueService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1913,7 +1955,7 @@ export function issueService(db: Db) {
         current.assigneeAgentId === actorAgentId &&
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
-        return { ...current, adoptedFromRunId: null as string | null };
+        return { ...current, adoptedFromRunId: null as string | null, adoptedReason: null as string | null };
       }
 
       if (
@@ -1934,6 +1976,30 @@ export function issueService(db: Db) {
           return {
             ...adopted,
             adoptedFromRunId: current.checkoutRunId,
+            adoptedReason: "stale_checkout_run",
+          };
+        }
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null &&
+        current.executionRunId
+      ) {
+        const adopted = await adoptRecoverableExecutionRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: current.executionRunId,
+            adoptedReason: "stale_execution_run",
           };
         }
       }
@@ -1943,6 +2009,7 @@ export function issueService(db: Db) {
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
+        executionRunId: current.executionRunId,
         actorAgentId,
         actorRunId,
       });
