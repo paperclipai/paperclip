@@ -39,6 +39,7 @@ import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { Voice } from "./pages/Voice";
 import { YouTube } from "./pages/YouTube";
+import { ApiRunner } from "./pages/ApiRunner";
 import { CalendarPage } from "./pages/CalendarPage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -136,6 +137,7 @@ function boardRoutes() {
       <Route path="org" element={<OrgChart />} />
       <Route path="voice" element={<Voice />} />
       <Route path="youtube" element={<YouTube />} />
+      <Route path="api-runner" element={<ApiRunner />} />
       <Route path="calendar" element={<CalendarPage />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
