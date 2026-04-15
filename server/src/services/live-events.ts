@@ -24,7 +24,8 @@ let nextEventId = 0;
 //
 // ioredis is imported dynamically so self-hosters without the env var
 // set don't pay the dependency cost — and the type is intentionally
-// kept loose so ioredis can be an optionalDependency.
+// kept loose so operators who want this feature install `ioredis`
+// themselves without forcing a global dependency update.
 type PublishClient = { publish(channel: string, message: string): Promise<unknown> };
 type SubscribeClient = {
   subscribe(channel: string): Promise<unknown>;
@@ -48,42 +49,52 @@ function resolveRedisUrl(): string | null {
 async function initRedis(): Promise<void> {
   const url = resolveRedisUrl();
   if (!url) return;
-  try {
-    const ioredis = await import("ioredis");
-    const Redis = (ioredis as { default?: unknown }).default ?? ioredis;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    redisPub = new (Redis as any)(url);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    redisSub = new (Redis as any)(url);
-    await redisSub!.subscribe(CHANNEL);
-    redisSub!.on("message", (_channel: unknown, message: unknown) => {
-      try {
-        const envelope = JSON.parse(message as string) as {
-          origin: string;
-          event: LiveEvent;
-        };
-        if (envelope.origin === originId) return;
-        emitter.emit(envelope.event.companyId, envelope.event);
+  // @ts-expect-error ioredis is an optional runtime dependency
+  const ioredis = await import("ioredis");
+  const Redis = (ioredis as { default?: unknown }).default ?? ioredis;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  redisPub = new (Redis as any)(url);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  redisSub = new (Redis as any)(url);
+  await redisSub!.subscribe(CHANNEL);
+  redisSub!.on("message", (_channel: unknown, message: unknown) => {
+    try {
+      const envelope = JSON.parse(message as string) as {
+        origin: string;
+        event: LiveEvent;
+      };
+      if (envelope.origin === originId) return;
+      // Mirror the routing in publishLiveEvent / publishGlobalLiveEvent:
+      // global events go to "*" listeners; company-scoped events go only
+      // to that company's listeners.
+      if (envelope.event.companyId === "*") {
         emitter.emit("*", envelope.event);
-      } catch {
-        // ignore malformed messages — a single bad payload shouldn't
-        // take down cross-replica delivery for everyone else
+      } else {
+        emitter.emit(envelope.event.companyId, envelope.event);
       }
-    });
-  } catch {
-    // ioredis not installed or connection failed — fall back to
-    // local-only events without surfacing an error: live events are
-    // best-effort.
-    redisPub = null;
-    redisSub = null;
-  }
+    } catch {
+      // A single malformed message shouldn't take down cross-replica
+      // delivery for everyone else.
+    }
+  });
 }
 
-// Non-blocking best-effort init on module load.
+// Non-blocking best-effort init on module load. If ioredis isn't
+// installed or the server fails to connect we surface a single warning
+// and fall back to local-only delivery so the misconfiguration is
+// visible instead of silently degrading.
 if (resolveRedisUrl()) {
   redisInit = initRedis();
-  redisInit.catch(() => {
-    /* logged indirectly via failed subscribe */
+  redisInit.catch((err) => {
+    redisPub = null;
+    redisSub = null;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] live-events: Redis transport init failed, falling back to " +
+        "single-replica delivery. Install `ioredis` and verify the redis URL " +
+        "(PAPERCLIP_LIVE_EVENTS_REDIS_URL / PAPERCLIP_REDIS_URL).",
+      err,
+    );
   });
 }
 
