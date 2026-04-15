@@ -5,6 +5,7 @@ import type {
   Issue,
   JoinRequest,
 } from "@paperclipai/shared";
+import { compareApprovalsByStatusThenUpdated } from "./approvals";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -126,9 +127,7 @@ export function getApprovalsForTab(
   tab: InboxTab,
   filter: InboxApprovalFilter,
 ): Approval[] {
-  const sortedApprovals = [...approvals].sort(
-    (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
-  );
+  const sortedApprovals = [...approvals].sort(compareApprovalsByStatusThenUpdated);
 
   if (tab === "recent") return sortedApprovals;
   if (tab === "unread") {
