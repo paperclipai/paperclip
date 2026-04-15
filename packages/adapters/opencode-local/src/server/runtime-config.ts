@@ -10,7 +10,7 @@ type PreparedOpenCodeRuntimeConfig = {
 };
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
-  if (path.sep === "\\") {
+  if (process.platform === "win32") {
     const appdata = env.APPDATA || process.env.APPDATA;
     if (appdata) {
       // OpenCode stores config directly in APPDATA/opencode or APPDATA/Roaming/opencode.
@@ -89,7 +89,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   return {
     env: {
       ...input.env,
-      XDG_CONFIG_HOME: runtimeConfigHome,
+      ...(process.platform === "win32"
+        ? { APPDATA: runtimeConfigHome }
+        : { XDG_CONFIG_HOME: runtimeConfigHome }),
     },
     notes: [
       "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
