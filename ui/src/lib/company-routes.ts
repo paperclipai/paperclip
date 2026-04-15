@@ -16,6 +16,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "ops-health",
   "inbox",
   "design-guide",
+  "intelligence",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "docs", "instance"]);

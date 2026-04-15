@@ -26,6 +26,7 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { OpsHealth } from "./pages/OpsHealth";
 import { Intelligence } from "./pages/Intelligence";
+import { Diagrams } from "./pages/Diagrams";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanySkills } from "./pages/CompanySkills";
 import { CompanyExport } from "./pages/CompanyExport";
@@ -168,6 +169,7 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="publishing-queue" element={<PublishingQueue />} />
       <Route path="intelligence" element={<Intelligence />} />
+      <Route path="diagrams" element={<Diagrams />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
       <Route path="ops-health" element={<OpsHealth />} />
@@ -344,6 +346,7 @@ export function App() {
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="publishing-queue" element={<UnprefixedBoardRedirect />} />
+          <Route path="diagrams" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
