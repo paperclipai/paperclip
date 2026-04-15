@@ -1731,6 +1731,22 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      // Validate checkoutRunId references an existing heartbeat_run before attempting
+      // to write it as a foreign key. A stale/reaped runId would cause the issues
+      // table update to fail with FK constraint violation ("issues_checkout_run_id_heartbeat_runs_id_fk"),
+      // putting agents with an orphaned runId into a retry loop.
+      if (checkoutRunId) {
+        const runExists = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (!runExists) {
+          throw conflict("Checkout run no longer exists; agent should request a fresh heartbeat");
+        }
+      }
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
