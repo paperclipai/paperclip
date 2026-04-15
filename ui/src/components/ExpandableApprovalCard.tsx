@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { assetsApi } from "../api/assets";
+import { useCompany } from "../context/CompanyContext";
 import { Identity } from "./Identity";
 import { CeoStrategyPayload, approvalLabel, resolveCeoPrimaryText } from "./ApprovalPayload";
 import { cn } from "../lib/utils";
@@ -36,6 +39,24 @@ function channelLabel(payload: Record<string, unknown> | null | undefined): stri
   return channel ?? category ?? "—";
 }
 
+function payloadDate(payload: Record<string, unknown> | null | undefined, keys: string[]): string | null {
+  if (!payload) return null;
+  for (const key of keys) {
+    const raw = payload[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+function payloadText(payload: Record<string, unknown> | null | undefined, keys: string[]): string | null {
+  if (!payload) return null;
+  for (const key of keys) {
+    const raw = payload[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
 export function ExpandableApprovalCard({
   approval,
   requesterAgent,
@@ -52,6 +73,13 @@ export function ExpandableApprovalCard({
   detailLink,
 }: ExpandableApprovalCardProps) {
   const payload = (approval.payload ?? null) as Record<string, unknown> | null;
+  const { selectedCompanyId } = useCompany();
+
+  const approvedAt = approval.decidedAt ? String(approval.decidedAt) : null;
+  const pickedUpAt = payloadDate(payload, ["consumedAt", "claimedAt", "pickedUpAt", "katyaClaimedAt"]);
+  const scheduledFor = payloadDate(payload, ["targetPublishAt", "scheduledAt", "scheduledFor", "publishAt"]);
+  const publishedAt = payloadDate(payload, ["publishedAt", "postedAt"]);
+  const proofUrl = payloadText(payload, ["proofUrl", "publishedUrl", "postUrl", "url"]);
 
   const label = useMemo(() => approvalLabel(approval.type, payload), [approval.type, payload]);
   const title = useMemo(() => {
@@ -63,11 +91,31 @@ export function ExpandableApprovalCard({
   const [editorText, setEditorText] = useState(resolvedDraftText ?? "");
   const [imageUrl, setImageUrl] = useState("");
   const [imagePath, setImagePath] = useState("");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const uploadImage = useMutation({
+    mutationFn: async (file: File) => {
+      if (!selectedCompanyId) throw new Error("Select a company before uploading an image");
+      return assetsApi.uploadImage(selectedCompanyId, file, "approvals/revisions");
+    },
+    onSuccess: (asset) => {
+      setUploadError(null);
+      if (asset?.contentPath) {
+        setImageUrl(asset.contentPath);
+      } else if (asset?.assetId) {
+        setImageUrl(`/api/assets/${asset.assetId}/content`);
+      }
+    },
+    onError: (err) => {
+      setUploadError(err instanceof Error ? err.message : "Image upload failed");
+    },
+  });
 
   useEffect(() => {
     setEditorText(resolvedDraftText ?? "");
     setImageUrl("");
     setImagePath("");
+    setUploadError(null);
   }, [approval.id, resolvedDraftText]);
 
   return (
@@ -112,6 +160,19 @@ export function ExpandableApprovalCard({
         <div className="border-t border-border px-3 py-3 space-y-3">
           <CeoStrategyPayload payload={payload ?? {}} />
 
+          <div className="rounded-md border border-border bg-muted/20 px-2 py-2">
+            <p className="text-[11px] font-medium text-muted-foreground mb-1">Execution status</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-[11px]">
+              <div><span className="text-muted-foreground">Approved at:</span> <span>{approvedAt ?? "—"}</span></div>
+              <div><span className="text-muted-foreground">Picked up by Katya:</span> <span>{pickedUpAt ?? "—"}</span></div>
+              <div><span className="text-muted-foreground">Scheduled for:</span> <span>{scheduledFor ?? "—"}</span></div>
+              <div><span className="text-muted-foreground">Published at:</span> <span>{publishedAt ?? "—"}</span></div>
+              <div className="md:col-span-2 truncate">
+                <span className="text-muted-foreground">Proof URL:</span> <span>{proofUrl ?? "—"}</span>
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 pt-1">
             <Button
               size="sm"
@@ -147,7 +208,7 @@ export function ExpandableApprovalCard({
               className="w-full min-h-40 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
             />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
               <div className="space-y-1">
                 <label className="text-[11px] text-muted-foreground">Image weblink (optional)</label>
                 <input
@@ -165,6 +226,24 @@ export function ExpandableApprovalCard({
                   placeholder="/path/to/image.jpg or repo-relative path"
                   className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
                 />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Upload image file (optional)</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setUploadError(null);
+                    uploadImage.mutate(file);
+                    e.currentTarget.value = "";
+                  }}
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs file:mr-2 file:rounded file:border-0 file:bg-muted file:px-2 file:py-1 file:text-xs"
+                  disabled={uploadImage.isPending || !isActionable || isPending}
+                />
+                {uploadImage.isPending && <p className="text-[11px] text-muted-foreground">Uploading image…</p>}
+                {uploadError && <p className="text-[11px] text-destructive">{uploadError}</p>}
               </div>
             </div>
 

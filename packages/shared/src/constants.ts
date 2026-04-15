@@ -191,6 +191,10 @@ export const APPROVAL_STATUSES = [
   "pending",
   "revision_requested",
   "approved",
+  "paused",
+  "scheduled",
+  "published",
+  "recalled",
   "rejected",
   "cancelled",
 ] as const;

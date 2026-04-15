@@ -35,3 +35,15 @@ export const addApprovalCommentSchema = z.object({
 });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;
+
+export const scheduleApprovalSchema = z.object({
+  scheduledAt: z.string().min(1),
+});
+
+export type ScheduleApproval = z.infer<typeof scheduleApprovalSchema>;
+
+export const updateApprovalContentSchema = z.object({
+  payload: z.record(z.unknown()),
+});
+
+export type UpdateApprovalContent = z.infer<typeof updateApprovalContentSchema>;

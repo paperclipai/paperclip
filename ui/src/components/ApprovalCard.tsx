@@ -22,6 +22,8 @@ export function ApprovalCard({
   onOpen,
   detailLink,
   isPending,
+  needsReminder = false,
+  ageHours = null,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -30,6 +32,8 @@ export function ApprovalCard({
   onOpen?: () => void;
   detailLink?: string;
   isPending: boolean;
+  needsReminder?: boolean;
+  ageHours?: number | null;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
@@ -55,12 +59,21 @@ export function ApprovalCard({
         <div className="flex items-center gap-1.5 shrink-0">
           {statusIcon(approval.status)}
           <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
+          {typeof ageHours === "number" && (approval.status === "pending" || approval.status === "revision_requested") && (
+            <span className="text-xs text-muted-foreground">· open {ageHours}h</span>
+          )}
           <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
         </div>
       </div>
 
       {/* Payload */}
       <ApprovalPayloadRenderer type={approval.type} payload={approval.payload} />
+
+      {needsReminder && (
+        <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
+          Reminder guardrail: pending for more than 24h.
+        </div>
+      )}
 
       {/* Decision note */}
       {approval.decisionNote && (

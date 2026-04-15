@@ -168,11 +168,15 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  scheduleApprovalSchema,
+  updateApprovalContentSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type ScheduleApproval,
+  type UpdateApprovalContent,
 } from "./approval.js";
 
 export {

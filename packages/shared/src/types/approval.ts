@@ -11,6 +11,8 @@ export interface Approval {
   decisionNote: string | null;
   decidedByUserId: string | null;
   decidedAt: Date | null;
+  scheduledAt: string | null;
+  publishedAt: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

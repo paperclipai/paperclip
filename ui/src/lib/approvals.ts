@@ -14,10 +14,38 @@ const APPROVAL_STATUS_PRIORITY: Record<string, number> = {
   revision_requested: 0,
   pending: 1,
   approved: 2,
-  rejected: 3,
-  cancelled: 4,
-  draft: 5,
+  paused: 3,
+  scheduled: 4,
+  published: 5,
+  recalled: 6,
+  rejected: 7,
+  cancelled: 8,
+  draft: 9,
 };
+
+export type ApprovalStatusView = "pending" | "approved_scheduled" | "published" | "all";
+
+export function approvalMatchesView(status: string, view: ApprovalStatusView): boolean {
+  if (view === "all") return true;
+  if (view === "pending") return status === "pending" || status === "revision_requested";
+  if (view === "approved_scheduled") return status === "approved" || status === "paused" || status === "scheduled";
+  if (view === "published") return status === "published" || status === "recalled";
+  return false;
+}
+
+export function approvalScheduledAt(approval: Approval): string | null {
+  const p = approval.payload as Record<string, unknown> | null;
+  if (!p) return null;
+  if (typeof p.scheduledAt === "string" && p.scheduledAt) return p.scheduledAt;
+  return null;
+}
+
+export function approvalPublishedAt(approval: Approval): string | null {
+  const p = approval.payload as Record<string, unknown> | null;
+  if (!p) return null;
+  if (typeof p.publishedAt === "string" && p.publishedAt) return p.publishedAt;
+  return null;
+}
 
 export function approvalStatusRank(status: Approval["status"]): number {
   return APPROVAL_STATUS_PRIORITY[status] ?? 99;
