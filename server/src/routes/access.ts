@@ -2921,6 +2921,13 @@ export function accessRoutes(
     res.json(members);
   });
 
+  router.get("/companies/:companyId/access-review", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const review = await access.listCompanyAccessReview(companyId);
+    res.json(review);
+  });
+
   router.patch(
     "/companies/:companyId/members/:memberId/permissions",
     validate(updateMemberPermissionsSchema),

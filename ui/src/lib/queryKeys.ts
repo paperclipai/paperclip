@@ -91,6 +91,7 @@ export const queryKeys = {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
+    review: (companyId: string) => ["access", "review", companyId] as const,
   },
   auth: {
     session: ["auth", "session"] as const,

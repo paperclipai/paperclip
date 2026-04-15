@@ -79,3 +79,28 @@ export interface InstanceUserRoleGrant {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type CompanyAccessReviewReasonKind =
+  | "company_membership"
+  | "instance_admin";
+
+export interface CompanyAccessReviewReason {
+  kind: CompanyAccessReviewReasonKind;
+  label: string;
+}
+
+export interface CompanyAccessReviewEntry {
+  userId: string;
+  name: string;
+  email: string | null;
+  membershipRole: string | null;
+  membershipStatus: MembershipStatus | null;
+  effectiveAccess: CompanyAccessReviewReason[];
+  explicitPermissions: PermissionKey[];
+}
+
+export interface CompanyAccessReview {
+  companyId: string;
+  generatedAt: string;
+  people: CompanyAccessReviewEntry[];
+}

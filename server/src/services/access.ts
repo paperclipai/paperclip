@@ -1,11 +1,18 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type {
+  CompanyAccessReview,
+  CompanyAccessReviewEntry,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalType,
+} from "@paperclipai/shared";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -95,6 +102,134 @@ export function accessService(db: Db) {
         ),
       )
       .orderBy(sql`${companyMemberships.createdAt} asc`);
+  }
+
+  async function listCompanyAccessReview(
+    companyId: string,
+  ): Promise<CompanyAccessReview> {
+    const [memberships, instanceAdmins, grants] = await Promise.all([
+      listActiveUserMemberships(companyId),
+      db
+        .select({ userId: instanceUserRoles.userId })
+        .from(instanceUserRoles)
+        .where(eq(instanceUserRoles.role, "instance_admin")),
+      db
+        .select({
+          userId: principalPermissionGrants.principalId,
+          permissionKey: principalPermissionGrants.permissionKey,
+        })
+        .from(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, "user"),
+          ),
+        ),
+    ]);
+
+    const effectiveUserIds = new Set<string>();
+    for (const membership of memberships) {
+      effectiveUserIds.add(membership.principalId);
+    }
+    for (const admin of instanceAdmins) {
+      effectiveUserIds.add(admin.userId);
+    }
+
+    if (effectiveUserIds.size === 0) {
+      return {
+        companyId,
+        generatedAt: new Date().toISOString(),
+        people: [],
+      };
+    }
+
+    const userIds = Array.from(effectiveUserIds);
+    const users = await db
+      .select({
+        id: authUsers.id,
+        name: authUsers.name,
+        email: authUsers.email,
+      })
+      .from(authUsers)
+      .where(inArray(authUsers.id, userIds));
+
+    const usersById = new Map(users.map((user) => [user.id, user]));
+    const reviewEntries = new Map<string, CompanyAccessReviewEntry>();
+
+    for (const membership of memberships) {
+      const profile = usersById.get(membership.principalId);
+      reviewEntries.set(membership.principalId, {
+        userId: membership.principalId,
+        name: profile?.name ?? membership.principalId,
+        email: profile?.email ?? null,
+        membershipRole: membership.membershipRole,
+        membershipStatus: membership.status as MembershipStatus,
+        effectiveAccess: [
+          {
+            kind: "company_membership",
+            label: membership.membershipRole
+              ? `Active company ${membership.membershipRole}`
+              : "Active company member",
+          },
+        ],
+        explicitPermissions: [],
+      });
+    }
+
+    for (const admin of instanceAdmins) {
+      const existing = reviewEntries.get(admin.userId);
+      if (existing) {
+        existing.effectiveAccess.push({
+          kind: "instance_admin",
+          label: "Instance admin",
+        });
+        continue;
+      }
+      const profile = usersById.get(admin.userId);
+      reviewEntries.set(admin.userId, {
+        userId: admin.userId,
+        name: profile?.name ?? admin.userId,
+        email: profile?.email ?? null,
+        membershipRole: null,
+        membershipStatus: null,
+        effectiveAccess: [
+          {
+            kind: "instance_admin",
+            label: "Instance admin",
+          },
+        ],
+        explicitPermissions: [],
+      });
+    }
+
+    for (const grant of grants) {
+      const existing = reviewEntries.get(grant.userId);
+      if (!existing) continue;
+      const permissionKey = grant.permissionKey as PermissionKey;
+      if (!existing.explicitPermissions.includes(permissionKey)) {
+        existing.explicitPermissions.push(permissionKey);
+      }
+    }
+
+    const people = Array.from(reviewEntries.values())
+      .map((entry) => ({
+        ...entry,
+        explicitPermissions: [...entry.explicitPermissions].sort(),
+      }))
+      .sort((left, right) => {
+        const leftName = left.name.trim().toLowerCase();
+        const rightName = right.name.trim().toLowerCase();
+        if (leftName !== rightName) {
+          return leftName.localeCompare(rightName);
+        }
+        return (left.email ?? left.userId).localeCompare(right.email ?? right.userId);
+      });
+
+    return {
+      companyId,
+      generatedAt: new Date().toISOString(),
+      people,
+    };
   }
 
   async function setMemberPermissions(
@@ -367,6 +502,7 @@ export function accessService(db: Db) {
     ensureMembership,
     listMembers,
     listActiveUserMemberships,
+    listCompanyAccessReview,
     copyActiveUserMemberships,
     setMemberPermissions,
     promoteInstanceAdmin,

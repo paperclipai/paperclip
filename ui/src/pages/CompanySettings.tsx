@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { CompanyAccessReviewSection } from "../components/CompanyAccessReviewSection";
 import {
   Field,
   ToggleField,
@@ -415,6 +416,13 @@ export function CompanySettings() {
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Access Review
+        </div>
+        <CompanyAccessReviewSection companyId={selectedCompanyId!} />
       </div>
 
       <div className="space-y-4">

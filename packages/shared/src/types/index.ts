@@ -177,6 +177,10 @@ export type {
   Invite,
   JoinRequest,
   InstanceUserRoleGrant,
+  CompanyAccessReviewReasonKind,
+  CompanyAccessReviewReason,
+  CompanyAccessReviewEntry,
+  CompanyAccessReview,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {
