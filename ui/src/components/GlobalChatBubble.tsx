@@ -80,7 +80,7 @@ export function GlobalChatBubble() {
   // Ctrl+Shift+C → open / cycle agent; Esc → close
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "c" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key.toLowerCase() === "c" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         if (!isOpen) {
           handleOpen();

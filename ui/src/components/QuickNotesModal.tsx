@@ -99,7 +99,7 @@ export function QuickNotesModal() {
   // Ctrl+Shift+P → toggle
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "p" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key.toLowerCase() === "p" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         setOpen((prev) => !prev);
       }

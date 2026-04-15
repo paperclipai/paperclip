@@ -40,7 +40,7 @@ export function CommandModal() {
   // Ctrl+Shift+K → toggle
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "k" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key.toLowerCase() === "k" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         setOpen((prev) => !prev);
       }

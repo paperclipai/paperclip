@@ -81,7 +81,7 @@ export function IssueNavPill() {
           break;
         case "n":
           e.preventDefault();
-          scrollToBottom();
+          window.dispatchEvent(new CustomEvent("paperclip:focus-comment"));
           break;
       }
     }
@@ -95,7 +95,7 @@ export function IssueNavPill() {
     <div className="fixed bottom-6 left-6 z-40 flex flex-col gap-1 rounded-lg border border-border bg-background/90 backdrop-blur-sm shadow-md p-1">
       <NavButton icon={ArrowUp} label="Top (T)" onClick={scrollToTop} />
       <NavButton icon={FileText} label="Docs (D)" onClick={() => scrollToElement("issue-documents")} />
-      <NavButton icon={MessageSquare} label="Newest (N)" onClick={scrollToBottom} />
+      <NavButton icon={MessageSquare} label="Comment (N)" onClick={() => window.dispatchEvent(new CustomEvent("paperclip:focus-comment"))} />
     </div>
   );
 }

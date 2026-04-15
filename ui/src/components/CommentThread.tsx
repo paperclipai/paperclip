@@ -397,6 +397,19 @@ export function CommentThread({
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  // "N" shortcut: focus the comment editor from anywhere on the page
+  useEffect(() => {
+    function handler() {
+      const editorEl = document.getElementById("issue-comment-composer");
+      if (editorEl) {
+        editorEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      setTimeout(() => editorRef.current?.focus(), 150);
+    }
+    window.addEventListener("paperclip:focus-comment", handler);
+    return () => window.removeEventListener("paperclip:focus-comment", handler);
+  }, []);
+
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
@@ -507,7 +520,7 @@ export function CommentThread({
         </div>
       )}
 
-      <div className="space-y-2">
+      <div id="issue-comment-composer" className="space-y-2">
         <MarkdownEditor
           ref={editorRef}
           value={body}
