@@ -19,16 +19,21 @@ import {
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
+  buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable,
   ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
+  listConfiguredRuntimeServiceEntries,
   normalizeAdapterManagedRuntimeServices,
   reconcilePersistedRuntimeServicesOnStartup,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
+  startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -367,6 +372,42 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
+  it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-447-add-worktree-support";
+    const poisonedPath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(poisonedPath, { recursive: true });
+
+    await expect(
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      }),
+    ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
+  });
+
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-1355-worktree-reuse";
@@ -406,6 +447,68 @@ describe("realizeExecutionWorkspace", () => {
     expect(realized.created).toBe(false);
     await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
     await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
+  });
+
+  it("rejects reusing a linked worktree whose branch drifted from the expected issue branch", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
+
+    await expect(
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      }),
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
@@ -1033,6 +1136,137 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
+  it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-provision-fail-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+
+    try {
+      await fs.mkdir(baseRoot, { recursive: true });
+      await fs.mkdir(worktreeRoot, { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 0",
+          "fi",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"worktree\" ] && [ \"$3\" = \"init\" ]; then",
+          "  echo \"simulated init failure\" >&2",
+          "  exit 42",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      let caught: Error | null = null;
+      try {
+        await execFileAsync(scriptPath, [], {
+          cwd: worktreeRoot,
+          env: {
+            ...process.env,
+            PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+            PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+            PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+          },
+        });
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught).toBeTruthy();
+      expect(String(caught)).toContain("simulated init failure");
+      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).rejects.toThrow();
+      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", ".env"))).rejects.toThrow();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-outdated-lockfile-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+
+    try {
+      await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(worktreeRoot, { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(worktreeRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: "workspace-root",
+            private: true,
+            packageManager: "pnpm@9.15.4",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "pnpm-lock.yaml"),
+        ["lockfileVersion: '9.0'", "", "importers:", "  .: {}", ""].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
+          "  echo \"ERR_PNPM_OUTDATED_LOCKFILE\" >&2",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--no-frozen-lockfile\" ]; then",
+          "  mkdir -p \"$PWD/node_modules\"",
+          "  : > \"$PWD/node_modules/.retry-success\"",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      const result = await execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      expect(result.stderr).toContain("retrying install without --frozen-lockfile");
+      await expect(fs.readFile(path.join(worktreeRoot, "node_modules", ".retry-success"), "utf8")).resolves.toBe("");
+      await expect(fs.readFile(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8")).resolves.toContain(
+        "\"database\"",
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
@@ -1288,6 +1522,187 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(workspace.cwd, "feature.txt"), "utf8")).resolves.toBe("preserve me\n");
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
+  });
+
+  it("reattaches a missing persisted git worktree before manual control starts it", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-451-restore-persisted-worktree";
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "restore.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf '%s\\n' \"$PAPERCLIP_WORKSPACE_BRANCH\" > .paperclip-restored-branch",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(path.join(repoRoot, "scripts", "restore.sh"), 0o755);
+    await runGit(repoRoot, ["add", "scripts/restore.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add restore script"]);
+
+    await runGit(repoRoot, ["checkout", "-b", branchName]);
+    await fs.writeFile(path.join(repoRoot, "feature.txt"), "persisted\n", "utf8");
+    await runGit(repoRoot, ["add", "feature.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add persisted feature"]);
+    const expectedHead = (await execFileAsync("git", ["rev-parse", branchName], { cwd: repoRoot })).stdout.trim();
+    await runGit(repoRoot, ["checkout", "main"]);
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/restore.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-451",
+        title: "Restore persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.rm(initial.cwd, { recursive: true, force: true });
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        config: {
+          provisionCommand: "bash ./scripts/restore.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-451",
+        title: "Restore persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored).not.toBeNull();
+    expect(restored?.cwd).toBe(initial.cwd);
+    await expect(fs.readFile(path.join(initial.cwd, "feature.txt"), "utf8")).resolves.toBe("persisted\n");
+    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-branch"), "utf8")).resolves.toBe(`${branchName}\n`);
+    const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
+    expect(actualHead).toBe(expectedHead);
+  });
+
+  it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "restore.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf 'reprovisioned\\n' > .paperclip-restored-state",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(path.join(repoRoot, "scripts", "restore.sh"), 0o755);
+    await runGit(repoRoot, ["add", "scripts/restore.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add reprovision script"]);
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/restore.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-452",
+        title: "Reprovision persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.rm(path.join(initial.cwd, ".paperclip-restored-state"), { force: true });
+
+    await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+        config: {
+          provisionCommand: "bash ./scripts/restore.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-452",
+        title: "Reprovision persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
   });
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
@@ -1977,6 +2392,234 @@ describe("ensureRuntimeServicesForRun", () => {
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
   });
+
+  it("starts only the selected workspace-controlled runtime service", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-start-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const services = await startRuntimeServicesForWorkspaceControl({
+      actor: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-control-start",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+            },
+            {
+              name: "worker",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('worker')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+      serviceIndex: 1,
+    });
+
+    expect(services).toHaveLength(1);
+    expect(services[0]?.serviceName).toBe("worker");
+    await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-control-start",
+      workspaceCwd: workspace.cwd,
+    });
+  });
+
+  it("stops only the selected execution workspace runtime service", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-stop-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const services = await startRuntimeServicesForWorkspaceControl({
+      actor: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-control-stop",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: {
+                type: "manual",
+              },
+            },
+            {
+              name: "worker",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('worker')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: {
+                type: "manual",
+              },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services).toHaveLength(2);
+    const web = services.find((service) => service.serviceName === "web");
+    const worker = services.find((service) => service.serviceName === "worker");
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-control-stop",
+      workspaceCwd: workspace.cwd,
+      runtimeServiceId: web?.id ?? null,
+    });
+
+    await expect(fetch(web!.url!)).rejects.toThrow();
+    await expect(fetch(worker!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-control-stop",
+      workspaceCwd: workspace.cwd,
+      runtimeServiceId: worker?.id ?? null,
+    });
+  });
+});
+
+describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
+  it("derives service entries from command-first runtime config", () => {
+    const services = listConfiguredRuntimeServiceEntries({
+      workspaceRuntime: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          { id: "db-migrate", name: "db:migrate", kind: "job", command: "pnpm db:migrate" },
+        ],
+      },
+    });
+
+    expect(services).toEqual([
+      expect.objectContaining({
+        id: "web",
+        kind: "service",
+        command: "pnpm dev",
+      }),
+    ]);
+  });
+
+  it("preserves sibling service state when updating a single configured runtime service", () => {
+    const patch = buildWorkspaceRuntimeDesiredStatePatch({
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev" },
+            { name: "worker", command: "pnpm worker" },
+          ],
+        },
+      },
+      currentDesiredState: "running",
+      currentServiceStates: null,
+      action: "stop",
+      serviceIndex: 1,
+    });
+
+    expect(patch).toEqual({
+      desiredState: "running",
+      serviceStates: {
+        "0": "running",
+        "1": "stopped",
+      },
+    });
+  });
+});
+
+describe("resolveWorkspaceRuntimeReadinessTimeoutSec", () => {
+  it("extends the default readiness timeout for dev-server commands", () => {
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "pnpm dev",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(90);
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "npm run dev -- --host 127.0.0.1",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(90);
+  });
+
+  it("keeps explicit readiness timeouts and non-dev defaults unchanged", () => {
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "pnpm dev",
+        readiness: {
+          type: "http",
+          timeoutSec: 12,
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(12);
+    expect(
+      resolveWorkspaceRuntimeReadinessTimeoutSec({
+        command: "node server.js",
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+        },
+      }),
+    ).toBe(30);
+  });
 });
 
 describe("resolveShell (shell fallback)", () => {
@@ -1993,13 +2636,18 @@ describe("resolveShell (shell fallback)", () => {
   });
 
   it("returns process.env.SHELL when set", () => {
-    process.env.SHELL = "/usr/bin/zsh";
-    expect(resolveShell()).toBe("/usr/bin/zsh");
+    process.env.SHELL = process.execPath;
+    expect(resolveShell()).toBe(process.execPath);
   });
 
   it("trims whitespace from SHELL env var", () => {
-    process.env.SHELL = "  /usr/bin/fish  ";
-    expect(resolveShell()).toBe("/usr/bin/fish");
+    process.env.SHELL = `  ${process.execPath}  `;
+    expect(resolveShell()).toBe(process.execPath);
+  });
+
+  it("preserves non-absolute shell names so PATH lookup still works", () => {
+    process.env.SHELL = "zsh";
+    expect(resolveShell()).toBe("zsh");
   });
 
   it("falls back to /bin/sh on non-Windows when SHELL is unset", () => {
@@ -2030,6 +2678,12 @@ describe("resolveShell (shell fallback)", () => {
     process.env.SHELL = "   ";
     Object.defineProperty(process, "platform", { value: "win32" });
     expect(resolveShell()).toBe("sh");
+  });
+
+  it("falls back when SHELL points to a missing absolute path", () => {
+    process.env.SHELL = "/definitely/missing/zsh";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
   });
 });
 

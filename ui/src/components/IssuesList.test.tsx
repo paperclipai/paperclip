@@ -226,6 +226,79 @@ describe("IssuesList", () => {
     });
   });
 
+  it("keeps server-side search scoped to the provided parent issue filters", async () => {
+    const localIssue = createIssue({ id: "issue-local", identifier: "PAP-1", title: "Local issue" });
+    const serverIssue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
+
+    mockIssuesApi.list.mockResolvedValue([serverIssue]);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[localIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialSearch="server"
+        searchFilters={{ parentId: "parent-1" }}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "server",
+        projectId: undefined,
+        parentId: "parent-1",
+      });
+      expect(container.textContent).toContain("Server result");
+      expect(container.textContent).not.toContain("Local issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses the supplied create defaults and label for sub-issue lists", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        baseCreateIssueDefaults={{ parentId: "parent-1", projectId: "project-1" }}
+        createIssueLabel="Sub-issue"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.includes("New Sub-issue"),
+      );
+      expect(button).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.includes("New Sub-issue"),
+      );
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      parentId: "parent-1",
+      projectId: "project-1",
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("debounces search updates so typing does not notify the page on every keystroke", async () => {
     vi.useFakeTimers();
 
@@ -278,8 +351,8 @@ describe("IssuesList", () => {
     });
   });
 
-  it("reuses the inbox issue column controls and persisted column visibility", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "assignee"]));
+  it("uses context-scoped persisted column visibility", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "assignee"]));
 
     const assignedIssue = createIssue({
       id: "issue-assigned",
@@ -314,8 +387,41 @@ describe("IssuesList", () => {
     });
   });
 
+  it("preserves stored grouping across refresh when initial assignees are applied", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "status", sortField: "updated", sortDir: "desc" }),
+    );
+
+    const todoIssue = createIssue({ id: "issue-todo", title: "Alpha", status: "todo", assigneeAgentId: "agent-1" });
+    const doneIssue = createIssue({ id: "issue-done", title: "Beta", status: "done", assigneeAgentId: "agent-1" });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[todoIssue, doneIssue]}
+        agents={[{ id: "agent-1", name: "Agent One" }]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialAssignees={["agent-1"]}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Todo");
+      expect(container.textContent).toContain("Done");
+      expect(container.textContent).toContain("Alpha");
+      expect(container.textContent).toContain("Beta");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("filters the list to a single workspace when a workspace name is clicked", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "workspace"]));
+    localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "workspace"]));
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.list.mockResolvedValue([
       {

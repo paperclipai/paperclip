@@ -587,7 +587,11 @@ export function adapterRoutes() {
   // Serve a declarative config schema for an adapter's UI form fields.
   // The adapter's getConfigSchema() resolves all options (static and dynamic)
   // so the UI receives a fully hydrated schema in a single fetch.
-  const configSchemaCache = new Map<string, { schema: AdapterConfigSchema; fetchedAt: number }>();
+  const configSchemaCache = new Map<string, {
+    adapter: ServerAdapterModule;
+    schema: AdapterConfigSchema;
+    fetchedAt: number;
+  }>();
   const CONFIG_SCHEMA_TTL_MS = 30_000;
 
   router.get("/adapters/:type/config-schema", async (req, res) => {
@@ -605,14 +609,14 @@ export function adapterRoutes() {
     }
 
     const cached = configSchemaCache.get(type);
-    if (cached && Date.now() - cached.fetchedAt < CONFIG_SCHEMA_TTL_MS) {
+    if (cached && cached.adapter === adapter && Date.now() - cached.fetchedAt < CONFIG_SCHEMA_TTL_MS) {
       res.json(cached.schema);
       return;
     }
 
     try {
       const schema = await adapter.getConfigSchema();
-      configSchemaCache.set(type, { schema, fetchedAt: Date.now() });
+      configSchemaCache.set(type, { adapter, schema, fetchedAt: Date.now() });
       res.json(schema);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

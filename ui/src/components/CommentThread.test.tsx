@@ -178,6 +178,52 @@ describe("CommentThread", () => {
     });
   });
 
+  it("hides the reopen control and infers reopen for closed agent-assigned issues", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            issueStatus="done"
+            currentAssigneeValue="agent:agent-1"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).not.toContain("Re-open");
+
+    const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders linked approvals inline in the timeline", () => {
     const root = createRoot(container);
     const agent: Agent = {
