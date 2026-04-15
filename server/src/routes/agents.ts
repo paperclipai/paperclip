@@ -74,6 +74,7 @@ import {
   applyCreateDefaultsByAdapterType,
   prepareAdapterConfigForPersistence,
 } from "../services/agent-adapter-config.js";
+import { resolveHermesRuntimeConfig } from "../services/hermes-config.js";
 
 export function agentRoutes(db: Db) {
   const SINGLETON_EXECUTIVE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "coo"]);
@@ -726,9 +727,10 @@ export function agentRoutes(db: Db) {
 
       const inputAdapterConfig =
         (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedAdapterConfig = applyCreateDefaultsByAdapterType(type, inputAdapterConfig);
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
-        inputAdapterConfig,
+        requestedAdapterConfig,
         { strictMode: strictSecretsMode },
       );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
@@ -739,7 +741,7 @@ export function agentRoutes(db: Db) {
       const result = await adapter.testEnvironment({
         companyId,
         adapterType: type,
-        config: runtimeAdapterConfig,
+        config: resolveHermesRuntimeConfig(type, runtimeAdapterConfig),
       });
 
       res.json(result);
