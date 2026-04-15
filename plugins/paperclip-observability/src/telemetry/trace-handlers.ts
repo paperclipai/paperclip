@@ -248,11 +248,7 @@ async function resolvePersistedParentCtx(
   issueId: string,
   event: PluginEvent,
 ) {
-  // Try server-propagated trace context first
-  const serverCtx = parentCtxFromServerTrace(event);
-  if (serverCtx) return serverCtx;
-
-  // Fall back to persisted execution-span context
+  // Try persisted execution-span context first (correct semantic parent for issue-scoped spans)
   const stored = await ctx.state
     .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
     .catch(() => null);
@@ -270,6 +266,11 @@ async function resolvePersistedParentCtx(
       isRemote: true,
     });
   }
+
+  // Fall back to server-propagated trace context
+  const serverCtx = parentCtxFromServerTrace(event);
+  if (serverCtx) return serverCtx;
+
   return undefined;
 }
 
@@ -811,35 +812,72 @@ export async function handleIssueCreatedTraces(
 
   // --- Create run-child span so issue creation appears under the heartbeat run ---
   if (createdByAgentId) {
-    const creatorRunId = ctx.agentActiveRunId.get(createdByAgentId);
-    if (creatorRunId) {
-      const creatorRunSpan = ctx.activeRunSpans.get(creatorRunId);
-      if (creatorRunSpan) {
-        const creatorAgentName = ctx.agentNameMap.get(createdByAgentId) || "";
-        const runParentCtx = trace.setSpan(context.active(), creatorRunSpan);
-        const runChildTracer = ctx.getTracerForAgent(createdByAgentId, creatorAgentName);
-        const runChildSpan = runChildTracer.startSpan(
-          "paperclip.issue.created",
-          {
-            kind: SpanKind.INTERNAL,
-            attributes: {
-              "paperclip.issue.id": issueId,
-              "paperclip.issue.identifier": identifier,
-              "paperclip.issue.title": title,
-              "paperclip.issue.priority": priority,
-              "paperclip.issue.parent_id": parentId,
-              "paperclip.issue.assignee_agent_id": assigneeAgentId,
-              "paperclip.issue.assignee_agent_name": assigneeAgentName,
-              "paperclip.agent.id": createdByAgentId,
-              "paperclip.agent.name": creatorAgentName,
-              "paperclip.project.id": projectId,
-              "paperclip.project.name": projectName,
-            },
-          },
-          runParentCtx,
-        );
-        runChildSpan.end();
+    const payloadRunId = String(p.runId ?? "");
+    const creatorAgentName = ctx.agentNameMap.get(createdByAgentId) || "";
+
+    // AD1: Try direct runId from event payload first
+    let creatorRunSpan: ReturnType<typeof ctx.activeRunSpans.get> | undefined;
+    if (payloadRunId) {
+      creatorRunSpan = ctx.activeRunSpans.get(payloadRunId);
+    }
+
+    // Fallback: agentActiveRunId -> activeRunSpans
+    let resolvedRunId = payloadRunId;
+    if (!creatorRunSpan) {
+      const agentRunId = ctx.agentActiveRunId.get(createdByAgentId);
+      if (agentRunId) {
+        creatorRunSpan = ctx.activeRunSpans.get(agentRunId);
+        if (creatorRunSpan) resolvedRunId = agentRunId;
       }
+    }
+
+    // AD2: State fallback — reconstruct remote SpanContext from persisted run span
+    let runParentCtx: ReturnType<typeof trace.setSpan> | undefined;
+    if (creatorRunSpan) {
+      runParentCtx = trace.setSpan(context.active(), creatorRunSpan);
+    } else if (resolvedRunId) {
+      const storedRun = await ctx.state
+        .get({ scopeKind: "instance", stateKey: `span:run:${resolvedRunId}` })
+        .catch(() => null);
+      if (
+        storedRun &&
+        typeof storedRun === "object" &&
+        "traceId" in (storedRun as Record<string, unknown>) &&
+        "spanId" in (storedRun as Record<string, unknown>)
+      ) {
+        const sr = storedRun as { traceId: string; spanId: string; traceFlags: number };
+        runParentCtx = trace.setSpanContext(context.active(), {
+          traceId: sr.traceId,
+          spanId: sr.spanId,
+          traceFlags: sr.traceFlags ?? 1,
+          isRemote: true,
+        });
+      }
+    }
+
+    if (runParentCtx) {
+      const runChildTracer = ctx.getTracerForAgent(createdByAgentId, creatorAgentName);
+      const runChildSpan = runChildTracer.startSpan(
+        "paperclip.issue.created",
+        {
+          kind: SpanKind.INTERNAL,
+          attributes: {
+            "paperclip.issue.id": issueId,
+            "paperclip.issue.identifier": identifier,
+            "paperclip.issue.title": title,
+            "paperclip.issue.priority": priority,
+            "paperclip.issue.parent_id": parentId,
+            "paperclip.issue.assignee_agent_id": assigneeAgentId,
+            "paperclip.issue.assignee_agent_name": assigneeAgentName,
+            "paperclip.agent.id": createdByAgentId,
+            "paperclip.agent.name": creatorAgentName,
+            "paperclip.project.id": projectId,
+            "paperclip.project.name": projectName,
+          },
+        },
+        runParentCtx,
+      );
+      runChildSpan.end();
     }
   }
 }
@@ -1107,37 +1145,82 @@ export async function handleIssueUpdatedTraces(
   // --- Create run-child spans so ticket changes appear under the heartbeat run ---
   // This makes the trace tree show: heartbeat.run → issue.status_change / issue.created
   if (issueId && previousStatus && status !== previousStatus) {
+    const payloadRunId = String(p.runId ?? "");
+
     // Find the active run that triggered this update
     let triggerRunSpan: ReturnType<typeof ctx.activeRunSpans.get> | undefined;
     let triggerAgentId = "";
     let triggerAgentName = "";
+    let resolvedRunId = "";
 
-    // Check if the assignee agent has an active run (most common: agent updating its own task)
-    if (assigneeAgentId) {
+    // AD1: Try direct runId from event payload first
+    if (payloadRunId) {
+      triggerRunSpan = ctx.activeRunSpans.get(payloadRunId);
+      if (triggerRunSpan) {
+        resolvedRunId = payloadRunId;
+        triggerAgentId = assigneeAgentId || previousAssigneeAgentId;
+        triggerAgentName = triggerAgentId === assigneeAgentId
+          ? assigneeAgentName : previousAssigneeAgentName;
+      }
+    }
+
+    // Fallback: assignee agent -> agentActiveRunId -> activeRunSpans
+    if (!triggerRunSpan && assigneeAgentId) {
       const runId = ctx.agentActiveRunId.get(assigneeAgentId);
       if (runId) {
         triggerRunSpan = ctx.activeRunSpans.get(runId);
         if (triggerRunSpan) {
+          resolvedRunId = runId;
           triggerAgentId = assigneeAgentId;
           triggerAgentName = assigneeAgentName;
         }
       }
     }
 
-    // Fallback: check if the previous assignee triggered this (e.g. reassignment/delegation)
+    // Fallback: previous assignee (e.g. reassignment/delegation)
     if (!triggerRunSpan && previousAssigneeAgentId) {
       const runId = ctx.agentActiveRunId.get(previousAssigneeAgentId);
       if (runId) {
         triggerRunSpan = ctx.activeRunSpans.get(runId);
         if (triggerRunSpan) {
+          resolvedRunId = runId;
           triggerAgentId = previousAssigneeAgentId;
           triggerAgentName = previousAssigneeAgentName;
         }
       }
     }
 
+    // AD2: State fallback — reconstruct remote SpanContext from persisted run span
+    let runParentCtx: ReturnType<typeof trace.setSpan> | undefined;
     if (triggerRunSpan) {
-      const runParentCtx = trace.setSpan(context.active(), triggerRunSpan);
+      runParentCtx = trace.setSpan(context.active(), triggerRunSpan);
+    } else if (payloadRunId || resolvedRunId) {
+      const lookupId = payloadRunId || resolvedRunId;
+      const storedRun = await ctx.state
+        .get({ scopeKind: "instance", stateKey: `span:run:${lookupId}` })
+        .catch(() => null);
+      if (
+        storedRun &&
+        typeof storedRun === "object" &&
+        "traceId" in (storedRun as Record<string, unknown>) &&
+        "spanId" in (storedRun as Record<string, unknown>)
+      ) {
+        const sr = storedRun as { traceId: string; spanId: string; traceFlags: number };
+        runParentCtx = trace.setSpanContext(context.active(), {
+          traceId: sr.traceId,
+          spanId: sr.spanId,
+          traceFlags: sr.traceFlags ?? 1,
+          isRemote: true,
+        });
+        if (!triggerAgentId) {
+          triggerAgentId = assigneeAgentId || previousAssigneeAgentId;
+          triggerAgentName = triggerAgentId === assigneeAgentId
+            ? assigneeAgentName : previousAssigneeAgentName;
+        }
+      }
+    }
+
+    if (runParentCtx) {
       const runChildTracer = triggerAgentId
         ? ctx.getTracerForAgent(triggerAgentId, triggerAgentName)
         : ctx.tracer;
