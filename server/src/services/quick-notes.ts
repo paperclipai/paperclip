@@ -22,11 +22,13 @@ export function quickNoteService(db: Db) {
     return note;
   }
 
-  async function list(companyId: string, userId: string, opts?: { includeDismissed?: boolean }) {
+  async function list(companyId: string, userId: string | null, opts?: { includeDismissed?: boolean }) {
     const conditions = [
       eq(quickNotes.companyId, companyId),
-      eq(quickNotes.userId, userId),
     ];
+    if (userId) {
+      conditions.push(eq(quickNotes.userId, userId));
+    }
     if (!opts?.includeDismissed) {
       conditions.push(eq(quickNotes.dismissed, false));
     }
