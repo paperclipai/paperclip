@@ -35,6 +35,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -128,6 +129,19 @@ type IssueRelationSummaryMap = {
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
+}
+
+function isAssignedPendingExecutionParticipantCheckout(input: {
+  status: string;
+  assigneeAgentId: string | null;
+  executionState: unknown;
+  agentId: string;
+}) {
+  if (input.status !== "in_review") return false;
+  if (!input.assigneeAgentId || input.assigneeAgentId !== input.agentId) return false;
+  const executionState = parseIssueExecutionState(input.executionState);
+  return executionState?.status === "pending" && executionState.currentParticipant?.type === "agent" &&
+    executionState.currentParticipant.agentId === input.agentId;
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -1774,6 +1788,75 @@ export function issueService(db: Db) {
         }
       });
 
+      const current = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Issue not found");
+
+      const hasPendingExecutionStage = parseIssueExecutionState(current.executionState)?.status === "pending";
+
+      if (
+        expectedStatuses.includes("in_review") &&
+        isAssignedPendingExecutionParticipantCheckout({
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          executionState: current.executionState,
+          agentId,
+        })
+      ) {
+        if (!checkoutRunId) {
+          throw conflict("Issue checkout conflict", {
+            issueId: current.id,
+            status: current.status,
+            assigneeAgentId: current.assigneeAgentId,
+            checkoutRunId: current.checkoutRunId,
+            executionRunId: current.executionRunId,
+          });
+        }
+
+        const reviewCheckout = await db
+          .update(issues)
+          .set({
+            executionRunId: checkoutRunId,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.status, "in_review"),
+              eq(issues.assigneeAgentId, agentId),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (reviewCheckout) {
+          const [enriched] = await withIssueLabels(db, [reviewCheckout]);
+          return enriched;
+        }
+      }
+
+      if (current.status === "in_review" && hasPendingExecutionStage) {
+        throw conflict("Issue checkout conflict", {
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+        });
+      }
+
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
@@ -1810,7 +1893,7 @@ export function issueService(db: Db) {
         return enriched;
       }
 
-      const current = await db
+      const latest = await db
         .select({
           id: issues.id,
           status: issues.status,
@@ -1822,13 +1905,13 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
 
-      if (!current) throw notFound("Issue not found");
+      if (!latest) throw notFound("Issue not found");
 
       if (
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
+        latest.assigneeAgentId === agentId &&
+        latest.status === "in_progress" &&
+        latest.checkoutRunId == null &&
+        (latest.executionRunId == null || latest.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
         const adopted = await db
@@ -1854,16 +1937,16 @@ export function issueService(db: Db) {
 
       if (
         checkoutRunId &&
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        current.checkoutRunId &&
-        current.checkoutRunId !== checkoutRunId
+        latest.assigneeAgentId === agentId &&
+        latest.status === "in_progress" &&
+        latest.checkoutRunId &&
+        latest.checkoutRunId !== checkoutRunId
       ) {
         const adopted = await adoptStaleCheckoutRun({
           issueId: id,
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
-          expectedCheckoutRunId: current.checkoutRunId,
+          expectedCheckoutRunId: latest.checkoutRunId,
         });
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
@@ -1875,9 +1958,9 @@ export function issueService(db: Db) {
 
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        sameRunLock(current.checkoutRunId, checkoutRunId)
+        latest.assigneeAgentId === agentId &&
+        latest.status === "in_progress" &&
+        sameRunLock(latest.checkoutRunId, checkoutRunId)
       ) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
@@ -1886,11 +1969,11 @@ export function issueService(db: Db) {
       }
 
       throw conflict("Issue checkout conflict", {
-        issueId: current.id,
-        status: current.status,
-        assigneeAgentId: current.assigneeAgentId,
-        checkoutRunId: current.checkoutRunId,
-        executionRunId: current.executionRunId,
+        issueId: latest.id,
+        status: latest.status,
+        assigneeAgentId: latest.assigneeAgentId,
+        checkoutRunId: latest.checkoutRunId,
+        executionRunId: latest.executionRunId,
       });
     },
 

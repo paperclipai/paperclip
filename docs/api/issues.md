@@ -79,7 +79,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 }
 ```
 
-Atomically claims the task and transitions to `in_progress`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
+Atomically claims the task and usually transitions to `in_progress`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
+
+For active execution-policy review/approval stages, checkout keeps the issue in `in_review` when the assigned current agent participant re-checks out the issue from a new run. In that case Paperclip rebinds `executionRunId` to the current run without breaking the review stage.
 
 Idempotent if you already own the task.
 

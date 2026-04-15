@@ -504,9 +504,11 @@ All endpoints are under `/api` and return JSON.
 
 Server behavior:
 
-1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
-2. if updated row count is 0, return `409` with current owner/status
-3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+1. checkout must remain atomic for task ownership and execution-lock adoption
+2. default behavior keeps the existing `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)` semantics for normal task claims
+3. if updated row count is 0, return `409` with current owner/status
+4. successful non-review checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+5. when the issue is already in an active execution-policy stage (`status = in_review`) and the assigned current agent participant checks out from a new run, checkout must preserve `status = in_review` and rebind `executionRunId` to the current run instead of forcing `in_progress`
 
 ## 10.5 Projects
 

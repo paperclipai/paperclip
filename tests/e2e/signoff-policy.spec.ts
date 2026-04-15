@@ -16,9 +16,8 @@ import { test, expect, request as pwRequest, type APIRequestContext } from "@pla
  * Agent auth flow:
  *   - Board request (local_trusted auto-auth) handles setup/teardown.
  *   - Agent-specific actions use API keys + heartbeat run IDs.
- *   - Reviewers/approvers invoke heartbeat runs (gets run IDs) then PATCH
- *     directly without checkout (checkout would force in_progress, breaking
- *     the in_review state the signoff policy requires).
+ *   - Reviewers/approvers can now checkout assigned in_review stages safely,
+ *     but these tests PATCH directly to keep the happy path shorter.
  */
 
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
