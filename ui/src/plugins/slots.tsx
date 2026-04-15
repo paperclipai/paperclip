@@ -149,9 +149,7 @@ export function resolveRegisteredPluginComponent(
   return registry.get(buildRegistryKey(pluginKey, exportName)) ?? null;
 }
 
-// ---------------------------------------------------------------------------
 // Plugin module dynamic import loader
-// ---------------------------------------------------------------------------
 
 type PluginLoadState = "idle" | "loading" | "loaded" | "error";
 
@@ -493,9 +491,7 @@ function aggregateLoadState(contributions: PluginUiContribution[]): "loading" | 
   return "loaded";
 }
 
-// ---------------------------------------------------------------------------
 // React hooks
-// ---------------------------------------------------------------------------
 
 /**
  * Trigger dynamic loading of plugin UI modules when contributions change.
@@ -828,9 +824,7 @@ export function PluginSlotOutlet({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Test helpers — exported for use in test suites only.
-// ---------------------------------------------------------------------------
 
 /**
  * Reset the module loader state. Only use in tests.

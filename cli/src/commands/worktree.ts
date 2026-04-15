@@ -612,7 +612,7 @@ function copyDirectoryContents(sourceDir: string, targetDir: string): boolean {
     try {
       chmodSync(targetPath, statSync(sourcePath).mode & 0o777);
     } catch {
-      // best effort
+      // chmod may be unsupported on non-POSIX filesystems; the file was copied successfully regardless
     }
     copied = true;
   }
@@ -831,7 +831,7 @@ export function copySeededSecretsKey(input: {
     try {
       chmodSync(input.targetKeyFilePath, 0o600);
     } catch {
-      // best effort
+      // chmod may be unsupported on non-POSIX filesystems; mode 0o600 was already passed to writeFileSync
     }
     return;
   }
@@ -852,7 +852,7 @@ export function copySeededSecretsKey(input: {
   try {
     chmodSync(input.targetKeyFilePath, 0o600);
   } catch {
-    // best effort
+    // chmod may be unsupported on non-POSIX filesystems; the key file was copied and will inherit source permissions
   }
 }
 

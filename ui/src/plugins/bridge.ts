@@ -36,9 +36,7 @@ import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToast, type ToastInput } from "@/context/ToastContext";
 
-// ---------------------------------------------------------------------------
 // Bridge error type (mirrors the SDK's PluginBridgeError)
-// ---------------------------------------------------------------------------
 
 /**
  * Structured error from the bridge, matching the SDK's `PluginBridgeError`.
@@ -49,9 +47,7 @@ export interface PluginBridgeError {
   details?: unknown;
 }
 
-// ---------------------------------------------------------------------------
 // Bridge data result type (mirrors the SDK's PluginDataResult)
-// ---------------------------------------------------------------------------
 
 export interface PluginDataResult<T = unknown> {
   data: T | null;
@@ -63,9 +59,7 @@ export interface PluginDataResult<T = unknown> {
 export type PluginToastInput = ToastInput;
 export type PluginToastFn = (input: PluginToastInput) => string | null;
 
-// ---------------------------------------------------------------------------
 // Host context type (mirrors the SDK's PluginHostContext)
-// ---------------------------------------------------------------------------
 
 export interface PluginHostContext {
   companyId: string | null;
@@ -116,9 +110,7 @@ export interface PluginRenderEnvironmentContext {
   closeLifecycle?: PluginRenderCloseLifecycle | null;
 }
 
-// ---------------------------------------------------------------------------
 // Bridge context — React context for plugin identity and host scope
-// ---------------------------------------------------------------------------
 
 export type PluginBridgeContextValue = {
   pluginId: string;
@@ -150,9 +142,7 @@ function usePluginBridgeContext(): PluginBridgeContextValue {
   return ctx;
 }
 
-// ---------------------------------------------------------------------------
 // Error extraction helpers
-// ---------------------------------------------------------------------------
 
 /**
  * Attempt to extract a structured PluginBridgeError from an API error.
@@ -186,9 +176,7 @@ function extractBridgeError(err: unknown): PluginBridgeError {
   };
 }
 
-// ---------------------------------------------------------------------------
 // usePluginData — concrete implementation
-// ---------------------------------------------------------------------------
 
 /**
  * Stable serialization of params for use as a dependency key.
@@ -304,9 +292,7 @@ export function usePluginData<T = unknown>(
   return { data, loading, error, refresh };
 }
 
-// ---------------------------------------------------------------------------
 // usePluginAction — concrete implementation
-// ---------------------------------------------------------------------------
 
 /**
  * Action function type matching the SDK's `PluginActionFn`.
@@ -349,9 +335,7 @@ export function usePluginAction(key: string): PluginActionFn {
   );
 }
 
-// ---------------------------------------------------------------------------
 // useHostContext — concrete implementation
-// ---------------------------------------------------------------------------
 
 /**
  * Concrete implementation of `useHostContext()`.
@@ -364,9 +348,7 @@ export function useHostContext(): PluginHostContext {
   return hostContext;
 }
 
-// ---------------------------------------------------------------------------
 // usePluginToast — concrete implementation
-// ---------------------------------------------------------------------------
 
 export function usePluginToast(): PluginToastFn {
   const { pushToast } = useToast();
@@ -376,9 +358,7 @@ export function usePluginToast(): PluginToastFn {
   );
 }
 
-// ---------------------------------------------------------------------------
 // usePluginStream — concrete implementation
-// ---------------------------------------------------------------------------
 
 export interface PluginStreamResult<T = unknown> {
   events: T[];

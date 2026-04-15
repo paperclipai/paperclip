@@ -92,9 +92,7 @@ import {
   JsonRpcCallError,
 } from "./protocol.js";
 
-// ---------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------
 
 /**
  * Options for starting the worker-side RPC host.
@@ -144,9 +142,7 @@ export interface WorkerRpcHost {
   stop(): void;
 }
 
-// ---------------------------------------------------------------------------
 // Internal: event registration
-// ---------------------------------------------------------------------------
 
 interface EventRegistration {
   name: string;
@@ -154,16 +150,12 @@ interface EventRegistration {
   fn: (event: PluginEvent) => Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
 
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-// ---------------------------------------------------------------------------
 // startWorkerRpcHost
-// ---------------------------------------------------------------------------
 
 /**
  * Options for runWorker when testing (optional stdio to avoid using process streams).
