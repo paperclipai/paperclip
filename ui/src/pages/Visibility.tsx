@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -6,6 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentFileRow } from "../components/AgentFileRow";
+import { FileDetailSheet } from "../components/FileDetailSheet";
 import type { FileEditEvent } from "../components/FileCard";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
@@ -30,6 +31,8 @@ function parseFileEditPayload(payload: Record<string, unknown>): {
       linesRemoved: (data.linesRemoved as number) ?? 0,
       timestamp: (data.timestamp as string) ?? new Date().toISOString(),
       seq: (payload.seq as number) ?? 0,
+      repoUrl: (data.repoUrl as string) ?? undefined,
+      branch: (data.branch as string) ?? undefined,
     },
   };
 }
@@ -42,6 +45,25 @@ export function Visibility() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Visibility" }]);
   }, [setBreadcrumbs]);
+
+  const [sheetState, setSheetState] = useState<{
+    open: boolean;
+    filePath: string;
+    events: FileEditEvent[];
+    agentName?: string;
+    agentId?: string;
+    runId?: string;
+  }>({ open: false, filePath: "", events: [] });
+
+  const handleFileClick = useCallback((
+    runId: string,
+    agentId: string | undefined,
+    agentName: string,
+    filePath: string,
+    events: FileEditEvent[],
+  ) => {
+    setSheetState({ open: true, filePath, events, agentName, agentId, runId });
+  }, []);
 
   // minCount=4 ensures we see recently-finished runs too (not just queued/running),
   // so cards don't vanish the instant a run completes.
@@ -98,6 +120,8 @@ export function Visibility() {
             linesRemoved: (data.linesRemoved as number) ?? 0,
             timestamp: (data.timestamp as string) ?? "",
             seq: ev.seq,
+            repoUrl: (data.repoUrl as string) ?? undefined,
+            branch: (data.branch as string) ?? undefined,
           });
           entry.files.set(filePath, existing);
         }
@@ -158,12 +182,26 @@ export function Visibility() {
           <AgentFileRow
             key={runId}
             agentName={run?.agentName ?? "Unknown Agent"}
+            agentId={run?.agentId}
+            runId={runId}
             issueTitle={run?.triggerDetail ?? undefined}
             files={files}
             runStatus={run?.status ?? "running"}
+            onFileClick={(filePath, events) =>
+              handleFileClick(runId, run?.agentId, run?.agentName ?? "Unknown Agent", filePath, events)
+            }
           />
         ))
       )}
+      <FileDetailSheet
+        open={sheetState.open}
+        onOpenChange={(open) => setSheetState((s) => ({ ...s, open }))}
+        filePath={sheetState.filePath}
+        events={sheetState.events}
+        agentName={sheetState.agentName}
+        agentId={sheetState.agentId}
+        runId={sheetState.runId}
+      />
     </div>
   );
 }

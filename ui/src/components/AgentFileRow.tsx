@@ -1,15 +1,19 @@
 import { useRef, useCallback } from "react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Link } from "@/lib/router";
 import { FileCard, type FileEditEvent } from "./FileCard";
 
 interface AgentFileRowProps {
   agentName: string;
+  agentId?: string;
+  runId?: string;
   issueTitle?: string;
   files: Map<string, FileEditEvent[]>;
   runStatus: string;
+  onFileClick?: (filePath: string, events: FileEditEvent[]) => void;
 }
 
-export function AgentFileRow({ agentName, issueTitle, files, runStatus }: AgentFileRowProps) {
+export function AgentFileRow({ agentName, agentId, runId, issueTitle, files, runStatus, onFileClick }: AgentFileRowProps) {
   const isActive = runStatus === "running" || runStatus === "queued";
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +44,16 @@ export function AgentFileRow({ agentName, issueTitle, files, runStatus }: AgentF
         ) : (
           <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
         )}
-        <span className="text-sm font-semibold">{agentName}</span>
+        {agentId && runId ? (
+          <Link
+            to={`/agents/${agentId}/runs/${runId}`}
+            className="text-sm font-semibold hover:underline"
+          >
+            {agentName}
+          </Link>
+        ) : (
+          <span className="text-sm font-semibold">{agentName}</span>
+        )}
         {issueTitle && (
           <span className="text-xs text-muted-foreground truncate">
             — {issueTitle}
@@ -56,7 +69,12 @@ export function AgentFileRow({ agentName, issueTitle, files, runStatus }: AgentF
         <ScrollArea className="w-full" onWheel={handleWheel}>
           <div ref={scrollRef} className="flex gap-3 pb-3 pl-5">
             {Array.from(files.entries()).map(([filePath, events]) => (
-              <FileCard key={filePath} filePath={filePath} events={events} />
+              <FileCard
+                key={filePath}
+                filePath={filePath}
+                events={events}
+                onClick={onFileClick ? () => onFileClick(filePath, events) : undefined}
+              />
             ))}
           </div>
           <ScrollBar orientation="horizontal" />
