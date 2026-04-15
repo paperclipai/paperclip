@@ -12,6 +12,13 @@ function readDesiredState(value: unknown): ProjectWorkspaceRuntimeConfig["desire
   return value === "running" || value === "stopped" ? value : null;
 }
 
+function readServiceStates(value: unknown): ProjectWorkspaceRuntimeConfig["serviceStates"] {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, state]) => state === "running" || state === "stopped");
+  if (entries.length === 0) return null;
+  return Object.fromEntries(entries) as ProjectWorkspaceRuntimeConfig["serviceStates"];
+}
+
 export function readProjectWorkspaceRuntimeConfig(
   metadata: Record<string, unknown> | null | undefined,
 ): ProjectWorkspaceRuntimeConfig | null {
@@ -21,9 +28,10 @@ export function readProjectWorkspaceRuntimeConfig(
   const config: ProjectWorkspaceRuntimeConfig = {
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
     desiredState: readDesiredState(raw.desiredState),
+    serviceStates: readServiceStates(raw.serviceStates),
   };
 
-  const hasConfig = config.workspaceRuntime !== null || config.desiredState !== null;
+  const hasConfig = config.workspaceRuntime !== null || config.desiredState !== null || config.serviceStates !== null;
   return hasConfig ? config : null;
 }
 
@@ -35,6 +43,7 @@ export function mergeProjectWorkspaceRuntimeConfig(
   const current = readProjectWorkspaceRuntimeConfig(metadata) ?? {
     workspaceRuntime: null,
     desiredState: null,
+    serviceStates: null,
   };
 
   if (patch === null) {
@@ -47,9 +56,11 @@ export function mergeProjectWorkspaceRuntimeConfig(
       patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
     desiredState:
       patch.desiredState !== undefined ? readDesiredState(patch.desiredState) : current.desiredState,
+    serviceStates:
+      patch.serviceStates !== undefined ? readServiceStates(patch.serviceStates) : current.serviceStates,
   };
 
-  if (nextConfig.workspaceRuntime === null && nextConfig.desiredState === null) {
+  if (nextConfig.workspaceRuntime === null && nextConfig.desiredState === null && nextConfig.serviceStates === null) {
     delete nextMetadata.runtimeConfig;
   } else {
     nextMetadata.runtimeConfig = nextConfig;

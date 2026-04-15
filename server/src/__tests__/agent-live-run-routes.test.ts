@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -18,31 +16,37 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  agentService: () => mockAgentService,
-  agentInstructionsService: () => ({}),
-  accessService: () => ({}),
-  approvalService: () => ({}),
-  companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
-  budgetService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(),
-  secretService: () => ({}),
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => ({}),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    agentService: () => mockAgentService,
+    agentInstructionsService: () => ({}),
+    accessService: () => ({}),
+    approvalService: () => ({}),
+    companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
+    budgetService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: vi.fn(),
+    secretService: () => ({}),
+    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    workspaceOperationService: () => ({}),
+  }));
 
-vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: vi.fn(),
-  listAdapterModels: vi.fn(),
-  detectAdapterModel: vi.fn(),
-  findActiveServerAdapter: vi.fn(),
-  requireServerAdapter: vi.fn(),
-}));
+  vi.doMock("../adapters/index.js", () => ({
+    findServerAdapter: vi.fn(),
+    listAdapterModels: vi.fn(),
+    detectAdapterModel: vi.fn(),
+    findActiveServerAdapter: vi.fn(),
+    requireServerAdapter: vi.fn(),
+  }));
+}
 
-function createApp() {
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -62,7 +66,14 @@ function createApp() {
 
 describe("agent live run routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -92,7 +103,7 @@ describe("agent live run routes", () => {
   });
 
   it("returns a compact active run payload for issue polling", async () => {
-    const res = await request(createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
@@ -113,5 +124,43 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
+  });
+
+  it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
+    mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
+      id: "run-foreign",
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "callback",
+      startedAt: new Date("2026-04-10T10:00:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:59:00.000Z"),
+      agentId: "agent-1",
+      issueId: "issue-2",
+    });
+    mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue({
+      id: "run-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-1",
+      issueId: "issue-1",
+    });
+
+    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).toHaveBeenCalledWith("agent-1");
+    expect(res.body).toMatchObject({
+      id: "run-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+    });
   });
 });

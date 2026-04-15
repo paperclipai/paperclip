@@ -11,7 +11,7 @@ describe("issue-reference", () => {
     expect(parseIssuePathIdFromPath("http://localhost:3100/PAP/issues/PAP-1179")).toBe("PAP-1179");
   });
 
-  it("normalizes bare identifiers and issue URLs into internal links", () => {
+  it("normalizes bare identifiers, issue URLs, and issue scheme links into internal links", () => {
     expect(parseIssueReferenceFromHref("pap-1271")).toEqual({
       issuePathId: "PAP-1271",
       href: "/issues/PAP-1271",
@@ -19,6 +19,14 @@ describe("issue-reference", () => {
     expect(parseIssueReferenceFromHref("http://localhost:3100/PAP/issues/PAP-1179")).toEqual({
       issuePathId: "PAP-1179",
       href: "/issues/PAP-1179",
+    });
+    expect(parseIssueReferenceFromHref("issue://PAP-1310")).toEqual({
+      issuePathId: "PAP-1310",
+      href: "/issues/PAP-1310",
+    });
+    expect(parseIssueReferenceFromHref("issue://:PAP-1311")).toEqual({
+      issuePathId: "PAP-1311",
+      href: "/issues/PAP-1311",
     });
   });
 
