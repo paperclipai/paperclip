@@ -95,13 +95,13 @@ function isoWeekKey(date: Date): string {
 }
 
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
   const months = Math.max(1, monthlyMonths);
   const now = new Date(nowMs);
-  return new Date(now.getFullYear(), now.getMonth() - months, 1).getTime();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
 /**
