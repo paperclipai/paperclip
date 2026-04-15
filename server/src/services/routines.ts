@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
   agents,
   companySecrets,
   goals,
@@ -711,12 +712,68 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     });
   }
 
+  async function cleanupIssueWakeupArtifacts(input: {
+    companyId: string;
+    issueId: string;
+  }) {
+    try {
+      const queuedRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.status, "queued"),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          ),
+        );
+
+      const runIds = queuedRuns.map((run) => run.id);
+      const wakeupRequestIds = queuedRuns
+        .map((run) => run.wakeupRequestId)
+        .filter((id): id is string => Boolean(id));
+
+      if (runIds.length > 0) {
+        await db
+          .delete(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, runIds)));
+      }
+
+      const wakeupRequestFilters = [
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+      ];
+      if (runIds.length > 0) wakeupRequestFilters.push(inArray(agentWakeupRequests.runId, runIds));
+      if (wakeupRequestIds.length > 0) wakeupRequestFilters.push(inArray(agentWakeupRequests.id, wakeupRequestIds));
+
+      await db
+        .delete(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            inArray(agentWakeupRequests.status, ["queued", "coalesced"]),
+            or(...wakeupRequestFilters),
+          ),
+        );
+    } catch (err) {
+      logger.error(
+        { err, companyId: input.companyId, issueId: input.issueId },
+        "failed to clean up queued routine issue wakeup artifacts",
+      );
+    }
+  }
+
   async function cleanupExternalDispatchIssues(issueIds: string[], input: {
     routineId: string;
     companyId: string;
   }) {
     if (issueIds.length === 0) return;
     try {
+      for (const issueId of issueIds) {
+        await cleanupIssueWakeupArtifacts({ companyId: input.companyId, issueId });
+      }
       await db
         .delete(issues)
         .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, issueIds)));
@@ -947,6 +1004,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           return updated ?? createdRun;
         } catch (error) {
           if (createdIssue) {
+            await cleanupIssueWakeupArtifacts({
+              companyId: input.routine.companyId,
+              issueId: createdIssue.id,
+            });
             await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
           }
           let failureReason = error instanceof Error ? error.message : String(error);
@@ -1611,13 +1672,16 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
         let runCount = 1;
+        const scheduledRunAts = [row.trigger.nextRunAt];
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
+          scheduledRunAts.length = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
             runCount += 1;
+            scheduledRunAts.push(cursor);
             claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
             cursor = claimedNextRunAt;
           }
@@ -1641,12 +1705,31 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         if (!claimed) continue;
 
         for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
-            routine: row.routine,
-            trigger: row.trigger,
-            source: "schedule",
-          });
-          triggered += 1;
+          try {
+            await dispatchRoutineRun({
+              routine: row.routine,
+              trigger: row.trigger,
+              source: "schedule",
+            });
+            triggered += 1;
+          } catch (error) {
+            const retryAt = scheduledRunAts[i] ?? row.trigger.nextRunAt;
+            try {
+              await db
+                .update(routineTriggers)
+                .set({
+                  nextRunAt: retryAt,
+                  updatedAt: new Date(),
+                })
+                .where(eq(routineTriggers.id, row.trigger.id));
+            } catch (restoreError) {
+              logger.error(
+                { err: restoreError, routineId: row.routine.id, triggerId: row.trigger.id, retryAt },
+                "failed to restore scheduled routine trigger after dispatch abort",
+              );
+            }
+            throw error;
+          }
         }
       }
 

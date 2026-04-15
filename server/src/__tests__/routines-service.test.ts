@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companySecrets,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -677,6 +679,97 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("cleans up queued wakeup artifacts when post-wakeup run finalization fails", async () => {
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const wakeupRequest = await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          reason: wakeupOpts.reason ?? null,
+          payload: wakeupOpts.payload ?? null,
+          status: "queued",
+          requestedByActorType: wakeupOpts.requestedByActorType ?? null,
+          requestedByActorId: wakeupOpts.requestedByActorId ?? null,
+        }).returning().then((rows) => rows[0]);
+
+        const queuedRun = await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        }).returning().then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({ runId: queuedRun.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRun.id,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRun.id };
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_issue_created_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run issue_created finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_issue_created_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'issue_created')
+      EXECUTE FUNCTION routine_run_issue_created_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "manual" }),
+      ).rejects.toThrow(/issue_created finalization exploded/i);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([]);
+
+      const queuedRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(queuedRuns).toEqual([]);
+
+      const wakeupRequests = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeupRequests).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_issue_created_update_explodes();
+      `));
+    }
+  });
+
   it("advances a stale company issue counter before scheduled routine issue creation", async () => {
     const { companyId, issuePrefix, routine, svc } = await seedFixture();
     await db.insert(issues).values({
@@ -824,6 +917,60 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       await db.execute(sql.raw(`
         DROP TRIGGER IF EXISTS routine_run_failed_update_explodes_trigger ON routine_runs;
         DROP FUNCTION IF EXISTS routine_run_failed_update_explodes();
+      `));
+    }
+  });
+
+  it("restores the scheduled trigger time if dispatch aborts after claiming a fire", async () => {
+    const { routine, svc } = await seedFixture();
+    const dueAt = new Date("2026-04-13T10:00:00.000Z");
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_insert_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run insert exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_insert_explodes_trigger
+      BEFORE INSERT ON routine_runs
+      FOR EACH ROW
+      EXECUTE FUNCTION routine_run_insert_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.tickScheduledTriggers(dueAt),
+      ).rejects.toThrow(/routine run insert exploded/i);
+
+      const restoredTrigger = await db
+        .select({ nextRunAt: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, trigger.id))
+        .then((rows) => rows[0] ?? null);
+      expect(restoredTrigger?.nextRunAt?.getTime()).toBe(dueAt.getTime());
+
+      const runs = await db
+        .select({ id: routineRuns.id })
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_insert_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_insert_explodes();
       `));
     }
   });
