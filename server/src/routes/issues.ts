@@ -1524,6 +1524,36 @@ export function issueRoutes(
       }
     }
 
+    // SharpAPI QA Auto-Handoff: when a non-QA agent sets a gated issue to
+    // `in_review`, automatically reassign to QA so the standard assignment
+    // wakeup fires. Closes the loop where engineers forget to @-mention QA.
+    // Skipped if the actor explicitly set an assignee in the same patch.
+    if (
+      updateFields.status === "in_review" &&
+      existing.status !== "in_review" &&
+      actor.actorType === "agent" &&
+      actor.agentId &&
+      updateFields.assigneeAgentId === undefined
+    ) {
+      const gatedLabels = ((existing as { labels?: Array<{ name: string }> }).labels ?? []).filter(
+        (l) => QA_GATED_LABEL_NAMES.has(l.name),
+      );
+      if (gatedLabels.length > 0) {
+        const actorAgent = await agentsSvc.getById(actor.agentId);
+        if (actorAgent?.role !== QA_GATE_ENFORCER_ROLE) {
+          const allAgents = await agentsSvc.list(existing.companyId);
+          const qaAgent = allAgents.find((a) => a.role === QA_GATE_ENFORCER_ROLE);
+          if (qaAgent && qaAgent.id !== existing.assigneeAgentId) {
+            updateFields.assigneeAgentId = qaAgent.id;
+            logger.info(
+              { issueId: existing.id, identifier: existing.identifier, qaAgentId: qaAgent.id, actorAgentId: actor.agentId },
+              "QA auto-handoff: reassigning gated issue to QA on in_review",
+            );
+          }
+        }
+      }
+    }
+
     // SharpAPI QA Gate: block non-QA agents from closing gated issues to `done`.
     // Users/board actors bypass this gate (they can still close directly).
     if (
