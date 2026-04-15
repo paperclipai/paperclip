@@ -2,9 +2,9 @@ const STORAGE_KEY = "paperclip:recent-assignees";
 const MAX_RECENT = 10;
 
 export function getRecentAssigneeIds(): string[] {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {

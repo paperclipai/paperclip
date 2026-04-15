@@ -448,19 +448,17 @@ export function ExecutionWorkspaceDetail() {
 
   if (workspaceId && activeTab === null) {
     let cachedTab: ExecutionWorkspaceTab = "configuration";
-    try {
-      const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
-      if (storedTab === "issues" || storedTab === "configuration") {
-        cachedTab = storedTab;
-      }
-    } catch {}
+    const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+    if (storedTab === "issues" || storedTab === "configuration") {
+      cachedTab = storedTab;
+    }
     return <Navigate to={`/execution-workspaces/${workspaceId}/${cachedTab}`} replace />;
   }
 
   const handleTabChange = (tab: ExecutionWorkspaceTab) => {
     try {
       localStorage.setItem(`paperclip:execution-workspace-tab:${workspace.id}`, tab);
-    } catch {}
+    } catch (error) { console.warn("Failed to persist execution workspace tab", error); }
     navigate(`/execution-workspaces/${workspace.id}/${tab}`);
   };
 

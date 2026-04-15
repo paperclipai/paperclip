@@ -92,11 +92,7 @@ interface CommentThreadProps {
 const DRAFT_DEBOUNCE_MS = 800;
 
 function loadDraft(draftKey: string): string {
-  try {
-    return localStorage.getItem(draftKey) ?? "";
-  } catch {
-    return "";
-  }
+  return localStorage.getItem(draftKey) ?? "";
 }
 
 function saveDraft(draftKey: string, value: string) {
