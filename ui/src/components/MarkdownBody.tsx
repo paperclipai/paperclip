@@ -242,7 +242,12 @@ export function MarkdownBody({
         );
       }
       return (
-        <a href={href} rel="noreferrer" style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+        >
           {linkChildren}
         </a>
       );

@@ -4,13 +4,50 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  buildProjectMentionHref,
+  buildSkillMentionHref,
+} from "@paperclipai/shared/project-mentions";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+}));
+
+vi.mock("@paperclipai/shared", () => ({
+  AGENT_ICON_NAMES: ["bot", "code"],
+  deriveAgentUrlKey: (name?: string | null, id?: string | null) => name ?? id ?? "",
+  deriveProjectUrlKey: (name?: string | null, id?: string | null) => name ?? id ?? "",
+  normalizeProjectUrlKey: (name?: string | null) => name ?? "",
+  hasNonAsciiContent: (value?: string | null) => /[^\x00-\x7F]/.test(value ?? ""),
+  parseAgentMentionHref: (href: string) => {
+    if (!href.startsWith("agent://")) return null;
+    const url = new URL(href);
+    return {
+      agentId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
+      icon: url.searchParams.get("i") ?? url.searchParams.get("icon"),
+    };
+  },
+  parseProjectMentionHref: (href: string) => {
+    if (!href.startsWith("project://")) return null;
+    const url = new URL(href);
+    const color = url.searchParams.get("c") ?? url.searchParams.get("color");
+    return {
+      projectId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
+      color: color ? `#${color.replace(/^#/, "")}` : null,
+    };
+  },
+  parseSkillMentionHref: (href: string) => {
+    if (!href.startsWith("skill://")) return null;
+    const url = new URL(href);
+    return {
+      skillId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
+      slug: url.searchParams.get("s") ?? url.searchParams.get("slug"),
+    };
+  },
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -99,7 +136,7 @@ describe("MarkdownBody", () => {
   it("sanitizes unsafe javascript markdown links", () => {
     const html = renderMarkdown("[click me](javascript:alert(document.cookie))");
 
-    expect(html).toContain('<a href="" rel="noreferrer"');
+    expect(html).toContain('<a href="" target="_blank" rel="noopener noreferrer"');
     expect(html).toContain(">click me</a>");
     expect(html).not.toContain("javascript:");
   });
@@ -166,6 +203,21 @@ describe("MarkdownBody", () => {
     expect(html).toContain(">issue://:PAP-1311<");
     expect(html).toContain("text-green-600");
     expect(html).toContain("text-red-600");
+  });
+
+  it("opens external links in a new tab", () => {
+    const html = renderMarkdown("[GitHub PR](https://github.com/paperclipai/paperclip/pull/3711)");
+
+    expect(html).toContain('href="https://github.com/paperclipai/paperclip/pull/3711"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("keeps mention chips as internal navigation links", () => {
+    const html = renderMarkdown(`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")})`);
+
+    expect(html).toContain('href="/agents/agent-123"');
+    expect(html).not.toContain('target="_blank"');
   });
 
   it("linkifies issue identifiers inside inline code spans", () => {
