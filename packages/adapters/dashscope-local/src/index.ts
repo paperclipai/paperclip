@@ -33,7 +33,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file
 - model (string, optional): DashScope model id
 - promptTemplate (string, optional): run prompt template
-- baseUrl (string, optional): custom API endpoint (leave empty for standard endpoint)
+- baseUrl (string, optional): Coding Plan API endpoint (default: https://coding.dashscope.aliyuncs.com/v1)
 - temperature (number, optional): sampling temperature (0.0-2.0, default 0.7)
 - topP (number, optional): nucleus sampling threshold (0.0-1.0, default 0.8)
 - maxTokens (number, optional): max completion tokens
@@ -44,6 +44,6 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- DASHSCOPE_API_KEY should be set in env
-- API endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
+- DASHSCOPE_API_KEY should be set in env (use subscription key: sk-sp-xxx)
+- API endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions (OpenAI compatible format)
 `;

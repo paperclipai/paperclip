@@ -50,6 +50,10 @@ export function buildDashScopeLocalConfig(v: CreateConfigValues): Record<string,
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.model) ac.model = v.model;
   
+  // Default baseUrl to Coding Plan endpoint
+  const defaultBaseUrl = "https://coding.dashscope.aliyuncs.com/v1";
+  ac.baseUrl = v.baseUrl || defaultBaseUrl;
+  
   // Handle environment variables
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

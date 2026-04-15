@@ -32,7 +32,7 @@ export async function testEnvironment(
       code: "dashscope_api_key_present",
       level: "info",
       message: "DashScope API key is configured",
-      detail: "Using standard endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+      detail: "Using Coding Plan endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions",
     });
   }
   

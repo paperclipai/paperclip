@@ -24,10 +24,11 @@ export function DashScopeLocalConfigFields({
     ? String(values?.model ?? "qwen3.5-plus")
     : eff("adapterConfig", "model", String(config.model ?? "qwen3.5-plus"));
 
-  // Get effective baseUrl value (for Coding Plan support)
+  // Get effective baseUrl value (default to Coding Plan endpoint)
+  const defaultBaseUrl = "https://coding.dashscope.aliyuncs.com/v1";
   const effectiveBaseUrl = isCreate
-    ? String(values?.baseUrl ?? "")
-    : eff("adapterConfig", "baseUrl", String(config.baseUrl ?? ""));
+    ? String(values?.baseUrl ?? defaultBaseUrl)
+    : eff("adapterConfig", "baseUrl", String(config.baseUrl ?? defaultBaseUrl));
 
   return (
     <>

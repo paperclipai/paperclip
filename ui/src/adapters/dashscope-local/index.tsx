@@ -6,6 +6,10 @@ function buildDashScopeLocalConfig(values: CreateConfigValues): Record<string, u
   const ac: Record<string, unknown> = {};
   if (values.model) ac.model = values.model;
   
+  // Default baseUrl to Coding Plan endpoint
+  const defaultBaseUrl = "https://coding.dashscope.aliyuncs.com/v1";
+  ac.baseUrl = values.baseUrl || defaultBaseUrl;
+  
   // Handle environment variables from envVars string (create mode)
   if (values.envVars && values.envVars.trim()) {
     const env: Record<string, { type: "plain"; value: string }> = {};
