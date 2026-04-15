@@ -7,6 +7,7 @@ import {
   resolveApprovalSchema,
   resubmitApprovalSchema,
 } from "@paperclipai/shared";
+import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -20,6 +21,15 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+
+const updateApprovalScheduleOverrideSchema = z.object({
+  payload: z.object({
+    targetPublishAt: z.string().nullable().optional(),
+    targetPublishWindowStart: z.string().nullable().optional(),
+    targetPublishWindowEnd: z.string().nullable().optional(),
+    targetPublishTimezone: z.string().nullable().optional(),
+  }),
+});
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -348,6 +358,22 @@ export function approvalRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       action: "approval.resubmitted",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { type: approval.type },
+    });
+    res.json(redactApprovalPayload(approval));
+  });
+
+  router.patch("/approvals/:id/schedule-override", validate(updateApprovalScheduleOverrideSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const approval = await svc.setScheduleOverride(id, req.body.payload ?? {});
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "approval.schedule_override_updated",
       entityType: "approval",
       entityId: approval.id,
       details: { type: approval.type },

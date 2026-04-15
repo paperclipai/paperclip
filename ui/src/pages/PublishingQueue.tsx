@@ -34,6 +34,7 @@ type QueueRow = {
   approvedAt: string | null;
   pickedUpAt: string | null;
   scheduledFor: string | null;
+  scheduledDisplay: string | null;
   publishedAt: string | null;
   proofUrl: string | null;
 };
@@ -76,6 +77,16 @@ export function PublishingQueue() {
     return approvals
       .map((approval: Approval) => {
         const payload = (approval.payload ?? null) as Record<string, unknown> | null;
+        const targetPublishAt = getPayloadString(payload, ["targetPublishAt"]);
+        const targetPublishWindowStart = getPayloadString(payload, ["targetPublishWindowStart"]);
+        const targetPublishWindowEnd = getPayloadString(payload, ["targetPublishWindowEnd"]);
+        const targetPublishTimezone = getPayloadString(payload, ["targetPublishTimezone"]);
+        const fallbackScheduledFor = getPayloadString(payload, ["scheduledAt", "scheduledFor", "publishAt"]);
+        const scheduledFor = targetPublishAt ?? fallbackScheduledFor;
+        const scheduledDisplay = targetPublishAt
+          ?? (targetPublishWindowStart && targetPublishWindowEnd
+            ? `${targetPublishWindowStart}–${targetPublishWindowEnd}${targetPublishTimezone ? ` ${targetPublishTimezone}` : ""}`
+            : fallbackScheduledFor);
         return {
           id: approval.id,
           title: getPayloadString(payload, ["title", "summary"]) ?? approval.id,
@@ -84,7 +95,8 @@ export function PublishingQueue() {
           status: approval.status,
           approvedAt: approval.decidedAt ? String(approval.decidedAt) : null,
           pickedUpAt: getPayloadString(payload, ["consumedAt", "claimedAt", "pickedUpAt", "katyaClaimedAt", "runStartedAt"]),
-          scheduledFor: getPayloadString(payload, ["targetPublishAt", "scheduledAt", "scheduledFor", "publishAt"]),
+          scheduledFor,
+          scheduledDisplay,
           publishedAt: getPayloadString(payload, ["publishedAt", "postedAt"]),
           proofUrl: getPayloadString(payload, ["proofUrl", "publishedUrl", "postUrl", "url"]),
         };
@@ -211,7 +223,7 @@ export function PublishingQueue() {
                 </td>
                 <td className="p-2 text-xs text-muted-foreground">{row.approvedAt ?? "—"}</td>
                 <td className="p-2 text-xs text-muted-foreground">{row.pickedUpAt ?? "—"}</td>
-                <td className="p-2 text-xs text-muted-foreground">{row.scheduledFor ?? "—"}</td>
+                <td className="p-2 text-xs text-muted-foreground">{row.scheduledDisplay ?? "—"}</td>
                 <td className="p-2 text-xs text-muted-foreground">{row.publishedAt ?? "—"}</td>
                 <td className="p-2 text-xs text-muted-foreground break-all">{row.proofUrl ?? "—"}</td>
               </tr>

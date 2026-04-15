@@ -143,18 +143,68 @@ type LaunchChecklistState = {
   copyFinal: boolean;
   linksValid: boolean;
   scheduledTime: string;
+  proofLine: string;
+  sentLedgerEntry: string;
   proofUrlOrPostId: string;
   proofTimestamp: string;
   proofPlatformChannel: string;
+};
+
+type BlockerEscalationState = {
+  owner: string;
+  dueAt: string;
+  terminalState: string;
+  notes: string;
+};
+
+type KatyaAutonomyState = {
+  lane: string;
+  contentType: string;
+  dependencies: string;
+  dueWindowStart: string;
+  dueWindowEnd: string;
+  dueWindowTimezone: string;
+  weeklyTarget: string;
+  weeklyCompleted: string;
+  weeklyWeekStartsOn: string;
+  outreachThursdayQuota: string;
+  outreachFridayQuota: string;
+  prospectMatchPath: string;
+  approvalQueueStatus: string;
 };
 
 const defaultLaunchChecklist: LaunchChecklistState = {
   copyFinal: false,
   linksValid: false,
   scheduledTime: "",
+  proofLine: "",
+  sentLedgerEntry: "",
   proofUrlOrPostId: "",
   proofTimestamp: "",
   proofPlatformChannel: "",
+};
+
+const defaultBlockerEscalation: BlockerEscalationState = {
+  owner: "",
+  dueAt: "",
+  terminalState: "",
+  notes: "",
+};
+
+const defaultKatyaAutonomy: KatyaAutonomyState = {
+  lane: "",
+  contentType: "",
+  dependencies: "",
+  dueWindowStart: "",
+  dueWindowEnd: "",
+  dueWindowTimezone: "",
+  weeklyTarget: "",
+  weeklyCompleted: "",
+  weeklyWeekStartsOn: "",
+  outreachThursdayQuota: "",
+  outreachFridayQuota: "",
+  prospectMatchPath: "",
+  approvalQueueStatus: "",
 };
 
 function launchChecklistFromProduct(product: IssueWorkProduct | null | undefined): LaunchChecklistState {
@@ -164,9 +214,60 @@ function launchChecklistFromProduct(product: IssueWorkProduct | null | undefined
     copyFinal: metadata.copyFinal === true,
     linksValid: metadata.linksValid === true,
     scheduledTime: typeof metadata.scheduledTime === "string" ? metadata.scheduledTime : "",
+    proofLine: typeof metadata.proofLine === "string" ? metadata.proofLine : "",
+    sentLedgerEntry: typeof metadata.sentLedgerEntry === "string" ? metadata.sentLedgerEntry : "",
     proofUrlOrPostId: typeof proof.urlOrPostId === "string" ? proof.urlOrPostId : "",
     proofTimestamp: typeof proof.timestamp === "string" ? proof.timestamp : "",
     proofPlatformChannel: typeof proof.platformChannel === "string" ? proof.platformChannel : "",
+  };
+}
+
+function blockerEscalationFromProduct(product: IssueWorkProduct | null | undefined): BlockerEscalationState {
+  const metadata = (product?.metadata ?? {}) as Record<string, unknown>;
+  const owner = (metadata.owner ?? {}) as Record<string, unknown>;
+  return {
+    owner:
+      typeof owner.displayName === "string"
+        ? owner.displayName
+        : typeof owner.userId === "string"
+          ? owner.userId
+          : typeof owner.agentId === "string"
+            ? owner.agentId
+            : "",
+    dueAt: typeof metadata.dueAt === "string" ? metadata.dueAt : "",
+    terminalState: typeof metadata.terminalState === "string" ? metadata.terminalState : "",
+    notes: typeof metadata.notes === "string" ? metadata.notes : "",
+  };
+}
+
+function katyaAutonomyFromProduct(product: IssueWorkProduct | null | undefined): KatyaAutonomyState {
+  const metadata = (product?.metadata ?? {}) as Record<string, unknown>;
+  const dueWindow = (metadata.dueWindow ?? {}) as Record<string, unknown>;
+  const weeklyCounter = (metadata.weeklyCounter ?? {}) as Record<string, unknown>;
+  const outreach = (metadata.outreachHardening ?? {}) as Record<string, unknown>;
+  const quotas = (outreach.quotas ?? {}) as Record<string, unknown>;
+  return {
+    lane: typeof metadata.lane === "string" ? metadata.lane : "",
+    contentType: typeof metadata.contentType === "string" ? metadata.contentType : "",
+    dependencies: Array.isArray(metadata.dependencies)
+      ? metadata.dependencies.map((dep) => String(dep)).join("\n")
+      : "",
+    dueWindowStart: typeof dueWindow.startAt === "string" ? dueWindow.startAt : "",
+    dueWindowEnd: typeof dueWindow.endAt === "string" ? dueWindow.endAt : "",
+    dueWindowTimezone: typeof dueWindow.timezone === "string" ? dueWindow.timezone : "",
+    weeklyTarget: typeof weeklyCounter.target === "number" ? String(weeklyCounter.target) : "",
+    weeklyCompleted: typeof weeklyCounter.completed === "number" ? String(weeklyCounter.completed) : "",
+    weeklyWeekStartsOn:
+      typeof weeklyCounter.weekStartsOn === "number" ? String(weeklyCounter.weekStartsOn) : "",
+    outreachThursdayQuota:
+      typeof quotas.thursday === "number" ? String(quotas.thursday) : "",
+    outreachFridayQuota:
+      typeof quotas.friday === "number" ? String(quotas.friday) : "",
+    prospectMatchPath: Array.isArray(outreach.prospectMatchPath)
+      ? outreach.prospectMatchPath.map((step) => String(step)).join("\n")
+      : "",
+    approvalQueueStatus:
+      typeof outreach.approvalQueueStatus === "string" ? outreach.approvalQueueStatus : "",
   };
 }
 
@@ -244,6 +345,8 @@ export function IssueDetail() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [launchChecklist, setLaunchChecklist] = useState<LaunchChecklistState>(defaultLaunchChecklist);
+  const [blockerEscalation, setBlockerEscalation] = useState<BlockerEscalationState>(defaultBlockerEscalation);
+  const [katyaAutonomy, setKatyaAutonomy] = useState<KatyaAutonomyState>(defaultKatyaAutonomy);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -310,6 +413,14 @@ export function IssueDetail() {
     () => (workProducts ?? []).find((product) => product.externalId === "launch_checklist_v1") ?? null,
     [workProducts],
   );
+  const blockerEscalationProduct = useMemo(
+    () => (workProducts ?? []).find((product) => product.externalId === "blocker_escalation_v1") ?? null,
+    [workProducts],
+  );
+  const katyaAutonomyProduct = useMemo(
+    () => (workProducts ?? []).find((product) => product.externalId === "katya_metadata_v1") ?? null,
+    [workProducts],
+  );
   const pendingLinkedApproval = useMemo(
     () => (linkedApprovals ?? []).find((approval) => approval.status === "pending") ?? null,
     [linkedApprovals],
@@ -321,6 +432,8 @@ export function IssueDetail() {
   const isScheduledWorkflowStage =
     issue?.status === "in_review" &&
     (linkedApprovals ?? []).some((approval) => approval.status === "approved");
+  const showBlockerEscalation = issue?.status === "blocked" || Boolean(blockerEscalationProduct);
+  const showKatyaAutonomy = issue?.status !== "done" && issue?.status !== "cancelled";
 
   const sourceBreadcrumb = useMemo(
     () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
@@ -548,12 +661,25 @@ export function IssueDetail() {
     },
     onSuccess: () => {
       invalidateIssue();
-      pushToast({ title: "Approved and moved to scheduled stage", tone: "success" });
+      pushToast({ title: "Approved", tone: "success" });
     },
     onError: (error) => {
       pushToast({ title: error instanceof Error ? error.message : "Failed to approve", tone: "error" });
     },
   });
+
+  const parseNumberInput = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const splitLines = (value: string) =>
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
 
   const saveLaunchChecklist = useMutation({
     mutationFn: async () => {
@@ -568,6 +694,8 @@ export function IssueDetail() {
           copyFinal: launchChecklist.copyFinal,
           linksValid: launchChecklist.linksValid,
           scheduledTime: launchChecklist.scheduledTime || null,
+          proofLine: launchChecklist.proofLine || null,
+          sentLedgerEntry: launchChecklist.sentLedgerEntry || null,
           proof: {
             urlOrPostId: launchChecklist.proofUrlOrPostId || null,
             timestamp: launchChecklist.proofTimestamp || null,
@@ -584,6 +712,104 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: ["issues", issueId, "work-products"] });
       invalidateIssue();
       pushToast({ title: "Launch checklist saved", tone: "success" });
+    },
+  });
+
+  const saveBlockerEscalation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        type: "document",
+        provider: "custom",
+        externalId: "blocker_escalation_v1",
+        title: "Blocker escalation",
+        status: "active",
+        reviewState: "none",
+        metadata: {
+          owner: blockerEscalation.owner
+            ? { displayName: blockerEscalation.owner }
+            : null,
+          dueAt: blockerEscalation.dueAt || null,
+          terminalState: blockerEscalation.terminalState || null,
+          notes: blockerEscalation.notes || null,
+        },
+      };
+      if (blockerEscalationProduct) {
+        return issuesApi.updateWorkProduct(blockerEscalationProduct.id, payload);
+      }
+      return issuesApi.createWorkProduct(issueId!, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issues", issueId, "work-products"] });
+      invalidateIssue();
+      pushToast({ title: "Blocker escalation saved", tone: "success" });
+    },
+  });
+
+  const saveKatyaAutonomy = useMutation({
+    mutationFn: async () => {
+      const weeklyTarget = parseNumberInput(katyaAutonomy.weeklyTarget);
+      const weeklyCompleted = parseNumberInput(katyaAutonomy.weeklyCompleted);
+      const weeklyWeekStartsOn = parseNumberInput(katyaAutonomy.weeklyWeekStartsOn);
+      const weeklyWeekStartsOnNormalized =
+        weeklyWeekStartsOn !== null
+        && Number.isInteger(weeklyWeekStartsOn)
+        && weeklyWeekStartsOn >= 0
+        && weeklyWeekStartsOn <= 6
+          ? (weeklyWeekStartsOn as 0 | 1 | 2 | 3 | 4 | 5 | 6)
+          : null;
+      const weeklyCounter =
+        weeklyTarget === null && weeklyCompleted === null && weeklyWeekStartsOnNormalized === null
+          ? null
+          : {
+            target: weeklyTarget ?? 0,
+            completed: weeklyCompleted ?? 0,
+            ...(weeklyWeekStartsOnNormalized !== null
+              ? { weekStartsOn: weeklyWeekStartsOnNormalized }
+              : {}),
+          };
+      const outreachThursday = parseNumberInput(katyaAutonomy.outreachThursdayQuota);
+      const outreachFriday = parseNumberInput(katyaAutonomy.outreachFridayQuota);
+      const dependencies = splitLines(katyaAutonomy.dependencies);
+      const prospectMatchPath = splitLines(katyaAutonomy.prospectMatchPath);
+      const existingMetadata = (katyaAutonomyProduct?.metadata ?? {}) as Record<string, unknown>;
+      const payload = {
+        type: "document",
+        provider: "custom",
+        externalId: "katya_metadata_v1",
+        title: "Katya autonomy",
+        status: "active",
+        reviewState: "none",
+        metadata: {
+          lane: katyaAutonomy.lane || null,
+          contentType: katyaAutonomy.contentType || null,
+          dependencies,
+          dueWindow: {
+            startAt: katyaAutonomy.dueWindowStart || null,
+            endAt: katyaAutonomy.dueWindowEnd || null,
+            timezone: katyaAutonomy.dueWindowTimezone || null,
+          },
+          owner: existingMetadata.owner ?? null,
+          proof: existingMetadata.proof ?? null,
+          weeklyCounter,
+          outreachHardening: {
+            quotas: {
+              thursday: outreachThursday,
+              friday: outreachFriday,
+            },
+            prospectMatchPath,
+            approvalQueueStatus: katyaAutonomy.approvalQueueStatus || null,
+          },
+        },
+      };
+      if (katyaAutonomyProduct) {
+        return issuesApi.updateWorkProduct(katyaAutonomyProduct.id, payload);
+      }
+      return issuesApi.createWorkProduct(issueId!, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issues", issueId, "work-products"] });
+      invalidateIssue();
+      pushToast({ title: "Katya autonomy saved", tone: "success" });
     },
   });
 
@@ -703,6 +929,14 @@ export function IssueDetail() {
   useEffect(() => {
     setLaunchChecklist(launchChecklistFromProduct(launchChecklistProduct));
   }, [launchChecklistProduct]);
+
+  useEffect(() => {
+    setBlockerEscalation(blockerEscalationFromProduct(blockerEscalationProduct));
+  }, [blockerEscalationProduct]);
+
+  useEffect(() => {
+    setKatyaAutonomy(katyaAutonomyFromProduct(katyaAutonomyProduct));
+  }, [katyaAutonomyProduct]);
 
   const copyIssueToClipboard = async () => {
     if (!issue) return;
@@ -1122,6 +1356,73 @@ export function IssueDetail() {
         </div>
       ) : null}
 
+      {showBlockerEscalation ? (
+        <section className="rounded-lg border bg-card p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Blocker escalation</h3>
+            <Button size="sm" variant="outline" onClick={() => saveBlockerEscalation.mutate()} disabled={saveBlockerEscalation.isPending}>
+              {saveBlockerEscalation.isPending ? "Saving..." : "Save escalation"}
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+              placeholder="Owner (name/user/agent)"
+              value={blockerEscalation.owner}
+              onChange={(e) => setBlockerEscalation((prev) => ({ ...prev, owner: e.target.value }))}
+            />
+            <input
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+              placeholder="Due at (ISO/local text)"
+              value={blockerEscalation.dueAt}
+              onChange={(e) => setBlockerEscalation((prev) => ({ ...prev, dueAt: e.target.value }))}
+            />
+            <input
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+              placeholder="Terminal state (DONE | BLOCKED_WITH_NEW_TIME | NEEDS_REVIEW)"
+              value={blockerEscalation.terminalState}
+              onChange={(e) => setBlockerEscalation((prev) => ({ ...prev, terminalState: e.target.value }))}
+            />
+            <input
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+              placeholder="Notes"
+              value={blockerEscalation.notes}
+              onChange={(e) => setBlockerEscalation((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">Blocked status requires owner, due date, and terminal-state discipline.</p>
+        </section>
+      ) : null}
+
+      {showKatyaAutonomy ? (
+        <section className="rounded-lg border bg-card p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Katya autonomy metadata</h3>
+            <Button size="sm" variant="outline" onClick={() => saveKatyaAutonomy.mutate()} disabled={saveKatyaAutonomy.isPending}>
+              {saveKatyaAutonomy.isPending ? "Saving..." : "Save metadata"}
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Lane" value={katyaAutonomy.lane} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, lane: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Content type" value={katyaAutonomy.contentType} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, contentType: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Due window start (ISO/local text)" value={katyaAutonomy.dueWindowStart} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, dueWindowStart: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Due window end (ISO/local text)" value={katyaAutonomy.dueWindowEnd} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, dueWindowEnd: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Due window timezone" value={katyaAutonomy.dueWindowTimezone} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, dueWindowTimezone: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Weekly target" value={katyaAutonomy.weeklyTarget} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, weeklyTarget: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Weekly completed" value={katyaAutonomy.weeklyCompleted} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, weeklyCompleted: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Week starts on (0=Sun..6=Sat)" value={katyaAutonomy.weeklyWeekStartsOn} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, weeklyWeekStartsOn: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Thu outreach quota" value={katyaAutonomy.outreachThursdayQuota} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, outreachThursdayQuota: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Fri outreach quota" value={katyaAutonomy.outreachFridayQuota} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, outreachFridayQuota: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs sm:col-span-2" placeholder="Approval queue status" value={katyaAutonomy.approvalQueueStatus} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, approvalQueueStatus: e.target.value }))} />
+          </div>
+          <div className="grid gap-2">
+            <textarea className="min-h-[64px] rounded-md border bg-background px-2 py-1 text-xs" placeholder="Dependencies (one per line)" value={katyaAutonomy.dependencies} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, dependencies: e.target.value }))} />
+            <textarea className="min-h-[64px] rounded-md border bg-background px-2 py-1 text-xs" placeholder="Prospect match path (one step per line)" value={katyaAutonomy.prospectMatchPath} onChange={(e) => setKatyaAutonomy((prev) => ({ ...prev, prospectMatchPath: e.target.value }))} />
+          </div>
+          <p className="text-[11px] text-muted-foreground">Used in 10:00/15:00 self-management checks for behind-schedule detection.</p>
+        </section>
+      ) : null}
+
       {isLaunchIssue ? (
         <section className="rounded-lg border bg-card p-3 space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -1141,8 +1442,10 @@ export function IssueDetail() {
             <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Proof URL / Post ID" value={launchChecklist.proofUrlOrPostId} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofUrlOrPostId: e.target.value }))} />
             <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Proof timestamp" value={launchChecklist.proofTimestamp} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofTimestamp: e.target.value }))} />
             <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Platform / channel" value={launchChecklist.proofPlatformChannel} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofPlatformChannel: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs sm:col-span-2" placeholder="Proof line (required)" value={launchChecklist.proofLine} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofLine: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs sm:col-span-2" placeholder="Sent ledger entry (required)" value={launchChecklist.sentLedgerEntry} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, sentLedgerEntry: e.target.value }))} />
           </div>
-          <p className="text-[11px] text-muted-foreground">Moving this issue to done is blocked until all checks are complete and proof metadata is provided.</p>
+          <p className="text-[11px] text-muted-foreground">Moving this issue to done is blocked until all checks are complete, proof is captured, and sent-ledger logging is recorded.</p>
         </section>
       ) : null}
 

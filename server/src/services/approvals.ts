@@ -328,6 +328,39 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0]);
     },
 
+    setScheduleOverride: async (
+      id: string,
+      scheduleOverride: {
+        targetPublishAt?: string | null;
+        targetPublishWindowStart?: string | null;
+        targetPublishWindowEnd?: string | null;
+        targetPublishTimezone?: string | null;
+      },
+    ) => {
+      const existing = await getExistingApproval(id);
+      const editableStatuses = new Set(["pending", "approved", "paused", "scheduled"]);
+      if (!editableStatuses.has(existing.status)) {
+        throw unprocessable("Only pending, approved, paused, or scheduled approvals can have scheduling overrides edited");
+      }
+      const now = new Date();
+      const mergedPayload = { ...(existing.payload as Record<string, unknown>) };
+      const keys = ["targetPublishAt", "targetPublishWindowStart", "targetPublishWindowEnd", "targetPublishTimezone"] as const;
+      for (const key of keys) {
+        const value = scheduleOverride[key];
+        if (value === null || value === undefined || value === "") {
+          delete mergedPayload[key];
+        } else {
+          mergedPayload[key] = value;
+        }
+      }
+      return db
+        .update(approvals)
+        .set({ payload: mergedPayload, updatedAt: now })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
     listComments: async (approvalId: string) => {
       const existing = await getExistingApproval(approvalId);
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();

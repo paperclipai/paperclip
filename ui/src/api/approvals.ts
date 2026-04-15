@@ -21,4 +21,21 @@ export const approvalsApi = {
   addComment: (id: string, body: string) =>
     api.post<ApprovalComment>(`/approvals/${id}/comments`, { body }),
   listIssues: (id: string) => api.get<Issue[]>(`/approvals/${id}/issues`),
+  pause: (id: string) => api.post<Approval>(`/approvals/${id}/pause`, {}),
+  schedule: (id: string, scheduledAt: string) =>
+    api.post<Approval>(`/approvals/${id}/schedule`, { scheduledAt }),
+  recall: (id: string, decisionNote?: string) =>
+    api.post<Approval>(`/approvals/${id}/recall`, { decisionNote }),
+  updateContent: (id: string, payload: Record<string, unknown>) =>
+    api.patch<Approval>(`/approvals/${id}/content`, { payload }),
+  setScheduleOverride: (
+    id: string,
+    payload: {
+      targetPublishAt?: string | null;
+      targetPublishWindowStart?: string | null;
+      targetPublishWindowEnd?: string | null;
+      targetPublishTimezone?: string | null;
+    },
+  ) => api.patch<Approval>(`/approvals/${id}/schedule-override`, { payload }),
+  deleteById: (id: string) => api.delete<void>(`/approvals/${id}`),
 };

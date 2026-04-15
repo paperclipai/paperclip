@@ -11,6 +11,7 @@ import { Identity } from "../components/Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
@@ -28,6 +29,11 @@ export function ApprovalDetail() {
   const [editorOverride, setEditorOverride] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [scheduleOverrideEnabled, setScheduleOverrideEnabled] = useState(false);
+  const [targetPublishAt, setTargetPublishAt] = useState("");
+  const [targetPublishWindowStart, setTargetPublishWindowStart] = useState("");
+  const [targetPublishWindowEnd, setTargetPublishWindowEnd] = useState("");
+  const [targetPublishTimezone, setTargetPublishTimezone] = useState("Europe/London");
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -143,6 +149,21 @@ export function ApprovalDetail() {
     onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
   });
 
+  const scheduleOverrideMutation = useMutation({
+    mutationFn: () =>
+      approvalsApi.setScheduleOverride(approvalId!, {
+        targetPublishAt: scheduleOverrideEnabled ? (targetPublishAt || null) : null,
+        targetPublishWindowStart: scheduleOverrideEnabled ? (targetPublishWindowStart || null) : null,
+        targetPublishWindowEnd: scheduleOverrideEnabled ? (targetPublishWindowEnd || null) : null,
+        targetPublishTimezone: scheduleOverrideEnabled ? (targetPublishTimezone || null) : null,
+      }),
+    onSuccess: () => {
+      setError(null);
+      refresh();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Schedule override update failed"),
+  });
+
   const pushToKatyaMutation = useMutation({
     mutationFn: async () => {
       if (!approvalId || !approval) throw new Error("Approval not loaded");
@@ -175,6 +196,7 @@ export function ApprovalDetail() {
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+  const canEditScheduleOverride = ["pending", "approved", "paused", "scheduled"].includes(approval.status);
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
   const isStrategyApproval = approval.type === "approve_ceo_strategy";
@@ -204,6 +226,18 @@ export function ApprovalDetail() {
             label: "Back to approvals",
             to: "/approvals",
           };
+
+  useEffect(() => {
+    const payloadTargetPublishAt = typeof payload.targetPublishAt === "string" ? payload.targetPublishAt : "";
+    const payloadWindowStart = typeof payload.targetPublishWindowStart === "string" ? payload.targetPublishWindowStart : "";
+    const payloadWindowEnd = typeof payload.targetPublishWindowEnd === "string" ? payload.targetPublishWindowEnd : "";
+    const payloadTimezone = typeof payload.targetPublishTimezone === "string" ? payload.targetPublishTimezone : "Europe/London";
+    setScheduleOverrideEnabled(Boolean(payloadTargetPublishAt || payloadWindowStart || payloadWindowEnd));
+    setTargetPublishAt(payloadTargetPublishAt);
+    setTargetPublishWindowStart(payloadWindowStart);
+    setTargetPublishWindowEnd(payloadWindowEnd);
+    setTargetPublishTimezone(payloadTimezone);
+  }, [approval.id, payload.targetPublishAt, payload.targetPublishWindowStart, payload.targetPublishWindowEnd, payload.targetPublishTimezone]);
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -363,6 +397,91 @@ export function ApprovalDetail() {
           )}
         </div>
       </div>
+
+      {canEditScheduleOverride && (
+        <section className="border border-border rounded-lg p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold">Scheduling override (optional)</h3>
+            <p className="text-xs text-muted-foreground">
+              Leave this empty to let the default Katya publish windows apply. Set an override only when this item needs a specific time or window.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={scheduleOverrideEnabled}
+              onChange={(e) => setScheduleOverrideEnabled(e.target.checked)}
+            />
+            Enable schedule override
+          </label>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-xs">
+              <span className="text-muted-foreground">Exact publish datetime</span>
+              <Input
+                type="datetime-local"
+                value={targetPublishAt}
+                onChange={(e) => setTargetPublishAt(e.target.value)}
+                disabled={!scheduleOverrideEnabled}
+                className="mt-1"
+              />
+            </label>
+            <label className="text-xs">
+              <span className="text-muted-foreground">Timezone</span>
+              <Input
+                value={targetPublishTimezone}
+                onChange={(e) => setTargetPublishTimezone(e.target.value)}
+                disabled={!scheduleOverrideEnabled}
+                className="mt-1"
+              />
+            </label>
+            <label className="text-xs">
+              <span className="text-muted-foreground">Window start</span>
+              <Input
+                value={targetPublishWindowStart}
+                onChange={(e) => setTargetPublishWindowStart(e.target.value)}
+                disabled={!scheduleOverrideEnabled}
+                placeholder="2026-04-16T09:30"
+                className="mt-1"
+              />
+            </label>
+            <label className="text-xs">
+              <span className="text-muted-foreground">Window end</span>
+              <Input
+                value={targetPublishWindowEnd}
+                onChange={(e) => setTargetPublishWindowEnd(e.target.value)}
+                disabled={!scheduleOverrideEnabled}
+                placeholder="2026-04-16T12:30"
+                className="mt-1"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => scheduleOverrideMutation.mutate()}
+              disabled={scheduleOverrideMutation.isPending}
+            >
+              {scheduleOverrideMutation.isPending ? "Saving…" : "Save scheduling override"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setScheduleOverrideEnabled(false);
+                setTargetPublishAt("");
+                setTargetPublishWindowStart("");
+                setTargetPublishWindowEnd("");
+                setTargetPublishTimezone("Europe/London");
+                scheduleOverrideMutation.mutate();
+              }}
+              disabled={scheduleOverrideMutation.isPending}
+            >
+              Clear override
+            </Button>
+          </div>
+        </section>
+      )}
 
       {isStrategyApproval && (
         <>
