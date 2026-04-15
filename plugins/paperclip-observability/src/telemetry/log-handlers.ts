@@ -242,12 +242,13 @@ export async function handleIssueUpdatedLogs(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
+  const prev = (p._previous as Record<string, unknown>) ?? {};
 
   emitLog(ctx, "INFO", SeverityNumber.INFO, "Issue updated", {
     ...commonAttributes(event),
     "paperclip.issue.identifier": String(p.identifier ?? ""),
     "paperclip.issue.status": String(p.status ?? "unknown"),
-    "paperclip.issue.previous_status": String(p.previousStatus ?? ""),
+    "paperclip.issue.previous_status": String(p.previousStatus ?? prev.status ?? ""),
     "paperclip.project.id": String(p.projectId ?? ""),
   });
 }

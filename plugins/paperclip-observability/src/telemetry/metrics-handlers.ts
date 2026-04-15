@@ -235,8 +235,9 @@ export async function handleIssueUpdatedMetrics(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
+  const prev = (p._previous as Record<string, unknown>) ?? {};
   const status = String(p.status ?? "unknown");
-  const previousStatus = String(p.previousStatus ?? "");
+  const previousStatus = String(p.previousStatus ?? prev.status ?? "");
 
   const issueTransitions = ctx.meter.createCounter(
     METRIC_NAMES.issueTransitions,

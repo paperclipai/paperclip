@@ -1837,26 +1837,6 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    // Emit agent.run.started plugin event
-    void logActivity(db, {
-      companyId: claimed.companyId,
-      actorType: "system",
-      actorId: "heartbeat-service",
-      action: "agent.run.started",
-      entityType: "heartbeat_run",
-      entityId: claimed.id,
-      agentId: claimed.agentId,
-      runId: claimed.id,
-      details: {
-        agentId: claimed.agentId,
-        agentName: agent?.name ?? null,
-        status: claimed.status,
-        invocationSource: claimed.invocationSource,
-        triggerDetail: claimed.triggerDetail ?? null,
-        issueId: readNonEmptyString(context.issueId) ?? null,
-      },
-    });
-
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
     return claimed;
   }
@@ -2154,8 +2134,30 @@ export function heartbeatService(db: Db) {
       return;
     }
 
+    // Emit agent.run.started inside withHeartbeatSpan so the event carries
+    // server trace context for proper distributed trace linking in plugins.
+    const runContext = parseObject(run.contextSnapshot);
+    void logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat-service",
+      action: "agent.run.started",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      agentId: run.agentId,
+      runId: run.id,
+      details: {
+        agentId: run.agentId,
+        agentName: agent?.name ?? null,
+        status: run.status,
+        invocationSource: run.invocationSource,
+        triggerDetail: run.triggerDetail ?? null,
+        issueId: readNonEmptyString(runContext.issueId) ?? null,
+      },
+    });
+
     const runtime = await ensureRuntimeState(agent);
-    const context = parseObject(run.contextSnapshot);
+    const context = runContext;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
