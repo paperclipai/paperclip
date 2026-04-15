@@ -1939,6 +1939,47 @@ export function agentRoutes(db: Db) {
     res.json(result.bundle);
   });
 
+  router.post("/agents/:id/instructions-bundle/reset", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board-level access can reset instruction bundles");
+    }
+
+    const files = await loadDefaultAgentInstructionsBundle(
+      resolveDefaultAgentInstructionsBundleRole(existing.role),
+    );
+    const materialized = await instructions.materializeManagedBundle(
+      existing,
+      files,
+      { entryFile: "AGENTS.md", replaceExisting: true },
+    );
+    const nextAdapterConfig = { ...materialized.adapterConfig };
+    delete nextAdapterConfig.promptTemplate;
+
+    await svc.update(existing.id, { adapterConfig: nextAdapterConfig });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.instructions_bundle_reset",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { role: existing.role },
+    });
+
+    res.json(materialized.bundle);
+  });
+
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);

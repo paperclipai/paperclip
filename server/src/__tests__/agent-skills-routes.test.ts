@@ -458,7 +458,10 @@ describe("agent skill routes", () => {
           adapterType: "claude_local",
         }),
         expect.objectContaining({
-          "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
+          "AGENTS.md": expect.stringContaining("You are the Engineer."),
+          "HEARTBEAT.md": expect.any(String),
+          "SOUL.md": expect.any(String),
+          "TOOLS.md": expect.any(String),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );
