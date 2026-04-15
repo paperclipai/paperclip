@@ -86,7 +86,32 @@ pnpm dev
 5. Keep plan docs dated and centralized.
    New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
-## 6. Database Change Workflow
+## 6. Code Execution Standards
+
+Adapted from [andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills). These govern how agents approach writing code.
+
+### Think Before Coding
+
+State assumptions explicitly before implementing. If multiple valid approaches exist, name them and pick one with justification. If critical ambiguity exists, set status to `blocked` and comment — do not silently guess. Document non-obvious decisions in the plan document.
+
+### Simplicity First
+
+Write the minimum code that solves the problem. No features beyond what was asked. No abstractions for single-use code. No speculative flexibility or configurability. If you wrote 200 lines and it could be 50, rewrite it.
+
+### Surgical Changes
+
+Touch only what the task requires. Do not "improve" adjacent code, comments, or formatting. Match existing style. Remove imports/variables/functions that your changes made unused, but do not remove pre-existing dead code unless asked. Every changed line should trace directly to the task.
+
+### Goal-Driven Execution
+
+Transform vague tasks into verifiable goals before starting:
+
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+
+For multi-step work, state a brief plan with a verification check per step. This aligns with the task spec done criteria (section 5) and the verifier workflow.
+
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -109,7 +134,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
 
@@ -121,7 +146,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -135,13 +160,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 11. Definition of Done
 
 A change is done when all are true:
 
