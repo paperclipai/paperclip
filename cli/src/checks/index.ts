@@ -1,11 +1,4 @@
-export interface CheckResult {
-  name: string;
-  status: "pass" | "warn" | "fail";
-  message: string;
-  canRepair?: boolean;
-  repair?: () => void | Promise<void>;
-  repairHint?: string;
-}
+export type { CheckResult } from "./types.js";
 
 export { agentJwtSecretCheck } from "./agent-jwt-secret-check.js";
 export { configCheck } from "./config-check.js";

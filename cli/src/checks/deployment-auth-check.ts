@@ -1,5 +1,5 @@
 import type { PaperclipConfig } from "../config/schema.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 
 function isLoopbackHost(host: string) {
   const normalized = host.trim().toLowerCase();

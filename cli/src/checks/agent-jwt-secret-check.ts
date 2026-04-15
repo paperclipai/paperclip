@@ -4,7 +4,7 @@ import {
   readAgentJwtSecretFromEnvFile,
   resolveAgentJwtEnvFile,
 } from "../config/env.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 
 export function agentJwtSecretCheck(configPath?: string): CheckResult {
   if (readAgentJwtSecretFromEnv(configPath)) {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { PaperclipConfig } from "../config/schema.js";
-import type { CheckResult } from "./index.js";
+import type { CheckResult } from "./types.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
 export function storageCheck(config: PaperclipConfig, configPath?: string): CheckResult {
