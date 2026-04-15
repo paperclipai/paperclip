@@ -110,6 +110,11 @@ export interface AgentConfigRevision {
   createdAt: Date;
 }
 
+export interface AdapterModel {
+  id: string;
+  label: string;
+}
+
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
 

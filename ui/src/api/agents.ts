@@ -5,6 +5,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterModel,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -13,6 +14,7 @@ import type {
   Approval,
   AgentConfigRevision,
 } from "@paperclipai/shared";
+export type { AdapterModel };
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -21,11 +23,6 @@ export interface AgentKey {
   name: string;
   createdAt: Date;
   revokedAt: Date | null;
-}
-
-export interface AdapterModel {
-  id: string;
-  label: string;
 }
 
 export interface DetectedAdapterModel {

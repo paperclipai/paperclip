@@ -200,6 +200,7 @@ export type {
   AgentInstructionsBundle,
   AgentKeyCreated,
   AgentConfigRevision,
+  AdapterModel,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
