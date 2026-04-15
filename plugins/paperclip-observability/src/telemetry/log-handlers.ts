@@ -118,7 +118,8 @@ export async function handleRunFinishedLogs(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
-  const agentName = String(p.agentName ?? "unknown");
+  const agentId = String(p.agentId ?? "");
+  const agentName = String(p.agentName ?? ctx.agentNameMap.get(agentId) ?? "unknown");
   const durationMs = p.durationMs != null ? Number(p.durationMs) : undefined;
 
   emitLog(
@@ -146,7 +147,8 @@ export async function handleRunFailedLogs(
   ctx: TelemetryContext,
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
-  const agentName = String(p.agentName ?? "unknown");
+  const agentId = String(p.agentId ?? "");
+  const agentName = String(p.agentName ?? ctx.agentNameMap.get(agentId) ?? "unknown");
   const error = String(p.error ?? "unknown");
 
   emitLog(
