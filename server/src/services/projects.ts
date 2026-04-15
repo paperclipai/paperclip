@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db, DbOrTx } from "@paperclipai/db";
 import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
@@ -368,7 +368,7 @@ export function resolveProjectNameForUniqueShortname(
 }
 
 async function ensureSinglePrimaryWorkspace(
-  dbOrTx: any,
+  dbOrTx: DbOrTx,
   input: {
     companyId: string;
     projectId: string;
