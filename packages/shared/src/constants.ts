@@ -186,6 +186,21 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_BOARD_STATE_KINDS = ["blocked", "waiting", "ready", "done", "system_error"] as const;
+export type IssueBoardStateKind = (typeof ISSUE_BOARD_STATE_KINDS)[number];
+
+export const ISSUE_STALL_REASON_CODES = [
+  "review",
+  "board_decision",
+  "assignee_followup",
+  "recovery",
+  "invalid_state",
+] as const;
+export type IssueStallReasonCode = (typeof ISSUE_STALL_REASON_CODES)[number];
+
+export const ISSUE_NEXT_ACTION_TYPES = ["open_issue", "open_blocker", "open_agent"] as const;
+export type IssueNextActionType = (typeof ISSUE_NEXT_ACTION_TYPES)[number];
+
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution", "board_copilot_thread"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 

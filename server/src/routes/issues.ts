@@ -67,6 +67,7 @@ import { issueMergeService } from "../services/issue-merge.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
 import { buildIssueQaGate, isDeliveryScopedAssigneeRole, issueQaGateReasonMessage } from "../services/qa-gate.js";
 import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
+import { computeIssueBoardStateMap } from "../services/issue-board-state.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const AUTO_FIX_ATTEMPT_MARKER = "[AUTO-FIX ATTEMPT]";
@@ -594,7 +595,73 @@ export function issueRoutes(
         if (err) reject(err);
         else resolve();
       });
+      });
+  }
+
+  function hasQueryableDb(candidate: unknown): candidate is Db {
+    return typeof (candidate as { select?: unknown } | null)?.select === "function";
+  }
+
+  async function decorateIssueListWithBoardState<TIssue extends { id: string }>(
+    companyId: string,
+    issueList: TIssue[],
+  ) {
+    if (issueList.length === 0) return issueList;
+    if (!hasQueryableDb(db)) return issueList;
+    const boardStateMap = await computeIssueBoardStateMap(
+      db,
+      companyId,
+      issueList.map((issue) => issue.id),
+      { includePaths: false },
+    ).catch((err) => {
+      logger.warn(
+        { err, companyId, issueIds: issueList.map((issue) => issue.id) },
+        "failed to compute board state for issue list response",
+      );
+      return null;
     });
+    if (!boardStateMap) return issueList;
+    return issueList.map((issue) => {
+      const computed = boardStateMap.get(issue.id);
+      if (!computed) return issue;
+      return {
+        ...issue,
+        boardState: computed.boardState,
+        primaryBlocker: computed.primaryBlocker,
+      };
+    });
+  }
+
+  async function decorateIssueDetailWithBoardState<TIssue extends { id: string; companyId: string }>(
+    issue: TIssue,
+  ) {
+    if (!hasQueryableDb(db)) return issue;
+    const boardStateMap = await computeIssueBoardStateMap(db, issue.companyId, [issue.id], { includePaths: true })
+      .catch((err) => {
+        logger.warn(
+          { err, companyId: issue.companyId, issueId: issue.id },
+          "failed to compute board state for issue detail response",
+        );
+        return null;
+      });
+    if (!boardStateMap) return issue;
+    const computed = boardStateMap.get(issue.id);
+    if (!computed) return issue;
+    return {
+      ...issue,
+      ...computed,
+    };
+  }
+
+  function hasCreateRecoveryFields(body: {
+    recoveryFromIssueId?: string | null;
+    recoveryDisposition?: string | null;
+  }) {
+    return Boolean(body.recoveryFromIssueId) || Boolean(body.recoveryDisposition);
+  }
+
+  function hasRecoveryPatch(body: { recovery?: unknown }) {
+    return body.recovery !== undefined;
   }
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
@@ -1003,7 +1070,7 @@ export function issueRoutes(
         };
       }),
     );
-    res.json(withQaGate);
+    res.json(await decorateIssueListWithBoardState(companyId, withQaGate));
   });
 
   router.post(
@@ -1120,7 +1187,7 @@ export function issueRoutes(
       qaGate,
       executionWorkspace: currentExecutionWorkspace,
     });
-    res.json({
+    res.json(await decorateIssueDetailWithBoardState({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
@@ -1136,7 +1203,7 @@ export function issueRoutes(
       workProducts,
       qaGate,
       mergeStatus,
-    });
+    }));
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
@@ -1750,6 +1817,10 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (hasCreateRecoveryFields(req.body) && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can create recovery continuation issues" });
+      return;
+    }
     if (!(await assertAgentExecutionMutationAllowed(req, res, {
       companyId,
       projectId: req.body.projectId ?? null,
@@ -1794,7 +1865,7 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json(await decorateIssueDetailWithBoardState(issue));
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -1805,6 +1876,10 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (hasRecoveryPatch(req.body) && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can manage issue recovery transitions" });
+      return;
+    }
     if (!(await assertAgentExecutionMutationAllowed(req, res, {
       companyId: existing.companyId,
       issueId: existing.id,
@@ -2426,7 +2501,12 @@ export function issueRoutes(
 
     const qaGate = await computeIssueQaGateSafe(issue);
     const finalMergeStatus = mergeStatus ?? await computeIssueMergeStatusSafe(issue, { qaGate });
-    res.json({ ...issueResponse, qaGate, mergeStatus: finalMergeStatus, comment });
+    res.json(await decorateIssueDetailWithBoardState({
+      ...issueResponse,
+      qaGate,
+      mergeStatus: finalMergeStatus,
+      comment,
+    }));
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -2546,7 +2626,7 @@ export function issueRoutes(
         .catch((err) => logWakeupFailure(err, { issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
 
-    res.json(updated);
+    res.json(await decorateIssueDetailWithBoardState(updated));
   });
 
   router.post("/issues/:id/release", async (req, res) => {
@@ -2588,7 +2668,7 @@ export function issueRoutes(
       entityId: released.id,
     });
 
-    res.json(released);
+    res.json(await decorateIssueDetailWithBoardState(released));
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

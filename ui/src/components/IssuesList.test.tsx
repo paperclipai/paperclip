@@ -69,10 +69,24 @@ vi.mock("../context/ToastContext", () => ({
 }));
 
 vi.mock("./IssueRow", () => ({
-  IssueRow: ({ issue, desktopTrailing, className }: { issue: Issue; desktopTrailing?: ReactNode; className?: string }) => (
+  IssueRow: ({
+    issue,
+    desktopTrailing,
+    mobileMeta,
+    trailingMeta,
+    className,
+  }: {
+    issue: Issue;
+    desktopTrailing?: ReactNode;
+    mobileMeta?: ReactNode;
+    trailingMeta?: ReactNode;
+    className?: string;
+  }) => (
     <div data-testid="issue-row" data-class-name={className}>
       <span>{issue.title}</span>
+      <span data-testid={`issue-row-mobile-meta-${issue.id}`}>{mobileMeta}</span>
       <span data-testid={`issue-row-trailing-${issue.id}`}>{desktopTrailing}</span>
+      <span data-testid={`issue-row-trailing-meta-${issue.id}`}>{trailingMeta}</span>
     </div>
   ),
 }));
@@ -363,6 +377,42 @@ describe("IssuesList", () => {
       expect(section?.textContent).toContain("Finish release notes");
       expect(section?.textContent).toContain("PAP-21");
       expect(section?.textContent).not.toContain("Wait on vendor reply");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders board-state summary copy from the server instead of client blocker guesswork", async () => {
+    const blockedIssue = createIssue({
+      id: "issue-blocked",
+      identifier: "COMA-1118",
+      title: "Leaf issue",
+      status: "blocked",
+      boardState: {
+        kind: "blocked",
+        headline: "Blocked by COMA-1098",
+        reasonCode: null,
+        actorType: "issue",
+        actorId: "blocker-1",
+        primaryAction: null,
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[blockedIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Blocked by COMA-1098");
     });
 
     act(() => {

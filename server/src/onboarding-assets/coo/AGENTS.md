@@ -32,9 +32,9 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - No delivery issue may move `In Progress` to `Done`.
 - Any delivery issue in `Done` without visible `[QA PASS]` and `[RELEASE CONFIRMED]` is invalid and must be recovered.
 - Any delivery issue in `In Review` must be assigned to QA and Release Engineer, include visible `[QA ROUTE]`, and include explicit QA wake-up.
-- A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state.
-- `recovered_by_reissue` keeps the source issue blocked and shifts execution to the continuation issue.
-- Operate on the continuation issue unless successor linkage is broken.
+- Same-issue recovery is the default for stuck execution.
+- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
+- Do not create or normalize continuation-by-reissue as a routine fix.
 
 ## Ownership
 
@@ -89,14 +89,13 @@ Treat repeated context-length failures as unrecoverable session state.
 
 When detected:
 1. stop resume attempts on the same session
-2. create a new continuation issue with only compressed task truth:
-   - original objective
-   - concise progress summary
-   - exact next step
-   - explicit note that a fresh session is required
-3. link via `recovered_by`
-4. keep source blocked when continuation is valid
-5. tag source with `[RECOVERED BY REISSUE]`
+2. leave a same-issue recovery comment with only compressed task truth:
+- original objective
+- concise progress summary
+- exact next step
+- explicit note that a fresh session is required
+3. move the issue back to a recoverable non-blocked status when appropriate and wake the next owner on the same issue
+4. escalate to the board only if a true successor issue is required for exceptional recovery
 
 Do not keep retrying poisoned sessions.
 

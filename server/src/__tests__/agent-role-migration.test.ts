@@ -161,6 +161,9 @@ describeEmbeddedPostgres("agentRoleMigrationService", () => {
   });
 
   it("recognizes the shared default workflow baseline as safe to reseed", () => {
-    expect(CURRENT_SHARED_DEFAULT_AGENT_INSTRUCTIONS_BASELINE).toContain("[RECOVERED BY REISSUE]");
+    expect(CURRENT_SHARED_DEFAULT_AGENT_INSTRUCTIONS_BASELINE).toContain("[POISONED SESSION]");
+    expect(CURRENT_SHARED_DEFAULT_AGENT_INSTRUCTIONS_BASELINE).toContain(
+      "Successor issues linked by `recovered_by` are exceptional board-controlled recovery only;",
+    );
   });
 });

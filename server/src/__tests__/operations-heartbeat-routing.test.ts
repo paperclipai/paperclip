@@ -11,6 +11,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -42,6 +43,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     }
 
     await db.delete(issueComments);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -101,6 +103,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
 
     const opsIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
     const otherIssueId = randomUUID();
 
     await db.insert(issues).values([
@@ -115,6 +118,16 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         identifier: `${issuePrefix}-1`,
       },
       {
+        id: blockerIssueId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+      },
+      {
         id: otherIssueId,
         companyId,
         title: "Cross-agent assigned with fresh blocker truth",
@@ -125,6 +138,12 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         identifier: `${issuePrefix}-2`,
       },
     ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: opsIssueId,
+      type: "blocks",
+    });
 
     await db.insert(issueComments).values({
       companyId,
@@ -138,6 +157,43 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(target?.issueId).toBe(opsIssueId);
     expect(target?.mode).toBe("ops_active");
     expect(target?.reason).toContain("stale or blocked assigned work");
+  });
+
+  it("does not prioritize an invalid blocked state with no blocker relation over ready backlog work", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const invalidBlockedIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: invalidBlockedIssueId,
+        companyId,
+        title: "Assigned issue wrongly marked blocked",
+        status: "blocked",
+        priority: "urgent",
+        assigneeAgentId: workerAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog issue",
+        status: "backlog",
+        priority: "high",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+    });
   });
 
   it("selects a cross-agent recovery issue before unassigned backlog", async () => {
@@ -271,7 +327,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         id: watchdogIssueId,
         companyId,
         title: "Queue-lock watchdog routine",
-        status: "blocked",
+        status: "in_progress",
         priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 1,
@@ -321,7 +377,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         id: watchdogIssueId,
         companyId,
         title: "Queue-lock watchdog routine",
-        status: "blocked",
+        status: "in_progress",
         priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 1,
@@ -384,7 +440,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         id: watchdogIssueId,
         companyId,
         title: "Queue-lock watchdog recurring cleanup",
-        status: "blocked",
+        status: "in_progress",
         priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 179,
@@ -471,7 +527,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         id: watchdogIssueId,
         companyId,
         title: "Queue-lock watchdog recurring cleanup",
-        status: "blocked",
+        status: "in_progress",
         priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 181,

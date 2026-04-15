@@ -41,6 +41,7 @@ import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils"
 import { describeIssueUpdateError } from "../lib/issue-update-errors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
+import { IssueBoardStatePanel } from "../components/IssueBoardStatePanel";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
@@ -1510,6 +1511,8 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      <IssueBoardStatePanel issue={issue} issueLinkState={resolvedIssueDetailState ?? location.state} />
 
       {qaGate && qaGate.isDeliveryScoped && (
         <div className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">

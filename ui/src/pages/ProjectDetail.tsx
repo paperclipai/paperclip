@@ -185,8 +185,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   }, [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.issues.listByProject(companyId, projectId), "exclude-recovery-sources-open-successors", "true"],
-    queryFn: () => issuesApi.list(companyId, { projectId, excludeRecoverySourcesWithOpenSuccessors: true }),
+    queryKey: queryKeys.issues.listByProject(companyId, projectId),
+    queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId,
   });
 
@@ -208,7 +208,6 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
-      excludeRecoverySourcesWithOpenSuccessors
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

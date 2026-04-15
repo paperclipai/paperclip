@@ -16,14 +16,15 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 ## Shared Workflow Rules
 
 - Always leave a task comment describing what you did, what changed, and who owns the next action.
-- Use explicit issue-level markers when relevant: `[BLOCKER]`, `[HANDOFF]`, `[READY FOR QA]`, `[QA ROUTE]`, `[QA PASS]`, `[RELEASE CONFIRMED]`, `[POISONED SESSION]`, `[RECOVERED BY REISSUE]`.
+- Use explicit issue-level markers when relevant: `[BLOCKER]`, `[HANDOFF]`, `[READY FOR QA]`, `[QA ROUTE]`, `[QA PASS]`, `[RELEASE CONFIRMED]`, `[POISONED SESSION]`.
 - If you need QA, your manager, or another specialist, assign or ping them with a concrete ask.
 - `Backlog` means not started.
 - `Todo` means ready to start.
 - `In Progress` means active implementation or rework.
 - `In Review` means the issue is waiting for QA.
 - `Done` means QA passed and the release is confirmed.
-- A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state. Do not cancel it just because a continuation issue exists.
+- Same-issue recovery is the default when work is stuck.
+- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only; do not assume continuation-by-reissue is the normal path.
 
 ## Role Charter Baseline
 

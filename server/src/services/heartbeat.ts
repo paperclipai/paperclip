@@ -60,6 +60,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { computeIssueBoardStateMap } from "./issue-board-state.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -468,6 +469,12 @@ async function resolveOperationsHeartbeatTargets(
             )
         : [];
     const issuesWithBlockers = new Set(blockerRows.map((row) => row.issueId));
+    const computedBoardStateMap = await computeIssueBoardStateMap(
+      db,
+      input.companyId,
+      issueIds,
+      { includePaths: false },
+    );
 
     const watchdogIssueIds = openAssignedIssues
       .filter((issue) => {
@@ -514,6 +521,9 @@ async function resolveOperationsHeartbeatTargets(
           : Number.POSITIVE_INFINITY;
         const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
         const hasBlockers = issuesWithBlockers.has(issue.id);
+        const computedBoardState = computedBoardStateMap.get(issue.id)?.boardState ?? null;
+        const hasDependencyBlockedState = computedBoardState?.kind === "blocked";
+        const hasInvalidBlockedState = computedBoardState?.kind === "system_error";
         const isOperationsOwned = issue.assigneeAgentId === input.operationsAgentId;
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
         const isWatchdogIssue = isWatchdogIssueLabel(watchdogLabel);
@@ -525,7 +535,7 @@ async function resolveOperationsHeartbeatTargets(
           (truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6;
         const hasStuckAssignedSignals =
           (issue.status === "in_progress" && !issue.executionRunId)
-          || issue.status === "blocked"
+          || hasDependencyBlockedState
           || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
         const hasFalseCompleteSignals = hasFalseCompleteRecoverySignal({
           runStatus: run?.status,
@@ -555,13 +565,27 @@ async function resolveOperationsHeartbeatTargets(
           };
         }
 
+        if (hasInvalidBlockedState && !isWatchdogIssue) {
+          return {
+            issue,
+            score: -200,
+            reasons: ["invalid blocked state without blocker relations"],
+            issueAgeHours,
+            isOperationsOwned,
+            isWatchdogIssue,
+            hasStuckAssignedSignals: false,
+            hasFalseCompleteSignals,
+            hasContradictoryTruthSignals,
+          };
+        }
+
         if (issue.status === "in_progress" && !issue.executionRunId) {
           score += 180;
           reasons.push("stale or blocked assigned work: in_progress with no execution run");
         }
-        if (issue.status === "blocked") {
+        if (hasDependencyBlockedState) {
           score += 170;
-          reasons.push("stale or blocked assigned work: status is blocked");
+          reasons.push("stale or blocked assigned work: blocked by dependency");
         }
         if (run && (run.status === "failed" || run.status === "cancelled")) {
           score += 180;
