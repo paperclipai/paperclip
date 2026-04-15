@@ -5,14 +5,28 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
 }));
 
+const { appendMock } = vi.hoisted(() => ({
+  appendMock: vi.fn(async () => undefined),
+}));
+
 const { threadMessagesMock } = vi.hoisted(() => ({
   threadMessagesMock: vi.fn(() => <div data-testid="thread-messages" />),
+}));
+
+const {
+  captureComposerViewportSnapshotMock,
+  restoreComposerViewportSnapshotMock,
+  shouldPreserveComposerViewportMock,
+} = vi.hoisted(() => ({
+  captureComposerViewportSnapshotMock: vi.fn(),
+  restoreComposerViewportSnapshotMock: vi.fn(),
+  shouldPreserveComposerViewportMock: vi.fn(),
 }));
 
 vi.mock("@assistant-ui/react", () => ({
@@ -32,7 +46,7 @@ vi.mock("@assistant-ui/react", () => ({
     Content: () => null,
     Parts: () => null,
   },
-  useAui: () => ({ thread: () => ({ append: vi.fn() }) }),
+  useAui: () => ({ thread: () => ({ append: appendMock }) }),
   useAuiState: () => false,
   useMessage: () => ({
     id: "message",
@@ -50,6 +64,16 @@ vi.mock("./transcript/useLiveRunTranscripts", () => ({
     hasOutputForRun: () => false,
   }),
 }));
+
+vi.mock("../lib/issue-chat-scroll", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/issue-chat-scroll")>();
+  return {
+    ...actual,
+    captureComposerViewportSnapshot: captureComposerViewportSnapshotMock.mockImplementation(actual.captureComposerViewportSnapshot),
+    restoreComposerViewportSnapshot: restoreComposerViewportSnapshotMock.mockImplementation(actual.restoreComposerViewportSnapshot),
+    shouldPreserveComposerViewport: shouldPreserveComposerViewportMock.mockImplementation(actual.shouldPreserveComposerViewport),
+  };
+});
 
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -126,8 +150,12 @@ describe("IssueChatThread", () => {
   afterEach(() => {
     container.remove();
     vi.useRealTimers();
+    appendMock.mockReset();
     markdownEditorFocusMock.mockReset();
     threadMessagesMock.mockReset();
+    captureComposerViewportSnapshotMock.mockClear();
+    restoreComposerViewportSnapshotMock.mockClear();
+    shouldPreserveComposerViewportMock.mockClear();
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -338,9 +366,67 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("hides the reopen control and infers reopen for closed agent-assigned issue replies", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueStatus="done"
+            currentAssigneeValue="agent:agent-1"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).not.toContain("Re-open");
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(appendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [{ type: "text", text: "Please pick this back up" }],
+        runConfig: {
+          custom: {
+            reopen: true,
+          },
+        },
+      }),
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("exposes a composer focus handle that forwards to the editor", () => {
     const root = createRoot(container);
-    const composerRef = createRef<{ focus: () => void }>();
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
@@ -387,6 +473,159 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("restores a cancelled queued draft into the composer handle", () => {
+    const root = createRoot(container);
+    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
+    const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const requestAnimationFrameMock = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            composerRef={composerRef}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor).not.toBeNull();
+
+    act(() => {
+      composerRef.current?.restoreDraft("Queued message");
+    });
+
+    expect(editor?.value).toBe("Queued message");
+    expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
+    expect(scrollByMock).toHaveBeenCalledWith({ top: 96, behavior: "smooth" });
+
+    scrollByMock.mockRestore();
+    requestAnimationFrameMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not restore the composer viewport for passive live updates by default", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(restoreComposerViewportSnapshotMock).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("requests composer viewport restoration when live messages arrive during active composer interaction", () => {
+    const root = createRoot(container);
+    const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    shouldPreserveComposerViewportMock.mockReturnValue(true);
+    captureComposerViewportSnapshotMock.mockReturnValue({ composerViewportTop: 420 });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(restoreComposerViewportSnapshotMock).toHaveBeenCalled();
+
+    scrollByMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("folds chain-of-thought when the same message transitions from running to complete", () => {
     expect(resolveAssistantMessageFoldedState({
       messageId: "message-1",
@@ -404,6 +643,22 @@ describe("IssueChatThread", () => {
       isFoldable: true,
       previousMessageId: "message-1",
       previousIsFoldable: true,
+    })).toBe(false);
+  });
+
+  it("shows the stop-run action for active run-linked messages even without embedded run status", () => {
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: null,
+      activeRunIds: new Set(["run-1"]),
+    })).toBe(true);
+  });
+
+  it("hides the stop-run action for completed historical runs", () => {
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: "cancelled",
+      activeRunIds: new Set<string>(),
     })).toBe(false);
   });
 });

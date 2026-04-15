@@ -1,10 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 import type { ServerAdapterModule } from "../adapters/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -82,6 +79,28 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    agentService: () => mockAgentService,
+    agentInstructionsService: () => mockAgentInstructionsService,
+    accessService: () => mockAccessService,
+    approvalService: () => mockApprovalService,
+    companySkillService: () => mockCompanySkillService,
+    budgetService: () => mockBudgetService,
+    heartbeatService: () => mockHeartbeatService,
+    issueApprovalService: () => mockIssueApprovalService,
+    issueService: () => ({}),
+    logActivity: mockLogActivity,
+    secretService: () => mockSecretService,
+    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    workspaceOperationService: () => ({}),
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+}
+
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
   execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
@@ -93,7 +112,13 @@ const externalAdapter: ServerAdapterModule = {
   }),
 };
 
-function createApp() {
+const missingAdapterType = "missing_adapter_validation_test";
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -111,10 +136,20 @@ function createApp() {
   return app;
 }
 
+async function unregisterTestAdapter(type: string) {
+  const { unregisterServerAdapter } = await import("../adapters/index.js");
+  unregisterServerAdapter(type);
+}
+
 describe("agent routes adapter validation", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    unregisterServerAdapter("external_test");
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../routes/agents.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -146,16 +181,21 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
+    await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter(missingAdapterType);
   });
 
-  afterEach(() => {
-    unregisterServerAdapter("external_test");
+  afterEach(async () => {
+    await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter(missingAdapterType);
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
 
-    const res = await request(createApp())
+    const app = await createApp();
+    const res = await request(app)
       .post("/api/companies/company-1/agents")
       .send({
         name: "External Agent",
@@ -167,14 +207,15 @@ describe("agent routes adapter validation", () => {
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
-    const res = await request(createApp())
+    const app = await createApp();
+    const res = await request(app)
       .post("/api/companies/company-1/agents")
       .send({
         name: "Missing Adapter",
-        adapterType: "missing_adapter",
+        adapterType: missingAdapterType,
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(String(res.body.error ?? res.body.message ?? "")).toContain("Unknown adapter type: missing_adapter");
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
 });

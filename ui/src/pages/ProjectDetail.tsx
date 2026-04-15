@@ -12,11 +12,10 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
-import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -24,15 +23,14 @@ import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceC
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
+import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
-import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
-import { IssuesQuicklook } from "../components/IssuesQuicklook";
+import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -211,7 +209,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-view:${projectId}`}
+      viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -263,154 +261,21 @@ function ProjectWorkspacesContent({
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
   const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
 
-  const renderSummaryRow = (summary: ReturnType<typeof buildProjectWorkspaceSummaries>[number]) => {
-    const visibleIssues = summary.issues.slice(0, 5);
-    const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
-    const workspaceHref =
-      summary.kind === "project_workspace"
-        ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
-        : `/execution-workspaces/${summary.workspaceId}`;
-    const hasRunningServices = summary.runningServiceCount > 0;
-
-    const truncatePath = (path: string) => {
-      const parts = path.split("/").filter(Boolean);
-      if (parts.length <= 3) return path;
-      return `…/${parts.slice(-2).join("/")}`;
-    };
-
-    return (
-      <div
-        key={summary.key}
-        className="border-b border-border px-4 py-3 last:border-b-0"
-      >
-        {/* Header row: name + actions */}
-        <div className="flex items-center gap-3">
-          <Link
-            to={workspaceHref}
-            className="min-w-0 shrink truncate text-sm font-medium hover:underline"
-          >
-            {summary.workspaceName}
-          </Link>
-
-          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-            {summary.serviceCount > 0 ? (
-              <span className={`inline-flex items-center gap-1 ${hasRunningServices ? "text-emerald-500" : ""}`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                {summary.runningServiceCount}/{summary.serviceCount}
-              </span>
-            ) : null}
-            {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
-              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
-            ) : null}
-          </div>
-
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">{timeAgo(summary.lastUpdatedAt)}</span>
-            {summary.hasRuntimeConfig ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 px-2 text-xs"
-                disabled={controlWorkspaceRuntime.isPending}
-                onClick={() =>
-                  controlWorkspaceRuntime.mutate({
-                    key: summary.key,
-                    kind: summary.kind,
-                    workspaceId: summary.workspaceId,
-                    action: hasRunningServices ? "stop" : "start",
-                  })
-                }
-              >
-                {runtimeActionKey === `${summary.key}:start` || runtimeActionKey === `${summary.key}:stop` ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : hasRunningServices ? (
-                  <Square className="h-3 w-3" />
-                ) : (
-                  <Play className="h-3 w-3" />
-                )}
-                {hasRunningServices ? "Stop" : "Start"}
-              </Button>
-            ) : null}
-            {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground"
-                onClick={() => setClosingWorkspace({
-                  id: summary.executionWorkspaceId!,
-                  name: summary.workspaceName,
-                  status: summary.executionWorkspaceStatus!,
-                })}
-              >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-
-        {/* Metadata lines: branch, folder */}
-        <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
-          {summary.branchName ? (
-            <div className="flex items-center gap-1.5">
-              <GitBranch className="h-3 w-3 shrink-0" />
-              <span className="font-mono">{summary.branchName}</span>
-            </div>
-          ) : null}
-          {summary.cwd ? (
-            <div className="flex items-center gap-1.5">
-              <FolderOpen className="h-3 w-3 shrink-0" />
-              <span className="truncate font-mono" title={summary.cwd}>
-                {truncatePath(summary.cwd)}
-              </span>
-              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
-                <Copy className="h-3 w-3" />
-              </CopyText>
-            </div>
-          ) : null}
-          {summary.primaryServiceUrl ? (
-            <div className="flex items-center gap-1.5">
-              <a
-                href={summary.primaryServiceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono hover:text-foreground hover:underline"
-              >
-                {summary.primaryServiceUrl}
-              </a>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Issues */}
-        {summary.issues.length > 0 ? (
-          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-medium text-muted-foreground/70">Issues</span>
-            {visibleIssues.map((issue) => (
-              <IssuesQuicklook key={issue.id} issue={issue}>
-                <Link
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="font-mono hover:text-foreground hover:underline"
-                >
-                  {issue.identifier ?? issue.id.slice(0, 8)}
-                </Link>
-              </IssuesQuicklook>
-            ))}
-            {hiddenIssueCount > 0 ? (
-              <Link to={workspaceHref} className="hover:text-foreground hover:underline">
-                +{hiddenIssueCount} more
-              </Link>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
   return (
     <>
       <div className="space-y-4">
         <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {activeSummaries.map(renderSummaryRow)}
+          {activeSummaries.map((summary) => (
+            <ProjectWorkspaceSummaryCard
+              key={summary.key}
+              projectRef={projectRef}
+              summary={summary}
+              runtimeActionKey={runtimeActionKey}
+              runtimeActionPending={controlWorkspaceRuntime.isPending}
+              onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+              onCloseWorkspace={(input) => setClosingWorkspace(input)}
+            />
+          ))}
         </div>
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
@@ -418,7 +283,17 @@ function ProjectWorkspacesContent({
               Cleanup attention needed
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
-              {cleanupFailedSummaries.map(renderSummaryRow)}
+              {cleanupFailedSummaries.map((summary) => (
+                <ProjectWorkspaceSummaryCard
+                  key={summary.key}
+                  projectRef={projectRef}
+                  summary={summary}
+                  runtimeActionKey={runtimeActionKey}
+                  runtimeActionPending={controlWorkspaceRuntime.isPending}
+                  onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+                  onCloseWorkspace={(input) => setClosingWorkspace(input)}
+                />
+              ))}
             </div>
           </div>
         ) : null}
@@ -455,7 +330,7 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
