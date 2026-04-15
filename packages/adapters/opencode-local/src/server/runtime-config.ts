@@ -10,6 +10,16 @@ type PreparedOpenCodeRuntimeConfig = {
 };
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
+  if (path.sep === "\\") {
+    const appdata = env.APPDATA || process.env.APPDATA;
+    if (appdata) {
+      // OpenCode stores config directly in APPDATA/opencode or APPDATA/Roaming/opencode.
+      // But Paperclip's prepareOpenCodeRuntimeConfig expects the PARENT of the "opencode" directory.
+      // So if OpenCode uses %APPDATA%/opencode, we return %APPDATA%.
+      return appdata;
+    }
+  }
+
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
     (typeof process.env.XDG_CONFIG_HOME === "string" && process.env.XDG_CONFIG_HOME.trim()) ||
@@ -40,7 +50,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     return {
       env: input.env,
       notes: [],
-      cleanup: async () => {},
+      cleanup: async () => { },
     };
   }
 
