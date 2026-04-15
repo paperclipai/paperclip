@@ -426,6 +426,8 @@ export function createPluginToolRegistry(
       };
 
       const callId = randomUUID();
+      const actorId = runContext.agentId ?? runContext.runId ?? "unknown";
+      const actorType = runContext.agentId ? "agent" : "system";
 
       // Emit pre-execute event (fire-and-forget, never blocks execution)
       if (eventBus) {
@@ -434,14 +436,14 @@ export function createPluginToolRegistry(
           eventType: "agent.tool.pre_execute",
           occurredAt: new Date().toISOString(),
           companyId: runContext.companyId,
-          actorId: runContext.agentId,
-          actorType: "agent",
+          actorId,
+          actorType,
           payload: {
             callId,
             pluginId,
             toolName,
             namespacedName,
-            agentId: runContext.agentId,
+            agentId: runContext.agentId ?? null,
             runId: runContext.runId,
             projectId: runContext.projectId,
           },
@@ -458,14 +460,14 @@ export function createPluginToolRegistry(
             eventType: "agent.tool.post_execute",
             occurredAt: new Date().toISOString(),
             companyId: runContext.companyId,
-            actorId: runContext.agentId,
-            actorType: "agent",
+            actorId,
+            actorType,
             payload: {
               callId,
               pluginId,
               toolName,
               namespacedName,
-              agentId: runContext.agentId,
+              agentId: runContext.agentId ?? null,
               runId: runContext.runId,
               projectId: runContext.projectId,
               success: false,
@@ -485,14 +487,14 @@ export function createPluginToolRegistry(
           eventType: "agent.tool.post_execute",
           occurredAt: new Date().toISOString(),
           companyId: runContext.companyId,
-          actorId: runContext.agentId,
-          actorType: "agent",
+          actorId,
+          actorType,
           payload: {
             callId,
             pluginId,
             toolName,
             namespacedName,
-            agentId: runContext.agentId,
+            agentId: runContext.agentId ?? null,
             runId: runContext.runId,
             projectId: runContext.projectId,
             success: true,
