@@ -2782,6 +2782,7 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
@@ -2816,6 +2817,7 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
