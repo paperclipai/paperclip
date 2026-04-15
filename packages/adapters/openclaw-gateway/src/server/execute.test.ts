@@ -9,10 +9,17 @@ let gatewayServer: WebSocketServer | null = null;
 
 afterEach(async () => {
   if (!gatewayServer) return;
-  for (const client of gatewayServer.clients) {
+  for (const client of [...gatewayServer.clients]) {
     client.terminate();
+    await Promise.race([
+      once(client, "close").then(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 250)),
+    ]);
   }
-  gatewayServer.close();
+  await Promise.race([
+    new Promise<void>((resolve) => gatewayServer!.close(() => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 250)),
+  ]);
   gatewayServer = null;
 });
 
@@ -111,7 +118,9 @@ describe("resolveSessionKey", () => {
       }),
     ).toBe("agent:meridian:paperclip");
   });
+});
 
+describe("execute", () => {
   it("does not send a top-level paperclip payload to the gateway agent request", async () => {
     let capturedParams: Record<string, unknown> | null = null;
     const gateway = await startGatewayServer((params) => {
@@ -137,17 +146,39 @@ describe("resolveSessionKey", () => {
         url: gateway.url,
         agentId: "meridian",
         disableDeviceAuth: true,
+        workspaceRuntime: {
+          mode: "manual",
+        },
         payloadTemplate: {
           text: "Follow the existing checklist.",
+          model: "openclaw-pro",
+          temperature: 0.2,
           paperclip: {
-            apiUrl: "https://paperclip.example.test",
-            wakeReason: "comment_added",
+            hints: {
+              source: "payload-template",
+            },
           },
         },
       },
       context: {
         issueId: "issue-456",
         wakeReason: "comment_added",
+        paperclipWorkspace: {
+          id: "workspace-1",
+          cwd: "/tmp/project",
+        },
+        paperclipWorkspaces: [
+          {
+            id: "workspace-2",
+            cwd: "/tmp/secondary",
+          },
+        ],
+        paperclipRuntimeServiceIntents: [
+          {
+            id: "svc-1",
+            kind: "preview",
+          },
+        ],
       },
       onLog: async () => {},
     };
@@ -166,8 +197,18 @@ describe("resolveSessionKey", () => {
       agentId: "meridian",
       sessionKey: "agent:meridian:paperclip:issue:issue-456",
       idempotencyKey: "run-123",
+      model: "openclaw-pro",
+      temperature: 0.2,
     });
     expect(String(params["message"])).toContain("Follow the existing checklist.");
     expect(String(params["message"])).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(String(params["message"])).toContain("Additional Paperclip context JSON:");
+    expect(String(params["message"])).toContain('"workspace": {');
+    expect(String(params["message"])).toContain('"cwd": "/tmp/project"');
+    expect(String(params["message"])).toContain('"workspaces": [');
+    expect(String(params["message"])).toContain('"workspaceRuntime": {');
+    expect(String(params["message"])).toContain('"mode": "manual"');
+    expect(String(params["message"])).toContain('"services": [');
+    expect(String(params["message"])).toContain('"source": "payload-template"');
   });
 });

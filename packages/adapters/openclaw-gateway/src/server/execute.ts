@@ -459,6 +459,50 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
+function buildSupplementalPaperclipContext(
+  ctx: AdapterExecutionContext,
+  payloadTemplate: Record<string, unknown>,
+): Record<string, unknown> {
+  const supplemental = parseObject(payloadTemplate.paperclip);
+  const workspace = asRecord(ctx.context.paperclipWorkspace);
+  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
+    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+    : [];
+  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
+  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
+    ? ctx.context.paperclipRuntimeServiceIntents.filter(
+        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
+      )
+    : [];
+
+  if (workspace) {
+    supplemental.workspace = workspace;
+  }
+  if (workspaces.length > 0) {
+    supplemental.workspaces = workspaces;
+  }
+  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
+    supplemental.workspaceRuntime = {
+      ...configuredWorkspaceRuntime,
+      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
+    };
+  }
+
+  return supplemental;
+}
+
+function appendSupplementalPaperclipContext(baseText: string, context: Record<string, unknown>): string {
+  if (Object.keys(context).length === 0) return baseText;
+
+  return [
+    baseText.trim(),
+    "Additional Paperclip context JSON:",
+    "```json",
+    JSON.stringify(context, null, 2),
+    "```",
+  ].join("\n");
+}
+
 function normalizeUrl(input: string): URL | null {
   try {
     return new URL(input);
@@ -1066,7 +1110,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const supplementalPaperclipContext = buildSupplementalPaperclipContext(ctx, payloadTemplate);
+  const enrichedWakeText = appendSupplementalPaperclipContext(wakeText, supplementalPaperclipContext);
+  const message = templateMessage ? appendWakeText(templateMessage, enrichedWakeText) : enrichedWakeText;
   const { text: _ignoredText, paperclip: _ignoredPaperclip, ...payloadTemplateWithoutPaperclip } = payloadTemplate;
 
   const agentParams: Record<string, unknown> = {
