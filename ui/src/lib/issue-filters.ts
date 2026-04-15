@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import { ISSUE_STATUSES, ISSUE_PRIORITIES } from "@paperclipai/shared";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -34,8 +35,8 @@ export const defaultIssueFilterState: IssueFilterState = {
   hideRoutineExecutions: false,
 };
 
-export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
-export const issuePriorityOrder = ["critical", "high", "medium", "low"];
+export const issueStatusOrder: string[] = [...ISSUE_STATUSES];
+export const issuePriorityOrder: string[] = [...ISSUE_PRIORITIES];
 
 export const issueQuickFilterPresets = [
   { label: "All", statuses: [] as string[] },
