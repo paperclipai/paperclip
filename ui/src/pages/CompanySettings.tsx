@@ -201,6 +201,7 @@ export function CompanySettings() {
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
+    setShowDeleteConfirm(false);
   }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
@@ -226,7 +227,13 @@ export function CompanySettings() {
 
   const deleteMutation = useMutation({
     mutationFn: () => companiesApi.remove(selectedCompany!.id),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats
+      });
       navigate("/");
     }
   });
