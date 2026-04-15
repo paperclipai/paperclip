@@ -280,8 +280,19 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
  *
  * Also handles re-exports:
  * - `export { ... } from "react";`
+ *
+ * When `baseUrl` is provided, also resolves relative specifiers (starting with
+ * `./` or `../`) to absolute URLs so they remain resolvable when the source is
+ * loaded via a blob URL (which has no hierarchical path component).
+ *
+ * **Plugin authoring note:** the Paperclip plugin static file server only
+ * exposes files under the plugin's declared `ui/` directory. Relative imports
+ * that ascend above that directory (e.g. `../constants.js`) resolve to URLs
+ * outside the served path and will 404. Plugin authors should either bundle
+ * all dependencies into the UI entry file or keep all imported modules inside
+ * the `ui/` directory.
  */
-function rewriteBareSpecifiers(source: string): string {
+function rewriteBareSpecifiers(source: string, baseUrl?: string): string {
   // Build a mapping of bare specifiers to blob URLs.
   const rewrites: Record<string, string> = {
     '"@paperclipai/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
@@ -305,6 +316,35 @@ function rewriteBareSpecifiers(source: string): string {
     result = result.replaceAll(` from ${from}`, ` from ${to}`);
     // Also handle `import "..."` (side-effect imports)
     result = result.replaceAll(`import ${from}`, `import ${to}`);
+  }
+
+  // When a base URL is available, resolve relative specifiers to absolute URLs.
+  // Blob URLs have no hierarchical path, so relative imports fail unless they
+  // are made absolute before the source is turned into a blob.
+  if (baseUrl) {
+    result = result.replace(
+      /(\bfrom\s+)(["'])(\.\.?\/[^"']+)\2/g,
+      (_match: string, fromKeyword: string, quote: string, specifier: string) => {
+        try {
+          const resolved = new URL(specifier, baseUrl).href;
+          return `${fromKeyword}${quote}${resolved}${quote}`;
+        } catch {
+          return _match;
+        }
+      },
+    );
+    // Also handle side-effect imports: `import "./foo.js"`
+    result = result.replace(
+      /(\bimport\s+)(["'])(\.\.?\/[^"']+)\2/g,
+      (_match: string, importKeyword: string, quote: string, specifier: string) => {
+        try {
+          const resolved = new URL(specifier, baseUrl).href;
+          return `${importKeyword}${quote}${resolved}${quote}`;
+        } catch {
+          return _match;
+        }
+      },
+    );
   }
 
   return result;
@@ -332,8 +372,9 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
 
   const source = await response.text();
 
-  // Rewrite bare specifier imports to blob URLs
-  const rewritten = rewriteBareSpecifiers(source);
+  // Rewrite bare specifier imports to blob URLs, and resolve relative
+  // specifiers to absolute URLs so they survive blob-URL import context.
+  const rewritten = rewriteBareSpecifiers(source, url);
 
   // Create a blob URL from the rewritten source and import it
   const blob = new Blob([rewritten], { type: "application/javascript" });
