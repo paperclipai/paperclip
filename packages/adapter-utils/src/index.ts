@@ -55,3 +55,4 @@ export {
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export { firstNonEmptyLine, commandLooksLike, summarizeStatus } from "./probe-helpers.js";
+export { parseCommaArgs, parseEnvVars, parseEnvBindings, parseJsonObject } from "./config-parser.js";
