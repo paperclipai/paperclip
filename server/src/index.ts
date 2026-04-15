@@ -1,4 +1,7 @@
 /// <reference path="./types/express.d.ts" />
+// Must load before http/express/pg are imported so auto-instrumentation
+// can patch them. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+import "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
