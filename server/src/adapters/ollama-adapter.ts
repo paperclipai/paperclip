@@ -20,7 +20,7 @@ import path from "node:path";
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ADAPTER_TYPE = "ollama_agent";
-const DEFAULT_BASE_URL = "http://10.0.0.185:11434";
+const DEFAULT_BASE_URL = "http://localhost:11434";
 const DEFAULT_MODEL = "qwen3.5:35B";
 const DEFAULT_TIMEOUT_SEC = 600;
 const MAX_TOOL_ITERATIONS = 20;
@@ -566,7 +566,7 @@ The model can list/checkout/complete tasks and read/write local files — no ext
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| baseUrl | string | http://10.0.0.185:11434 | Ollama base URL |
+| baseUrl | string | http://localhost:11434 | Ollama base URL |
 | model | string | qwen3.5:35B | Model name (must be pulled) |
 | timeoutSec | number | 600 | Total timeout in seconds |
 | useTools | boolean | true | Enable tool-call loop |
