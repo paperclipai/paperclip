@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { issues, type Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -36,6 +37,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { isLaunchIssueText } from "../services/issue-launch-guards.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -246,6 +248,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       q: req.query.q as string | undefined,
     });
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/katya/self-management", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const summary = await svc.katyaSelfManagementSnapshot(companyId, {
+      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeUserId: req.query.assigneeUserId as string | undefined,
+      includeClosed: req.query.includeClosed === "true" || req.query.includeClosed === "1",
+      checkWindow: typeof req.query.checkWindow === "string" ? req.query.checkWindow : null,
+    });
+    res.json(summary);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -930,6 +944,57 @@ export function issueRoutes(db: Db, storage: StorageService) {
         },
       });
 
+    }
+
+    const statusChangedToDone = existing.status !== "done" && issue.status === "done" && req.body.status !== undefined;
+    if (statusChangedToDone) {
+      const workProducts = await workProductsSvc.listForIssue(issue.id);
+      const launchChecklist = workProducts.find((product) => product.externalId === "launch_checklist_v1") ?? null;
+      const launchRelated = isLaunchIssueText(issue.title, issue.description) || Boolean(launchChecklist);
+
+      if (launchRelated) {
+        const existingDerivation = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              eq(issues.originKind, "publish_derivation"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (!existingDerivation) {
+          const derived = await svc.create(issue.companyId, {
+            title: `Derivation: ${issue.title}`,
+            description: `Tier 2 derivation triggered by publish completion for ${issue.identifier ?? issue.id}.`,
+            status: "todo",
+            priority: "medium",
+            projectId: issue.projectId ?? null,
+            parentId: issue.id,
+            originKind: "publish_derivation",
+            originId: issue.id,
+          });
+
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.derivation_created",
+            entityType: "issue",
+            entityId: derived.id,
+            details: {
+              originIssueId: issue.id,
+              originIdentifier: issue.identifier,
+              derivationIssueId: derived.id,
+              derivationIdentifier: derived.identifier,
+            },
+          });
+        }
+      }
     }
 
     const assigneeChanged = assigneeWillChange;

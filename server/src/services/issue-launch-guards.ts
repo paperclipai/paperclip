@@ -2,6 +2,8 @@ export type LaunchChecklistMetadata = {
   copyFinal?: boolean;
   linksValid?: boolean;
   scheduledTime?: string | null;
+  proofLine?: string | null;
+  sentLedgerEntry?: string | null;
   proof?: {
     urlOrPostId?: string | null;
     timestamp?: string | null;
@@ -39,6 +41,8 @@ export function evaluateLaunchChecklist(input: {
     approvalReceived: input.hasApprovedLinkedApproval,
     scheduledTimeSet: Boolean(typeof metadata.scheduledTime === "string" && metadata.scheduledTime.trim()),
     proofCaptured: hasProofMetadata(metadata),
+    proofLineLogged: Boolean(typeof metadata.proofLine === "string" && metadata.proofLine.trim()),
+    sentLedgerLogged: Boolean(typeof metadata.sentLedgerEntry === "string" && metadata.sentLedgerEntry.trim()),
   };
 
   const missing = Object.entries(checks)

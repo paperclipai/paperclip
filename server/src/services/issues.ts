@@ -34,6 +34,17 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { evaluateLaunchChecklist, isLaunchIssueText, type LaunchChecklistMetadata } from "./issue-launch-guards.js";
+import {
+  buildKatyaMetadataTemplate,
+  computeKatyaDueState,
+  computeKatyaSelfManagementScoreboard,
+  detectKatyaBehindSchedule,
+  evaluateKatyaCheckWindow,
+  evaluateKatyaOutreachHardening,
+  isBlockerEscalationComplete,
+  normalizeKatyaMetadata,
+  packageBlockerEscalationForPaperclip,
+} from "./katya-autonomy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -104,6 +115,27 @@ async function assertDoneTransitionGuards(
   if (!checklist.complete) {
     throw unprocessable(
       `Launch checklist incomplete. Missing: ${checklist.missing.join(", ")}. Complete checklist + proof metadata before moving to done.`,
+    );
+  }
+}
+
+async function assertBlockedTransitionGuards(
+  dbOrTx: any,
+  input: { id: string; status: string },
+) {
+  if (input.status !== "blocked") return;
+
+  const blockerRow = await dbOrTx
+    .select({ metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(and(eq(issueWorkProducts.issueId, input.id), eq(issueWorkProducts.externalId, "blocker_escalation_v1")))
+    .orderBy(desc(issueWorkProducts.updatedAt))
+    .then((rows: Array<{ metadata: Record<string, unknown> | null }>) => rows[0] ?? null);
+
+  const complete = isBlockerEscalationComplete(blockerRow?.metadata as any);
+  if (!complete) {
+    throw unprocessable(
+      "Blocker escalation incomplete. Set owner, due date, and terminal state before moving to blocked.",
     );
   }
 }
@@ -667,6 +699,132 @@ export function issueService(db: Db) {
       }));
     },
 
+    katyaSelfManagementSnapshot: async (
+      companyId: string,
+      options?: {
+        assigneeAgentId?: string;
+        assigneeUserId?: string;
+        includeClosed?: boolean;
+        checkWindow?: string | null;
+      },
+    ) => {
+      const now = new Date();
+      const conditions = [
+        eq(issues.companyId, companyId),
+        eq(issueWorkProducts.externalId, "katya_metadata_v1"),
+      ];
+      if (!options?.includeClosed) {
+        conditions.push(inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]));
+      }
+      if (options?.assigneeAgentId) {
+        conditions.push(eq(issues.assigneeAgentId, options.assigneeAgentId));
+      }
+      if (options?.assigneeUserId) {
+        conditions.push(eq(issues.assigneeUserId, options.assigneeUserId));
+      }
+
+      const rows = await db
+        .selectDistinctOn([issueWorkProducts.issueId], {
+          issueId: issueWorkProducts.issueId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          metadata: issueWorkProducts.metadata,
+        })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issueWorkProducts.issueId, issues.id))
+        .where(and(...conditions))
+        .orderBy(issueWorkProducts.issueId, desc(issueWorkProducts.updatedAt));
+
+      const blockerRows = await db
+        .selectDistinctOn([issueWorkProducts.issueId], {
+          issueId: issueWorkProducts.issueId,
+          metadata: issueWorkProducts.metadata,
+        })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issueWorkProducts.issueId, issues.id))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issueWorkProducts.externalId, "blocker_escalation_v1"),
+            options?.includeClosed
+              ? sql`true`
+              : inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+            options?.assigneeAgentId ? eq(issues.assigneeAgentId, options.assigneeAgentId) : sql`true`,
+            options?.assigneeUserId ? eq(issues.assigneeUserId, options.assigneeUserId) : sql`true`,
+          ),
+        )
+        .orderBy(issueWorkProducts.issueId, desc(issueWorkProducts.updatedAt));
+      const blockerByIssueId = new Map(blockerRows.map((row) => [row.issueId, row.metadata as Record<string, unknown> | null]));
+
+      const summaries = [] as Array<ReturnType<typeof computeKatyaDueState>>;
+      const items = rows.map((row) => {
+        const metadata = normalizeKatyaMetadata(row.metadata) ?? buildKatyaMetadataTemplate();
+        const summary = computeKatyaDueState({
+          now,
+          dueWindow: metadata.dueWindow,
+          weeklyCounter: metadata.weeklyCounter ?? null,
+        });
+        summaries.push(summary);
+        const outreachStatus = evaluateKatyaOutreachHardening(metadata.outreachHardening ?? null);
+        const blockerEscalation = packageBlockerEscalationForPaperclip(blockerByIssueId.get(row.issueId) as any);
+        return {
+          issueId: row.issueId,
+          identifier: row.identifier,
+          title: row.title,
+          status: row.status,
+          dueState: summary.dueState,
+          weeklyState: summary.weeklyState,
+          outreachHardening: outreachStatus,
+          blockerEscalation,
+        };
+      });
+
+      const scoreboard = computeKatyaSelfManagementScoreboard(summaries);
+      const behindSchedule = detectKatyaBehindSchedule(scoreboard);
+      const checkWindow = evaluateKatyaCheckWindow(options?.checkWindow ?? null, behindSchedule);
+      const outreachComplete = items.filter((item) => item.outreachHardening.complete).length;
+      const outreachMissing = items.filter((item) => !item.outreachHardening.complete).length;
+      const blockerPackaged = items.filter((item) => item.blockerEscalation.complete).length;
+      const blockerMissing = items.filter((item) => !item.blockerEscalation.complete).length;
+
+      return {
+        checkedAt: now.toISOString(),
+        scoreboard,
+        behindSchedule,
+        checkWindow,
+        outreachHardening: {
+          total: items.length,
+          complete: outreachComplete,
+          missing: outreachMissing,
+          missingItems: items
+            .filter((item) => !item.outreachHardening.complete)
+            .map((item) => ({
+              issueId: item.issueId,
+              identifier: item.identifier,
+              title: item.title,
+              missing: item.outreachHardening.missing,
+            })),
+        },
+        blockerEscalation: {
+          total: items.length,
+          complete: blockerPackaged,
+          missing: blockerMissing,
+          missingItems: items
+            .filter((item) => !item.blockerEscalation.complete)
+            .map((item) => ({
+              issueId: item.issueId,
+              identifier: item.identifier,
+              title: item.title,
+              owner: item.blockerEscalation.owner,
+              dueAt: item.blockerEscalation.dueAt,
+              terminalState: item.blockerEscalation.terminalState,
+            })),
+        },
+        items,
+      };
+    },
+
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
       const conditions = [
         eq(issues.companyId, companyId),
@@ -840,6 +998,10 @@ export function issueService(db: Db) {
           description: issue.description,
           status: issue.status,
         });
+        await assertBlockedTransitionGuards(tx, {
+          id: issue.id,
+          status: issue.status,
+        });
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -925,6 +1087,10 @@ export function issueService(db: Db) {
           id,
           title: (issueData.title ?? existing.title) as string,
           description: (issueData.description ?? existing.description) as string | null,
+          status: nextStatus,
+        });
+        await assertBlockedTransitionGuards(tx, {
+          id,
           status: nextStatus,
         });
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);

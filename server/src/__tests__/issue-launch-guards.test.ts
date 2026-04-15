@@ -18,6 +18,8 @@ describe("issue launch guards", () => {
         copyFinal: true,
         linksValid: true,
         scheduledTime: "2026-03-24T09:00:00Z",
+        proofLine: "Proof: https://x.com/p/1",
+        sentLedgerEntry: "2026-03-24 | X | thread | https://x.com/p/1",
         proof: {
           urlOrPostId: "https://x.com/p/1",
           timestamp: "2026-03-24T09:01:00Z",
