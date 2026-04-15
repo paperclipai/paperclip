@@ -54,17 +54,6 @@ vi.mock("../api/companies", () => ({
   },
 }));
 
-let healthMockResponse = {
-  status: "ok" as const,
-  features: { companyDeletionEnabled: true },
-};
-
-vi.mock("../api/health", () => ({
-  healthApi: {
-    get: () => Promise.resolve(healthMockResponse),
-  },
-}));
-
 vi.mock("../api/access", () => ({
   accessApi: {
     createOpenClawInvitePrompt: vi.fn(),
@@ -85,10 +74,6 @@ beforeEach(() => {
   root = createRoot(container);
   navigateMock.mockClear();
   removeMock.mockClear();
-  healthMockResponse = {
-    status: "ok",
-    features: { companyDeletionEnabled: true },
-  };
 });
 
 afterEach(() => {
@@ -127,19 +112,9 @@ function findButton(text: string) {
 }
 
 describe("CompanySettings delete button", () => {
-  it("renders the Delete company button when companyDeletionEnabled is true", async () => {
+  it("renders the Delete company button in the Danger Zone", async () => {
     renderSettings();
     await waitFor(() => expect(findButton("Delete company")).toBeTruthy());
-  });
-
-  it("does not render the Delete company button when companyDeletionEnabled is false", async () => {
-    healthMockResponse = {
-      status: "ok",
-      features: { companyDeletionEnabled: false },
-    };
-    renderSettings();
-    await waitFor(() => expect(findButton("Archive company")).toBeTruthy());
-    expect(findButton("Delete company")).toBeUndefined();
   });
 
   it("shows confirmation dialog when Delete company is clicked", async () => {

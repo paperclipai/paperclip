@@ -1,12 +1,11 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "@/lib/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
-import { healthApi } from "../api/health";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -38,12 +37,6 @@ export function CompanySettings() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => healthApi.get(),
-    staleTime: Infinity,
-  });
-  const companyDeletionEnabled = health?.features?.companyDeletionEnabled ?? false;
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -638,56 +631,52 @@ export function CompanySettings() {
             )}
           </div>
 
-          {companyDeletionEnabled && (
-            <>
-              <hr className="border-destructive/20" />
+          <hr className="border-destructive/20" />
 
-              <p className="text-sm text-muted-foreground">
-                Permanently delete this company and all its data.
+          <p className="text-sm text-muted-foreground">
+            Permanently delete this company and all its data.
+          </p>
+          {showDeleteConfirm ? (
+            <div className="flex items-center justify-between bg-destructive/10 border border-destructive/20 rounded-md px-4 py-3">
+              <p className="text-sm text-destructive font-medium">
+                Delete this company and all its data? This cannot be undone.
               </p>
-              {showDeleteConfirm ? (
-                <div className="flex items-center justify-between bg-destructive/10 border border-destructive/20 rounded-md px-4 py-3">
-                  <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
-                  </p>
-                  <div className="flex items-center gap-2 ml-4 shrink-0">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShowDeleteConfirm(false)}
-                      disabled={deleteMutation.isPending}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => deleteMutation.mutate()}
-                      disabled={deleteMutation.isPending}
-                    >
-                      {deleteMutation.isPending ? "Deleting..." : "Delete"}
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => setShowDeleteConfirm(true)}
-                  >
-                    Delete company
-                  </Button>
-                </div>
-              )}
-              {deleteMutation.isError && (
-                <span className="text-xs text-destructive">
-                  {deleteMutation.error instanceof Error
-                    ? deleteMutation.error.message
-                    : "Failed to delete company"}
-                </span>
-              )}
-            </>
+              <div className="flex items-center gap-2 ml-4 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(false)}
+                  disabled={deleteMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                >
+                  {deleteMutation.isPending ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setShowDeleteConfirm(true)}
+              >
+                Delete company
+              </Button>
+            </div>
+          )}
+          {deleteMutation.isError && (
+            <span className="text-xs text-destructive">
+              {deleteMutation.error instanceof Error
+                ? deleteMutation.error.message
+                : "Failed to delete company"}
+            </span>
           )}
         </div>
       </div>
