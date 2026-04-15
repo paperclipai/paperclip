@@ -26,10 +26,14 @@ let nextEventId = 0;
 // set don't pay the dependency cost — and the type is intentionally
 // kept loose so operators who want this feature install `ioredis`
 // themselves without forcing a global dependency update.
-type PublishClient = { publish(channel: string, message: string): Promise<unknown> };
-type SubscribeClient = {
-  subscribe(channel: string): Promise<unknown>;
+type RedisEventClient = {
   on(event: string, cb: (...args: unknown[]) => void): void;
+};
+type PublishClient = RedisEventClient & {
+  publish(channel: string, message: string): Promise<unknown>;
+};
+type SubscribeClient = RedisEventClient & {
+  subscribe(channel: string): Promise<unknown>;
 };
 
 const CHANNEL = "paperclip:live-events";
@@ -46,6 +50,18 @@ function resolveRedisUrl(): string | null {
   return shared || null;
 }
 
+function attachErrorLogger(client: RedisEventClient, role: "publisher" | "subscriber") {
+  // ioredis extends EventEmitter and emits `error` on its own schedule (network
+  // blip, auth expiry, redis restart). Without a listener, node promotes that
+  // to an uncaught exception and crashes the server — which would defeat the
+  // whole "best-effort, fall back to local-only" contract of this transport.
+  // A single warn-level log is enough; ioredis will auto-reconnect.
+  client.on("error", (err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[paperclip] live-events: redis ${role} error`, err);
+  });
+}
+
 async function initRedis(): Promise<void> {
   const url = resolveRedisUrl();
   if (!url) return;
@@ -53,11 +69,15 @@ async function initRedis(): Promise<void> {
   const ioredis = await import("ioredis");
   const Redis = (ioredis as { default?: unknown }).default ?? ioredis;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  redisPub = new (Redis as any)(url);
+  const pub = new (Redis as any)(url) as PublishClient;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  redisSub = new (Redis as any)(url);
-  await redisSub!.subscribe(CHANNEL);
-  redisSub!.on("message", (_channel: unknown, message: unknown) => {
+  const sub = new (Redis as any)(url) as SubscribeClient;
+  attachErrorLogger(pub, "publisher");
+  attachErrorLogger(sub, "subscriber");
+  redisPub = pub;
+  redisSub = sub;
+  await sub.subscribe(CHANNEL);
+  sub.on("message", (_channel: unknown, message: unknown) => {
     try {
       const envelope = JSON.parse(message as string) as {
         origin: string;
