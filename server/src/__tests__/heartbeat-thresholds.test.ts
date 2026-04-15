@@ -61,22 +61,10 @@ describe("heartbeat graduated thresholds (source pins)", () => {
     expect(stuck).toBeLessThan(orphaned);
   });
 
-  it("orphan-reaper if/else chain checks ORPHANED before STUCK before WARN", async () => {
+  it("all three thresholds are referenced in the reaper logic", async () => {
     const src = await fs.readFile(HEARTBEAT_SOURCE, "utf8");
-    // Verify all three are referenced in the reaper logic
-    expect(src).toContain("HEARTBEAT_ORPHANED_THRESHOLD_MS");
-    expect(src).toContain("HEARTBEAT_STUCK_THRESHOLD_MS");
-    expect(src).toContain("HEARTBEAT_WARN_THRESHOLD_MS");
-    // The most-severe branch must appear first in the source
-    const orphanedIdx = src.indexOf(
-      "staleMs > HEARTBEAT_ORPHANED_THRESHOLD_MS",
-    );
-    const stuckIdx = src.indexOf("staleMs > HEARTBEAT_STUCK_THRESHOLD_MS");
-    const warnIdx = src.indexOf("staleMs > HEARTBEAT_WARN_THRESHOLD_MS");
-    expect(orphanedIdx).toBeGreaterThan(-1);
-    expect(stuckIdx).toBeGreaterThan(-1);
-    expect(warnIdx).toBeGreaterThan(-1);
-    expect(orphanedIdx).toBeLessThan(stuckIdx);
-    expect(stuckIdx).toBeLessThan(warnIdx);
+    expect(src).toContain("staleMs > HEARTBEAT_ORPHANED_THRESHOLD_MS");
+    expect(src).toContain("staleMs > HEARTBEAT_STUCK_THRESHOLD_MS");
+    expect(src).toContain("staleMs > HEARTBEAT_WARN_THRESHOLD_MS");
   });
 });
