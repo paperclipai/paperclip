@@ -28,7 +28,10 @@ For each agent's recent completed-looking comments (e.g. "nothing to fix", "all 
 ### 4. Configuration drift
 Diff each agent's live `adapterConfig.promptTemplate` and `instructionsFilePath` content against the file on disk at `/home/adacovsk/code/paperclip/agents/{agent}/INSTRUCTIONS.md`. If they diverge, file a followup (don't auto-sync — divergence can be intentional).
 
-### 5. Report
+### 5. Auto-hide stale completions
+Keep the issues list readable. For each issue with `status` in `done`/`cancelled`, `updatedAt` older than 7 days, and `hiddenAt` still null: `PATCH /api/issues/{id}` with `{"hiddenAt": "<now ISO>"}`. Don't comment on these — it's routine housekeeping. `hiddenAt` only affects default list views; API queries still return everything, so Planner's pattern-scan is unaffected.
+
+### 6. Report
 Comment a single summary on your own heartbeat task with:
 - Queue depth delta per agent
 - Stuck tasks you cleared (with reason)
