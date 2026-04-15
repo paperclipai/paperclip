@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
@@ -120,8 +120,34 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
   return line ?? null;
 }
 
+function firstRunResultMessage(run: HeartbeatRun): string | null {
+  const result = run.resultJson;
+  if (!result || typeof result !== "object") return null;
+
+  if (typeof result.error === "string") return firstNonEmptyLine(result.error);
+  if (typeof result.message === "string") return firstNonEmptyLine(result.message);
+  if (typeof result.summary === "string") return firstNonEmptyLine(result.summary);
+  if (typeof result.result === "string") return firstNonEmptyLine(result.result);
+  return null;
+}
+
+function isGenericRunFailureMessage(value: string | null) {
+  if (!value) return true;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "adapter failed"
+    || normalized === "timed out"
+    || normalized === "run exited with an error."
+    || normalized === "unknown adapter failure";
+}
+
 function runFailureMessage(run: HeartbeatRun): string {
-  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+  const errorLine = firstNonEmptyLine(run.error);
+  if (!isGenericRunFailureMessage(errorLine)) return errorLine!;
+
+  return firstRunResultMessage(run)
+    ?? firstNonEmptyLine(run.stderrExcerpt)
+    ?? errorLine
+    ?? "Run exited with an error.";
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
@@ -1036,11 +1062,10 @@ export function Inbox() {
 
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter);
-    if (tab === "mine") {
-      filtered = filtered.filter((a) => !dismissed.has(`approval:${a.id}`));
-    }
+    filtered = filtered.filter((approval) => !dismissed.has(`approval:${approval.id}`));
+    if (tab === "unread") filtered = filtered.filter((approval) => !readItems.has(`approval:${approval.id}`));
     return filtered;
-  }, [approvals, tab, allApprovalFilter, dismissed]);
+  }, [approvals, tab, allApprovalFilter, dismissed, readItems]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -1052,14 +1077,32 @@ export function Inbox() {
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
     if (tab === "all" && !showFailedRunsCategory) return [];
+    if (tab === "unread") return failedRuns.filter((run) => !readItems.has(`run:${run.id}`));
     return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory]);
+  }, [failedRuns, readItems, tab, showFailedRunsCategory]);
+  const failedRunDetailQueries = useQueries({
+    queries: failedRunsForTab.map((run) => ({
+      queryKey: queryKeys.runDetail(run.id),
+      queryFn: () => heartbeatsApi.get(run.id),
+      staleTime: 30_000,
+      retry: false,
+    })),
+  });
+  const detailedFailedRunById = useMemo(() => {
+    const map = new Map<string, HeartbeatRun>();
+    failedRunsForTab.forEach((run, index) => {
+      const detailedRun = failedRunDetailQueries[index]?.data;
+      if (detailedRun) map.set(run.id, detailedRun);
+    });
+    return map;
+  }, [failedRunDetailQueries, failedRunsForTab]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
-    if (tab === "mine") return joinRequests.filter((jr) => !dismissed.has(`join:${jr.id}`));
-    return joinRequests;
-  }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
+    let filtered = joinRequests.filter((joinRequest) => !dismissed.has(`join:${joinRequest.id}`));
+    if (tab === "unread") filtered = filtered.filter((joinRequest) => !readItems.has(`join:${joinRequest.id}`));
+    return filtered;
+  }, [joinRequests, tab, showJoinRequestsCategory, dismissed, readItems]);
   const needsActionItems = useMemo(
     () =>
       getNeedsActionWorkItems({
@@ -1112,7 +1155,7 @@ export function Inbox() {
         return false;
       }
       if (item.kind === "failed_run") {
-        const run = item.run;
+        const run = detailedFailedRunById.get(item.run.id) ?? item.run;
         const name = agentById.get(run.agentId);
         if (name?.toLowerCase().includes(q)) return true;
         const msg = runFailureMessage(run);
@@ -1138,6 +1181,7 @@ export function Inbox() {
     searchQuery,
     agentById,
     defaultProjectWorkspaceIdByProjectId,
+    detailedFailedRunById,
     executionWorkspaceById,
     issueById,
     isolatedWorkspacesEnabled,
@@ -1238,9 +1282,12 @@ export function Inbox() {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
     onSuccess: ({ newRun, originalRun }) => {
+      setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(originalRun.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(originalRun.id) });
+      queryClient.setQueryData(queryKeys.runDetail(newRun.id), newRun);
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;
@@ -1884,17 +1931,18 @@ export function Inbox() {
                 if (item.kind === "failed_run") {
                   const runKey = `run:${item.run.id}`;
                   const isArchiving = archivingNonIssueIds.has(runKey);
+                  const run = detailedFailedRunById.get(item.run.id) ?? item.run;
                   const row = (
                     <FailedRunInboxRow
                       key={runKey}
-                      run={item.run}
+                      run={run}
                       selected={isSelected}
                       issueById={issueById}
-                      agentName={agentName(item.run.agentId)}
+                      agentName={agentName(run.agentId)}
                       issueLinkState={issueLinkState}
                       onDismiss={() => dismiss(runKey)}
-                      onRetry={() => retryRunMutation.mutate(item.run)}
-                      isRetrying={retryingRunIds.has(item.run.id)}
+                      onRetry={() => retryRunMutation.mutate(run)}
+                      isRetrying={retryingRunIds.has(run.id)}
                       unreadState={nonIssueUnreadState(runKey)}
                       onMarkRead={() => handleMarkNonIssueRead(runKey)}
                       onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(runKey) : undefined}

@@ -44,8 +44,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - a compressed summary of what was attempted
 - the exact current state of the code or task
 - the exact next step for a fresh session
-- Prefer same-issue recovery and a fresh session over creating successor issues yourself.
-- If a successor issue is truly necessary, escalate to the board or COO instead of assuming continuation-by-reissue is the active path.
+- Keep recovery on the same issue by default. Do not create or expect a continuation issue as routine recovery.
+- If the board explicitly creates a successor issue, follow the board-directed active issue instead of assuming continuation-by-reissue is the normal path.
 - Do not keep retrying a poisoned session without new evidence.
 
 ## Truth Requirements

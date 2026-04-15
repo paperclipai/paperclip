@@ -204,11 +204,11 @@ index 93cddf8..95ed1ef 100644
 +    if (prevSessionIdRaw && !prevSessionId) {
 +        await ctx.onLog("stdout", `[paperclip] Skipping suspicious Hermes session id "${prevSessionIdRaw}" and starting fresh.\n`);
      }
-+    const useQuiet = cfgBoolean(config.quiet) !== false;
 +    const buildArgs = (resumeSessionId) => {
 +        const args = ["chat", "-q", prompt];
-+        if (useQuiet)
-+            args.push("-Q");
++        // Paperclip-managed Hermes runs always force quiet mode so transcript
++        // summaries and issue comments do not inherit CLI chrome.
++        args.push("-Q");
 +        if (model)
 +            args.push("-m", model);
 +        if (provider && VALID_PROVIDERS.includes(provider)) {

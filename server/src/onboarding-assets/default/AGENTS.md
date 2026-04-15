@@ -23,8 +23,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - `In Progress` means active implementation or rework.
 - `In Review` means the issue is waiting for QA.
 - `Done` means QA passed and the release is confirmed.
-- Same-issue recovery is the default when work is stuck.
-- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only; do not assume continuation-by-reissue is the normal path.
+- Same-issue recovery is the default for stuck work. Do not create continuation issues as routine recovery.
+- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only. If the board explicitly creates one, follow the board-directed active issue.
 
 ## Role Charter Baseline
 

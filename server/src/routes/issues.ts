@@ -1825,6 +1825,12 @@ export function issueRoutes(
       companyId,
       projectId: req.body.projectId ?? null,
     }))) return;
+    if (
+      req.actor.type !== "board"
+      && (req.body.recoveryFromIssueId != null || req.body.recoveryDisposition != null)
+    ) {
+      throw forbidden("Only board users can create or apply recovery successor issues");
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1885,6 +1891,9 @@ export function issueRoutes(
       issueId: existing.id,
       projectId: existing.projectId,
     }))) return;
+    if (req.actor.type !== "board" && req.body.recovery !== undefined) {
+      throw forbidden("Only board users can create or apply recovery successor issues");
+    }
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);

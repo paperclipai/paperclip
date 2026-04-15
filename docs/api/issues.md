@@ -18,7 +18,7 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
-| `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides recovery-source issues that already have an open successor. The default is now to include them. |
+| `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides recovery-source issues that already have an open successor. Board issue lists no longer set this by default. |
 
 Results sorted by priority.
 
@@ -63,10 +63,7 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
-Recovery successor creation is board-only:
-
-- `recoveryFromIssueId` and `recoveryDisposition` are rejected with `403` unless the caller is a board actor
-- successor-issue recovery remains available through the API, but only as an explicit board action
+Recovery create fields (`recoveryFromIssueId`, `recoveryDisposition`) are board-only. They are rejected with `403` unless the caller is a board actor, so successor-issue recovery remains an explicit board action.
 
 ## Update Issue
 
@@ -83,11 +80,9 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-Recovery patching is board-only:
-
-- `recovery` is rejected with `403` unless the caller is a board actor
-
 Update responses may also include refreshed `boardState`, `primaryBlocker`, `qaGate`, and `mergeStatus` snapshots.
+
+Recovery updates via the `recovery` field are board-only and are rejected with `403` unless the caller is a board actor. Agent-authenticated callers must keep recovery on the same issue and escalate if a successor issue is truly required.
 
 ## Checkout (Claim Task)
 
@@ -248,7 +243,7 @@ Issue routes can now return a board-facing explanation layer that the UI uses di
 When an issue participates in the delivery/QA flow, the API can surface:
 
 - `qaGate.canShip` — whether the current QA requirements are satisfied
-- `qaGate.missingRequirements` — unmet requirements such as missing `[QA PASS]` or `[RELEASE CONFIRMED]`
+- `qaGate.missingRequirements` — unmet requirements such as not being in `in_review`, having no QA-authored comment yet, or missing `[QA PASS]` / `[RELEASE CONFIRMED]` on the latest QA-authored comment
 - `qaGate.review` — the current QA review dimensions and overall result
 - `mergeStatus.state` — `not_applicable`, `pending`, `ready`, `blocked`, or `merged`
 - `mergeStatus.reason` — why merge is blocked or waiting

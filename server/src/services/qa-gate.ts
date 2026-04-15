@@ -81,6 +81,8 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
       return "No eligible QA agent is available to own this in_review issue";
     case "qa_gate_requires_in_review":
       return "Delivery issues can only move to done from in_review";
+    case "qa_gate_missing_qa_comment":
+      return "No QA-authored comment exists yet for this issue";
     case "qa_gate_missing_qa_pass":
       return "Latest QA-authored comment must include [QA PASS] before moving to done";
     case "qa_gate_missing_release_confirmation":
@@ -133,12 +135,16 @@ export function buildIssueQaGate(input: {
     if (input.issue.status !== "in_review") {
       missingRequirements.push("qa_gate_requires_in_review");
     }
-    const latestBody = latestQaComment?.body ?? "";
-    if (!QA_PASS_REGEX.test(latestBody)) {
-      missingRequirements.push("qa_gate_missing_qa_pass");
-    }
-    if (!RELEASE_CONFIRMED_REGEX.test(latestBody)) {
-      missingRequirements.push("qa_gate_missing_release_confirmation");
+    if (!latestQaComment) {
+      missingRequirements.push("qa_gate_missing_qa_comment");
+    } else {
+      const latestBody = latestQaComment.body ?? "";
+      if (!QA_PASS_REGEX.test(latestBody)) {
+        missingRequirements.push("qa_gate_missing_qa_pass");
+      }
+      if (!RELEASE_CONFIRMED_REGEX.test(latestBody)) {
+        missingRequirements.push("qa_gate_missing_release_confirmation");
+      }
     }
   }
 

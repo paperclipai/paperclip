@@ -41,6 +41,8 @@ This starts:
 - API server: `http://localhost:3100`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
+If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `pnpm -s dev` with warning/error log filtering.
+
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.

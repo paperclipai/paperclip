@@ -71,8 +71,7 @@ describe("qa gate helpers", () => {
     expect(base.canShip).toBe(false);
     expect(base.missingRequirements).toEqual([
       "qa_gate_requires_in_review",
-      "qa_gate_missing_qa_pass",
-      "qa_gate_missing_release_confirmation",
+      "qa_gate_missing_qa_comment",
     ]);
 
     const ready = buildIssueQaGate({
@@ -92,6 +91,18 @@ describe("qa gate helpers", () => {
     expect(ready.missingRequirements).toEqual([]);
   });
 
+  it("reports missing QA comment before marker-level failures", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.missingRequirements).toEqual(["qa_gate_missing_qa_comment"]);
+  });
+
   it("treats technical branch work as delivery-scoped even when a non-engineering role is assigned", () => {
     const gate = buildIssueQaGate({
       issue: { status: "in_review" },
@@ -104,10 +115,7 @@ describe("qa gate helpers", () => {
 
     expect(gate.isDeliveryScoped).toBe(true);
     expect(gate.canShip).toBe(false);
-    expect(gate.missingRequirements).toEqual([
-      "qa_gate_missing_qa_pass",
-      "qa_gate_missing_release_confirmation",
-    ]);
+    expect(gate.missingRequirements).toEqual(["qa_gate_missing_qa_comment"]);
   });
 
   it("flags stale review when no recent summary exists", () => {
@@ -130,6 +138,7 @@ describe("qa gate helpers", () => {
   it("returns stable reason messages", () => {
     expect(issueQaGateReasonMessage("invalid_status_transition")).toContain("Invalid issue status transition");
     expect(issueQaGateReasonMessage("qa_gate_requires_in_review")).toContain("in_review");
+    expect(issueQaGateReasonMessage("qa_gate_missing_qa_comment")).toContain("No QA-authored comment");
     expect(issueQaGateReasonMessage("qa_gate_missing_qa_pass")).toContain("[QA PASS]");
     expect(issueQaGateReasonMessage("qa_gate_missing_release_confirmation")).toContain("[RELEASE CONFIRMED]");
   });

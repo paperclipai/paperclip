@@ -40,8 +40,6 @@ import type { Issue, IssueRelationIssueSummary } from "@paperclipai/shared";
 
 const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
-const OPEN_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked";
-
 const statusLabel = formatIssueStatusLabel;
 
 interface EpicPresentation {
@@ -218,8 +216,6 @@ interface IssuesListProps {
     participantAgentId?: string;
   };
   excludeRecoverySourcesWithOpenSuccessors?: boolean;
-  showClosed?: boolean;
-  onShowClosedChange?: (next: boolean) => void;
   onArchiveClosed?: () => void;
   archiveClosedPending?: boolean;
   onSearchChange?: (search: string) => void;
@@ -240,8 +236,6 @@ export function IssuesList({
   initialSearch,
   searchFilters,
   excludeRecoverySourcesWithOpenSuccessors = false,
-  showClosed = false,
-  onShowClosedChange,
   onArchiveClosed,
   archiveClosedPending = false,
   onSearchChange,
@@ -312,7 +306,6 @@ export function IssuesList({
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
       excludeRecoverySourcesWithOpenSuccessors ? "exclude-recovery-sources-open-successors" : "include-recovery-sources-open-successors",
-      showClosed ? "show-closed" : "hide-closed",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
@@ -320,7 +313,6 @@ export function IssuesList({
         projectId,
         ...searchFilters,
         ...(excludeRecoverySourcesWithOpenSuccessors ? { excludeRecoverySourcesWithOpenSuccessors: true } : {}),
-        ...(showClosed ? {} : { status: OPEN_ISSUE_STATUSES }),
       }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
     placeholderData: (previousData) => previousData,
@@ -601,15 +593,6 @@ export function IssuesList({
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
-          <Button
-            variant={showClosed ? "secondary" : "ghost"}
-            size="sm"
-            className="text-xs"
-            onClick={() => onShowClosedChange?.(!showClosed)}
-          >
-            <span className="hidden sm:inline">{showClosed ? "Hide Closed" : "Show Closed"}</span>
-            <span className="sm:hidden">{showClosed ? "Hide" : "Closed"}</span>
-          </Button>
           {onArchiveClosed && (
             <Button
               variant="ghost"
@@ -690,12 +673,6 @@ export function IssuesList({
                           }`}
                           onClick={() => {
                             const nextStatuses = isActive ? [] : [...preset.statuses];
-                            if (
-                              !showClosed &&
-                              nextStatuses.some((status) => status === "done" || status === "cancelled")
-                            ) {
-                              onShowClosedChange?.(true);
-                            }
                             updateView({ statuses: nextStatuses });
                           }}
                         >
@@ -720,13 +697,6 @@ export function IssuesList({
                             checked={viewState.statuses.includes(s)}
                             onCheckedChange={() => {
                               const nextStatuses = toggleInArray(viewState.statuses, s);
-                              if (
-                                !showClosed &&
-                                !viewState.statuses.includes(s) &&
-                                (s === "done" || s === "cancelled")
-                              ) {
-                                onShowClosedChange?.(true);
-                              }
                               updateView({ statuses: nextStatuses });
                             }}
                           />

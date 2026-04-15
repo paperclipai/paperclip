@@ -226,6 +226,7 @@ export type IssueQaGateReasonCode =
   | "qa_gate_requires_qa_assignee"
   | "qa_gate_no_eligible_qa_agent"
   | "qa_gate_requires_in_review"
+  | "qa_gate_missing_qa_comment"
   | "qa_gate_missing_qa_pass"
   | "qa_gate_missing_release_confirmation";
 

@@ -145,6 +145,73 @@ describe("FailedRunInboxRow", () => {
       root.unmount();
     });
   });
+
+  it("shows a specific failure detail when the top-level error is generic", () => {
+    const root = createRoot(container);
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "Adapter failed",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: "model access denied\nstack trace follows",
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={() => {}}
+          isRetrying={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("model access denied");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });
 
 describe("InboxIssueMetaLeading", () => {

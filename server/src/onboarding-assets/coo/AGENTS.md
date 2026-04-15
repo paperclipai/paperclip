@@ -32,9 +32,9 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - No delivery issue may move `In Progress` to `Done`.
 - Any delivery issue in `Done` without visible `[QA PASS]` and `[RELEASE CONFIRMED]` is invalid and must be recovered.
 - Any delivery issue in `In Review` must be assigned to QA and Release Engineer, include visible `[QA ROUTE]`, and include explicit QA wake-up.
-- Same-issue recovery is the default for stuck execution.
+- Same-issue recovery is the default for stuck work.
 - Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
-- Do not create or normalize continuation-by-reissue as a routine fix.
+- If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
 
 ## Ownership
 
@@ -90,12 +90,12 @@ Treat repeated context-length failures as unrecoverable session state.
 When detected:
 1. stop resume attempts on the same session
 2. leave a same-issue recovery comment with only compressed task truth:
-- original objective
-- concise progress summary
-- exact next step
-- explicit note that a fresh session is required
-3. move the issue back to a recoverable non-blocked status when appropriate and wake the next owner on the same issue
-4. escalate to the board only if a true successor issue is required for exceptional recovery
+   - original objective
+   - concise progress summary
+   - exact next step
+   - explicit note that a fresh session is required
+3. move the issue back to a recoverable non-blocked status and rotate to a fresh session when possible
+4. if a successor issue is truly required, escalate to the board with a concrete justification
 
 Do not keep retrying poisoned sessions.
 
@@ -132,7 +132,8 @@ Every correction comment must include:
 - no retry loops without new evidence
 - no leaving invalid `Done` unrecovered
 - no leaving `In Review` without QA ownership and wake-up
-- no cancelling a valid blocked source issue with healthy continuation
+- no autonomous successor-issue creation as routine recovery
+- no cancelling a valid blocked source issue with a board-created continuation
 
 ## Role Charter Baseline
 

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
 import { approvalsApi } from "../api/approvals";
-import { boardBriefApi } from "../api/boardBrief";
 import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
+import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import {
   computeInboxBadgeData,
@@ -75,6 +76,7 @@ export function useReadInboxItems() {
 
 export function useInboxBadge(companyId: string | null | undefined) {
   const { dismissed } = useDismissedInboxItems();
+  const { readItems } = useReadInboxItems();
 
   const { data: approvals = [] } = useQuery({
     queryKey: queryKeys.approvals.list(companyId!),
@@ -98,16 +100,10 @@ export function useInboxBadge(companyId: string | null | undefined) {
     retry: false,
   });
 
-  const { data: boardBrief } = useQuery({
-    queryKey: queryKeys.boardBrief.detail(companyId!),
-    queryFn: () => boardBriefApi.get(companyId!),
-    enabled: !!companyId,
-  });
-
   const { data: dashboard } = useQuery({
     queryKey: queryKeys.dashboard(companyId!),
     queryFn: () => dashboardApi.summary(companyId!),
-    enabled: !!companyId && !boardBrief,
+    enabled: !!companyId,
   });
 
   const { data: heartbeatRuns = [] } = useQuery({
@@ -116,17 +112,27 @@ export function useInboxBadge(companyId: string | null | undefined) {
     enabled: !!companyId,
   });
 
+  const { data: touchedIssues = [] } = useQuery({
+    queryKey: queryKeys.issues.listTouchedByMe(companyId!),
+    queryFn: () =>
+      issuesApi.list(companyId!, {
+        touchedByUserId: "me",
+        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+      }),
+    enabled: !!companyId,
+  });
+
   return useMemo(
     () =>
       computeInboxBadgeData({
         approvals,
         joinRequests,
-        boardBrief,
         dashboard,
         heartbeatRuns,
-        mineIssues: [],
+        mineIssues: touchedIssues,
         dismissed,
+        readItems,
       }),
-    [approvals, joinRequests, boardBrief, dashboard, heartbeatRuns, dismissed],
+    [approvals, joinRequests, dashboard, heartbeatRuns, touchedIssues, dismissed, readItems],
   );
 }

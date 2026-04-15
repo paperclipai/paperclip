@@ -18,6 +18,10 @@ const REASON_TEXT: Record<IssueQaGateReasonCode, { title: string; body: string }
     title: "Ship blocked: move to QA first",
     body: "Delivery issues can only ship to Done from QA (in_review).",
   },
+  qa_gate_missing_qa_comment: {
+    title: "Ship blocked: waiting on QA",
+    body: "A QA-authored comment is required before this issue can ship.",
+  },
   qa_gate_missing_qa_pass: {
     title: "Ship blocked: missing QA PASS",
     body: "The latest QA-authored comment must include [QA PASS].",

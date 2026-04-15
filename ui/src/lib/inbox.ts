@@ -1,6 +1,5 @@
 import type {
   Approval,
-  BoardBrief,
   DashboardAttentionItem,
   DashboardSummary,
   HeartbeatRun,
@@ -418,67 +417,62 @@ export function shouldShowInboxSection({
 export function computeInboxBadgeData({
   approvals,
   joinRequests,
-  boardBrief,
   dashboard,
   heartbeatRuns,
   mineIssues,
   dismissed,
+  readItems,
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
-  boardBrief?: BoardBrief;
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
   dismissed: Set<string>;
+  readItems: Set<string>;
 }): InboxBadgeData {
-  const isDismissedBoardBriefAction = (item: { key: string; kind: string; entityId: string }) =>
-    dismissed.has(item.key)
-    || (item.kind === "join_request" && dismissed.has(`join:${item.entityId}`));
-
-  const actionableApprovals = approvals.filter(
+  const visibleApprovals = approvals.filter(
     (approval) =>
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !dismissed.has(`approval:${approval.id}`),
+  );
+  const actionableApprovals = visibleApprovals.length;
+  const unreadApprovals = visibleApprovals.filter(
+    (approval) => !readItems.has(`approval:${approval.id}`),
   ).length;
-  const failedRuns = boardBrief
-    ? boardBrief.actionQueue.filter(
-      (item) => item.kind === "run" && !isDismissedBoardBriefAction(item),
-    ).length
-    : getLatestFailedRunsByAgent(heartbeatRuns).filter(
-      (run) => !dismissed.has(`run:${run.id}`),
-    ).length;
-  const visibleJoinRequests = joinRequests.filter(
+
+  const visibleFailedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
+    (run) => !dismissed.has(`run:${run.id}`),
+  );
+  const failedRuns = visibleFailedRuns.length;
+  const unreadFailedRuns = visibleFailedRuns.filter(
+    (run) => !readItems.has(`run:${run.id}`),
+  ).length;
+
+  const visibleJoinRequestItems = joinRequests.filter(
     (jr) => !dismissed.has(`join:${jr.id}`),
+  );
+  const visibleJoinRequests = visibleJoinRequestItems.length;
+  const unreadJoinRequests = visibleJoinRequestItems.filter(
+    (jr) => !readItems.has(`join:${jr.id}`),
   ).length;
-  const visibleActionQueue = boardBrief
-    ? boardBrief.actionQueue.filter(
-      (item) => item.kind === "issue" || !isDismissedBoardBriefAction(item),
-    ).length
-    : dashboard?.brief.needsAttention.filter(
-      (item) => item.kind === "issue" || !dismissed.has(item.key),
-    ).length
-      ?? mineIssues.filter((issue) => issue.isUnreadForMe).length;
-  const alerts = boardBrief
-    ? boardBrief.incidents.filter(
-      (incident) => incident.severity === "critical" && !dismissed.has(`incident:${incident.fingerprint}`),
-    ).length
-    : Number(
-      (dashboard?.agents.error ?? 0) > 0 &&
-        failedRuns === 0 &&
-        !dismissed.has("alert:agent-errors"),
-    ) + Number(
-      (dashboard?.costs.monthBudgetCents ?? 0) > 0 &&
-        (dashboard?.costs.monthUtilizationPercent ?? 0) >= 80 &&
-        !dismissed.has("alert:budget"),
-    );
+  const unreadTouchedIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const alerts = Number(
+    (dashboard?.agents.error ?? 0) > 0 &&
+      failedRuns === 0 &&
+      !dismissed.has("alert:agent-errors"),
+  ) + Number(
+    (dashboard?.costs.monthBudgetCents ?? 0) > 0 &&
+      (dashboard?.costs.monthUtilizationPercent ?? 0) >= 80 &&
+      !dismissed.has("alert:budget"),
+  );
 
   return {
-    inbox: visibleActionQueue + alerts,
+    inbox: unreadApprovals + unreadFailedRuns + unreadJoinRequests + unreadTouchedIssues + alerts,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
-    mineIssues: visibleActionQueue,
+    mineIssues: unreadTouchedIssues,
     alerts,
   };
 }

@@ -260,7 +260,7 @@ describe("IssuesList", () => {
     });
   });
 
-  it("requests open statuses for search when closed issues are hidden", async () => {
+  it("does not force open status filtering during search", async () => {
     const issue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
     mockIssuesApi.list.mockResolvedValue([issue]);
 
@@ -271,38 +271,6 @@ describe("IssuesList", () => {
         projects={[]}
         viewStateKey="paperclip:test-issues"
         initialSearch="server"
-        onUpdateIssue={() => undefined}
-      />,
-      container,
-    );
-
-    await waitForAssertion(() => {
-      expect(mockIssuesApi.list).toHaveBeenCalledWith(
-        "company-1",
-        expect.objectContaining({
-          q: "server",
-          status: "backlog,todo,in_progress,in_review,blocked",
-        }),
-      );
-    });
-
-    act(() => {
-      root.unmount();
-    });
-  });
-
-  it("does not force open status filtering when closed issues are shown", async () => {
-    const issue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
-    mockIssuesApi.list.mockResolvedValue([issue]);
-
-    const { root } = renderWithQueryClient(
-      <IssuesList
-        issues={[]}
-        agents={[]}
-        projects={[]}
-        viewStateKey="paperclip:test-issues"
-        initialSearch="server"
-        showClosed
         onUpdateIssue={() => undefined}
       />,
       container,
@@ -313,6 +281,89 @@ describe("IssuesList", () => {
       expect(searchCall).toBeDefined();
       expect(searchCall?.[1]).not.toHaveProperty("status");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not exclude recovery source issues during search by default", async () => {
+    const issue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
+    mockIssuesApi.list.mockResolvedValue([issue]);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialSearch="server"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const searchCall = mockIssuesApi.list.mock.calls.find((call) => call[1]?.q === "server");
+      expect(searchCall).toBeDefined();
+      expect(searchCall?.[1]).not.toHaveProperty("excludeRecoverySourcesWithOpenSuccessors");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("propagates explicit recovery source exclusion during search", async () => {
+    const issue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
+    mockIssuesApi.list.mockResolvedValue([issue]);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialSearch="server"
+        excludeRecoverySourcesWithOpenSuccessors
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({
+          q: "server",
+          excludeRecoverySourcesWithOpenSuccessors: true,
+        }),
+      );
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not render a show closed toggle", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-visible", identifier: "PAP-4", title: "Visible issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Visible issue");
+    });
+
+    expect(container.textContent).not.toContain("Show Closed");
+    expect(container.textContent).not.toContain("Hide Closed");
 
     act(() => {
       root.unmount();

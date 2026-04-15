@@ -230,6 +230,21 @@ describe("issue QA gate routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects delivery issue done transition when no QA comment exists yet", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_qa_comment",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("rejects delivery issue done transition when latest QA comment is missing [RELEASE CONFIRMED]", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
     mockIssueService.listComments.mockResolvedValue([qaComment("[QA PASS]\nNeeds release check")]);
@@ -267,7 +282,7 @@ describe("issue QA gate routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
-      reasonCode: "qa_gate_missing_qa_pass",
+      reasonCode: "qa_gate_missing_qa_comment",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

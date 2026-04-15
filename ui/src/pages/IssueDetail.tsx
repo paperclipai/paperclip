@@ -39,6 +39,7 @@ import {
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { describeIssueUpdateError } from "../lib/issue-update-errors";
+import { getSmartReviewPresentation } from "../lib/qa-gate-presentation";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueBoardStatePanel } from "../components/IssueBoardStatePanel";
@@ -132,6 +133,7 @@ const QA_GATE_REASON_LABELS: Record<string, string> = {
   qa_gate_requires_qa_assignee: "Delivery issues entering QA must be assigned to a QA agent.",
   qa_gate_no_eligible_qa_agent: "No eligible QA agent is available to own this review.",
   qa_gate_requires_in_review: "Issue must be in QA before shipping.",
+  qa_gate_missing_qa_comment: "No QA comment yet.",
   qa_gate_missing_qa_pass: "Latest QA comment is missing [QA PASS].",
   qa_gate_missing_release_confirmation: "Latest QA comment is missing [RELEASE CONFIRMED].",
 };
@@ -1315,7 +1317,10 @@ export function IssueDetail() {
     }))
     : [];
   const qaGateMissing = qaGate?.missingRequirements ?? [];
-  const canAttemptQaShip = issue.status === "in_review";
+  const smartReviewPresentation = getSmartReviewPresentation({
+    issueStatus: issue.status,
+    lastQaSummaryAt: qaGate?.lastQaSummaryAt ?? null,
+  });
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -1527,7 +1532,9 @@ export function IssueDetail() {
               </span>
             )}
             <span className="ml-auto text-[11px] text-muted-foreground">
-              {qaGate.lastQaSummaryAt ? `Last summary ${relativeTime(qaGate.lastQaSummaryAt)}` : "No QA summary yet"}
+              {qaGate.lastQaSummaryAt
+                ? `Last summary ${relativeTime(qaGate.lastQaSummaryAt)}`
+                : smartReviewPresentation.statusLabel}
             </span>
           </div>
 
@@ -1609,11 +1616,19 @@ export function IssueDetail() {
           <div className="flex items-center justify-end">
             <Button
               size="sm"
-              variant={qaGate.canShip ? "default" : "outline"}
-              disabled={!canAttemptQaShip || updateIssue.isPending}
-              onClick={() => updateIssue.mutate({ status: "done" })}
+              variant={
+                smartReviewPresentation.actionStatus === "in_review"
+                || (smartReviewPresentation.actionStatus === "done" && qaGate.canShip)
+                  ? "default"
+                  : "outline"
+              }
+              disabled={!smartReviewPresentation.actionStatus || updateIssue.isPending}
+              onClick={() => {
+                if (!smartReviewPresentation.actionStatus) return;
+                updateIssue.mutate({ status: smartReviewPresentation.actionStatus });
+              }}
             >
-              QA Ship
+              {smartReviewPresentation.actionLabel}
             </Button>
           </div>
         </div>

@@ -258,6 +258,7 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
 - **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
+- **Closed visibility:** `Done` and `Cancelled` issues remain visible in both list and board views by default. In kanban, large columns are trimmed with the same per-column `Show more` pagination used elsewhere rather than a global closed-items toggle.
 
 **Grouping:**
 - Issues are grouped by status by default (matching the reference screenshots).
@@ -366,6 +367,12 @@ Clicking an issue opens the detail view. The main content area splits into two z
 - Each comment shows: author avatar/icon, author name, timestamp, body (markdown rendered).
 - Comment input at the bottom — a text area with markdown support and a "Comment" button.
 - Comments from agents show a bot icon; comments from the board show a user icon.
+
+**Delivery / QA issues:**
+- Delivery-scoped issues show a Smart Review card summarizing QA state.
+- Before an issue enters `in_review`, the primary CTA is `Start QA`.
+- Once an issue is in `in_review`, the primary CTA becomes `QA Ship`.
+- If there is no QA-authored comment yet, the card should say that explicitly instead of implying a latest QA verdict already exists.
 
 #### Right Pane (Properties Panel)
 
@@ -833,7 +840,7 @@ Items are grouped by category, with the most actionable items first:
 - Clicking an item marks it as read.
 - Approvals disappear from the inbox once approved/rejected (they move to the resolved state).
 - Alerts disappear when the underlying condition is resolved (agent resumed, budget increased).
-- The sidebar badge count reflects total unresolved inbox items.
+- The sidebar badge count mirrors the inbox page: unread issue updates plus unread non-issue rows, with failed runs deduped to the latest failed run per agent.
 - Inbox is computed from live data (pending approvals query + alert conditions), not a separate notification table. This keeps it simple for V1.
 
 ---
