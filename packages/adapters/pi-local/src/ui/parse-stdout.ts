@@ -1,21 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
+import { safeJsonParse, asRecord, asString } from "@paperclipai/adapter-utils";
 
 function extractTextContent(content: string | Array<{ type: string; text?: string; thinking?: string }>): { text: string; thinking: string } {
   if (typeof content === "string") return { text: content, thinking: "" };

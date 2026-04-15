@@ -1,9 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
+import { asRecord, safeJsonParse } from "@paperclipai/adapter-utils";
 
 function asNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -23,14 +19,6 @@ function errorText(value: unknown): string {
     return JSON.stringify(rec);
   } catch {
     return "";
-  }
-}
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
   }
 }
 

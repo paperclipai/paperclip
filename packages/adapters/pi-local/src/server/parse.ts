@@ -1,4 +1,5 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asRecord } from "@paperclipai/adapter-utils";
 
 interface ParsedPiOutput {
   sessionId: string | null;
@@ -14,10 +15,6 @@ interface ParsedPiOutput {
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
 
 function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === "string") return content;

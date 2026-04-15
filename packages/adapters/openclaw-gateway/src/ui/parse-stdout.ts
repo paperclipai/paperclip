@@ -1,18 +1,6 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 import { normalizeOpenClawGatewayStreamLine } from "../shared/stream.js";
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
+import { safeJsonParse, asRecord } from "@paperclipai/adapter-utils";
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";

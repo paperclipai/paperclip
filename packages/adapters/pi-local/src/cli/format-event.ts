@@ -1,21 +1,5 @@
 import pc from "picocolors";
-
-function safeJsonParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
+import { safeJsonParse, asRecord, asString } from "@paperclipai/adapter-utils";
 
 function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === "string") return content;
