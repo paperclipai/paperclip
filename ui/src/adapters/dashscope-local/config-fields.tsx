@@ -25,9 +25,10 @@ export function DashScopeLocalConfigFields({
     : eff("adapterConfig", "model", String(config.model ?? "qwen3.5-plus"));
 
   // Get effective baseUrl value (default to Coding Plan endpoint)
+  // Note: baseUrl is not in CreateConfigValues, always use default in create mode
   const defaultBaseUrl = "https://coding.dashscope.aliyuncs.com/v1";
   const effectiveBaseUrl = isCreate
-    ? String(values?.baseUrl ?? defaultBaseUrl)
+    ? defaultBaseUrl
     : eff("adapterConfig", "baseUrl", String(config.baseUrl ?? defaultBaseUrl));
 
   return (
@@ -69,13 +70,14 @@ export function DashScopeLocalConfigFields({
 
       <Field 
         label="API Base URL" 
-        hint="DashScope Coding Plan endpoint"
+        hint="DashScope Coding Plan endpoint (fixed)"
+        readOnly={isCreate}
       >
         <DraftInput
           value={effectiveBaseUrl}
           onCommit={(v: string) =>
             isCreate
-              ? set!({ baseUrl: v })
+              ? null // baseUrl is fixed in create mode
               : mark("adapterConfig", "baseUrl", v || undefined)
           }
           immediate
