@@ -77,17 +77,23 @@ export function GlobalChatBubble() {
     }
   };
 
-  // Ctrl+Shift+C → open / cycle agent; Esc → close
+  // Ctrl+. → open / cycle agent; Esc → close
+  // (Ctrl+Shift+C conflicts with browser DevTools inspector)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key.toLowerCase() === "c" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key === "." && (e.ctrlKey || e.metaKey) && !e.altKey) {
         e.preventDefault();
         if (!isOpen) {
-          handleOpen();
+          setIsOpen(true);
+          setIsMinimized(false);
+          if (!selectedAgentId && agents.length > 0) {
+            setSelectedAgentId(agents[0]!.id);
+          }
         } else if (agents.length > 1) {
           const currentIdx = agents.findIndex((a) => a.id === selectedAgentId);
           const nextIdx = (currentIdx + 1) % agents.length;
-          handleSelectAgent(agents[nextIdx]!.id);
+          setSelectedAgentId(agents[nextIdx]!.id);
+          setAgentPickerOpen(false);
         }
       }
       if (e.key === "Escape" && isOpen) {
