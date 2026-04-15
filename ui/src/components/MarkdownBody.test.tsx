@@ -96,6 +96,13 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="skill"');
   });
 
+  it("sanitizes unsafe javascript markdown links", () => {
+    const html = renderMarkdown("[click me](javascript:alert(document.cookie))");
+
+    expect(html).toContain('<a href="" rel="noreferrer">click me</a>');
+    expect(html).not.toContain("javascript:");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 
@@ -144,6 +151,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1179"');
     expect(html).toContain("text-red-600");
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
+  });
+
+  it("rewrites issue scheme links to internal issue links", () => {
+    const html = renderMarkdown("See issue://PAP-1310 and issue://:PAP-1311.", [
+      { identifier: "PAP-1310", status: "done" },
+      { identifier: "PAP-1311", status: "blocked" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1310"');
+    expect(html).toContain('href="/issues/PAP-1311"');
+    expect(html).toContain(">issue://PAP-1310<");
+    expect(html).toContain(">issue://:PAP-1311<");
+    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-red-600");
   });
 
   it("linkifies issue identifiers inside inline code spans", () => {

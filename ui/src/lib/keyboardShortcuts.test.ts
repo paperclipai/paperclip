@@ -8,6 +8,7 @@ import {
   isKeyboardShortcutTextInputTarget,
   resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
+  resolveInboxUndoArchiveKeyAction,
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "./keyboardShortcuts";
@@ -177,6 +178,36 @@ describe("keyboardShortcuts helpers", () => {
       ctrlKey: false,
       altKey: false,
       target: input,
+      hasOpenDialog: false,
+    })).toBe("ignore");
+  });
+
+  it("undoes only a clean lowercase u press when an archive is available", () => {
+    const button = document.createElement("button");
+
+    expect(resolveInboxUndoArchiveKeyAction({
+      hasUndoableArchive: true,
+      defaultPrevented: false,
+      key: "u",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("undo_archive");
+  });
+
+  it("keeps uppercase U available for mark-unread handling", () => {
+    const button = document.createElement("button");
+
+    expect(resolveInboxUndoArchiveKeyAction({
+      hasUndoableArchive: true,
+      defaultPrevented: false,
+      key: "U",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
       hasOpenDialog: false,
     })).toBe("ignore");
   });

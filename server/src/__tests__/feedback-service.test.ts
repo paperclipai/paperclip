@@ -92,6 +92,10 @@ async function startTempDatabase() {
   return { connectionString, dataDir, instance };
 }
 
+async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
+  await db?.$client?.end?.({ timeout: 0 });
+}
+
 describe("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;
@@ -129,6 +133,7 @@ describe("feedbackService.saveIssueVote", () => {
   });
 
   afterAll(async () => {
+    await closeDbClient(db);
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });
