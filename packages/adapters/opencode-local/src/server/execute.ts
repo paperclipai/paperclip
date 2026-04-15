@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, firstNonEmptyLine, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -29,15 +29,6 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
 
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;

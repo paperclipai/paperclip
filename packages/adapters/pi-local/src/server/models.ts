@@ -1,17 +1,9 @@
 import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
+import { firstNonEmptyLine } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
 
 function parseModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];

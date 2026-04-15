@@ -4,33 +4,20 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  firstNonEmptyLine,
+  summarizeStatus,
+} from "@paperclipai/adapter-utils";
+import {
   asString,
+  asStringArray,
   parseObject,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  asStringArray,
-} from "@paperclipai/adapter-utils/server-utils";
 import { discoverPiModelsCached } from "./models.js";
 import { parsePiJsonl } from "./parse.js";
-
-function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
-  if (checks.some((check) => check.level === "error")) return "fail";
-  if (checks.some((check) => check.level === "warn")) return "warn";
-  return "pass";
-}
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
   const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);

@@ -4,6 +4,11 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  firstNonEmptyLine,
+  commandLooksLike,
+  summarizeStatus,
+} from "@paperclipai/adapter-utils";
+import {
   asString,
   asBoolean,
   asStringArray,
@@ -17,28 +22,8 @@ import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 
-function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
-  if (checks.some((check) => check.level === "error")) return "fail";
-  if (checks.some((check) => check.level === "warn")) return "warn";
-  return "pass";
-}
-
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {

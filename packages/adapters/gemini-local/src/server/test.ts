@@ -1,8 +1,12 @@
-import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
+} from "@paperclipai/adapter-utils";
+import {
+  firstNonEmptyLine,
+  commandLooksLike,
+  summarizeStatus,
 } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
@@ -17,21 +21,9 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
-import { firstNonEmptyLine } from "./utils.js";
-
-function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
-  if (checks.some((check) => check.level === "error")) return "fail";
-  if (checks.some((check) => check.level === "warn")) return "warn";
-  return "pass";
-}
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
