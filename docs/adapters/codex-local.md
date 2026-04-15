@@ -45,9 +45,10 @@ Paperclip currently applies that only when the selected model is `gpt-5.4`. On o
 
 When Paperclip is running inside a managed worktree instance (`PAPERCLIP_IN_WORKTREE=true`), the adapter instead uses a worktree-isolated `CODEX_HOME` under the Paperclip instance so Codex skills, sessions, logs, and other runtime state do not leak across checkouts. It seeds that isolated home from the user's main Codex home for shared auth/config continuity.
 
+If `OPENAI_API_KEY` is present, Paperclip writes API-key auth into the effective managed `CODEX_HOME/auth.json` so Codex uses usage-based API authentication instead of inheriting a ChatGPT login session from `~/.codex/auth.json`.
+
 ## Manual Local CLI
 
-If `OPENAI_API_KEY` is present, Paperclip writes API-key auth into the effective managed `CODEX_HOME/auth.json` so Codex uses usage-based API authentication instead of inheriting a ChatGPT login session from `~/.codex/auth.json`.
 For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
 
 ```sh

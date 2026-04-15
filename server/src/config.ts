@@ -46,7 +46,7 @@ function loadEnvFileOnce(envPath: string): void {
 // at the first directory that looks like a project boundary (.git or
 // pnpm-workspace.yaml).
 function findProjectRootEnvPath(): string | null {
-  let dir = dirname(resolve(process.cwd()));
+  let dir = resolve(process.cwd());
   while (true) {
     const isProjectRoot =
       existsSync(resolve(dir, ".git")) ||
