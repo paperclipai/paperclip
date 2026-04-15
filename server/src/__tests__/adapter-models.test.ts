@@ -3,6 +3,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { models as copilotFallbackModels } from "../adapters/copilot-local/index.js";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -83,6 +84,16 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+  });
+
+  it("returns the expanded copilot fallback models", async () => {
+    const models = await listAdapterModels("copilot_local");
+
+    expect(models).toEqual(copilotFallbackModels);
+    expect(models.some((model) => model.id === "claude-opus-4.6")).toBe(true);
+    expect(models.some((model) => model.id === "claude-haiku-4.5")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.3-codex")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.2-codex")).toBe(true);
   });
 
   it("loads cursor models dynamically and caches them", async () => {
