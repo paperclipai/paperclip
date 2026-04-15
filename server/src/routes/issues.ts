@@ -2031,7 +2031,27 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+
+    let updated;
+    try {
+      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    } catch (error) {
+      const isRoutineExecutionConflict =
+        !!error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: string }).code === "23505" &&
+        "constraint" in error &&
+        (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+      if (isRoutineExecutionConflict) {
+        res.status(409).json({
+          error: "Another execution for this routine is already in progress",
+        });
+        return;
+      }
+      throw error;
+    }
+
     const actor = getActorInfo(req);
 
     await logActivity(db, {
