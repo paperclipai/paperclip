@@ -90,7 +90,7 @@ type StagedIssueFile = {
   title?: string | null;
 };
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "openclaw_gateway"]);
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
@@ -116,6 +116,9 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "high", label: "High" },
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
+  ],
+  openclaw_gateway: [
+    { value: "", label: "Default" },
   ],
 } as const;
 
@@ -633,7 +636,9 @@ export function NewIssueDialog() {
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          : assigneeAdapterType === "openclaw_gateway"
+            ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+            : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -857,13 +862,17 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
-        : "Agent options";
+          : assigneeAdapterType === "openclaw_gateway"
+            ? "OpenClaw options"
+            : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : assigneeAdapterType === "openclaw_gateway"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
