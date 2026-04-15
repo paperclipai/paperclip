@@ -1786,6 +1786,14 @@ export function IssueDetail() {
               await uploadAttachment.mutateAsync(file);
             }}
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+            onApprove={
+              issue.status === "in_review"
+                ? async () => {
+                    await addComment.mutateAsync({ body: "Approved" });
+                    navigate(sourceBreadcrumb.href, { replace: true });
+                  }
+                : undefined
+            }
           />
         </TabsContent>
 

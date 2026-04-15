@@ -2531,6 +2531,16 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    // Auto-transition linked issue to in_progress when a run starts executing.
+    // Allowlist: only transition from statuses where a new run means active work is starting.
+    // Excludes blocked (needs user guidance), done/cancelled (terminal), in_progress (already there).
+    if (
+      issueContext &&
+      (issueContext.status === "backlog" || issueContext.status === "todo" || issueContext.status === "in_review")
+    ) {
+      await issuesSvc.update(issueContext.id, { status: "in_progress" });
+      issueContext.status = "in_progress";
+    }
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(

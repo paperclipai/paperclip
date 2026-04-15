@@ -71,6 +71,7 @@ interface CommentThreadProps {
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onApprove?: () => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
@@ -611,6 +612,8 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
+  issueStatus,
+  onApprove,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -935,6 +938,24 @@ export function CommentThread({
             <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
               {submitting ? "Posting..." : "Comment"}
             </Button>
+            {issueStatus === "in_review" && onApprove && (
+              <Button
+                size="sm"
+                disabled={submitting}
+                onClick={async () => {
+                  setSubmitting(true);
+                  try {
+                    await onApprove();
+                  } finally {
+                    setSubmitting(false);
+                  }
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                <Check className="h-3.5 w-3.5 mr-1" />
+                Approve
+              </Button>
+            )}
           </div>
         </div>
       )}

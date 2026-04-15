@@ -244,7 +244,11 @@ export function KanbanBoard({
     }
 
     if (targetStatus && targetStatus !== issue.status) {
-      onUpdateIssue(issueId, { status: targetStatus });
+      const patch: Record<string, unknown> = { status: targetStatus };
+      if (targetStatus === "todo" && !issue.assigneeAgentId && agents?.length) {
+        patch.assigneeAgentId = agents[0].id;
+      }
+      onUpdateIssue(issueId, patch);
     }
   }
 
