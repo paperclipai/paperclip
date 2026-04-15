@@ -42,11 +42,14 @@ interface CallDashScopeOptions {
   topP?: number;
   maxTokens?: number;
   timeoutSec?: number;
+  baseUrl?: string;
 }
 
 /**
  * Call DashScope API
- * Uses standard DashScope endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
+ * Supports both:
+ * - Standard endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
+ * - Coding Plan endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions
  */
 async function callDashScopeAPI(
   apiKey: string,
@@ -54,19 +57,34 @@ async function callDashScopeAPI(
   messages: DashScopeMessage[],
   options: CallDashScopeOptions,
 ): Promise<{ response: DashScopeResponse; latencyMs: number }> {
-  // Always use standard DashScope endpoint
-  const url = new URL("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation");
+  // Auto-detect endpoint mode based on baseUrl
+  const isCodingPlan = options.baseUrl?.includes('coding.dashscope');
   
-  // Build request body in DashScope native format
-  const requestBody = {
-    model,
-    input: { messages },
-    parameters: {
-      ...(options.temperature !== undefined && { temperature: options.temperature }),
-      ...(options.topP !== undefined && { top_p: options.topP }),
-      ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
-    },
-  };
+  // Select endpoint based on mode
+  const url = isCodingPlan
+    ? new URL(`${options.baseUrl}/chat/completions`) // Coding Plan: OpenAI compatible format
+    : new URL("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"); // Pay-as-you-go
+  
+  // Build request body based on mode
+  const requestBody = isCodingPlan
+    ? {
+        // Coding Plan: OpenAI compatible format
+        model,
+        messages,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
+      }
+    : {
+        // Pay-as-you-go: DashScope native format
+        model,
+        input: { messages },
+        parameters: {
+          ...(options.temperature !== undefined && { temperature: options.temperature }),
+          ...(options.topP !== undefined && { top_p: options.topP }),
+          ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
+        },
+      };
 
   const body = JSON.stringify(requestBody);
   const startTime = Date.now();
@@ -147,6 +165,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const { runId, agent, config, context, onLog, authToken } = ctx;
 
   const model = asString(config.model, "");
+  const baseUrl = asString(config.baseUrl, ""); // Read baseUrl config for Coding Plan support
   const temperature = asNumber(config.temperature, 0.7);
   const topP = asNumber(config.topP, 0.8);
   const maxTokens = asNumber(config.maxTokens, 0);
@@ -195,9 +214,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  // Log configuration
-  await onLog("stdout", `[paperclip] Using DashScope standard endpoint\n`);
-  await onLog("stdout", `[paperclip] Endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation\n`);
+  // Log configuration (dynamic based on baseUrl)
+  const isCodingPlan = baseUrl.includes('coding.dashscope');
+  await onLog("stdout", `[paperclip] Using ${isCodingPlan ? 'Coding Plan' : 'DashScope standard'} endpoint\n`);
+  await onLog("stdout", `[paperclip] Endpoint: ${isCodingPlan ? baseUrl + '/chat/completions' : 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation'}\n`);
   await onLog("stdout", `[paperclip] Model: ${model}\n`);
 
   const messages: DashScopeMessage[] = [
@@ -211,18 +231,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       topP,
       maxTokens: maxTokens > 0 ? maxTokens : undefined,
       timeoutSec,
+      baseUrl,
     });
 
     await onLog("stdout", `[paperclip] DashScope response in ${latencyMs}ms\n`);
-    await onLog("stdout", `[paperclip] Tokens: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}\n`);
+    await onLog("stdout", `[paperclip] Tokens:input=${response.usage.input_tokens}, output=${response.usage.output_tokens}\n`);
 
-    // Extract output (DashScope native format)
+    // Extract output (supports both DashScope native and OpenAI compatible format)
     let outputText = "";
     let finishReason = "stop";
     
     if (response.output?.text !== undefined) {
+      // DashScope native format
       outputText = response.output.text;
       finishReason = response.output.finish_reason ?? "stop";
+    } else if (response.choices?.[0]?.message?.content !== undefined) {
+      // OpenAI compatible format (Coding Plan)
+      outputText = response.choices[0].message.content;
+      finishReason = response.choices[0].finish_reason ?? "stop";
     } else {
       // Fallback for unexpected response format
       outputText = JSON.stringify(response);
