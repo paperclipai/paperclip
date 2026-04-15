@@ -47,6 +47,9 @@ describe("opencode_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "opencode_local",
       config: {
+        env: {
+          XDG_CONFIG_HOME: tempConfigDir,
+        },
         command: process.execPath,
         cwd,
       },
@@ -70,6 +73,7 @@ describe("opencode_local environment diagnostics", () => {
           command: process.execPath,
           cwd,
           env: {
+            XDG_CONFIG_HOME: tempConfigDir,
             OPENAI_API_KEY: "",
           },
         },
@@ -108,6 +112,9 @@ describe("opencode_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "opencode_local",
         config: {
+        env: {
+          XDG_CONFIG_HOME: tempConfigDir,
+        },
           command: fakeOpencode,
           cwd,
         },
