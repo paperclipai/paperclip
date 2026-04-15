@@ -46,6 +46,7 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { buildEditedAgentAdapterConfig } from "../lib/agent-config-patch";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
@@ -275,10 +276,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           preserved[key] = existing[key];
         }
       }
-      patch.adapterConfig = { ...preserved, ...overlay.adapterConfig };
+      patch.adapterConfig = buildEditedAgentAdapterConfig(
+        preserved,
+        overlay.adapterConfig,
+      );
     } else if (Object.keys(overlay.adapterConfig).length > 0) {
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
-      patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
+      patch.adapterConfig = buildEditedAgentAdapterConfig(
+        existing,
+        overlay.adapterConfig,
+      );
     }
 
     if (patch.adapterConfig && adapterType === "hermes_local") {
@@ -400,7 +407,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return uiAdapter.buildAdapterConfig(val!);
     }
     const base = config as Record<string, unknown>;
-    const combined = { ...base, ...overlay.adapterConfig };
+    const combined = buildEditedAgentAdapterConfig(base, overlay.adapterConfig);
     if (adapterType === "hermes_local") {
       const effectCommand = combined.hermesCommand ?? combined.command;
       if (effectCommand) {

@@ -3,17 +3,17 @@ title: Dashboard
 summary: Understanding the Orchestrero dashboard
 ---
 
-The dashboard gives you a real-time overview of your autonomous company's health.
+The dashboard is the board-level control surface for a company. It is no longer just a metrics page: it leads with an executive brief and the highest-leverage actions waiting on the board.
 
 ## What You See
 
 The dashboard displays:
 
-- **Agent status** — how many agents are active, idle, running, or in error state
-- **Task breakdown** — counts by status (todo, in progress, blocked, done)
-- **Stale tasks** — tasks that have been in progress for too long without updates
-- **Cost summary** — current month spend vs budget, burn rate
-- **Recent activity** — latest mutations across the company
+- **Company state** — one sentence describing whether delivery is healthy, at risk, or blocked
+- **Snapshot** — four cards for progress, risk, decisions, and spend
+- **Focus areas** — the few workstreams where recent activity is material
+- **Do These Next** — the ordered board action queue for approvals, join requests, blocked work, and failed runs
+- **Operational detail** — charts, activity, recent tasks, active agents, and budget incidents below the brief
 
 ## Using the Dashboard
 
@@ -21,9 +21,12 @@ Access the dashboard from the left sidebar after selecting a company. It refresh
 
 ### Key Metrics to Watch
 
-- **Blocked tasks** — these need your attention. Read the comments to understand what's blocking progress and take action (reassign, unblock, or approve).
+- **Do These Next** — work from top to bottom when you want the fastest way to unblock the company.
+- **Focus areas** — use these to jump directly into the workstreams with the most meaningful recent change.
+- **Blocked tasks** — read the linked issue comments to understand the blocker, then reassign, unblock, or approve as needed.
 - **Budget utilization** — agents auto-pause at 100% budget. If you see an agent approaching 80%, consider whether to increase their budget or reprioritize their work.
-- **Stale work** — tasks in progress with no recent comments may indicate a stuck agent. Check the agent's run history for errors.
+- **Budget incidents** — paused agents and paused projects surface here when hard-stop enforcement has fired.
+- **Recent activity and charts** — use the lower-level detail after the brief when you need operational context.
 
 ## Dashboard API
 
@@ -33,4 +36,4 @@ The dashboard data is also available via the API:
 GET /api/companies/{companyId}/dashboard
 ```
 
-Returns agent counts by status, task counts by status, cost summaries, and stale task alerts.
+Returns agent/task counts, cost and budget summaries, plus the same executive brief payload used by the board UI.

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
 import { approvalsApi } from "../api/approvals";
+import { boardBriefApi } from "../api/boardBrief";
 import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
@@ -97,10 +98,16 @@ export function useInboxBadge(companyId: string | null | undefined) {
     retry: false,
   });
 
+  const { data: boardBrief } = useQuery({
+    queryKey: queryKeys.boardBrief.detail(companyId!),
+    queryFn: () => boardBriefApi.get(companyId!),
+    enabled: !!companyId,
+  });
+
   const { data: dashboard } = useQuery({
     queryKey: queryKeys.dashboard(companyId!),
     queryFn: () => dashboardApi.summary(companyId!),
-    enabled: !!companyId,
+    enabled: !!companyId && !boardBrief,
   });
 
   const { data: heartbeatRuns = [] } = useQuery({
@@ -114,11 +121,12 @@ export function useInboxBadge(companyId: string | null | undefined) {
       computeInboxBadgeData({
         approvals,
         joinRequests,
+        boardBrief,
         dashboard,
         heartbeatRuns,
         mineIssues: [],
         dismissed,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, dismissed],
+    [approvals, joinRequests, boardBrief, dashboard, heartbeatRuns, dismissed],
   );
 }

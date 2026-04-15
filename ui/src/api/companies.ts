@@ -39,6 +39,7 @@ export const companiesApi = {
         | "requireBoardApprovalForNewAgents"
         | "feedbackDataSharingEnabled"
         | "dailyExecutiveSummaryEnabled"
+        | "criticalBoardAlertsEmailEnabled"
         | "brandColor"
         | "logoAssetId"
       >

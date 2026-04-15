@@ -26,6 +26,9 @@ export const companies = pgTable(
     dailyExecutiveSummaryEnabled: boolean("daily_executive_summary_enabled")
       .notNull()
       .default(false),
+    criticalBoardAlertsEmailEnabled: boolean("critical_board_alerts_email_enabled")
+      .notNull()
+      .default(true),
     dailyExecutiveSummaryLastSentAt: timestamp("daily_executive_summary_last_sent_at", { withTimezone: true }),
     dailyExecutiveSummaryLastStatus: text("daily_executive_summary_last_status"),
     dailyExecutiveSummaryLastError: text("daily_executive_summary_last_error"),

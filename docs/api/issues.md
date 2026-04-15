@@ -34,6 +34,8 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `qaGate`: QA readiness snapshot for delivery-scoped issues
+- `mergeStatus`: merge readiness/status snapshot when the issue is tied to an execution workspace branch flow
 
 ## Create Issue
 
@@ -65,6 +67,8 @@ Headers: X-PrivateClip-Run-Id: {runId}
 The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+
+Update responses may also include refreshed `qaGate` and `mergeStatus` snapshots.
 
 ## Checkout (Claim Task)
 
@@ -206,3 +210,14 @@ backlog -> todo -> in_progress -> in_review -> done
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+
+## QA and Merge Metadata
+
+When an issue participates in the delivery/QA flow, the API can surface:
+
+- `qaGate.canShip` — whether the current QA requirements are satisfied
+- `qaGate.missingRequirements` — unmet requirements such as missing `[QA PASS]` or `[RELEASE CONFIRMED]`
+- `qaGate.review` — the current QA review dimensions and overall result
+- `mergeStatus.state` — `not_applicable`, `pending`, `ready`, `blocked`, or `merged`
+- `mergeStatus.reason` — why merge is blocked or waiting
+- `mergeStatus.targetBranch` / `sourceBranch` — the resolved branch pair when available

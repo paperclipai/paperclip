@@ -30,6 +30,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   agentHeartbeatModelService,
+  boardBriefDeliveryService,
   executiveSummaryService,
   feedbackService,
   heartbeatService,
@@ -658,6 +659,7 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
     const executiveSummary = executiveSummaryService(db as any);
+    const boardBriefDelivery = boardBriefDeliveryService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -699,6 +701,17 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "executive summary scheduler tick failed");
+        });
+
+      void boardBriefDelivery
+        .tickCriticalAlerts(new Date())
+        .then((result) => {
+          if (result.sent > 0 || result.resolved > 0) {
+            logger.info({ ...result }, "board brief critical alerts tick finished");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "board brief critical alerts tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure

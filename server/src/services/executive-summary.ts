@@ -17,6 +17,8 @@ import type { CompanyKpi, CompanyKpiInput, ExecutiveSummary, ExecutiveSummarySen
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { boardBriefDeliveryService } from "./board-brief-delivery.js";
+import { boardBriefService } from "./board-brief.js";
 import { budgetService } from "./budgets.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
@@ -319,206 +321,7 @@ export function executiveSummaryService(db: Db) {
   }
 
   async function buildExecutiveSummary(companyId: string, now: Date = new Date(), database: Db | any = db): Promise<ExecutiveSummary> {
-    const company = await database
-      .select({
-        id: companies.id,
-        name: companies.name,
-        budgetMonthlyCents: companies.budgetMonthlyCents,
-        dailyExecutiveSummaryEnabled: companies.dailyExecutiveSummaryEnabled,
-        dailyExecutiveSummaryLastSentAt: companies.dailyExecutiveSummaryLastSentAt,
-        dailyExecutiveSummaryLastStatus: companies.dailyExecutiveSummaryLastStatus,
-        dailyExecutiveSummaryLastError: companies.dailyExecutiveSummaryLastError,
-      })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows: Array<any>) => rows[0] ?? null);
-
-    if (!company) throw notFound("Company not found");
-
-    const periodEnd = now;
-    const periodStart = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-
-    const [manualKpis, taskRows, monthSpendRow, pendingApprovals, budgetOverview, recipients, transitionRows, failedRuns] =
-      await Promise.all([
-        listKpis(companyId, database),
-        database
-          .select({ status: issues.status, count: sql<number>`count(*)` })
-          .from(issues)
-          .where(and(eq(issues.companyId, companyId), sql`${issues.originKind} <> 'board_copilot_thread'`))
-          .groupBy(issues.status),
-        database
-          .select({ monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
-          .from(costEvents)
-          .where(and(eq(costEvents.companyId, companyId), gte(costEvents.occurredAt, startOfLocalMonth(now))))
-          .then((rows: Array<{ monthSpend: number }>) => rows[0] ?? { monthSpend: 0 }),
-        database
-          .select({ count: sql<number>`count(*)` })
-          .from(approvals)
-          .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
-          .then((rows: Array<{ count: number }>) => Number(rows[0]?.count ?? 0)),
-        budgetService(database as Db).overview(companyId),
-        resolveRecipientEmails(companyId, database),
-        database
-          .select({
-            issueId: activityLog.entityId,
-            updatedAt: activityLog.createdAt,
-            details: activityLog.details,
-          })
-          .from(activityLog)
-          .where(
-            and(
-              eq(activityLog.companyId, companyId),
-              eq(activityLog.action, "issue.updated"),
-              gte(activityLog.createdAt, periodStart),
-              sql`exists (
-                select 1
-                from ${issues}
-                where ${issues.id}::text = ${activityLog.entityId}
-                  and ${issues.companyId} = ${companyId}
-                  and ${issues.originKind} <> 'board_copilot_thread'
-              )`,
-            ),
-          )
-          .orderBy(desc(activityLog.createdAt))
-          .limit(100),
-        database
-          .select({
-            runId: heartbeatRuns.id,
-            agentId: heartbeatRuns.agentId,
-            agentName: agents.name,
-            status: heartbeatRuns.status,
-            error: heartbeatRuns.error,
-            startedAt: heartbeatRuns.startedAt,
-            finishedAt: heartbeatRuns.finishedAt,
-          })
-          .from(heartbeatRuns)
-          .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.status, FAILED_RUN_STATUSES as unknown as string[]),
-              sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${periodStart.toISOString()}::timestamptz`,
-            ),
-          )
-          .orderBy(desc(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`))
-          .limit(3),
-      ]);
-
-    const taskCounts: Record<string, number> = {
-      open: 0,
-      inProgress: 0,
-      blocked: 0,
-      done: 0,
-    };
-    for (const row of taskRows) {
-      const count = Number(row.count ?? 0);
-      if (row.status === "in_progress") taskCounts.inProgress += count;
-      if (row.status === "blocked") taskCounts.blocked += count;
-      if (row.status === "done") taskCounts.done += count;
-      if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
-    }
-
-    const issueTransitionsRaw: Array<{
-      issueId: string;
-      toStatus: string;
-      fromStatus: string | null;
-      updatedAt: Date;
-    }> = [];
-    const seenIssueIds = new Set<string>();
-    for (const row of transitionRows) {
-      if (issueTransitionsRaw.length >= 5) break;
-      const details = (row.details ?? null) as Record<string, unknown> | null;
-      const toStatus = typeof details?.status === "string" ? details.status : null;
-      if (!toStatus || !ISSUE_TRANSITION_TARGET_STATUSES.has(toStatus)) continue;
-      if (seenIssueIds.has(row.issueId)) continue;
-      const previous = details?._previous;
-      const fromStatus =
-        previous && typeof previous === "object" && typeof (previous as Record<string, unknown>).status === "string"
-          ? ((previous as Record<string, unknown>).status as string)
-          : null;
-      issueTransitionsRaw.push({
-        issueId: row.issueId,
-        toStatus,
-        fromStatus,
-        updatedAt: row.updatedAt,
-      });
-      seenIssueIds.add(row.issueId);
-    }
-
-    const issueIdsForLookup = [...new Set(issueTransitionsRaw.map((item) => item.issueId).filter((value) => isUuid(value)))];
-    const issueMetaById = issueIdsForLookup.length > 0
-      ? await database
-        .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
-        .from(issues)
-        .where(inArray(issues.id, issueIdsForLookup))
-        .then((rows: Array<{ id: string; identifier: string; title: string }>) => new Map(rows.map((row) => [row.id, row])))
-      : new Map<string, { id: string; identifier: string; title: string }>();
-
-    const monthSpendCents = Number(monthSpendRow.monthSpend ?? 0);
-    const utilizationPercent =
-      company.budgetMonthlyCents > 0
-        ? Number(((monthSpendCents / company.budgetMonthlyCents) * 100).toFixed(2))
-        : 0;
-
-    return {
-      companyId: company.id,
-      companyName: company.name,
-      generatedAt: now,
-      periodStart,
-      periodEnd,
-      manualKpis,
-      computedKpis: {
-        monthSpendCents,
-        monthBudgetCents: company.budgetMonthlyCents,
-        monthUtilizationPercent: utilizationPercent,
-        tasksOpen: taskCounts.open,
-        tasksInProgress: taskCounts.inProgress,
-        tasksBlocked: taskCounts.blocked,
-        tasksDone: taskCounts.done,
-        pendingApprovals,
-        activeBudgetIncidents: budgetOverview.activeIncidents.length,
-        pausedAgents: budgetOverview.pausedAgentCount,
-        pausedProjects: budgetOverview.pausedProjectCount,
-      },
-      topChanges: {
-        issueTransitions: issueTransitionsRaw.map((row) => {
-          const meta = issueMetaById.get(row.issueId);
-          return {
-            issueId: row.issueId,
-            issueIdentifier: meta?.identifier ?? null,
-            issueTitle: meta?.title ?? row.issueId,
-            fromStatus: row.fromStatus as any,
-            toStatus: row.toStatus as any,
-            updatedAt: row.updatedAt,
-          };
-        }),
-        failedRuns: failedRuns.map((run: {
-          runId: string;
-          agentId: string;
-          agentName: string | null;
-          status: string;
-          error: string | null;
-          startedAt: Date | null;
-          finishedAt: Date | null;
-        }) => ({
-          runId: run.runId,
-          agentId: run.agentId,
-          agentName: run.agentName ?? null,
-          status: run.status as any,
-          error: run.error ? truncate(run.error, 280) : null,
-          startedAt: run.startedAt ?? null,
-          finishedAt: run.finishedAt ?? null,
-        })),
-        pendingApprovals,
-      },
-      dispatch: {
-        enabled: company.dailyExecutiveSummaryEnabled,
-        lastSentAt: company.dailyExecutiveSummaryLastSentAt,
-        lastStatus: toExecutiveSummaryStatus(company.dailyExecutiveSummaryLastStatus),
-        lastError: company.dailyExecutiveSummaryLastError,
-        recipients,
-      },
-    };
+    return boardBriefService(database as Db).buildExecutiveSummary(companyId, now, database);
   }
 
   async function dispatchForCompany(
@@ -605,6 +408,12 @@ export function executiveSummaryService(db: Db) {
         text: renderSummaryText(summary),
         html: renderSummaryHtml(summary),
       });
+      await boardBriefDeliveryService(tx as unknown as Db).persistCompanySnapshot(
+        companyId,
+        "daily_digest",
+        now,
+        tx as unknown as Db,
+      );
 
       await tx
         .update(companies)

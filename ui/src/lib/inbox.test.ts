@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type {
   Approval,
+  BoardBrief,
   DashboardSummary,
   ExecutionWorkspace,
   HeartbeatRun,
@@ -338,6 +339,62 @@ const dashboard: DashboardSummary = {
   },
 };
 
+const boardBrief = {
+  meta: {
+    companyId: "company-1",
+    schemaVersion: 1,
+    generatedAt: new Date("2026-03-11T05:00:00.000Z"),
+    windowStart: new Date("2026-03-10T05:00:00.000Z"),
+    windowEnd: new Date("2026-03-11T05:00:00.000Z"),
+  },
+  totals: {
+    agents: dashboard.agents,
+    tasks: dashboard.tasks,
+    costs: dashboard.costs,
+    budgets: dashboard.budgets,
+    pendingApprovals: dashboard.pendingApprovals,
+  },
+  health: {
+    tone: "watch",
+    reasons: ["Board actions are waiting"],
+  },
+  freshness: {
+    execution: { status: "fresh", lastUpdatedAt: new Date("2026-03-11T05:00:00.000Z"), reason: null },
+    work: { status: "fresh", lastUpdatedAt: new Date("2026-03-11T05:00:00.000Z"), reason: null },
+    cost: { status: "fresh", lastUpdatedAt: new Date("2026-03-11T05:00:00.000Z"), reason: null },
+    approvals: { status: "fresh", lastUpdatedAt: new Date("2026-03-11T05:00:00.000Z"), reason: null },
+    outputs: { status: "unknown", lastUpdatedAt: null, reason: null },
+  },
+  confidence: "high",
+  snapshot: {
+    ...dashboard.brief.snapshot,
+    outputs: {
+      value: "0",
+      label: "Outputs",
+      headline: "No fresh outputs",
+      detail: "0 new outputs",
+      tone: "watch",
+    },
+  },
+  focusAreas: [],
+  actionQueue: [
+    {
+      key: "join_request:join-1",
+      kind: "join_request",
+      entityId: "join-1",
+      title: "Human join request",
+      reason: "Pending join request",
+      severity: "medium",
+      timestamp: new Date("2026-03-11T03:00:00.000Z"),
+      href: "/inbox/unread",
+      ctaLabel: "Review request",
+    },
+  ],
+  incidents: [],
+  outputs: [],
+  manualKpis: [],
+} satisfies BoardBrief;
+
 describe("inbox helpers", () => {
   beforeEach(() => {
     storage.clear();
@@ -380,6 +437,27 @@ describe("inbox helpers", () => {
         "alert:budget",
         "alert:agent-errors",
       ]),
+    });
+
+    expect(result).toEqual({
+      inbox: 0,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+      mineIssues: 0,
+      alerts: 0,
+    });
+  });
+
+  it("treats dismissed join requests as dismissed when board brief keys use join_request:", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [makeJoinRequest("join-1")],
+      boardBrief,
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [],
+      dismissed: new Set<string>(["join:join-1"]),
     });
 
     expect(result).toEqual({

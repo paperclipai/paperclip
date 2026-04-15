@@ -97,6 +97,24 @@ PATCH /api/projects/{projectId}
 }
 ```
 
+Project responses may also include pause state fields such as `pausedAt` and `pauseReason`.
+
+### Pause Project
+
+```
+POST /api/projects/{projectId}/pause
+```
+
+Pausing a project blocks new execution in that project and cancels in-scope running work.
+
+### Resume Project
+
+```
+POST /api/projects/{projectId}/resume
+```
+
+If a project was paused manually, resume reopens execution for new work. Budget-paused projects must be unblocked through budget changes first.
+
 ## Project Workspaces
 
 Workspaces link a project to a repository and directory:

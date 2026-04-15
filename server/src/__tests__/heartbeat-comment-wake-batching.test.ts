@@ -525,6 +525,140 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(sweep.targetMode).toBeNull();
   });
 
+  it("does not auto-reassign cross-agent recovery work during operations sweeps", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const completedRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Manual Recovery Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Product Engineer - App",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: completedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked assigned issue without recovery truth",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      executionRunId: completedRunId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const persistedIssues = await db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .orderBy(asc(issues.createdAt));
+    const relations = await db
+      .select({
+        issueId: issueRelations.issueId,
+        relatedIssueId: issueRelations.relatedIssueId,
+        type: issueRelations.type,
+      })
+      .from(issueRelations)
+      .where(eq(issueRelations.companyId, companyId));
+    const comments = await db
+      .select({
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        agentId: agentWakeupRequests.agentId,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(persistedIssues).toHaveLength(1);
+    expect(persistedIssues[0]).toMatchObject({
+      id: issueId,
+      assigneeAgentId: workerAgentId,
+      status: "blocked",
+    });
+    expect(relations).toHaveLength(0);
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-recovery]"))).toBe(true);
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-assignment]"))).toBe(false);
+    expect(
+      wakeups.some((wakeup) => (
+        wakeup.agentId === workerAgentId && wakeup.reason === "operations_cross_agent_recovery"
+      )),
+    ).toBe(true);
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
@@ -816,6 +950,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(runs[0]?.issueCommentStatus).toBe("retry_queued");
       expect(runs[1]?.retryOfRunId).toBe(runs[0]?.id);
       expect(runs[1]?.issueCommentStatus).toBe("retry_exhausted");
+
+      await waitFor(async () => {
+        const comments = await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId));
+        return comments.length === 1;
+      });
 
       const comments = await db
         .select()

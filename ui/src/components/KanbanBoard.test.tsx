@@ -64,10 +64,37 @@ describe("KanbanBoard", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-07T12:00:00.000Z"));
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     container.remove();
+  });
+
+  it("shows each ticket's last updated time in the header", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      updatedAt: new Date("2026-04-07T10:00:00.000Z"),
+    });
+
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[issue]}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    const card = container.querySelector('[data-kanban-card-id="issue-1"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("Updated 2h ago");
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("applies epic color classes to matching cards", () => {

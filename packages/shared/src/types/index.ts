@@ -1,5 +1,17 @@
 export type { Company } from "./company.js";
 export type {
+  BoardBrief,
+  BoardBriefTotals,
+  BoardBriefHealth,
+  BoardBriefFreshnessEntry,
+  BoardBriefFocusArea,
+  BoardBriefActionItem,
+  BoardBriefIncident,
+  BoardBriefOutput,
+  BoardBriefSnapshot,
+  BoardBriefAlertEvent,
+} from "./board-brief.js";
+export type {
   CompanyKpi,
   CompanyKpiInput,
   ExecutiveSummaryComputedKpis,

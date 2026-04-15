@@ -26,7 +26,7 @@ pending -> approved
 ```
 
 1. An agent creates an approval request
-2. It appears in your approval queue (Approvals page in the UI)
+2. It appears in the board action queue (`Inbox > Needs Action`) and on the dashboard's `Do These Next` list
 3. You review the request details and any linked issues
 4. You can:
    - **Approve** — the action proceeds
@@ -35,7 +35,9 @@ pending -> approved
 
 ## Reviewing Approvals
 
-From the Approvals page, you can see all pending approvals. Each approval shows:
+The fastest path is usually through the board action queue, which mixes approvals with the other items that need intervention. The Approvals page still exists for full-list review and history.
+
+Each approval shows:
 
 - Who requested it and why
 - Linked issues (context for the request)

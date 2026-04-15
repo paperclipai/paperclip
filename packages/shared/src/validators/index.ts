@@ -25,6 +25,17 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  boardBriefFreshnessEntrySchema,
+  boardBriefHealthSchema,
+  boardBriefFocusAreaSchema,
+  boardBriefActionItemSchema,
+  boardBriefIncidentSchema,
+  boardBriefOutputSchema,
+  boardBriefSchema,
+  boardBriefSnapshotSchema,
+  boardBriefAlertEventSchema,
+} from "./board-brief.js";
+export {
   companyKpiTrendSchema,
   companyKpiInputSchema,
   replaceCompanyKpisSchema,

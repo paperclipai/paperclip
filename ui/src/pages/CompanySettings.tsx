@@ -103,6 +103,16 @@ export function CompanySettings() {
     },
   });
 
+  const criticalBoardAlertsMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        criticalBoardAlertsEmailEnabled: enabled,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
   const feedbackSharingMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       companiesApi.update(selectedCompanyId!, {
@@ -465,12 +475,12 @@ export function CompanySettings() {
 
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Executive Summary
+          Board Briefs
         </div>
-        <div className="rounded-md border border-border px-4 py-3">
+        <div className="space-y-3 rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Email daily executive summary"
-            hint="Sends a daily KPI and top-changes summary to active company members with email addresses."
+            label="Email daily board brief"
+            hint="Sends the deterministic board brief digest to active company members with email addresses."
             checked={!!selectedCompany.dailyExecutiveSummaryEnabled}
             onChange={(enabled) => executiveSummaryMutation.mutate(enabled)}
           />
@@ -479,6 +489,19 @@ export function CompanySettings() {
               {executiveSummaryMutation.error instanceof Error
                 ? executiveSummaryMutation.error.message
                 : "Failed to update daily summary setting"}
+            </p>
+          ) : null}
+          <ToggleField
+            label="Email immediate critical board alerts"
+            hint="Sends immediate emails when a new critical board incident opens."
+            checked={!!selectedCompany.criticalBoardAlertsEmailEnabled}
+            onChange={(enabled) => criticalBoardAlertsMutation.mutate(enabled)}
+          />
+          {criticalBoardAlertsMutation.isError ? (
+            <p className="text-xs text-destructive">
+              {criticalBoardAlertsMutation.error instanceof Error
+                ? criticalBoardAlertsMutation.error.message
+                : "Failed to update critical alert setting"}
             </p>
           ) : null}
         </div>

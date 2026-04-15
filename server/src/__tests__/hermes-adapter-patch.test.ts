@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,14 @@ function resolveActiveHermesExecutePath(): string {
   return realpathSync(path.join(repoRoot, "server", "node_modules", "hermes-paperclip-adapter", "dist", "server", "execute.js"));
 }
 
+function hasBundledHermesAdapter(): boolean {
+  try {
+    return existsSync(resolveUnpatchedHermesExecutePath()) && existsSync(resolveActiveHermesExecutePath());
+  } catch {
+    return false;
+  }
+}
+
 function renderExecuteJsFromRepoPatch(): string {
   const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
   const patchPath = path.join(repoRoot, "patches", "hermes-paperclip-adapter@0.2.0.patch");
@@ -43,7 +51,9 @@ function renderExecuteJsFromRepoPatch(): string {
   }
 }
 
-describe("hermes patched adapter", () => {
+const describeHermesPatchedAdapter = hasBundledHermesAdapter() ? describe : describe.skip;
+
+describeHermesPatchedAdapter("hermes patched adapter", () => {
   it("keeps the repo patch execute.js template syntactically valid", () => {
     const executePath = renderExecuteJsFromRepoPatch();
 

@@ -6,6 +6,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { unprocessable } from "../errors.js";
+import { normalizeHermesConfigForPersistence } from "./hermes-config.js";
 
 export type AdapterConfigSecretsService = {
   normalizeAdapterConfigForPersistence(
@@ -64,7 +65,9 @@ export function applyCreateDefaultsByAdapterType(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
-  const next = { ...adapterConfig };
+  const next = adapterType === "hermes_local"
+    ? normalizeHermesConfigForPersistence(adapterConfig)
+    : { ...adapterConfig };
   if (adapterType === "hermes_local" && next.timeoutSec == null) {
     next.timeoutSec = 0;
   }

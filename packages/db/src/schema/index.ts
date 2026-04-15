@@ -1,4 +1,6 @@
 export { companies } from "./companies.js";
+export { boardBriefAlertEvents } from "./board_brief_alert_events.js";
+export { boardBriefSnapshots } from "./board_brief_snapshots.js";
 export { companyKpis } from "./company_kpis.js";
 export { companyLogos } from "./company_logos.js";
 export { roadmapEpicPauses } from "./roadmap_epic_pauses.js";

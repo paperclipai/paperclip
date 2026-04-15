@@ -110,6 +110,11 @@ export const queryKeys = {
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  boardBrief: {
+    detail: (companyId: string) => ["board-brief", companyId] as const,
+    history: (companyId: string, limit?: number, source?: string) =>
+      ["board-brief", companyId, "history", limit ?? 30, source ?? "__all__"] as const,
+  },
   executiveSummary: {
     detail: (companyId: string) => ["executive-summary", companyId] as const,
     kpis: (companyId: string) => ["executive-summary", companyId, "kpis"] as const,

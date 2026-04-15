@@ -10,6 +10,7 @@ import {
   getEmbeddedPostgresTestSupport,
   heartbeatRuns,
   invites,
+  issueWorkProducts,
   issues,
   joinRequests,
   projects,
@@ -41,6 +42,7 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
     await db.delete(joinRequests);
     await db.delete(invites);
     await db.delete(approvals);
+    await db.delete(issueWorkProducts);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -214,6 +216,22 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
       },
     ]);
 
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: activeChildId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #99",
+      url: "https://example.com/pr/99",
+      status: "ready_for_review",
+      reviewState: "needs_board_review",
+      isPrimary: true,
+      healthStatus: "healthy",
+      summary: "Ready for board review",
+      createdAt: new Date(now.getTime() - 15 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+
     await db.insert(invites).values({
       id: inviteId,
       companyId,
@@ -277,7 +295,7 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
       ctaLabel: string;
     }>;
     const attentionKinds = new Set(attentionItems.map((item) => item.kind));
-    expect(attentionKinds).toEqual(new Set(["approval", "join_request", "run", "issue"]));
+    expect(attentionKinds).toEqual(new Set(["approval", "join_request", "output", "run", "issue"]));
     const orderedKinds = attentionItems.map((item) => item.kind);
     expect(orderedKinds.indexOf("approval")).toBeLessThan(orderedKinds.indexOf("run"));
     expect(orderedKinds.indexOf("join_request")).toBeLessThan(orderedKinds.indexOf("run"));
@@ -298,6 +316,11 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
           ctaLabel: "Review request",
         }),
         expect.objectContaining({
+          kind: "output",
+          title: "PR #99",
+          ctaLabel: "Review output",
+        }),
+        expect.objectContaining({
           kind: "run",
           entityId: failedRunId,
           ctaLabel: "Inspect failure",
@@ -309,6 +332,43 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
         }),
       ]),
     );
+  });
+
+  it("caps dashboard attention items to the top seven without truncating the canonical board brief", async () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Top Seven Co",
+      issuePrefix: `TOP${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      budgetMonthlyCents: 10_000,
+    });
+
+    await db.insert(approvals).values(
+      Array.from({ length: 8 }, (_, index) => ({
+        companyId,
+        type: "request_board_approval" as const,
+        status: "pending" as const,
+        payload: { title: `Approval ${index + 1}` },
+        createdAt: new Date(now.getTime() - index * 60_000),
+        updatedAt: new Date(now.getTime() - index * 60_000),
+      })),
+    );
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.brief.needsAttention).toHaveLength(7);
+    expect(summary.brief.needsAttention.map((item) => item.title)).toEqual([
+      "Approval 1",
+      "Approval 2",
+      "Approval 3",
+      "Approval 4",
+      "Approval 5",
+      "Approval 6",
+      "Approval 7",
+    ]);
   });
 
   it("returns a healthy empty brief when the company has no active work", async () => {

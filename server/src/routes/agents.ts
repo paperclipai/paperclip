@@ -45,6 +45,7 @@ import {
   issueApprovalService,
   issueService,
   logActivity,
+  parseSchedulerHeartbeatPolicy,
   secretService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -73,6 +74,7 @@ import {
   applyCreateDefaultsByAdapterType,
   prepareAdapterConfigForPersistence,
 } from "../services/agent-adapter-config.js";
+import { resolveHermesRuntimeConfig } from "../services/hermes-config.js";
 
 export function agentRoutes(db: Db) {
   const SINGLETON_EXECUTIVE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "coo"]);
@@ -452,39 +454,6 @@ export function agentRoutes(db: Db) {
     return merged;
   }
 
-  function parseBooleanLike(value: unknown): boolean | null {
-    if (typeof value === "boolean") return value;
-    if (typeof value === "number") {
-      if (value === 1) return true;
-      if (value === 0) return false;
-      return null;
-    }
-    if (typeof value !== "string") return null;
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
-      return true;
-    }
-    if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
-      return false;
-    }
-    return null;
-  }
-
-  function parseNumberLike(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value !== "string") return null;
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
-    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
-    return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? true,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
-    };
-  }
-
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
     const trimmed = candidatePath.trim();
     if (path.isAbsolute(trimmed)) return trimmed;
@@ -758,9 +727,10 @@ export function agentRoutes(db: Db) {
 
       const inputAdapterConfig =
         (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedAdapterConfig = applyCreateDefaultsByAdapterType(type, inputAdapterConfig);
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
-        inputAdapterConfig,
+        requestedAdapterConfig,
         { strictMode: strictSecretsMode },
       );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
@@ -771,7 +741,7 @@ export function agentRoutes(db: Db) {
       const result = await adapter.testEnvironment({
         companyId,
         adapterType: type,
-        config: runtimeAdapterConfig,
+        config: resolveHermesRuntimeConfig(type, runtimeAdapterConfig),
       });
 
       res.json(result);

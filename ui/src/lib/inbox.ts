@@ -1,5 +1,6 @@
 import type {
   Approval,
+  BoardBrief,
   DashboardAttentionItem,
   DashboardSummary,
   HeartbeatRun,
@@ -377,6 +378,8 @@ export function getNeedsActionWorkItems({
       continue;
     }
 
+    if (item.kind === "output") continue;
+
     const joinRequest = joinRequestById.get(item.entityId);
     if (joinRequest) {
       items.push({
@@ -415,6 +418,7 @@ export function shouldShowInboxSection({
 export function computeInboxBadgeData({
   approvals,
   joinRequests,
+  boardBrief,
   dashboard,
   heartbeatRuns,
   mineIssues,
@@ -422,38 +426,52 @@ export function computeInboxBadgeData({
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
+  boardBrief?: BoardBrief;
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
   dismissed: Set<string>;
 }): InboxBadgeData {
+  const isDismissedBoardBriefAction = (item: { key: string; kind: string; entityId: string }) =>
+    dismissed.has(item.key)
+    || (item.kind === "join_request" && dismissed.has(`join:${item.entityId}`));
+
   const actionableApprovals = approvals.filter(
     (approval) =>
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !dismissed.has(`approval:${approval.id}`),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !dismissed.has(`run:${run.id}`),
-  ).length;
+  const failedRuns = boardBrief
+    ? boardBrief.actionQueue.filter(
+      (item) => item.kind === "run" && !isDismissedBoardBriefAction(item),
+    ).length
+    : getLatestFailedRunsByAgent(heartbeatRuns).filter(
+      (run) => !dismissed.has(`run:${run.id}`),
+    ).length;
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !dismissed.has(`join:${jr.id}`),
   ).length;
-  const visibleActionQueue = dashboard?.brief.needsAttention.filter(
-    (item) => item.kind === "issue" || !dismissed.has(item.key),
-  ).length
-    ?? mineIssues.filter((issue) => issue.isUnreadForMe).length;
-  const agentErrorCount = dashboard?.agents.error ?? 0;
-  const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
-  const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
-  const showAggregateAgentError =
-    agentErrorCount > 0 &&
-    failedRuns === 0 &&
-    !dismissed.has("alert:agent-errors");
-  const showBudgetAlert =
-    monthBudgetCents > 0 &&
-    monthUtilizationPercent >= 80 &&
-    !dismissed.has("alert:budget");
-  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
+  const visibleActionQueue = boardBrief
+    ? boardBrief.actionQueue.filter(
+      (item) => item.kind === "issue" || !isDismissedBoardBriefAction(item),
+    ).length
+    : dashboard?.brief.needsAttention.filter(
+      (item) => item.kind === "issue" || !dismissed.has(item.key),
+    ).length
+      ?? mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const alerts = boardBrief
+    ? boardBrief.incidents.filter(
+      (incident) => incident.severity === "critical" && !dismissed.has(`incident:${incident.fingerprint}`),
+    ).length
+    : Number(
+      (dashboard?.agents.error ?? 0) > 0 &&
+        failedRuns === 0 &&
+        !dismissed.has("alert:agent-errors"),
+    ) + Number(
+      (dashboard?.costs.monthBudgetCents ?? 0) > 0 &&
+        (dashboard?.costs.monthUtilizationPercent ?? 0) >= 80 &&
+        !dismissed.has("alert:budget"),
+    );
 
   return {
     inbox: visibleActionQueue + alerts,

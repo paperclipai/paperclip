@@ -4,14 +4,14 @@ import { and, eq, sql } from "drizzle-orm";
 import { joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
-import { dashboardService } from "../services/dashboard.js";
+import { boardBriefService } from "../services/board-brief.js";
 import { assertCompanyAccess } from "./authz.js";
 
 export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
   const access = accessService(db);
-  const dashboard = dashboardService(db);
+  const briefs = boardBriefService(db);
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -26,7 +26,7 @@ export function sidebarBadgeRoutes(db: Db) {
       canApproveJoins = await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve");
     }
 
-    const joinRequestCount = canApproveJoins
+    const unreadJoinRequestCount = canApproveJoins
       ? await db
         .select({ count: sql<number>`count(*)` })
         .from(joinRequests)
@@ -34,15 +34,12 @@ export function sidebarBadgeRoutes(db: Db) {
         .then((rows) => Number(rows[0]?.count ?? 0))
       : 0;
 
-    const badges = await svc.get(companyId, {
-      joinRequests: joinRequestCount,
+    const brief = await briefs.build(companyId);
+    const badges = await svc.get(companyId, brief, {
+      canApproveJoins,
+      unreadTouchedIssues: 0,
     });
-    const summary = await dashboard.summary(companyId);
-    const hasFailedRuns = badges.failedRuns > 0;
-    const alertsCount =
-      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
-      (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = summary.brief.needsAttention.length + alertsCount;
+    badges.joinRequests = unreadJoinRequestCount;
 
     res.json(badges);
   });

@@ -24,6 +24,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     logoAssetId: null,
     logoUrl: null,
     dailyExecutiveSummaryEnabled: false,
+    criticalBoardAlertsEmailEnabled: true,
     dailyExecutiveSummaryLastSentAt: null,
     dailyExecutiveSummaryLastStatus: null,
     dailyExecutiveSummaryLastError: null,

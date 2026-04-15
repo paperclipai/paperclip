@@ -78,10 +78,13 @@ If you change schema/API behavior, update all impacted layers:
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
 
-4. Do not replace strategic docs wholesale unless asked.
+4. Update documentation after every change.
+Documentation is part of the change. Every code, behavior, command, or workflow change must be reflected in the relevant docs before hand-off.
+
+5. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep plan docs dated and centralized.
+6. Keep plan docs dated and centralized.
 New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
 ## 6. Database Change Workflow
@@ -158,7 +161,7 @@ A change is done when all are true:
 1. Behavior matches `doc/SPEC-implementation.md`
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+4. Documentation reviewed and updated after every change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
 ## 11. Fork-Specific: HenkDz/paperclip

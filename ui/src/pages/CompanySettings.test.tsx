@@ -27,6 +27,7 @@ const defaultCompany = vi.hoisted((): Company => ({
   feedbackDataSharingConsentByUserId: null,
   feedbackDataSharingTermsVersion: null,
   dailyExecutiveSummaryEnabled: false,
+  criticalBoardAlertsEmailEnabled: true,
   dailyExecutiveSummaryLastSentAt: null,
   dailyExecutiveSummaryLastStatus: null,
   dailyExecutiveSummaryLastError: null,

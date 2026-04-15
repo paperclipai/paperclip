@@ -80,6 +80,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { resolveHermesRuntimeConfig } from "./hermes-config.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -98,6 +99,7 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
 const OPERATIONS_IDLE_WAKE_MARKER = "[operations-heartbeat-wakeup]";
 const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
+const OPERATIONS_OPERATOR_RECOVERY_MARKER = "[operations-heartbeat-operator-recovery]";
 const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
 const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
 const ISSUE_COMMENT_RECOVERY_MARKER = "[issue-comment-recovery]";
@@ -119,23 +121,7 @@ export function mapHermesCommandForRuntimeConfig(
   adapterType: string,
   config: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (adapterType !== "hermes_local") return config;
-
-  const newConfig = { ...config };
-  if (newConfig.timeoutSec == null || newConfig.timeoutSec === 0) {
-    // Hermes currently treats `0` as falsy and falls back to its internal
-    // 300-second default. Pass `-1` at runtime so PrivateClip's "no timeout"
-    // intent survives until the adapter package is fixed upstream.
-    newConfig.timeoutSec = -1;
-  }
-  const effectiveCommand = config.hermesCommand ?? config.command;
-  if (!effectiveCommand) {
-    return newConfig;
-  }
-
-  newConfig.command = effectiveCommand;
-  newConfig.hermesCommand = effectiveCommand;
-  return newConfig;
+  return resolveHermesRuntimeConfig(adapterType, config);
 }
 
 function stripPostgresTextNullBytes(value: string): string {
@@ -185,6 +171,7 @@ function isOperationsAutomationCommentBody(body: string | null | undefined): boo
   return (
     body.includes(OPERATIONS_IDLE_WAKE_MARKER)
     || body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
+    || body.includes(OPERATIONS_OPERATOR_RECOVERY_MARKER)
     || body.includes(OPERATIONS_REQUEUE_MARKER)
     || body.includes(OPERATIONS_ASSIGNMENT_MARKER)
   );
@@ -290,6 +277,24 @@ function buildOperationsRecoveryWakeComment(input: {
     `${mention} operations heartbeat detected assigned work that needs issue-level recovery.`,
     `Detected signal: ${input.reason}.`,
     "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
+  ].join("\n");
+}
+
+function buildOperationsOperatorRecoveryComment(input: {
+  assigneeAgentId: string;
+  assigneeName: string | null;
+  assigneeStatus: string | null;
+  reason: string;
+}) {
+  const mentionLabel = `@${(input.assigneeName ?? "assigned-agent").trim() || "assigned-agent"}`;
+  const mention = `[${mentionLabel}](${buildAgentMentionHref(input.assigneeAgentId)})`;
+  const statusLabel = (input.assigneeStatus ?? "unknown").trim() || "unknown";
+  return [
+    OPERATIONS_OPERATOR_RECOVERY_MARKER,
+    "Operations heartbeat detected assigned work that now requires manual operator recovery.",
+    `Detected signal: ${input.reason}.`,
+    `${mention} is currently not invokable for recovery handling (status: ${statusLabel}), so Orchestrero did not auto-reassign this issue.`,
+    "Board action required: resume the assignee, reassign explicitly, or leave issue-level truth with the next step.",
   ].join("\n");
 }
 
@@ -429,6 +434,7 @@ async function resolveOperationsHeartbeatTargets(
                 inArray(issueComments.issueId, issueIds),
                 sql`${issueComments.body} not like ${`${OPERATIONS_IDLE_WAKE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_RECOVERY_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_OPERATOR_RECOVERY_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
               ),
@@ -3639,6 +3645,7 @@ export function heartbeatService(db: Db) {
                 inArray(issueComments.issueId, issueIds),
                 sql`${issueComments.body} not like ${`${OPERATIONS_IDLE_WAKE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_RECOVERY_WAKE_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_OPERATOR_RECOVERY_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
               ),
@@ -3780,10 +3787,6 @@ export function heartbeatService(db: Db) {
     let assignedIssueCount = 0;
     let assignmentCommentCount = 0;
     let assignmentWakeupCount = 0;
-    const recoveryReissueTargets: Array<{
-      issue: (typeof openAssignedIssues)[number];
-      reason: string;
-    }> = [];
     const idleHandledIssueIds = new Set(idleOwnedIssues.map((issue) => issue.id));
     const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
     const targetReasonByIssueId = new Map<string, string>();
@@ -3866,19 +3869,19 @@ export function heartbeatService(db: Db) {
         targetIssue.assigneeStatus === "paused" ||
         targetIssue.assigneeStatus === "terminated" ||
         targetIssue.assigneeStatus === "pending_approval";
-      const shouldAutoReissueTarget =
+      const requiresManualRecoveryHandling =
         target.mode === "cross_agent_recovery" &&
         Boolean(targetIssue.assigneeAgentId) &&
         (target.autoReissueEligible || assigneeUnavailableForRecovery);
-      const recoveryCooldownMs = shouldAutoReissueTarget
+      const recoveryCooldownMs = requiresManualRecoveryHandling
         ? OPERATIONS_RECOVERY_REWAKE_COOLDOWN_MS
         : OPERATIONS_IDLE_WAKE_COOLDOWN_MS;
       const hasRecoveryCooldownMarker = Boolean(
         latestOpsTargetComment?.body
         && (
           latestOpsTargetComment.body.includes(OPERATIONS_RECOVERY_WAKE_MARKER)
+          || latestOpsTargetComment.body.includes(OPERATIONS_OPERATOR_RECOVERY_MARKER)
           || latestOpsTargetComment.body.includes(OPERATIONS_REQUEUE_MARKER)
-          || (shouldAutoReissueTarget && latestOpsTargetComment.body.includes(OPERATIONS_ASSIGNMENT_MARKER))
         ),
       );
       const targetRecoveryCooldownActive =
@@ -3894,14 +3897,29 @@ export function heartbeatService(db: Db) {
       handledTargetIssueIds.add(targetIssue.id);
 
       if (target.mode === "cross_agent_recovery" && targetIssue.assigneeAgentId) {
-        if (shouldAutoReissueTarget) {
-          recoveryReissueTargets.push({
-            issue: targetIssue,
-            reason: target.reason,
-          });
+        if (!isAgentInvokableStatus(targetIssue.assigneeStatus)) {
+          try {
+            await issuesSvc.addComment(
+              targetIssue.id,
+              buildOperationsOperatorRecoveryComment({
+                assigneeAgentId: targetIssue.assigneeAgentId,
+                assigneeName: targetIssue.assigneeName,
+                assigneeStatus: targetIssue.assigneeStatus,
+                reason: target.reason,
+              }),
+              { agentId: input.agent.id, runId: input.run.id },
+            );
+            recoveryCommentCount += 1;
+          } catch (err) {
+            logger.warn(
+              { err, issueId: targetIssue.id, assigneeAgentId: targetIssue.assigneeAgentId },
+              "operations heartbeat failed to post operator recovery comment",
+            );
+          }
           continue;
         }
         await requestCrossAgentRecoveryWake(targetIssue, target.reason);
+        continue;
       }
 
       if (
@@ -4018,107 +4036,6 @@ export function heartbeatService(db: Db) {
         excludeAgentId: opts?.excludeAgentId,
         allowPausedFallback: opts?.allowPausedFallback,
       });
-    }
-
-    for (const reissueTarget of recoveryReissueTargets) {
-      const sourceIssue = await issuesSvc.getById(reissueTarget.issue.id);
-      if (!sourceIssue) continue;
-      const candidate = pickAssignmentCandidate(
-        {
-          id: sourceIssue.id,
-          identifier: sourceIssue.identifier,
-          title: sourceIssue.title,
-          projectId: sourceIssue.projectId,
-          projectName: reissueTarget.issue.projectName,
-        },
-        { excludeAgentId: reissueTarget.issue.assigneeAgentId, allowPausedFallback: true },
-      );
-      if (!candidate || !isAgentInvokableStatus(candidate.status)) {
-        await requestCrossAgentRecoveryWake(reissueTarget.issue, reissueTarget.reason);
-        continue;
-      }
-
-      try {
-        const continuation = await issuesSvc.create(sourceIssue.companyId, {
-          projectId: sourceIssue.projectId,
-          projectWorkspaceId: sourceIssue.projectWorkspaceId,
-          goalId: sourceIssue.goalId,
-          parentId: sourceIssue.parentId,
-          title: sourceIssue.title,
-          description: sourceIssue.description,
-          status: "todo",
-          priority: sourceIssue.priority,
-          assigneeAgentId: candidate.id,
-          assigneeUserId: null,
-          requestDepth: sourceIssue.requestDepth ?? 0,
-          billingCode: sourceIssue.billingCode,
-          assigneeAdapterOverrides: sourceIssue.assigneeAdapterOverrides,
-          executionPolicy: sourceIssue.executionPolicy,
-          executionWorkspacePreference: sourceIssue.executionWorkspacePreference,
-          executionWorkspaceSettings: sourceIssue.executionWorkspaceSettings,
-          labelIds: sourceIssue.labelIds,
-          inheritExecutionWorkspaceFromIssueId: sourceIssue.id,
-          recoveryFromIssueId: sourceIssue.id,
-          recoveryDisposition: "recovered_by_reissue",
-          createdByAgentId: input.agent.id,
-        });
-        if (!continuation) continue;
-        recoveryReissueCount += 1;
-
-        try {
-          await issuesSvc.addComment(
-            continuation.id,
-            buildOperationsAssignmentComment({
-              assigneeAgentId: candidate.id,
-              assigneeName: candidate.name,
-              reason: `recovery reissue from ${sourceIssue.identifier ?? sourceIssue.id}: ${reissueTarget.reason}`,
-            }),
-            { agentId: input.agent.id, runId: input.run.id },
-          );
-          assignmentCommentCount += 1;
-        } catch (err) {
-          logger.warn(
-            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
-            "operations heartbeat failed to post recovery reissue assignment comment",
-          );
-        }
-
-        try {
-          await enqueueWakeup(candidate.id, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "operations_recovery_reissue",
-            payload: {
-              issueId: continuation.id,
-              sourceIssueId: sourceIssue.id,
-              mutation: "operations_recovery_reissue",
-              sourceRunId: input.run.id,
-            },
-            requestedByActorType: "agent",
-            requestedByActorId: input.agent.id,
-            contextSnapshot: {
-              issueId: continuation.id,
-              sourceIssueId: sourceIssue.id,
-              taskId: continuation.id,
-              source: "operations.heartbeat",
-              wakeReason: "operations_recovery_reissue",
-            },
-          });
-          recoveryReissueWakeupCount += 1;
-        } catch (err) {
-          if (isAgentNotInvokableConflict(err)) continue;
-          logger.warn(
-            { err, issueId: continuation.id, assigneeAgentId: candidate.id },
-            "operations heartbeat failed to enqueue recovery reissue wakeup",
-          );
-        }
-      } catch (err) {
-        logger.warn(
-          { err, issueId: sourceIssue.id, assigneeAgentId: candidate.id },
-          "operations heartbeat failed to create recovery reissue during recovery",
-        );
-        await requestCrossAgentRecoveryWake(reissueTarget.issue, reissueTarget.reason);
-      }
     }
 
     const issuesNeedingAssignment = [

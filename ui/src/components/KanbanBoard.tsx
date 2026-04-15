@@ -21,6 +21,8 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatIssueStatusLabel } from "../lib/issue-status-labels";
+import { timeAgo } from "../lib/timeAgo";
+import { formatDateTime } from "../lib/utils";
 import type { Issue } from "@paperclipai/shared";
 
 const COLUMN_PAGE_SIZE = 15;
@@ -186,15 +188,23 @@ function KanbanCard({
         }}
       >
         <div className="flex items-start gap-1.5 mb-1.5">
-          <span className="text-xs text-muted-foreground font-mono shrink-0">
-            {issue.identifier ?? issue.id.slice(0, 8)}
-          </span>
-          {isLive && (
-            <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+          <span className="flex min-w-0 items-start gap-1.5">
+            <span className="text-xs text-muted-foreground font-mono shrink-0">
+              {issue.identifier ?? issue.id.slice(0, 8)}
             </span>
-          )}
+            {isLive && (
+              <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+            )}
+          </span>
+          <span
+            className="ml-auto shrink-0 text-[11px] text-muted-foreground"
+            title={formatDateTime(issue.updatedAt)}
+          >
+            Updated {timeAgo(issue.updatedAt)}
+          </span>
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
         {issue.status === "in_review" && issue.qaGate?.review && (

@@ -24,6 +24,23 @@ This starts:
 
 No Docker or external database required. Orchestrero uses embedded PostgreSQL automatically.
 
+Related commands:
+
+```sh
+pnpm dev:once
+pnpm dev:list
+pnpm dev:stop
+```
+
+- `pnpm dev:once` starts the full stack without watch mode.
+- `pnpm dev:list` and `pnpm dev:stop` inspect or stop the repo's managed dev runner.
+
+If embedded PostgreSQL fails to start because of local shared-memory or IPC leftovers, run:
+
+```sh
+pnpm dev:recover
+```
+
 ## One-Command Bootstrap
 
 For a first-time install:
@@ -60,7 +77,17 @@ Allow additional private hostnames:
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+If authenticated dev starts with no instance admin yet, the app stays in setup mode until you generate the first admin invite:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
+
 For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tailscale-private-access).
+
+## Restart Awareness
+
+`pnpm dev:once` tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner instead of silently drifting out of date.
 
 ## Health Checks
 

@@ -18,6 +18,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   dailyExecutiveSummaryEnabled: boolean;
+  criticalBoardAlertsEmailEnabled: boolean;
   dailyExecutiveSummaryLastSentAt: Date | null;
   dailyExecutiveSummaryLastStatus: ExecutiveSummarySendStatus | null;
   dailyExecutiveSummaryLastError: string | null;
