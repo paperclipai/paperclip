@@ -71,6 +71,23 @@ function extractMermaidSource(children: ReactNode): string | null {
   return flattenText(childProps.children).replace(/\n$/, "");
 }
 
+/** Strip scripts, foreignObject, and event handlers from SVG using the browser's built-in DOMParser. */
+function sanitizeSvg(svgString: string): string {
+  const doc = new DOMParser().parseFromString(svgString, "image/svg+xml");
+  for (const tag of ["script", "foreignObject"]) {
+    doc.querySelectorAll(tag).forEach((el) => el.remove());
+  }
+  for (const el of doc.querySelectorAll("*")) {
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.name.startsWith("on")) el.removeAttribute(attr.name);
+      if (["href", "xlink:href"].includes(attr.name) && attr.value.replace(/\s/g, "").toLowerCase().startsWith("javascript:")) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return new XMLSerializer().serializeToString(doc.documentElement);
+}
+
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
@@ -111,7 +128,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   return (
     <div className="paperclip-mermaid">
       {svg ? (
-        <div dangerouslySetInnerHTML={{ __html: svg }} />
+        <div dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg) }} />
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
@@ -215,7 +232,13 @@ export function MarkdownBody({
       )}
       style={style}
     >
-      <Markdown remarkPlugins={remarkPlugins} components={components} urlTransform={(url) => url}>
+      <Markdown remarkPlugins={remarkPlugins} components={components} urlTransform={(url) => {
+          const trimmed = url.replace(/\s/g, "").toLowerCase();
+          if (trimmed.startsWith("javascript:") || trimmed.startsWith("vbscript:") || trimmed.startsWith("data:text/html")) {
+            return "";
+          }
+          return url;
+        }}>
         {children}
       </Markdown>
     </div>
