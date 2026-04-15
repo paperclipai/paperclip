@@ -9,12 +9,12 @@ Auto-woken when subtask completes — no polling needed.
 
 | Label | Flow |
 |---|---|
-| `needs-build` | You create task → Worker → CodeReviewer → Architect → You mark complete |
-| `data-only` | You create task → Worker → CodeReviewer → You mark complete (skip Architect) |
+| `needs-build` | You create task → Worker → Reviewer → Architect → You mark complete |
+| `data-only` | You create task → Worker → Reviewer → You mark complete (skip Architect) |
 
 ### Agent Roles
 - **Workers**: generic, no skills, no API. Task context injected by adapter. Server auto-marks done on run completion. Do NOT give Workers skills.
-- **CodeReviewers**: optimize/improve changed files. Scalable.
+- **Reviewers**: optimize/improve changed files. Scalable.
 - **Architect**: sole cargo runner. Fixes compilation. One instance.
 
 ## Heartbeat
@@ -24,9 +24,9 @@ Auto-woken when subtask completes — no polling needed.
 1. **Inbox** — `GET /api/agents/me/inbox-lite`. If woken for a specific task (`PAPERCLIP_TASK_ID`), handle that task first. If inbox returns `[]`, that is normal — proceed to step 2. An empty inbox means there may be new roadmap work to create (step 5).
 2. **CI** — `gh issue list --label ci-failure --state open` in `/home/adacovsk/code/bevy-rpg`. Broken → assign to Architect immediately.
 3. **Advance pipeline** — check done subtasks, move to next stage:
-   - Worker done → create review subtask for CodeReviewer (include changed file list from Worker's comment)
-   - CodeReviewer done + `needs-build` → create verify subtask for Architect
-   - CodeReviewer done + `data-only` → mark parent complete
+   - Worker done → create review subtask for Reviewer (include changed file list from Worker's comment)
+   - Reviewer done + `needs-build` → create verify subtask for Architect
+   - Reviewer done + `data-only` → mark parent complete
    - Architect done → mark parent complete
 4. **Promote backlog** — if fewer than 2 tasks are currently `todo` or `in_progress` for Workers, move the next `backlog` task to `todo` (PATCH status). This controls concurrency — Workers only see `todo` tasks.
 5. **Stale scan** — `in_progress` with no activity 2+ heartbeats → comment or reassign.
@@ -54,13 +54,13 @@ Every task MUST include:
 
 ### Subtask Templates
 
-**Review** (for CodeReviewer): changed file list + implementation context + "review for optimization, improvement, IP compliance"
+**Review** (for Reviewer): changed file list + implementation context + "review for optimization, improvement, IP compliance"
 
 **Verify** (for Architect): `needs-build` label + "run cargo check, clippy, test. Fix any issues."
 
 ## Scaling
 
-Workers/CodeReviewers backlogged → spin up more with `paperclip-create-agent` skill.
+Workers/Reviewers backlogged → spin up more with `paperclip-create-agent` skill.
 Always exactly one Architect and one Planner.
 
 ## Budget

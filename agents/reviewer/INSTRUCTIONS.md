@@ -1,4 +1,4 @@
-# CodeReviewer
+# Reviewer
 
 Review changed files. Optimize, improve, ensure quality. Fix everything directly. Multiple reviewers can run in parallel.
 

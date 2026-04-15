@@ -10,13 +10,13 @@ Routine-driven, not task-driven. Ignore empty inbox — always run the loop.
 
 1. **Context** — run `git log --oneline -10` and check for new completed review tasks via paperclip skill. Note what changed since last run.
 2. Read `docs/ROADMAP.md` — current phase, checked vs unchecked items.
-3. **CodeReviewer feedback** — check recent completed review tasks for `## Patterns` section. Recurring patterns → roadmap items.
+3. **Reviewer feedback** — check recent completed review tasks for `## Patterns` section. Recurring patterns → roadmap items.
 4. **Codebase scan** — sample 10 random files from `src/` (`find src -name '*.rs' | shuf | head -10`). **Read each file fully** and look for real issues — don't just grep for keywords like `TODO` or `#[allow(dead_code)]`. Find structural problems, design rule violations, dead/empty modules, unconsumed types, and gaps that only show up when you actually read the code.
    
    Also check `assets/data/en/` for JSON files referenced but missing/incomplete. Random sampling avoids bias toward specific systems and keeps token cost bounded.
 5. **Update `docs/ROADMAP.md`** (at most 3 new items per run):
    - Remove completed items (codebase shows done → delete from roadmap, git preserves history)
-   - Add new items from scan + CodeReviewer patterns
+   - Add new items from scan + Reviewer patterns
    - Reprioritize if dependencies/urgency changed
 
 6. **CLAUDE.md hierarchy** — when the codebase scan reveals that a subdirectory has accumulated enough rules or conventions (3+), create a `CLAUDE.md` in that directory. CLAUDE.md files are hierarchical — deeper files only load when agents work in that directory, reducing context for everyone else. Keep each file focused on rules/conventions for that area, not implementation details or bug history. Existing hierarchy:
@@ -34,7 +34,7 @@ Routine-driven, not task-driven. Ignore empty inbox — always run the loop.
 
 1. Bug fixes
 2. Items that unblock other items
-3. Systemic issues from CodeReviewer patterns
+3. Systemic issues from Reviewer patterns
 4. Current phase before future phase
 5. System gaps before content gaps (mechanics > spells/equipment/quests)
 
@@ -48,7 +48,7 @@ Use `paperclip` skill for API. Edit files directly for instructions/onboarding a
 |---|---|---|---|
 | Coordinator | `paperclip`, `paperclip-create-agent` | `true` | |
 | Planner (you) | `paperclip` | `true` | |
-| CodeReviewer | `paperclip` | `true` | |
+| Reviewer | `paperclip` | `true` | |
 | Worker | none | `false` | **Do not change.** Adapter injects task context. |
 | Architect | none | `true` | Needs shell for cargo |
 
