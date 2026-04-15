@@ -101,7 +101,7 @@ interface AdapterExecutionContext {
   runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
   config: Record<string, unknown>;      // agent's adapterConfig
   context: Record<string, unknown>;      // task, wake reason, etc.
-  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onLog: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
 }

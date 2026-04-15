@@ -242,7 +242,7 @@ function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismat
 export async function ensureServerWorkspaceLinksCurrent(
   startCwd: string,
   opts?: {
-    onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    onLog?: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
   },
 ) {
   const workspaceRoot = findWorkspaceRoot(startCwd);
@@ -1900,7 +1900,7 @@ async function startLocalRuntimeService(input: {
   executionWorkspaceId?: string | null;
   adapterEnv: Record<string, string>;
   service: Record<string, unknown>;
-  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
   reuseKey: string | null;
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
@@ -2310,7 +2310,7 @@ export async function ensureRuntimeServicesForRun(input: {
   executionWorkspaceId?: string | null;
   config: Record<string, unknown>;
   adapterEnv: Record<string, string>;
-  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
 }): Promise<RuntimeServiceRef[]> {
   const rawServices = readRuntimeServiceEntries(input.config);
   const acquiredServiceIds: string[] = [];
@@ -2392,7 +2392,7 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
   executionWorkspaceId?: string | null;
   config: Record<string, unknown>;
   adapterEnv: Record<string, string>;
-  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
   serviceIndex?: number | null;
   respectDesiredStates?: boolean;
 }): Promise<RuntimeServiceRef[]> {

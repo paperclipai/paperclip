@@ -83,7 +83,7 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
-    onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    onLog: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
   },
 ): Promise<RunProcessResult> {
   return _runChildProcess(runId, command, args, {

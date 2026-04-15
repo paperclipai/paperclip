@@ -409,9 +409,9 @@ export function projectRoutes(db: Db) {
           }));
         }
 
-        const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        const onLog = async (stream: "stdout" | "stderr" | "system", chunk: string) => {
           if (stream === "stdout") stdout.push(chunk);
-          else stderr.push(chunk);
+          else if (stream === "stderr") stderr.push(chunk);
         };
 
         if (action === "stop" || action === "restart") {

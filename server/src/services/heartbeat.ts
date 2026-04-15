@@ -3551,7 +3551,7 @@ export function heartbeatService(db: Db) {
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-      const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      const onLog = async (stream: "stdout" | "stderr" | "system", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
         );

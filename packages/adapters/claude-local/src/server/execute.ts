@@ -264,7 +264,7 @@ export async function runClaudeLogin(input: {
   config: Record<string, unknown>;
   context?: Record<string, unknown>;
   authToken?: string;
-  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
 }) {
   const onLog = input.onLog ?? (async () => {});
   const runtime = await buildClaudeRuntimeConfig({
