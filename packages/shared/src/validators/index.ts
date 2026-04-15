@@ -25,6 +25,14 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  createCompanyDocumentSchema,
+  updateCompanyDocumentSchema,
+  restoreCompanyDocumentRevisionSchema,
+  type CreateCompanyDocument,
+  type UpdateCompanyDocument,
+  type RestoreCompanyDocumentRevision,
+} from "./document.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,

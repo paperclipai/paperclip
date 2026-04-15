@@ -5,10 +5,13 @@ import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
+  createCompanyDocumentSchema,
   createCompanySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  restoreCompanyDocumentRevisionSchema,
+  updateCompanyDocumentSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -20,6 +23,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  documentService,
   feedbackService,
   logActivity,
 } from "../services/index.js";
@@ -34,6 +38,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const documents = documentService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -132,6 +137,171 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  router.get("/:companyId/documents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const result = await documents.listCompanyDocuments(companyId);
+    res.json(result);
+  });
+
+  router.get("/:companyId/documents/:documentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const documentId = req.params.documentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const document = await documents.getCompanyDocumentById(companyId, documentId);
+    if (!document) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.json(document);
+  });
+
+  router.post("/:companyId/documents", validate(createCompanyDocumentSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const document = await documents.createCompanyDocument({
+      companyId,
+      title: req.body.title,
+      format: req.body.format,
+      body: req.body.body,
+      changeSummary: req.body.changeSummary ?? null,
+      createdByUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      createdByAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      createdByRunId: actor.runId,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      entityType: "company",
+      entityId: companyId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.document_created",
+      details: {
+        documentId: document.id,
+        title: document.title,
+        revisionNumber: document.latestRevisionNumber,
+      },
+    });
+    res.status(201).json(document);
+  });
+
+  router.put("/:companyId/documents/:documentId", validate(updateCompanyDocumentSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const documentId = req.params.documentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const document = await documents.updateCompanyDocument({
+      companyId,
+      documentId,
+      title: req.body.title,
+      format: req.body.format,
+      body: req.body.body,
+      changeSummary: req.body.changeSummary ?? null,
+      baseRevisionId: req.body.baseRevisionId ?? null,
+      createdByUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      createdByAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      createdByRunId: actor.runId,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      entityType: "company",
+      entityId: companyId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.document_updated",
+      details: {
+        documentId: document.id,
+        title: document.title,
+        revisionNumber: document.latestRevisionNumber,
+      },
+    });
+    res.json(document);
+  });
+
+  router.get("/:companyId/documents/:documentId/revisions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const documentId = req.params.documentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const revisions = await documents.listCompanyDocumentRevisions(companyId, documentId);
+    res.json(revisions);
+  });
+
+  router.post(
+    "/:companyId/documents/:documentId/revisions/:revisionId/restore",
+    validate(restoreCompanyDocumentRevisionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const documentId = req.params.documentId as string;
+      const revisionId = req.params.revisionId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      const actor = getActorInfo(req);
+      const result = await documents.restoreCompanyDocumentRevision({
+        companyId,
+        documentId,
+        revisionId,
+        createdByUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        createdByAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        entityType: "company",
+        entityId: companyId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.document_restored",
+        details: {
+          documentId: result.document.id,
+          title: result.document.title,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+          revisionNumber: result.document.latestRevisionNumber,
+        },
+      });
+      res.json(result.document);
+    },
+  );
+
+  router.delete("/:companyId/documents/:documentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const documentId = req.params.documentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const removed = await documents.deleteCompanyDocument(companyId, documentId);
+    if (!removed) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      entityType: "company",
+      entityId: companyId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.document_deleted",
+      details: {
+        documentId: removed.id,
+        title: removed.title,
+      },
+    });
+    res.json({ ok: true });
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {

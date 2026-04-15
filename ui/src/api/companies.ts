@@ -1,5 +1,7 @@
 import type {
   Company,
+  CompanyDocument,
+  CompanyDocumentRevision,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -16,6 +18,24 @@ export type CompanyStats = Record<string, { agentCount: number; issueCount: numb
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
+  listDocuments: (companyId: string) => api.get<CompanyDocument[]>(`/companies/${companyId}/documents`),
+  getDocument: (companyId: string, documentId: string) =>
+    api.get<CompanyDocument>(`/companies/${companyId}/documents/${documentId}`),
+  createDocument: (
+    companyId: string,
+    data: { title: string; format: "markdown"; body: string; changeSummary?: string | null },
+  ) => api.post<CompanyDocument>(`/companies/${companyId}/documents`, data),
+  updateDocument: (
+    companyId: string,
+    documentId: string,
+    data: { title: string; format: "markdown"; body: string; changeSummary?: string | null; baseRevisionId?: string | null },
+  ) => api.put<CompanyDocument>(`/companies/${companyId}/documents/${documentId}`, data),
+  listDocumentRevisions: (companyId: string, documentId: string) =>
+    api.get<CompanyDocumentRevision[]>(`/companies/${companyId}/documents/${documentId}/revisions`),
+  restoreDocumentRevision: (companyId: string, documentId: string, revisionId: string) =>
+    api.post<CompanyDocument>(`/companies/${companyId}/documents/${documentId}/revisions/${revisionId}/restore`, {}),
+  deleteDocument: (companyId: string, documentId: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}/documents/${documentId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
     name: string;
