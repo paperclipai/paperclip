@@ -43,6 +43,7 @@ describe("execution workspace config helpers", () => {
       teardownCommand: "bash ./scripts/teardown-worktree.sh",
       cleanupCommand: "pkill -f vite || true",
       desiredState: null,
+      serviceStates: null,
       workspaceRuntime: {
         services: [{ name: "web", command: "pnpm dev", port: 3100 }],
       },
@@ -73,6 +74,7 @@ describe("execution workspace config helpers", () => {
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
         desiredState: null,
+        serviceStates: null,
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
         },
