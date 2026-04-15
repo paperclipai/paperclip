@@ -50,6 +50,8 @@ type RoutineHeartbeatDeps = IssueAssignmentWakeupDeps & {
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
+const ACTIVE_WAKEUP_REQUEST_STATUSES = ["queued", "coalesced", "deferred_issue_execution", "claimed"];
+const ORPHAN_WAKEUP_REQUEST_STATUSES = ["queued", "coalesced", "deferred_issue_execution"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const WEEKDAY_INDEX: Record<string, number> = {
@@ -721,7 +723,7 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
     issueId: string;
   }): Promise<boolean> {
     try {
-      const liveRuns = await db
+      const findLiveIssueRuns = () => db
         .select({
           id: heartbeatRuns.id,
           wakeupRequestId: heartbeatRuns.wakeupRequestId,
@@ -736,27 +738,52 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
           ),
         );
 
-      const queuedRuns = liveRuns.filter((run) => run.status === "queued");
-      const runningRuns = liveRuns.filter((run) => run.status === "running");
-      const runIds = queuedRuns.map((run) => run.id);
-      const wakeupRequestIds = queuedRuns
-        .map((run) => run.wakeupRequestId)
-        .filter((id): id is string => Boolean(id));
-
-      await db
-        .delete(agentWakeupRequests)
+      const findActiveIssueWakeupRequests = () => db
+        .select({
+          id: agentWakeupRequests.id,
+          status: agentWakeupRequests.status,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
         .where(
           and(
             eq(agentWakeupRequests.companyId, input.companyId),
-            inArray(agentWakeupRequests.status, ["coalesced", "deferred_issue_execution"]),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+            inArray(agentWakeupRequests.status, ACTIVE_WAKEUP_REQUEST_STATUSES),
+            or(
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+              sql`exists (
+                select 1 from ${heartbeatRuns}
+                where ${heartbeatRuns.wakeupRequestId} = ${agentWakeupRequests.id}
+                  and ${heartbeatRuns.companyId} = ${input.companyId}
+                  and ${heartbeatRuns.status} in ('queued', 'running')
+                  and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}
+              )`,
+            ),
           ),
         );
 
-      for (const run of runningRuns) {
+      const deleteOrphanIssueWakeupRequests = async () => {
+        await db
+          .delete(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, input.companyId),
+              inArray(agentWakeupRequests.status, ORPHAN_WAKEUP_REQUEST_STATUSES),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+              sql`not exists (
+                select 1 from ${heartbeatRuns}
+                where ${heartbeatRuns.wakeupRequestId} = ${agentWakeupRequests.id}
+                  and ${heartbeatRuns.companyId} = ${input.companyId}
+                  and ${heartbeatRuns.status} in ('queued', 'running')
+              )`,
+            ),
+          );
+      };
+
+      const cancelRunningIssueRun = async (run: { id: string; wakeupRequestId: string | null }) => {
         if (heartbeat.cancelRun) {
           await heartbeat.cancelRun(run.id);
-          continue;
+          return;
         }
 
         const finishedAt = new Date();
@@ -787,9 +814,9 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
             })
             .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
         }
-      }
+      };
 
-      if (runningRuns.length > 0) {
+      const clearIssueExecutionLock = async () => {
         await db
           .update(issues)
           .set({
@@ -799,30 +826,74 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
             updatedAt: new Date(),
           })
           .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
+      };
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await deleteOrphanIssueWakeupRequests();
+
+        const liveRuns = await findLiveIssueRuns();
+        const runningRuns = liveRuns.filter((run) => run.status === "running");
+        const queuedRunIds = liveRuns
+          .filter((run) => run.status === "queued")
+          .map((run) => run.id);
+
+        for (const run of runningRuns) {
+          await cancelRunningIssueRun(run);
+        }
+
+        if (queuedRunIds.length > 0) {
+          const deletedQueuedRuns = await db
+            .delete(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, input.companyId),
+                eq(heartbeatRuns.status, "queued"),
+                inArray(heartbeatRuns.id, queuedRunIds),
+              ),
+            )
+            .returning({
+              id: heartbeatRuns.id,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+            });
+          const deletedRunIds = deletedQueuedRuns.map((run) => run.id);
+          const deletedWakeupRequestIds = deletedQueuedRuns
+            .map((run) => run.wakeupRequestId)
+            .filter((id): id is string => Boolean(id));
+          const wakeupRequestFilters = [];
+          if (deletedRunIds.length > 0) wakeupRequestFilters.push(inArray(agentWakeupRequests.runId, deletedRunIds));
+          if (deletedWakeupRequestIds.length > 0) {
+            wakeupRequestFilters.push(inArray(agentWakeupRequests.id, deletedWakeupRequestIds));
+          }
+          if (wakeupRequestFilters.length > 0) {
+            await db
+              .delete(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, input.companyId),
+                  inArray(agentWakeupRequests.status, ["queued", "coalesced"]),
+                  or(...wakeupRequestFilters),
+                ),
+              );
+          }
+        }
+
+        await deleteOrphanIssueWakeupRequests();
+
+        const remainingRuns = await findLiveIssueRuns();
+        const remainingWakeupRequests = await findActiveIssueWakeupRequests();
+        if (remainingRuns.length === 0 && remainingWakeupRequests.length === 0) {
+          await clearIssueExecutionLock();
+          return true;
+        }
       }
 
-      if (runIds.length > 0) {
-        await db
-          .delete(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, runIds)));
-      }
-
-      const wakeupRequestFilters = [
-        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
-      ];
-      if (runIds.length > 0) wakeupRequestFilters.push(inArray(agentWakeupRequests.runId, runIds));
-      if (wakeupRequestIds.length > 0) wakeupRequestFilters.push(inArray(agentWakeupRequests.id, wakeupRequestIds));
-
-      await db
-        .delete(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, input.companyId),
-            inArray(agentWakeupRequests.status, ["queued", "coalesced"]),
-            or(...wakeupRequestFilters),
-          ),
-        );
-      return true;
+      const remainingRuns = await findLiveIssueRuns();
+      const remainingWakeupRequests = await findActiveIssueWakeupRequests();
+      logger.error(
+        { companyId: input.companyId, issueId: input.issueId, remainingRuns, remainingWakeupRequests },
+        "routine issue wakeup artifacts remained active after cleanup",
+      );
+      return false;
     } catch (err) {
       logger.error(
         { err, companyId: input.companyId, issueId: input.issueId },
