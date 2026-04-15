@@ -4250,6 +4250,28 @@ export function heartbeatService(db: Db) {
           .where(eq(issues.id, issue.id));
       }
 
+      // If the issue reached a terminal state during the run (e.g. agent marked
+      // it done and then posted a comment which queued a deferred wakeup), skip
+      // all deferred wakeups — there is no work left to promote.
+      if (issue.status === "done" || issue.status === "cancelled") {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: new Date(),
+            error: "Issue already in terminal state; deferred promotion skipped",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        return null;
+      }
+
       while (true) {
         const deferred = await tx
           .select()
