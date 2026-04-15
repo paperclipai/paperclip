@@ -200,6 +200,7 @@ describe("cross-issue comment guard (OCT-552)", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 
   it("allows agent to comment on in_progress issue even if run is for a different issue", async () => {
@@ -238,6 +239,20 @@ describe("cross-issue comment guard (OCT-552)", () => {
       .send({ body: "Wrong issue" });
 
     expect(res.status).toBe(409);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects comment on done issue when run record is not found", async () => {
+    const doneIssue = makeIssue({ id: ISSUE_B_ID, status: "done" });
+    mockIssueService.getById.mockResolvedValue(doneIssue);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${ISSUE_B_ID}`)
+      .send({ comment: "Stale run ID" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/run not found/i);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 });

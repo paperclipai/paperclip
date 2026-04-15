@@ -416,21 +416,27 @@ export function issueRoutes(
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     if (isClosed && req.actor.runId) {
       const run = await heartbeat.getRun(req.actor.runId);
-      if (run) {
-        const runIssueId =
-          run.contextSnapshot &&
-          typeof run.contextSnapshot === "object" &&
-          typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
-            ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
-            : null;
-        if (runIssueId && runIssueId !== issue.id) {
-          res.status(409).json({
-            error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
-            runIssueId,
-            targetIssueId: issue.id,
-          });
-          return false;
-        }
+      if (!run) {
+        res.status(409).json({
+          error: "Agent run not found; cannot verify issue context for a completed issue",
+          runId: req.actor.runId,
+          targetIssueId: issue.id,
+        });
+        return false;
+      }
+      const runIssueId =
+        run.contextSnapshot &&
+        typeof run.contextSnapshot === "object" &&
+        typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
+          ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
+          : null;
+      if (runIssueId && runIssueId !== issue.id) {
+        res.status(409).json({
+          error: "Agent run is for a different issue; commenting on a completed issue from another run is not allowed",
+          runIssueId,
+          targetIssueId: issue.id,
+        });
+        return false;
       }
     }
 
