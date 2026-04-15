@@ -115,6 +115,24 @@ export async function createApp(
 ) {
   const app = express();
 
+  // Trust reverse proxies (ingress controllers, load balancers) so that
+  // req.ip and related helpers return the real client IP from
+  // X-Forwarded-For instead of the proxy's internal address. Without
+  // this, any downstream logic keyed on req.ip (rate limiting, audit
+  // logs, abuse detection) groups every user behind the same proxy into
+  // a single bucket.
+  //
+  // Accepted values (see Express docs):
+  //   - number  — trust N hops of proxies (e.g. "1" for a single ingress)
+  //   - "true"  — trust all proxies (use only when deployment guarantees
+  //               X-Forwarded-For cannot be spoofed)
+  //   - unset / "" / "false" / "0" — disable (default)
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy && trustProxy !== "false" && trustProxy !== "0") {
+    const parsed = Number.parseInt(trustProxy, 10);
+    app.set("trust proxy", Number.isFinite(parsed) && parsed > 0 ? parsed : true);
+  }
+
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
