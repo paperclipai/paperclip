@@ -230,11 +230,17 @@ function statusLabel(s: string) {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-const statuses = ISSUE_STATUSES.map((s) => ({
-  value: s,
-  label: statusLabel(s),
-  color: issueStatusText[s] ?? issueStatusTextDefault,
-}));
+// "blocked" and "cancelled" are lifecycle-only statuses — users should not
+// be able to pick them when creating a new issue.
+const HIDDEN_CREATION_STATUSES = new Set(["blocked", "cancelled"]);
+
+const statuses = ISSUE_STATUSES
+  .filter((s) => !HIDDEN_CREATION_STATUSES.has(s))
+  .map((s) => ({
+    value: s,
+    label: statusLabel(s),
+    color: issueStatusText[s] ?? issueStatusTextDefault,
+  }));
 
 const priorities = [
   { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
