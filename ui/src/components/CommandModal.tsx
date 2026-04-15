@@ -79,7 +79,7 @@ export function CommandModal() {
       <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" onClick={() => setOpen(false)} />
 
       {/* Modal */}
-      <div className="fixed left-1/2 top-1/3 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2">
+      <div className="fixed left-1/2 top-1/3 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2">
         <form
           onSubmit={handleSubmit}
           className="rounded-xl border border-border bg-card shadow-2xl overflow-hidden"
@@ -87,7 +87,7 @@ export function CommandModal() {
           <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-muted/30">
             <Zap className="h-4 w-4 text-primary shrink-0" />
             <span className="text-sm font-medium">Command</span>
-            <span className="ml-auto text-xs text-muted-foreground">Ctrl+Shift+K</span>
+            <span className="ml-auto text-xs text-muted-foreground hidden md:inline">Ctrl+Shift+K</span>
           </div>
 
           <div className="p-4">

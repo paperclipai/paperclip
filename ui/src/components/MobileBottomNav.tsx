@@ -7,6 +7,7 @@ import {
   Users,
   Inbox,
   Youtube,
+  StickyNote,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { cn } from "../lib/utils";
@@ -43,7 +44,12 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
       { type: "link", to: "/dashboard", label: "Home", icon: House },
       { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
       { type: "link", to: "/voice", label: "Voice", icon: Mic },
-      { type: "link", to: "/youtube", label: "YouTube", icon: Youtube },
+      {
+        type: "action",
+        label: "Notes",
+        icon: StickyNote,
+        onClick: () => window.dispatchEvent(new CustomEvent("paperclip:open-quick-notes")),
+      },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
       {
         type: "link",

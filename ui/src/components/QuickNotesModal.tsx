@@ -97,6 +97,7 @@ export function QuickNotesModal() {
   });
 
   // Ctrl+Shift+P → toggle
+  // Ctrl+Shift+P → toggle; also listen for programmatic open event (mobile nav)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key.toLowerCase() === "p" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
@@ -107,8 +108,15 @@ export function QuickNotesModal() {
         setOpen(false);
       }
     }
+    function handleOpenEvent() {
+      setOpen(true);
+    }
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("paperclip:open-quick-notes", handleOpenEvent);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("paperclip:open-quick-notes", handleOpenEvent);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -158,13 +166,13 @@ export function QuickNotesModal() {
       {/* Backdrop */}
       <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" onClick={() => setOpen(false)} />
 
-      {/* Panel — right side slide-out */}
-      <div className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-md bg-card border-l border-border shadow-2xl flex flex-col">
+      {/* Panel — full screen on mobile, right slide-out on desktop */}
+      <div className="fixed inset-0 md:inset-auto md:right-0 md:top-0 md:bottom-0 z-50 w-full md:max-w-md bg-card md:border-l border-border shadow-2xl flex flex-col pb-[env(safe-area-inset-bottom)]">
         {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-muted/30 shrink-0">
+        <div className="flex items-center gap-2 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] border-b border-border bg-muted/30 shrink-0">
           <StickyNote className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium flex-1">Quick Notes</span>
-          <span className="text-xs text-muted-foreground">Ctrl+Shift+P</span>
+          <span className="text-xs text-muted-foreground hidden md:inline">Ctrl+Shift+P</span>
           <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
