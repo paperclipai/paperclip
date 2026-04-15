@@ -2362,6 +2362,7 @@ export function agentRoutes(db: Db) {
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
@@ -2396,6 +2397,7 @@ export function agentRoutes(db: Db) {
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
