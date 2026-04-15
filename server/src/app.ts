@@ -122,6 +122,17 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Capture rawBody for form-encoded requests (e.g. Slack slash commands).
+  // express.json() only captures rawBody for application/json payloads; without
+  // this middleware, HMAC signature verification fails for any webhook that
+  // sends application/x-www-form-urlencoded (the Slack slash command format).
+  app.use(express.urlencoded({
+    extended: true,
+    verify: (req, _res, buf) => {
+      const r = req as unknown as { rawBody?: Buffer };
+      if (!r.rawBody) r.rawBody = buf;
+    },
+  }));
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
