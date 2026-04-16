@@ -235,6 +235,59 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("does not recreate the mention decoration observer when the external value changes", async () => {
+    const originalMutationObserver = globalThis.MutationObserver;
+
+    class MockMutationObserver implements MutationObserver {
+      static instances: MockMutationObserver[] = [];
+
+      readonly observe = vi.fn();
+      readonly disconnect = vi.fn();
+      readonly takeRecords = vi.fn<() => MutationRecord[]>(() => []);
+
+      constructor(readonly callback: MutationCallback) {
+        MockMutationObserver.instances.push(this);
+      }
+    }
+
+    vi.stubGlobal("MutationObserver", MockMutationObserver);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="First value"
+            onChange={() => {}}
+            placeholder="Markdown body"
+          />,
+        );
+      });
+
+      await flush();
+
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="Updated value"
+            onChange={() => {}}
+            placeholder="Markdown body"
+          />,
+        );
+      });
+
+      await flush();
+
+      expect(MockMutationObserver.instances).toHaveLength(1);
+      expect(MockMutationObserver.instances[0]?.observe).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      vi.stubGlobal("MutationObserver", originalMutationObserver);
+    }
+  });
+
   it("converts advisory-style html image tags to markdown image syntax before mounting the editor", async () => {
     const root = createRoot(container);
 
