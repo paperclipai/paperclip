@@ -26,6 +26,18 @@ describe("resolveSessionKey", () => {
     ).toBe("agent:meridian:paperclip:issue:issue-456");
   });
 
+  it("falls back to a run-scoped key when issue strategy is used without an issue id", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "issue",
+        configuredSessionKey: "paperclip",
+        agentId: "meridian",
+        runId: "run-123",
+        issueId: null,
+      }),
+    ).toBe("agent:meridian:paperclip:run:run-123");
+  });
+
   it("prefixes fixed session keys with the configured agent", () => {
     expect(
       resolveSessionKey({
