@@ -121,10 +121,11 @@ function LinkRow({ label, value, placeholder, displayValue, href, openInNewTab, 
         ) : (
           <button
             type="button"
-            className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+            className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
             onClick={startEdit}
+            title={placeholder}
           >
-            {placeholder}
+            None
           </button>
         )}
       </div>
