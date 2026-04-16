@@ -28,6 +28,7 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
 }
 
 export type AdapterBillingType =

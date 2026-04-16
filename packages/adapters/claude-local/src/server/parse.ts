@@ -59,6 +59,7 @@ export function parseClaudeStreamJson(stdout: string) {
   const usage: UsageSummary = {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
+    cacheCreationInputTokens: asNumber(usageObj.cache_creation_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };
   const costRaw = finalResult.total_cost_usd;
