@@ -4,10 +4,12 @@
  * One `SidecarBrowser` lives for the lifetime of the sidecar process. Pages are
  * not torn down between tool calls so state (cookies, storage) persists across
  * a session, which is required for login-once workflows.
+ *
+ * NOTE: Persistent Chromium sessions require `chromium.launchPersistentContext(userDataDir, …)`.
+ * `browser.newContext({ userDataDir })` is NOT a valid Playwright API.
  */
 
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import path from "node:path";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import fs from "node:fs/promises";
 
 const DEFAULT_PROFILE_DIR = "/var/lib/surfer/profile";
@@ -15,7 +17,6 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 900 };
 const LAUNCH_TIMEOUT_MS = 30_000;
 
 export class SidecarBrowser {
-  private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private profileDir: string;
@@ -27,33 +28,32 @@ export class SidecarBrowser {
   async start(): Promise<void> {
     await fs.mkdir(this.profileDir, { recursive: true });
 
-    this.browser = await chromium.launch({
+    // `launchPersistentContext` binds the userDataDir at launch time and returns
+    // a BrowserContext directly — there is no separate Browser handle.
+    this.context = await chromium.launchPersistentContext(this.profileDir, {
       headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
       ],
-      timeout: LAUNCH_TIMEOUT_MS,
-    });
-
-    this.context = await this.browser.newContext({
-      userDataDir: this.profileDir,
       viewport: DEFAULT_VIEWPORT,
       userAgent:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      timeout: LAUNCH_TIMEOUT_MS,
     });
 
-    this.page = await this.context.newPage();
+    // Reuse the blank tab Chromium opens on start, or open a new one.
+    const pages = this.context.pages();
+    this.page = pages.length > 0 ? pages[0]! : await this.context.newPage();
   }
 
   async stop(): Promise<void> {
     try {
-      await this.browser?.close();
+      await this.context?.close();
     } catch {
       // Best-effort on shutdown
     }
-    this.browser = null;
     this.context = null;
     this.page = null;
   }
@@ -69,6 +69,8 @@ export class SidecarBrowser {
   }
 
   isRunning(): boolean {
-    return this.browser !== null && this.browser.isConnected();
+    // launchPersistentContext doesn't expose a .browser(), but .isConnected()
+    // exists on the Browser object returned from context.browser().
+    return this.context !== null && this.context.browser()?.isConnected() !== false;
   }
 }
