@@ -50,7 +50,7 @@
     "ui": "./dist/ui/"
   },
   "scripts": {
-    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
@@ -79,7 +79,7 @@ Save to `packages/plugins/issue-links/package.json`.
 
 ```json
 {
-  "extends": "../../../../tsconfig.json",
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
