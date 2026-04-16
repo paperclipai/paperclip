@@ -191,7 +191,7 @@ export function agentRoutes(db: Db) {
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAdapterConfigEnv(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -760,6 +760,37 @@ export function agentRoutes(db: Db) {
     };
   }
 
+  const ENV_SECRET_KEY_RE = /(_KEY|_TOKEN|_SECRET|PASSWORD|_CREDENTIAL)$/i;
+
+  /**
+   * Redact the values inside adapterConfig.env so that API responses
+   * never leak plaintext secrets or secret-ref UUIDs. Keys are preserved
+   * so the UI knows which env vars are bound; only values are masked.
+   * See upstream issue #1818.
+   */
+  function redactAdapterConfigEnv<T extends Record<string, unknown> | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    const record = agent as Record<string, unknown>;
+    const ac = record.adapterConfig;
+    if (!ac || typeof ac !== "object" || Array.isArray(ac)) return agent;
+    const env = (ac as Record<string, unknown>).env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return agent;
+    const redactedEnv: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (ENV_SECRET_KEY_RE.test(key) || typeof value === "object") {
+        redactedEnv[key] = "***";
+      } else {
+        redactedEnv[key] = value;
+      }
+    }
+    return {
+      ...agent,
+      adapterConfig: { ...(ac as Record<string, unknown>), env: redactedEnv },
+    } as T;
+  }
+
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1038,7 +1069,7 @@ export function agentRoutes(db: Db) {
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((a) => redactAdapterConfigEnv(a)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
