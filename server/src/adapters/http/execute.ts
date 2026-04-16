@@ -1,10 +1,12 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import { asString, asNumber, parseObject } from "../utils.js";
+import { validateUrlNotInternal } from "../../utils/url-validation.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context } = ctx;
   const url = asString(config.url, "");
   if (!url) throw new Error("HTTP adapter missing url");
+  await validateUrlNotInternal(url);
 
   const method = asString(config.method, "POST");
   const timeoutMs = asNumber(config.timeoutMs, 0);
