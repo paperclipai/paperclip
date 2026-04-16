@@ -42,6 +42,7 @@ import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
+import { UserMenu } from "./UserMenu";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
@@ -345,6 +346,7 @@ export function Layout() {
             </div>
             <div className="border-t border-r border-border px-3 py-2 bg-background">
               <div className="flex items-center gap-1">
+                {health?.deploymentMode === "authenticated" && <UserMenu />}
                 <a
                   href="https://docs.paperclip.ing/"
                   target="_blank"
@@ -404,6 +406,7 @@ export function Layout() {
             </div>
             <div className="border-t border-r border-border px-3 py-2">
               <div className="flex items-center gap-1">
+                {health?.deploymentMode === "authenticated" && <UserMenu />}
                 <a
                   href="https://docs.paperclip.ing/"
                   target="_blank"
