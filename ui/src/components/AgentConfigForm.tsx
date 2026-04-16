@@ -160,6 +160,8 @@ const claudeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra High (Opus 4.7)" },
+  { id: "max", label: "Max" },
 ] as const;
 
 
