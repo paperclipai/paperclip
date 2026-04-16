@@ -2754,7 +2754,17 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const trackedProcess = runningProcesses.get(run.id);
+      if (trackedProcess) {
+        const child = trackedProcess.child;
+        const trackedChildDead = child.exitCode !== null || child.killed === true || !isProcessAlive(run.processPid);
+        if (trackedChildDead) {
+          runningProcesses.delete(run.id);
+        } else {
+          continue;
+        }
+      }
+      if (activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

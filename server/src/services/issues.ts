@@ -492,6 +492,7 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
+const STALE_QUEUED_EXECUTION_RUN_MS = 15 * 60 * 1000;
 
 async function activeRunMapForIssues(
   dbOrTx: any,
@@ -908,14 +909,101 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
+  async function getHeartbeatRunStatus(runId: string) {
+    return db
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function isTerminalOrMissingHeartbeatRun(runId: string) {
+    const run = await getHeartbeatRunStatus(runId);
     if (!run) return true;
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  }
+
+  async function cancelStaleQueuedExecutionRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedExecutionRunId: string;
+  }) {
+    const run = await db
+      .select({
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.expectedExecutionRunId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.status !== "queued" || run.startedAt || run.finishedAt) return null;
+
+    const now = new Date();
+    const staleReference = run.updatedAt ?? run.createdAt;
+    if (!staleReference || now.getTime() - staleReference.getTime() < STALE_QUEUED_EXECUTION_RUN_MS) {
+      return null;
+    }
+
+    return db.transaction(async (tx) => {
+      const currentRun = await tx
+        .select({
+          status: heartbeatRuns.status,
+          startedAt: heartbeatRuns.startedAt,
+          finishedAt: heartbeatRuns.finishedAt,
+          createdAt: heartbeatRuns.createdAt,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.expectedExecutionRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!currentRun || currentRun.status !== "queued" || currentRun.startedAt || currentRun.finishedAt) {
+        return null;
+      }
+
+      const currentReference = currentRun.updatedAt ?? currentRun.createdAt;
+      if (!currentReference || now.getTime() - currentReference.getTime() < STALE_QUEUED_EXECUTION_RUN_MS) {
+        return null;
+      }
+
+      const releasedIssue = await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.executionRunId, input.expectedExecutionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (!releasedIssue) return null;
+
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: `superseded by later assignee heartbeat run ${input.actorRunId} after stale queued lock`,
+          errorCode: "stale_queued_lock",
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, input.expectedExecutionRunId), eq(heartbeatRuns.status, "queued")));
+
+      return {
+        executionRunId: input.expectedExecutionRunId,
+      };
+    });
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -1856,7 +1944,7 @@ export function issueService(db: Db) {
         return enriched;
       }
 
-      const current = await db
+      let current = await db
         .select({
           id: issues.id,
           status: issues.status,
@@ -1869,6 +1957,33 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (
+        checkoutRunId &&
+        current.assigneeAgentId === agentId &&
+        current.status === "in_progress" &&
+        current.executionRunId &&
+        current.executionRunId !== checkoutRunId
+      ) {
+        await cancelStaleQueuedExecutionRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        current = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Issue not found");
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -1941,12 +2056,13 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
-      const current = await db
+      let current = await db
         .select({
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1955,9 +2071,36 @@ export function issueService(db: Db) {
       if (!current) throw notFound("Issue not found");
 
       if (
+        actorRunId &&
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
-        sameRunLock(current.checkoutRunId, actorRunId)
+        current.executionRunId &&
+        current.executionRunId !== actorRunId
+      ) {
+        await cancelStaleQueuedExecutionRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        current = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Issue not found");
+      }
+
+      if (
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        (current.checkoutRunId == null || sameRunLock(current.checkoutRunId, actorRunId))
       ) {
         return { ...current, adoptedFromRunId: null as string | null };
       }
