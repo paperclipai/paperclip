@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
@@ -2679,12 +2679,16 @@ describe("resolveWorkspaceRuntimeReadinessTimeoutSec", () => {
 });
 
 describe("resolveShell (shell fallback)", () => {
-  const originalShell = process.env.SHELL;
   const originalPlatform = process.platform;
+  let savedShell: string | undefined;
+
+  beforeEach(() => {
+    savedShell = process.env.SHELL;
+  });
 
   afterEach(() => {
-    if (originalShell !== undefined) {
-      process.env.SHELL = originalShell;
+    if (savedShell !== undefined) {
+      process.env.SHELL = savedShell;
     } else {
       delete process.env.SHELL;
     }
