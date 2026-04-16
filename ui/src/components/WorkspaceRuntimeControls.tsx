@@ -10,7 +10,7 @@ import {
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useLocale } from "../context/LocaleContext";
+import { useLocaleOrFallback } from "../context/LocaleContext";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -222,7 +222,7 @@ function CommandActionButtons({
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
       ? ["run"]
@@ -288,7 +288,7 @@ function CommandSection({
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const translateStatus = (status: string, kind: "service" | "job") => {
     if (kind === "job" && status === "run_once") return t("workspaceRuntimeControls.runOnce");
     if (status === "starting") return t("workspaceRuntimeControls.status.starting");
@@ -395,7 +395,7 @@ export function WorkspaceRuntimeControls({
   onAction,
   className,
 }: WorkspaceRuntimeControlsProps) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
       ...item,

@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { useLocale } from "../context/LocaleContext";
+import { useLocaleOrFallback } from "../context/LocaleContext";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { getCurrentLocale } from "../lib/locale-store";
 import { cn } from "../lib/utils";
@@ -60,7 +60,7 @@ export function IssueColumnPicker({
   title: string;
   iconOnly?: boolean;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const issueColumnLabels: Record<InboxIssueColumn, string> = {
     status: t("common.status"),
     id: "ID",
@@ -152,7 +152,7 @@ export function InboxIssueMetaLeading({
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   return (
     <>
       {showStatus ? (
@@ -222,7 +222,7 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
 

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
@@ -9,6 +10,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useLocale } from "../context/LocaleContext";
+import { getCurrentLocale } from "../lib/locale-store";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
@@ -33,6 +35,8 @@ export function GoalPropertiesToggleButton({
   onShowProperties,
   label,
 }: GoalPropertiesToggleButtonProps) {
+  const resolvedLabel = label ?? createTranslator(getCurrentLocale()).t("goalDetail.showProperties");
+
   return (
     <Button
       variant="ghost"
@@ -42,7 +46,7 @@ export function GoalPropertiesToggleButton({
         panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
       )}
       onClick={onShowProperties}
-      title={label}
+      title={resolvedLabel}
     >
       <SlidersHorizontal className="h-4 w-4" />
     </Button>

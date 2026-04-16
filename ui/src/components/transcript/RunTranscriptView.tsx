@@ -4,7 +4,7 @@ import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { getCurrentLocale } from "../../lib/locale-store";
 import { cn, formatTokens } from "../../lib/utils";
-import { useLocale } from "../../context/LocaleContext";
+import { useLocaleOrFallback } from "../../context/LocaleContext";
 import {
   Check,
   ChevronDown,
@@ -648,7 +648,7 @@ function TranscriptMessageBlock({
 }) {
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
 
   return (
     <div>
@@ -710,7 +710,7 @@ function TranscriptToolCard({
 }) {
   const [open, setOpen] = useState(block.status === "error");
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const parsedResult = parseStructuredToolResult(block.result);
   const statusLabel =
     block.status === "running"
@@ -819,7 +819,7 @@ function TranscriptCommandGroup({
 }) {
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const runningItem = [...block.items].reverse().find((item) => item.status === "running");
   const latestItem = block.items[block.items.length - 1] ?? null;
   const hasError = block.items.some((item) => item.status === "error");
@@ -945,7 +945,7 @@ function TranscriptToolGroup({
 }) {
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const runningItem = [...block.items].reverse().find((item) => item.status === "running");
   const hasError = block.items.some((item) => item.status === "error");
   const isRunning = Boolean(runningItem);
@@ -1105,7 +1105,7 @@ function TranscriptEventRow({
   density: TranscriptDensity;
 }) {
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const labelText =
     block.label === "init"
       ? t("runTranscript.initLabel")
@@ -1169,7 +1169,7 @@ function TranscriptDiffGroup({
 }) {
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
 
   // Count add/remove lines (exclude context, hunk, file_header, truncation)
   const addCount = block.hunks.filter((h) => h.changeType === "add").length;
@@ -1267,7 +1267,7 @@ function TranscriptStderrGroup({
 }) {
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   return (
     <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-2 text-amber-700 dark:text-amber-300">
       <div
@@ -1304,7 +1304,7 @@ function TranscriptSystemGroup({
   density: TranscriptDensity;
 }) {
   const [open, setOpen] = useState(false);
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   return (
     <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-2 text-blue-700 dark:text-blue-300">
       <div
@@ -1344,7 +1344,7 @@ function TranscriptStdoutRow({
   collapseByDefault: boolean;
 }) {
   const [open, setOpen] = useState(!collapseByDefault);
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
 
   return (
     <div>
@@ -1422,7 +1422,7 @@ export function RunTranscriptView({
   className,
   thinkingClassName,
 }: RunTranscriptViewProps) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const resolvedEmptyMessage = emptyMessage ?? t("runTranscript.empty");
   const blocks = useMemo(() => normalizeTranscript(entries, streaming, t), [entries, streaming, t]);
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;

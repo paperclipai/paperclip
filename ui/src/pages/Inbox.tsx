@@ -16,7 +16,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
-import { useLocale } from "../context/LocaleContext";
+import { useLocale, useLocaleOrFallback } from "../context/LocaleContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -254,7 +254,7 @@ export function FailedRunInboxRow({
   selected?: boolean;
   className?: string;
 }) {
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const displayError = runFailureMessage(run, t("inbox.failedRunDefaultError"));

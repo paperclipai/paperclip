@@ -6,9 +6,11 @@ import { authApi } from "@/api/auth";
 import { i18nApi } from "@/api/i18n";
 import { userPreferencesApi } from "@/api/userPreferences";
 import { queryKeys } from "@/lib/queryKeys";
-import { setCurrentLocale } from "@/lib/locale-store";
+import { getCurrentLocale, setCurrentLocale } from "@/lib/locale-store";
 
 const LOCALE_STORAGE_KEY = "paperclip.locale";
+const fallbackSupportedLocales = [...SUPPORTED_LOCALES];
+const fallbackSetLocalePreference: LocaleContextValue["setLocalePreference"] = async () => {};
 
 interface LocaleContextValue {
   locale: SupportedLocale;
@@ -125,4 +127,20 @@ export function useLocale() {
     throw new Error("useLocale must be used within a LocaleProvider");
   }
   return context;
+}
+
+export function useLocaleOrFallback(): LocaleContextValue {
+  const context = useContext(LocaleContext);
+  const locale = context?.locale ?? getCurrentLocale();
+  const translator = useMemo(() => createTranslator(locale), [locale]);
+
+  return context ?? {
+    locale,
+    supportedLocales: fallbackSupportedLocales,
+    localeOptionLabels,
+    t: translator.t,
+    tx: translator.tx,
+    setLocalePreference: fallbackSetLocalePreference,
+    isUpdatingLocale: false,
+  };
 }

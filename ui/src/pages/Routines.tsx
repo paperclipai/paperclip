@@ -9,7 +9,7 @@ import { issuesApi } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useLocale } from "../context/LocaleContext";
+import { useLocaleOrFallback } from "../context/LocaleContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
@@ -334,7 +334,7 @@ function RoutineListRow({
 export function Routines() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { t } = useLocale();
+  const { t } = useLocaleOrFallback();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
