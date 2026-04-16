@@ -42,6 +42,7 @@ export function CompanySettings() {
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [heartbeatTimeScalePercent, setHeartbeatTimeScalePercent] = useState(100);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -50,6 +51,7 @@ export function CompanySettings() {
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setHeartbeatTimeScalePercent(selectedCompany.heartbeatTimeScalePercent ?? 100);
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -99,6 +101,27 @@ export function CompanySettings() {
     onError: (err) => {
       pushToast({
         title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const heartbeatScaleMutation = useMutation({
+    mutationFn: (percent: number) =>
+      companiesApi.update(selectedCompanyId!, {
+        heartbeatTimeScalePercent: percent,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: "Heartbeat time scale updated",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update heartbeat time scale",
         body: err instanceof Error ? err.message : "Unknown error",
         tone: "error",
       });
@@ -244,6 +267,8 @@ export function CompanySettings() {
       brandColor: brandColor || null
     });
   }
+
+  const heartbeatScaleFactor = Math.max(0.1, Math.min(10, heartbeatTimeScalePercent / 100));
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -414,6 +439,51 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      {/* Heartbeats */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Heartbeats
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <Field
+            label="Heartbeat time scale"
+            hint="Scales all scheduled (timer) heartbeats for this company proportionally. 2.0x means agents wake twice as often (their intervals are divided by 2)."
+          >
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium tabular-nums">
+                  {heartbeatScaleFactor.toFixed(1)}x
+                </div>
+                <div className="text-xs text-muted-foreground tabular-nums">
+                  {heartbeatTimeScalePercent}%
+                </div>
+              </div>
+              <input
+                type="range"
+                min={10}
+                max={1000}
+                step={10}
+                value={heartbeatTimeScalePercent}
+                onChange={(e) => setHeartbeatTimeScalePercent(Number(e.target.value))}
+                onPointerUp={() => {
+                  const next = Math.max(10, Math.min(1000, Math.round(heartbeatTimeScalePercent / 10) * 10));
+                  heartbeatScaleMutation.mutate(next);
+                }}
+                onKeyUp={(e) => {
+                  if (e.key !== "Enter") return;
+                  const next = Math.max(10, Math.min(1000, Math.round(heartbeatTimeScalePercent / 10) * 10));
+                  heartbeatScaleMutation.mutate(next);
+                }}
+                className="w-full"
+              />
+              {heartbeatScaleMutation.isPending && (
+                <span className="text-xs text-muted-foreground">Saving...</span>
+              )}
+            </div>
+          </Field>
         </div>
       </div>
 

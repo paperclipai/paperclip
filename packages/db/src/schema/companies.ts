@@ -23,6 +23,9 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    // Integer percent for easy storage/validation: 100 => 1.0x.
+    // Runtime clamps to [10, 1000] (0.1x–10x) and divides agent interval by scale.
+    heartbeatTimeScalePercent: integer("heartbeat_time_scale_percent").notNull().default(100),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
