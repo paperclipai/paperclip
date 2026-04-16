@@ -20,7 +20,8 @@ async function listReportingSubtreeAgentIds(db: Db, companyId: string, actorAgen
       reportsTo: agents.reportsTo,
     })
     .from(agents)
-    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")))
+    .limit(500);
 
   const reportsByManager = new Map<string, string[]>();
   for (const agent of companyAgents) {
