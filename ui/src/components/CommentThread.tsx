@@ -141,6 +141,11 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
+  return isClosed && assigneeValue.startsWith("agent:");
+}
+
 function humanizeValue(value: string | null): string {
   const { tx, t } = getRuntimeTranslator();
   if (!value) return t("common.none");
@@ -676,6 +681,7 @@ export function CommentThread({
   pendingApprovalAction = null,
   onVote,
   onAdd,
+  issueStatus,
   agentMap,
   currentUserId,
   imageUploadHandler,
@@ -693,7 +699,6 @@ export function CommentThread({
 }: CommentThreadProps) {
   const { t } = useLocale();
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
@@ -814,14 +819,17 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
     setBody("");
     try {
-      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
-      setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>

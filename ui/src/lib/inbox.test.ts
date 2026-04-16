@@ -12,11 +12,14 @@ import type {
 } from "@paperclipai/shared";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
+  buildGroupedInboxSections,
+  buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
   filterInboxIssues,
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
+  getInboxWorkItemKey,
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
@@ -28,16 +31,22 @@ import {
   isMineInboxTab,
   loadInboxFilterPreferences,
   loadInboxIssueColumns,
+  loadInboxWorkItemGroupBy,
+  loadCollapsedInboxGroupKeys,
   loadLastInboxTab,
   matchesInboxIssueSearch,
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
   resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
+  resolveIssueWorkspaceGroup,
   resolveInboxSelectionIndex,
   saveInboxFilterPreferences,
+  saveCollapsedInboxGroupKeys,
   saveInboxIssueColumns,
+  saveInboxWorkItemGroupBy,
   saveLastInboxTab,
+  shouldResetInboxWorkspaceGrouping,
   shouldShowInboxSection,
   type InboxWorkItem,
 } from "./inbox";
@@ -487,6 +496,71 @@ describe("inbox helpers", () => {
     ]);
   });
 
+  it("skips hidden groups when building keyboard navigation entries", () => {
+    const visibleIssue = makeIssue("visible", true);
+    const hiddenIssue = makeIssue("hidden", true);
+    const approval = makeApprovalWithTimestamps("approval-1", "pending", "2026-03-11T03:00:00.000Z");
+
+    const entries = buildInboxKeyboardNavEntries(
+      [
+        {
+          key: "visible-group",
+          displayItems: [{ kind: "issue", timestamp: 3, issue: visibleIssue }],
+          childrenByIssueId: new Map(),
+        },
+        {
+          key: "hidden-group",
+          displayItems: [
+            { kind: "issue", timestamp: 2, issue: hiddenIssue },
+            { kind: "approval", timestamp: 1, approval },
+          ],
+          childrenByIssueId: new Map(),
+        },
+      ],
+      new Set(["hidden-group"]),
+      new Set(),
+    );
+
+    expect(entries).toEqual([
+      {
+        type: "top",
+        itemKey: `visible-group:${getInboxWorkItemKey({ kind: "issue", timestamp: 3, issue: visibleIssue })}`,
+        item: { kind: "issue", timestamp: 3, issue: visibleIssue },
+      },
+    ]);
+  });
+
+  it("includes child issues only when their parent row is expanded", () => {
+    const parentIssue = makeIssue("parent", true);
+    const childIssue = makeIssue("child", true);
+    childIssue.parentId = parentIssue.id;
+
+    const groupedSections = [
+      {
+        key: "workspace:default",
+        displayItems: [{ kind: "issue", timestamp: 2, issue: parentIssue } satisfies InboxWorkItem],
+        childrenByIssueId: new Map([[parentIssue.id, [childIssue]]]),
+      },
+    ];
+
+    expect(
+      buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set()).map((entry) => entry.type === "top"
+        ? entry.itemKey
+        : entry.issueId),
+    ).toEqual([
+      `workspace:default:${getInboxWorkItemKey({ kind: "issue", timestamp: 2, issue: parentIssue })}`,
+      childIssue.id,
+    ]);
+
+    expect(
+      buildInboxKeyboardNavEntries(groupedSections, new Set(), new Set([parentIssue.id])).map((entry) => entry.type === "top"
+        ? entry.itemKey
+        : entry.issueId),
+    ).toEqual([
+      `workspace:default:${getInboxWorkItemKey({ kind: "issue", timestamp: 2, issue: parentIssue })}`,
+    ]);
+  });
+
   it("sorts self-touched issues without external comments by updatedAt", () => {
     const recentSelfTouched = makeIssue("recent", false);
     recentSelfTouched.lastExternalCommentAt = null as unknown as Date;
@@ -575,6 +649,22 @@ describe("inbox helpers", () => {
     )).toBe(true);
   });
 
+  it("resolves the default workspace into an explicit grouping label", () => {
+    const issue = makeIssue("default", false);
+    issue.projectId = "project-1";
+    issue.projectWorkspaceId = "project-workspace-1";
+
+    expect(resolveIssueWorkspaceGroup(issue, {
+      projectWorkspaceById: new Map([
+        ["project-workspace-1", { name: "Primary workspace" }],
+      ]),
+      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+    })).toEqual({
+      key: "workspace:project:project-workspace-1",
+      label: "Primary workspace (default)",
+    });
+  });
+
   it("returns archived search matches that are not already visible in the inbox", () => {
     const visibleIssue = makeIssue("visible", false);
     visibleIssue.title = "Alpha visible task";
@@ -626,10 +716,11 @@ describe("inbox helpers", () => {
           statuses: ["in_progress"],
           priorities: [],
           assignees: [],
+          creators: [],
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -644,10 +735,11 @@ describe("inbox helpers", () => {
           statuses: [],
           priorities: [],
           assignees: [],
+          creators: [],
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }),
     ).toEqual([]);
@@ -662,13 +754,53 @@ describe("inbox helpers", () => {
           statuses: [],
           priorities: [],
           assignees: [],
+          creators: [],
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }),
     ).toEqual([]);
+  });
+
+  it("keeps inbox search matches ahead of archived and other result sections", () => {
+    const inboxIssue = makeIssue("inbox", false);
+    inboxIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const archivedIssue = makeIssue("archived", false);
+    archivedIssue.lastActivityAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const otherIssue = makeIssue("other", false);
+    otherIssue.lastActivityAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const sections = [
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [inboxIssue], approvals: [] }),
+        "none",
+        {},
+      ),
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [archivedIssue], approvals: [] }),
+        "none",
+        {},
+        { keyPrefix: "archived-search:", searchSection: "archived" },
+      ),
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [otherIssue], approvals: [] }),
+        "none",
+        {},
+        { keyPrefix: "other-search:", searchSection: "other" },
+      ),
+    ];
+
+    expect(sections.map((section) => section.searchSection)).toEqual(["none", "archived", "other"]);
+    expect(
+      sections.map((section) => {
+        const [item] = section.displayItems;
+        return item?.kind === "issue" ? item.issue.id : null;
+      }),
+    ).toEqual(["inbox", "archived", "other"]);
   });
 
   it("defaults the remembered inbox tab to mine and persists all", () => {
@@ -687,10 +819,11 @@ describe("inbox helpers", () => {
         statuses: ["todo"],
         priorities: ["high"],
         assignees: ["agent-1"],
+        creators: ["user:user-1"],
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: true,
+        hideRoutineExecutions: false,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -700,10 +833,11 @@ describe("inbox helpers", () => {
         statuses: ["done"],
         priorities: [],
         assignees: [],
+        creators: [],
         labels: [],
         projects: [],
         workspaces: [],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: true,
       },
     });
 
@@ -714,10 +848,11 @@ describe("inbox helpers", () => {
         statuses: ["todo"],
         priorities: ["high"],
         assignees: ["agent-1"],
+        creators: ["user:user-1"],
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: true,
+        hideRoutineExecutions: false,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -727,10 +862,11 @@ describe("inbox helpers", () => {
         statuses: ["done"],
         priorities: [],
         assignees: [],
+        creators: [],
         labels: [],
         projects: [],
         workspaces: [],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: true,
       },
     });
   });
@@ -743,10 +879,11 @@ describe("inbox helpers", () => {
         statuses: ["todo", 123],
         priorities: "high",
         assignees: ["agent-1"],
+        creators: ["user:user-1", 42],
         labels: null,
         projects: ["project-1"],
         workspaces: ["workspace-1", false],
-        showRoutineExecutions: "yes",
+        hideRoutineExecutions: "yes",
       },
     }));
 
@@ -757,10 +894,11 @@ describe("inbox helpers", () => {
         statuses: ["todo"],
         priorities: [],
         assignees: ["agent-1"],
+        creators: ["user:user-1"],
         labels: [],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: false,
       },
     });
   });
@@ -914,12 +1052,12 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 
-  it("hides routine execution issues until the toggle is enabled", () => {
+  it("hides routine execution issues when the hide toggle is enabled", () => {
     const manualIssue = { ...makeIssue("manual", true), originKind: "manual" as const };
     const routineIssue = { ...makeIssue("routine", true), originKind: "routine_execution" as const };
 
-    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue]);
-    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue, routineIssue]);
+    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue, routineIssue]);
+    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue]);
   });
 
   it("groups mixed inbox items by type while preserving item order within each group", () => {
@@ -938,5 +1076,83 @@ describe("inbox helpers", () => {
       { key: "failed_run", label: "Failed runs", items: [items[3]] },
       { key: "join_request", label: "Join requests", items: [items[4]] },
     ]);
+  });
+
+  it("groups workspace sections by latest issue activity while preserving non-issue sections", () => {
+    const defaultIssue = makeIssue("default", true);
+    defaultIssue.projectId = "project-1";
+    defaultIssue.projectWorkspaceId = "project-workspace-1";
+
+    const sharedDefaultIssue = makeIssue("shared-default", true);
+    sharedDefaultIssue.projectId = "project-1";
+    sharedDefaultIssue.projectWorkspaceId = "project-workspace-1";
+    sharedDefaultIssue.executionWorkspaceId = "execution-workspace-shared-default";
+
+    const featureIssue = makeIssue("feature", false);
+    featureIssue.projectId = "project-1";
+    featureIssue.projectWorkspaceId = "project-workspace-2";
+
+    const execIssue = makeIssue("exec", false);
+    execIssue.projectId = "project-1";
+    execIssue.projectWorkspaceId = "project-workspace-1";
+    execIssue.executionWorkspaceId = "execution-workspace-1";
+
+    const items: InboxWorkItem[] = [
+      { kind: "issue", timestamp: 5, issue: defaultIssue },
+      { kind: "approval", timestamp: 2, approval: makeApproval("pending") },
+      { kind: "issue", timestamp: 4, issue: sharedDefaultIssue },
+      { kind: "issue", timestamp: 7, issue: featureIssue },
+      { kind: "issue", timestamp: 9, issue: execIssue },
+    ];
+
+    expect(groupInboxWorkItems(items, "workspace", {
+      executionWorkspaceById: new Map([
+        ["execution-workspace-1", { name: "Feature Branch", mode: "isolated_workspace", projectWorkspaceId: "project-workspace-1" }],
+        ["execution-workspace-shared-default", { name: "Shared default workspace", mode: "shared_workspace", projectWorkspaceId: "project-workspace-1" }],
+      ]),
+      projectWorkspaceById: new Map([
+        ["project-workspace-1", { name: "Primary workspace" }],
+        ["project-workspace-2", { name: "Secondary workspace" }],
+      ]),
+      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+    })).toEqual([
+      { key: "workspace:execution:execution-workspace-1", label: "Feature Branch", items: [items[4]] },
+      { key: "workspace:project:project-workspace-2", label: "Secondary workspace", items: [items[3]] },
+      {
+        key: "workspace:project:project-workspace-1",
+        label: "Primary workspace (default)",
+        items: [items[0], items[2]],
+      },
+      { key: "kind:approval", label: "Approvals", items: [items[1]] },
+    ]);
+  });
+
+  it("persists workspace grouping preferences", () => {
+    saveInboxWorkItemGroupBy("workspace");
+    expect(loadInboxWorkItemGroupBy()).toBe("workspace");
+  });
+
+  it("persists collapsed inbox groups per company", () => {
+    saveCollapsedInboxGroupKeys("company-1", new Set(["workspace:alpha", "workspace:beta"]));
+    saveCollapsedInboxGroupKeys("company-2", new Set(["type:approval"]));
+
+    expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set(["workspace:alpha", "workspace:beta"]));
+    expect(loadCollapsedInboxGroupKeys("company-2")).toEqual(new Set(["type:approval"]));
+  });
+
+  it("returns empty collapsed inbox groups for missing or invalid storage", () => {
+    expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
+    localStorage.setItem("paperclip:inbox:collapsed-groups:company-1", JSON.stringify({ nope: true }));
+    expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
+  });
+
+  it("does not reset workspace grouping before experimental settings have loaded", () => {
+    expect(shouldResetInboxWorkspaceGrouping("workspace", false, false)).toBe(false);
+  });
+
+  it("resets workspace grouping only when settings are loaded and workspace grouping is unavailable", () => {
+    expect(shouldResetInboxWorkspaceGrouping("workspace", false, true)).toBe(true);
+    expect(shouldResetInboxWorkspaceGrouping("workspace", true, true)).toBe(false);
+    expect(shouldResetInboxWorkspaceGrouping("none", false, true)).toBe(false);
   });
 });

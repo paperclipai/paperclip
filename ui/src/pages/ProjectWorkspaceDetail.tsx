@@ -7,6 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
 import { projectsApi } from "../api/projects";
+import {
+  buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeControls,
+  type WorkspaceRuntimeControlRequest,
+} from "../components/WorkspaceRuntimeControls";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useLocale } from "../context/LocaleContext";
@@ -62,10 +67,6 @@ function readText(value: string | null | undefined) {
   return value ?? "";
 }
 
-function hasActiveRuntimeServices(workspace: ProjectWorkspace | null | undefined) {
-  return (workspace?.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
-}
-
 function formatJson(value: Record<string, unknown> | null | undefined) {
   if (!value || Object.keys(value).length === 0) return "";
   return JSON.stringify(value, null, 2);
@@ -103,7 +104,7 @@ function parseRuntimeConfigJson(value: string, t: (key: string, variables?: Reco
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         ok: false as const,
-        error: t("projectWorkspaceDetail.runtimeServicesJsonMustBeObject"),
+        error: t("projectWorkspaceDetail.runtimeCommandsJsonMustBeObject"),
       };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
@@ -313,22 +314,24 @@ export function ProjectWorkspaceDetail() {
   });
 
   const controlRuntimeServices = useMutation({
-    mutationFn: (action: "start" | "stop" | "restart") =>
-      projectsApi.controlWorkspaceRuntimeServices(project!.id, routeWorkspaceId, action, lookupCompanyId),
-    onSuccess: (result, action) => {
+    mutationFn: (request: WorkspaceRuntimeControlRequest) =>
+      projectsApi.controlWorkspaceCommands(project!.id, routeWorkspaceId, request.action, lookupCompanyId, request),
+    onSuccess: (result, request) => {
       invalidateProject();
       setErrorMessage(null);
       setRuntimeActionMessage(
-        action === "stop"
-          ? t("projectWorkspaceDetail.runtimeStopped")
-          : action === "restart"
-            ? t("projectWorkspaceDetail.runtimeRestarted")
-            : t("projectWorkspaceDetail.runtimeStarted"),
+        request.action === "run"
+          ? t("projectWorkspaceDetail.workspaceJobCompleted")
+          : request.action === "stop"
+            ? t("projectWorkspaceDetail.workspaceServiceStopped")
+            : request.action === "restart"
+              ? t("projectWorkspaceDetail.workspaceServiceRestarted")
+              : t("projectWorkspaceDetail.workspaceServiceStarted"),
       );
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setErrorMessage(error instanceof Error ? error.message : t("projectWorkspaceDetail.failedToControlRuntime"));
+      setErrorMessage(error instanceof Error ? error.message : t("projectWorkspaceDetail.failedToControlWorkspaceCommands"));
     },
   });
 
@@ -344,6 +347,16 @@ export function ProjectWorkspaceDetail() {
     return <p className="text-sm text-muted-foreground">{t("projectWorkspaceDetail.notFound")}</p>;
   }
 
+  const canRunWorkspaceCommands = Boolean(workspace.cwd);
+  const canStartRuntimeServices = Boolean(workspace.runtimeConfig?.workspaceRuntime) && canRunWorkspaceCommands;
+  const runtimeControlSections = buildWorkspaceRuntimeControlSections({
+    runtimeConfig: workspace.runtimeConfig?.workspaceRuntime ?? null,
+    runtimeServices: workspace.runtimeServices ?? [],
+    canStartServices: canStartRuntimeServices,
+    canRunJobs: canRunWorkspaceCommands,
+  });
+  const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
+
   const saveChanges = () => {
     const validationError = validateWorkspaceForm(form, t);
     if (validationError) {
@@ -357,18 +370,6 @@ export function ProjectWorkspaceDetail() {
 
   const sourceTypeDescriptionKey = SOURCE_TYPE_OPTIONS.find((option) => option.value === form.sourceType)?.descriptionKey ?? null;
   const sourceTypeDescription = sourceTypeDescriptionKey ? t(sourceTypeDescriptionKey) : null;
-  const runtimeServiceStatusLabels: Record<string, string> = {
-    starting: t("projectProperties.runtimeServiceStatus.starting"),
-    running: t("projectProperties.runtimeServiceStatus.running"),
-    stopped: t("projectProperties.runtimeServiceStatus.stopped"),
-    failed: t("projectProperties.runtimeServiceStatus.failed"),
-  };
-  const runtimeServiceHealthLabels: Record<string, string> = {
-    healthy: t("projectWorkspaceDetail.health.healthy"),
-    degraded: t("projectWorkspaceDetail.health.degraded"),
-    unhealthy: t("projectWorkspaceDetail.health.unhealthy"),
-    unknown: t("projectWorkspaceDetail.health.unknown"),
-  };
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -549,14 +550,22 @@ export function ProjectWorkspaceDetail() {
                 </Field>
               </div>
 
-              <Field label={t("projectWorkspaceDetail.runtimeServicesJson")} hint={t("projectWorkspaceDetail.runtimeServicesJsonHint")}>
-                <textarea
-                  className="min-h-36 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
-                  value={form.runtimeConfig}
-                  onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
-                  placeholder={"{\n  \"services\": [\n    {\n      \"name\": \"web\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    }\n  ]\n}"}
-                />
-              </Field>
+              <details className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-3">
+                <summary className="cursor-pointer text-sm font-medium">{t("projectWorkspaceDetail.advancedRuntimeJson")}</summary>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t("projectWorkspaceDetail.advancedRuntimeJsonDescription")}
+                </p>
+                <div className="mt-3">
+                  <Field label={t("projectWorkspaceDetail.workspaceCommandsJson")} hint={t("projectWorkspaceDetail.workspaceCommandsJsonHint")}>
+                    <textarea
+                      className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.runtimeConfig}
+                      onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
+                      placeholder={"{\n  \"commands\": [\n    {\n      \"id\": \"web\",\n      \"name\": \"web\",\n      \"kind\": \"service\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    },\n    {\n      \"id\": \"db-migrate\",\n      \"name\": \"db:migrate\",\n      \"kind\": \"job\",\n      \"command\": \"pnpm db:migrate\",\n      \"cwd\": \".\"\n    }\n  ]\n}"}
+                    />
+                  </Field>
+                </div>
+              </details>
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
@@ -615,77 +624,25 @@ export function ProjectWorkspaceDetail() {
           <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("projectWorkspaceDetail.runtimeServices")}</div>
-                <h2 className="text-lg font-semibold">{t("projectWorkspaceDetail.attachedServices")}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {t("projectWorkspaceDetail.attachedServicesHint")}
-                </p>
-              </div>
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.runtimeConfig?.workspaceRuntime || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("start")}
-                >
-                  {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                  {t("projectWorkspaceDetail.start")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("restart")}
-                >
-                  {t("projectWorkspaceDetail.restart")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !hasActiveRuntimeServices(workspace)}
-                  onClick={() => controlRuntimeServices.mutate("stop")}
-                >
-                  {t("projectWorkspaceDetail.stop")}
-                </Button>
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("projectWorkspaceDetail.workspaceCommands")}</div>
+                <h2 className="text-lg font-semibold">{t("projectWorkspaceDetail.servicesAndJobs")}</h2>
+                <p className="text-sm text-muted-foreground">{t("projectWorkspaceDetail.workspaceCommandsDescription")}</p>
               </div>
             </div>
-            <Separator className="my-4" />
-            {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
-              <div className="space-y-3">
-                {workspace.runtimeServices.map((service) => (
-                  <div key={service.id} className="rounded-xl border border-border/80 bg-background px-3 py-2">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="space-y-1">
-                        <div className="text-sm font-medium">{service.serviceName}</div>
-                        <div className="space-y-1 text-xs text-muted-foreground">
-                          {service.url ? (
-                            <a href={service.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
-                              {service.url}
-                              <ExternalLink className="h-3 w-3" />
-                            </a>
-                          ) : null}
-                          {service.port ? <div>{t("projectWorkspaceDetail.port", { port: service.port })}</div> : null}
-                          <div>{service.command ?? t("projectWorkspaceDetail.noCommandRecorded")}</div>
-                          {service.cwd ? <div className="break-all font-mono">{service.cwd}</div> : null}
-                        </div>
-                      </div>
-                      <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground sm:text-right">
-                        {(runtimeServiceStatusLabels[service.status] ?? service.status)} · {(runtimeServiceHealthLabels[service.healthStatus] ?? service.healthStatus)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {workspace.runtimeConfig?.workspaceRuntime
-                  ? t("projectWorkspaceDetail.noRunningRuntimeServices")
-                  : t("projectWorkspaceDetail.noRuntimeServiceDefault")}
-              </p>
-            )}
+            <WorkspaceRuntimeControls
+              className="mt-4"
+              sections={runtimeControlSections}
+              isPending={controlRuntimeServices.isPending}
+              pendingRequest={pendingRuntimeAction}
+              serviceEmptyMessage={
+                workspace.runtimeConfig?.workspaceRuntime
+                  ? t("projectWorkspaceDetail.noServicesStartedYet")
+                  : t("projectWorkspaceDetail.noWorkspaceCommandConfig")
+              }
+              jobEmptyMessage={t("projectWorkspaceDetail.noJobsConfigured")}
+              disabledHint={t("projectWorkspaceDetail.workspaceCommandsDisabledHint")}
+              onAction={(request) => controlRuntimeServices.mutate(request)}
+            />
           </div>
         </div>
       </div>

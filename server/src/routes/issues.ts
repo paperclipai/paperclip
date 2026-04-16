@@ -46,8 +46,12 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectIssueWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
@@ -140,6 +144,22 @@ function summarizeExecutionParticipants(
       userId: participant.userId ?? null,
     })) ?? []
   );
+}
+
+function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
+  return status === "done" || status === "cancelled";
+}
+
+function shouldImplicitlyReopenCommentForAgent(input: {
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+  actorId: string;
+}) {
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
+  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
+  return true;
 }
 
 function diffExecutionParticipants(
@@ -444,6 +464,53 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function normalizeIssueAssigneeAgentReference(
+    companyId: string,
+    rawAssigneeAgentId: string | null | undefined,
+  ) {
+    if (rawAssigneeAgentId === undefined || rawAssigneeAgentId === null) {
+      return rawAssigneeAgentId;
+    }
+
+    const raw = rawAssigneeAgentId.trim();
+    if (raw.length === 0) {
+      return rawAssigneeAgentId;
+    }
+
+    const resolved = await agentsSvc.resolveByReference(companyId, raw);
+    if (resolved.ambiguous) {
+      throw conflict("Agent shortname is ambiguous in this company. Use the agent ID.");
+    }
+    if (!resolved.agent) {
+      throw notFound("Agent not found");
+    }
+    return resolved.agent.id;
+  }
+  function toValidTimestamp(value: Date | string | null | undefined) {
+    if (!value) return null;
+    const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function isQueuedIssueCommentForActiveRun(params: {
+    comment: {
+      authorAgentId?: string | null;
+      createdAt?: Date | string | null;
+    };
+    activeRun: {
+      agentId?: string | null;
+      startedAt?: Date | string | null;
+      createdAt?: Date | string | null;
+    };
+  }) {
+    const activeRunStartedAtMs =
+      toValidTimestamp(params.activeRun.startedAt) ?? toValidTimestamp(params.activeRun.createdAt);
+    const commentCreatedAtMs = toValidTimestamp(params.comment.createdAt);
+
+    if (activeRunStartedAtMs === null || commentCreatedAtMs === null) return false;
+    if (params.comment.authorAgentId && params.comment.authorAgentId === params.activeRun.agentId) return false;
+    return commentCreatedAtMs >= activeRunStartedAtMs;
+  }
   async function getClosedIssueExecutionWorkspace(issue: { executionWorkspaceId?: string | null }) {
     if (!issue.executionWorkspaceId) return null;
     const workspace = await executionWorkspacesSvc.getById(issue.executionWorkspaceId);
@@ -589,6 +656,8 @@ export function issueRoutes(
       originId: req.query.originId as string | undefined,
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      excludeRoutineExecutions:
+        req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
       limit,
     });
@@ -660,7 +729,7 @@ export function issueRoutes(
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      svc.findMentionedProjectIds(issue.id),
+      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
     ]);
@@ -1260,6 +1329,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -1310,10 +1380,15 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const actor = getActorInfo(req);
-    const isClosed = existing.status === "done" || existing.status === "cancelled";
+    const isClosed = isClosedIssueStatus(existing.status);
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      existing.companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
     const existingRelations =
       Array.isArray(req.body.blockedByIssueIds)
         ? await svc.getRelationSummaries(existing.id)
@@ -1325,6 +1400,17 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    const requestedAssigneeAgentId =
+      normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const effectiveReopenRequested =
+      reopenRequested ||
+      (!!commentBody &&
+        shouldImplicitlyReopenCommentForAgent({
+          issueStatus: existing.status,
+          assigneeAgentId: requestedAssigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+        }));
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
@@ -1367,7 +1453,7 @@ export function issueRoutes(
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
-    if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
+    if (commentBody && effectiveReopenRequested && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
     if (req.body.executionPolicy !== undefined) {
@@ -1378,14 +1464,16 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    if (normalizedAssigneeAgentId !== undefined) {
+      updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
-        assigneeAgentId:
-          req.body.assigneeAgentId === undefined ? undefined : (req.body.assigneeAgentId as string | null),
+        assigneeAgentId: normalizedAssigneeAgentId,
         assigneeUserId:
           req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
       },
@@ -1474,8 +1562,7 @@ export function issueRoutes(
             issueId: id,
             companyId: existing.companyId,
             assigneePatch: {
-              assigneeAgentId:
-                req.body.assigneeAgentId === undefined ? "__omitted__" : req.body.assigneeAgentId,
+              assigneeAgentId: normalizedAssigneeAgentId === undefined ? "__omitted__" : normalizedAssigneeAgentId,
               assigneeUserId:
                 req.body.assigneeUserId === undefined ? "__omitted__" : req.body.assigneeUserId,
             },
@@ -1526,7 +1613,7 @@ export function issueRoutes(
     const hasFieldChanges = Object.keys(previous).length > 0;
     const reopened =
       commentBody &&
-      reopenRequested === true &&
+      effectiveReopenRequested &&
       isClosed &&
       previous.status !== undefined &&
       issue.status === "todo";
@@ -1629,7 +1716,13 @@ export function issueRoutes(
       if (tc && actor.agentId) {
         const actorAgent = await agentsSvc.getById(actor.agentId);
         if (actorAgent) {
-          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+          const model = typeof actorAgent.adapterConfig?.model === "string" ? actorAgent.adapterConfig.model : undefined;
+          trackAgentTaskCompleted(tc, {
+            agentRole: actorAgent.role,
+            agentId: actorAgent.id,
+            adapterType: actorAgent.adapterType,
+            model,
+          });
         }
       }
     }
@@ -1668,6 +1761,10 @@ export function issueRoutes(
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
+      req.body.status !== undefined;
+    const statusChangedFromBlockedToTodo =
+      existing.status === "blocked" &&
+      issue.status === "todo" &&
       req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
@@ -1722,7 +1819,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusChangedFromBlockedToTodo) && issue.assigneeAgentId) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -1748,7 +1845,7 @@ export function issueRoutes(
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
-        if (assigneeId && !assigneeChanged && !skipAssigneeCommentWake) {
+        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -2069,6 +2166,72 @@ export function issueRoutes(
     res.json(comment);
   });
 
+  router.delete("/issues/:id/comments/:commentId", async (req, res) => {
+    const id = req.params.id as string;
+    const commentId = req.params.commentId as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+
+    const comment = await svc.getComment(commentId);
+    if (!comment || comment.issueId !== id) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const actorOwnsComment =
+      actor.actorType === "agent"
+        ? comment.authorAgentId === actor.agentId
+        : comment.authorUserId === actor.actorId;
+    if (!actorOwnsComment) {
+      res.status(403).json({ error: "Only the comment author can cancel queued comments" });
+      return;
+    }
+
+    const activeRun = await resolveActiveIssueRun(issue);
+    if (!activeRun) {
+      res.status(409).json({ error: "Queued comment can no longer be canceled" });
+      return;
+    }
+
+    if (!isQueuedIssueCommentForActiveRun({ comment, activeRun })) {
+      res.status(409).json({ error: "Only queued comments can be canceled" });
+      return;
+    }
+
+    const removed = await svc.removeComment(commentId);
+    if (!removed) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.comment_cancelled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: removed.id,
+        bodySnippet: removed.body.slice(0, 120),
+        identifier: issue.identifier,
+        issueTitle: issue.title,
+        source: "queue_cancel",
+        queueTargetRunId: activeRun.id,
+      },
+    });
+
+    res.json(removed);
+  });
+
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2167,13 +2330,21 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
-    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    const isClosed = isClosedIssueStatus(issue.status);
+    const effectiveReopenRequested =
+      reopenRequested ||
+      shouldImplicitlyReopenCommentForAgent({
+        issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      });
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
 
-    if (reopenRequested && isClosed) {
+    if (effectiveReopenRequested && isClosed) {
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
