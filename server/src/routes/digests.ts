@@ -1,8 +1,9 @@
 import { Router } from "express";
+import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod";
-import Anthropic from "@anthropic-ai/sdk";
 import type { Db } from "@paperclipai/db";
 import { projectWorkspaces } from "@paperclipai/db";
 import { eq, and } from "drizzle-orm";
@@ -139,21 +140,27 @@ export function digestRoutes(db: Db) {
 
       const { content } = req.body as { content: string };
 
-      const client = new Anthropic();
-      const message = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 4096,
-        system:
-          "You are a professional broadcast news anchor. Convert the following markdown digest into a natural, engaging spoken script. Remove all markdown syntax, hashtags, bullet points, bold markers, and links. Write as if speaking aloud. Use complete sentences. Keep all factual content. Target 150-200 words per topic section.",
-        messages: [{ role: "user", content }],
-      });
+      const exec = promisify(execFile);
+      const prompt = [
+        "You are a professional broadcast news anchor. Convert the following markdown digest into a natural, engaging spoken script.",
+        "Remove all markdown syntax, hashtags, bullet points, bold markers, and links.",
+        "Write as if speaking aloud. Use complete sentences. Keep all factual content.",
+        "Target 150-200 words per topic section. Output only the spoken script text, nothing else.",
+        "",
+        content,
+      ].join("\n");
 
-      const script = message.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("\n");
-
-      res.json({ script });
+      try {
+        const { stdout } = await exec(
+          "claude",
+          ["-p", prompt, "--dangerously-skip-permissions", "--output-format", "text"],
+          { maxBuffer: 10 * 1024 * 1024, timeout: 180_000 },
+        );
+        res.json({ script: stdout.trim() });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: `Script generation failed: ${message}` });
+      }
     },
   );
 
