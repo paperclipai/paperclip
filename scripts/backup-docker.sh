@@ -18,7 +18,7 @@ COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.prod.yml"
 OUTPUT_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --output|-o) OUTPUT_FILE="$2"; mkdir -p "$(dirname "$OUTPUT_FILE")"; shift 2 ;;
+    --output|-o) OUTPUT_FILE="$2"; shift 2 ;;
     *) echo "Uso: $0 [--output arquivo.sql.gz]" >&2; exit 1 ;;
   esac
 done
@@ -28,6 +28,14 @@ BACKUP_DIR="$PROJECT_ROOT/backups"
 mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="${OUTPUT_FILE:-$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz}"
+
+# Validate --output stays within the backups directory to prevent path traversal.
+SAFE_PREFIX="$(realpath --canonicalize-missing "$BACKUP_DIR")"
+RESOLVED="$(realpath --canonicalize-missing "$OUTPUT_FILE")"
+if [[ "$RESOLVED" != "$SAFE_PREFIX"/* && "$RESOLVED" != "$SAFE_PREFIX" ]]; then
+  echo "Erro: --output deve ser dentro de $SAFE_PREFIX" >&2; exit 1
+fi
+mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Prevent concurrent backup runs from racing on temp files / the final output path.
 LOCK_FILE="$BACKUP_DIR/.backup.lock"
