@@ -30,7 +30,7 @@ describe("resolveSessionKey", () => {
     expect(
       resolveSessionKey({
         strategy: "issue",
-        configuredSessionKey: "paperclip",
+        configuredSessionKey: "unused-fixed-session",
         agentId: "meridian",
         runId: "run-123",
         issueId: null,
