@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -35,8 +35,10 @@ import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
+  HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
+  HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
+  HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
-  summarizeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import {
@@ -97,6 +99,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -182,7 +185,6 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     .then((rows) => rows[0] ?? null);
   if (!issue) return [];
 
-  // Limit to 500 most-recent comments to bound memory usage per run dispatch.
   const comments = await input.db
     .select({ body: issueComments.body })
     .from(issueComments)
@@ -191,9 +193,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.issueId, input.issueId),
         eq(issueComments.companyId, input.companyId),
       ),
-    )
-    .orderBy(issueComments.createdAt)
-    .limit(500);
+    );
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
     issue.title,
     issue.description ?? "",
@@ -381,7 +381,6 @@ const heartbeatRunListColumns = {
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
-  resultJson: heartbeatRuns.resultJson,
   sessionIdBefore: heartbeatRuns.sessionIdBefore,
   sessionIdAfter: heartbeatRuns.sessionIdAfter,
   logStore: heartbeatRuns.logStore,
@@ -398,9 +397,88 @@ const heartbeatRunListColumns = {
   processStartedAt: heartbeatRuns.processStartedAt,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
-  contextSnapshot: heartbeatRuns.contextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const heartbeatRunListContextColumns = {
+  contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
+  contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
+  contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
+  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
+  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+  contextWakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
+  contextWakeSource: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
+  contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
+} as const;
+
+const heartbeatRunListResultColumns = {
+  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
+  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
+  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
+  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
+
+const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
+  case
+    when ${heartbeatRuns.resultJson} is null then null
+    when pg_column_size(${heartbeatRuns.resultJson}) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
+      then ${heartbeatRuns.resultJson}
+    else jsonb_strip_nulls(
+      jsonb_build_object(
+        'summary', left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'stdoutTruncated', case
+          when length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+            then to_jsonb(true)
+          else null
+        end,
+        'stderrTruncated', case
+          when length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+            then to_jsonb(true)
+          else null
+        end,
+        'costUsd', coalesce(
+          ${heartbeatRuns.resultJson} -> 'costUsd',
+          ${heartbeatRuns.resultJson} -> 'cost_usd',
+          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+        ),
+        'cost_usd', coalesce(
+          ${heartbeatRuns.resultJson} -> 'cost_usd',
+          ${heartbeatRuns.resultJson} -> 'costUsd',
+          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+        ),
+        'total_cost_usd', coalesce(
+          ${heartbeatRuns.resultJson} -> 'total_cost_usd',
+          ${heartbeatRuns.resultJson} -> 'cost_usd',
+          ${heartbeatRuns.resultJson} -> 'costUsd'
+        ),
+        'truncated', true,
+        'truncationReason', 'oversized_result_json',
+        'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
+      )
+    )
+  end
+`.as("resultJson");
+
+const heartbeatRunSafeColumns = {
+  ...getTableColumns(heartbeatRuns),
+  processGroupId: heartbeatRunProcessGroupIdColumn,
+  resultJson: heartbeatRunSafeResultJsonColumn,
+} as const;
+
+const heartbeatRunLogAccessColumns = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  logStore: heartbeatRuns.logStore,
+  logRef: heartbeatRuns.logRef,
 } as const;
 
 const heartbeatRunIssueSummaryColumns = {
@@ -520,6 +598,87 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export function summarizeHeartbeatRunContextSnapshot(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  const summary: Record<string, unknown> = {};
+  const allowedKeys = [
+    "issueId",
+    "taskId",
+    "taskKey",
+    "commentId",
+    "wakeCommentId",
+    "wakeReason",
+    "wakeSource",
+    "wakeTriggerDetail",
+  ] as const;
+
+  for (const key of allowedKeys) {
+    const value = readNonEmptyString(contextSnapshot?.[key]);
+    if (value) summary[key] = value;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+export function summarizeHeartbeatRunListResultJson(input: {
+  summary?: string | null;
+  result?: string | null;
+  message?: string | null;
+  error?: string | null;
+  totalCostUsd?: string | null;
+  costUsd?: string | null;
+  costUsdCamel?: string | null;
+}): Record<string, unknown> | null {
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of [
+    ["summary", input.summary],
+    ["result", input.result],
+    ["message", input.message],
+    ["error", input.error],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (normalized) summary[key] = normalized;
+  }
+
+  for (const [key, value] of [
+    ["total_cost_usd", input.totalCostUsd],
+    ["cost_usd", input.costUsd],
+    ["costUsd", input.costUsdCamel],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (!normalized) continue;
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) summary[key] = parsed;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function summarizeRunFailureForIssueComment(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined,
+) {
+  if (!run) return null;
+
+  const errorCode = readNonEmptyString(run.errorCode)?.trim() ?? null;
+  const rawError = readNonEmptyString(run.error)?.trim() ?? null;
+  const apiMessageMatch = rawError?.match(/"message"\s*:\s*"([^"]+)"/);
+  const firstLine = rawError
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? null;
+  const summarySource = apiMessageMatch?.[1] ?? firstLine;
+  const summary =
+    summarySource && summarySource.length > 240
+      ? `${summarySource.slice(0, 237)}...`
+      : summarySource;
+
+  if (errorCode && summary) return ` Latest retry failure: \`${errorCode}\` - ${summary}.`;
+  if (errorCode) return ` Latest retry failure: \`${errorCode}\`.`;
+  if (summary) return ` Latest retry failure: ${summary}.`;
+  return null;
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -1354,9 +1513,17 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getRun(runId: string) {
+  async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
     return db
-      .select()
+      .select(opts?.unsafeFullResultJson ? getTableColumns(heartbeatRuns) : heartbeatRunSafeColumns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunLogAccess(runId: string) {
+    return db
+      .select(heartbeatRunLogAccessColumns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
@@ -1424,7 +1591,10 @@ export function heartbeatService(db: Db) {
       conditions.push(sql`${heartbeatRuns.id} <> ${opts.excludeRunId}`);
     }
     return db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        usageJson: heartbeatRuns.usageJson,
+      })
       .from(heartbeatRuns)
       .where(and(...conditions))
       .orderBy(desc(heartbeatRuns.createdAt))
@@ -1500,8 +1670,8 @@ export function heartbeatService(db: Db) {
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
-        resultJson: heartbeatRuns.resultJson,
         error: heartbeatRuns.error,
+        ...heartbeatRunListResultColumns,
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
@@ -1555,7 +1725,15 @@ export function heartbeatService(db: Db) {
       };
     }
 
-    const latestSummary = summarizeHeartbeatRunResultJson(latestRun.resultJson);
+    const latestSummary = summarizeHeartbeatRunListResultJson({
+      summary: latestRun?.resultSummary,
+      result: latestRun?.resultResult,
+      message: latestRun?.resultMessage,
+      error: latestRun?.resultError,
+      totalCostUsd: latestRun?.resultTotalCostUsd,
+      costUsd: latestRun?.resultCostUsd,
+      costUsdCamel: latestRun?.resultCostUsdCamel,
+    });
     const latestTextSummary =
       readNonEmptyString(latestSummary?.summary) ??
       readNonEmptyString(latestSummary?.result) ??
@@ -1563,7 +1741,7 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(latestRun.error);
 
     const handoffMarkdown = [
-      "Toca da IA session handoff:",
+      "Paperclip session handoff:",
       `- Previous session: ${sessionId}`,
       issueId ? `- Issue: ${issueId}` : "",
       `- Rotation reason: ${reason}`,
@@ -2684,7 +2862,13 @@ export function heartbeatService(db: Db) {
 
   async function getLatestIssueRun(companyId: string, issueId: string) {
     return db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .where(
         and(
@@ -2774,29 +2958,14 @@ export function heartbeatService(db: Db) {
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
-    latestRun: typeof heartbeatRuns.$inferSelect | null;
+    latestRun: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      "id" | "status" | "error" | "errorCode" | "contextSnapshot"
+    > | null;
     comment: string;
   }) {
-    // Idempotency guard: lock the row inside a transaction and re-check
-    // status before escalating. Two concurrent reconcile ticks can both
-    // observe the same issue in todo/in_progress; only the first one to
-    // acquire the lock should proceed — the second will see status===blocked
-    // and bail out, preventing duplicate escalation comments.
-    const updated = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select id from issues where id = ${input.issue.id} for update`,
-      );
-      const current = await tx
-        .select({ id: issues.id, status: issues.status })
-        .from(issues)
-        .where(eq(issues.id, input.issue.id))
-        .then((rows) => rows[0] ?? null);
-
-      if (!current || current.status === "blocked" || current.status === "done" || current.status === "cancelled") {
-        return null;
-      }
-
-      return issuesSvc.update(input.issue.id, { status: "blocked" }, tx);
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
     });
     if (!updated) return null;
 
@@ -2826,8 +2995,6 @@ export function heartbeatService(db: Db) {
   }
 
   async function reconcileStrandedAssignedIssues() {
-    // Limit per-tick to avoid OOM/timeout on large installs during recovery.
-    // Remaining candidates will be handled on subsequent reconcile ticks.
     const candidates = await db
       .select()
       .from(issues)
@@ -2837,8 +3004,7 @@ export function heartbeatService(db: Db) {
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
         ),
-      )
-      .limit(100);
+      );
 
     const result = {
       dispatchRequeued: 0,
@@ -2849,99 +3015,47 @@ export function heartbeatService(db: Db) {
     };
 
     for (const issue of candidates) {
-      try {
-        const agentId = issue.assigneeAgentId;
-        if (!agentId) {
+      const agentId = issue.assigneeAgentId;
+      if (!agentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const agent = await getAgent(agentId);
+      if (!agent || agent.companyId !== issue.companyId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const latestContext = parseObject(latestRun?.contextSnapshot);
+      const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+
+      if (issue.status === "todo") {
+        if (!latestRun || latestRun.status === "succeeded") {
           result.skipped += 1;
           continue;
         }
 
-        const agent = await getAgent(agentId);
-        if (!agent || agent.companyId !== issue.companyId) {
-          result.skipped += 1;
-          continue;
-        }
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-          result.skipped += 1;
-          continue;
-        }
-
-        if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
-          result.skipped += 1;
-          continue;
-        }
-
-        const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
-        const latestContext = parseObject(latestRun?.contextSnapshot);
-        const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-
-        if (issue.status === "todo") {
-          if (!latestRun || latestRun.status === "succeeded") {
-            result.skipped += 1;
-            continue;
-          }
-
-          if (latestRetryReason === "assignment_recovery") {
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: "todo",
-              latestRun,
-              comment:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
-            });
-            if (updated) {
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-            continue;
-          }
-
-          const queued = await enqueueStrandedIssueRecovery({
-            issueId: issue.id,
-            agentId,
-            reason: "issue_assignment_recovery",
-            retryReason: "assignment_recovery",
-            source: "issue.assignment_recovery",
-            retryOfRunId: latestRun.id,
-          });
-          if (queued) {
-            result.dispatchRequeued += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            // enqueueWakeup returned null — agent policy skipped the wake (e.g. wakeOnDemand:false,
-            // budget blocked was caught above). Escalate immediately so the issue doesn't loop
-            // silently forever: no run will ever set latestRetryReason and the normal
-            // escalation path will never fire.
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: "todo",
-              latestRun,
-              comment:
-                "Paperclip could not queue a recovery dispatch for this assigned `todo` issue " +
-                "(agent policy prevented re-waking). Moving it to `blocked` so it is visible for intervention.",
-            });
-            if (updated) {
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-          }
-          continue;
-        }
-
-        if (latestRetryReason === "issue_continuation_needed") {
+        if (latestRetryReason === "assignment_recovery") {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
-            previousStatus: "in_progress",
+            previousStatus: "todo",
             latestRun,
             comment:
-              "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-              "execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is " +
-              "visible for intervention.",
+              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+              `but it still has no live execution path.${failureSummary ?? ""} ` +
+              "Moving it to `blocked` so it is visible for intervention.",
           });
           if (updated) {
             result.escalated += 1;
@@ -2955,35 +3069,52 @@ export function heartbeatService(db: Db) {
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
-          reason: "issue_continuation_needed",
-          retryReason: "issue_continuation_needed",
-          source: "issue.continuation_recovery",
-          retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+          reason: "issue_assignment_recovery",
+          retryReason: "assignment_recovery",
+          source: "issue.assignment_recovery",
+          retryOfRunId: latestRun.id,
         });
         if (queued) {
-          result.continuationRequeued += 1;
+          result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
-          // Same as the todo case: agent policy prevented the wake, escalate immediately.
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "in_progress",
-            latestRun,
-            comment:
-              "Paperclip could not queue a continuation recovery for this assigned `in_progress` issue " +
-              "(agent policy prevented re-waking). Moving it to `blocked` so it is visible for intervention.",
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
+          result.skipped += 1;
         }
-      } catch (err) {
-        // Isolate per-issue failures so one issue (e.g. budget-blocked agent throwing conflict())
-        // does not abort reconciliation for all remaining issues in the batch.
-        logger.error({ err, issueId: issue.id }, "reconcileStrandedAssignedIssues: skipping issue due to error");
+        continue;
+      }
+
+      if (latestRetryReason === "issue_continuation_needed") {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: issue.id,
+        agentId,
+        reason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+      });
+      if (queued) {
+        result.continuationRequeued += 1;
+        result.issueIds.push(issue.id);
+      } else {
         result.skipped += 1;
       }
     }
@@ -4271,22 +4402,19 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(issues.id, issue.id));
 
-        // Log inside the transaction so the audit entry is atomically
-        // committed with the issue reopen — prevents a silent audit gap
-        // if the process crashes between the transaction commit and the
-        // post-transaction logActivity call.
-        if (reopenedActivity) {
-          await logActivity(tx as unknown as typeof db, reopenedActivity);
-        }
-
         return {
           run: newRun,
+          reopenedActivity,
         };
       }
     });
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
+
+    if (promotionResult?.reopenedActivity) {
+      await logActivity(db, promotionResult.reopenedActivity);
+    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
@@ -5005,7 +5133,11 @@ export function heartbeatService(db: Db) {
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const query = db
-        .select(heartbeatRunListColumns)
+        .select({
+          ...heartbeatRunListColumns,
+          ...heartbeatRunListContextColumns,
+          ...heartbeatRunListResultColumns,
+        })
         .from(heartbeatRuns)
         .where(
           agentId
@@ -5015,13 +5147,54 @@ export function heartbeatService(db: Db) {
         .orderBy(desc(heartbeatRuns.createdAt));
 
       const rows = limit ? await query.limit(limit) : await query;
-      return rows.map((row) => ({
-        ...row,
-        resultJson: summarizeHeartbeatRunResultJson(row.resultJson),
-      }));
+      return rows.map((row) => {
+        const {
+          contextIssueId,
+          contextTaskId,
+          contextTaskKey,
+          contextCommentId,
+          contextWakeCommentId,
+          contextWakeReason,
+          contextWakeSource,
+          contextWakeTriggerDetail,
+          resultSummary,
+          resultResult,
+          resultMessage,
+          resultError,
+          resultTotalCostUsd,
+          resultCostUsd,
+          resultCostUsdCamel,
+          ...rest
+        } = row;
+
+        return {
+          ...rest,
+          contextSnapshot: summarizeHeartbeatRunContextSnapshot({
+            issueId: contextIssueId,
+            taskId: contextTaskId,
+            taskKey: contextTaskKey,
+            commentId: contextCommentId,
+            wakeCommentId: contextWakeCommentId,
+            wakeReason: contextWakeReason,
+            wakeSource: contextWakeSource,
+            wakeTriggerDetail: contextWakeTriggerDetail,
+          }),
+          resultJson: summarizeHeartbeatRunListResultJson({
+            summary: resultSummary,
+            result: resultResult,
+            message: resultMessage,
+            error: resultError,
+            totalCostUsd: resultTotalCostUsd,
+            costUsd: resultCostUsd,
+            costUsdCamel: resultCostUsdCamel,
+          }),
+        };
+      });
     },
 
     getRun,
+
+    getRunLogAccess,
 
     getRuntimeState: async (agentId: string) => {
       const state = await getRuntimeState(agentId);
@@ -5096,8 +5269,17 @@ export function heartbeatService(db: Db) {
         .orderBy(asc(heartbeatRunEvents.seq))
         .limit(Math.max(1, Math.min(limit, 1000))),
 
-    readLog: async (runId: string, opts?: { offset?: number; limitBytes?: number }) => {
-      const run = await getRun(runId);
+    readLog: async (
+      runOrLookup: string | {
+        id: string;
+        companyId: string;
+        logStore: string | null;
+        logRef: string | null;
+      },
+      opts?: { offset?: number; limitBytes?: number },
+    ) => {
+      const run = typeof runOrLookup === "string" ? await getRunLogAccess(runOrLookup) : runOrLookup;
+      const runId = typeof runOrLookup === "string" ? runOrLookup : runOrLookup.id;
       if (!run) throw notFound("Heartbeat run not found");
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 

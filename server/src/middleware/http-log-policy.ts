@@ -25,6 +25,7 @@ const SILENCED_SUCCESS_STATIC_PREFIXES = [
 const SILENCED_SUCCESS_STATIC_PATHS = new Set([
   "/favicon.ico",
   "/site.webmanifest",
+  "/sw.js",
 ]);
 
 function normalizePath(url: string): string {

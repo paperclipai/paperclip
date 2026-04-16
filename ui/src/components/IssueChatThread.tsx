@@ -922,7 +922,7 @@ function IssueChatUserMessage() {
         <div className="flex min-w-0 max-w-[85%] flex-col items-end">
           <div
             className={cn(
-              "min-w-0 break-all rounded-2xl px-4 py-2.5",
+              "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
               queued
                 ? "bg-amber-50/80 dark:bg-amber-500/10"
                 : "bg-muted",
@@ -957,7 +957,7 @@ function IssueChatUserMessage() {
                 ) : null}
               </div>
             ) : null}
-            <div className="space-y-3">
+            <div className="min-w-0 max-w-full space-y-3">
               <MessagePrimitive.Parts
                 components={{
                   Text: ({ text }) => <IssueChatTextPart text={text} />,

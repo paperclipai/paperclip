@@ -267,6 +267,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(runRes.body.source).toBe("manual");
     expect(runRes.body.linkedIssueId).toBeTruthy();
 
+    const listRes = await request(app).get(`/api/companies/${companyId}/routines`);
+    expect(listRes.status).toBe(200);
+    const listed = listRes.body.find((r: { id: string }) => r.id === routineId);
+    expect(listed).toBeDefined();
+    expect(listed.triggers).toHaveLength(1);
+    expect(listed.triggers[0].cronExpression).toBe("0 10 * * 1-5");
+    expect(listed.triggers[0].timezone).toBe("UTC");
+
     const detailRes = await request(app).get(`/api/routines/${routineId}`);
     expect(detailRes.status).toBe(200);
     expect(detailRes.body.triggers).toHaveLength(1);

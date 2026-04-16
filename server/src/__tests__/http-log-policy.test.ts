@@ -56,6 +56,7 @@ describe("shouldSilenceHttpSuccessLog", () => {
     expect(shouldSilenceHttpSuccessLog("GET", "/@fs/Users/dotta/paperclip/ui/src/main.tsx", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/src/App.tsx?t=123", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/site.webmanifest", 200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/sw.js", 200)).toBe(true);
   });
 
   it("keeps normal successful application requests", () => {
