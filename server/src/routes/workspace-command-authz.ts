@@ -86,6 +86,16 @@ export function collectProjectWorkspaceCommandPaths(
   if (isRecord(workspacePatch.runtimeConfig) && hasOwn(workspacePatch.runtimeConfig, "workspaceRuntime")) {
     paths.push(prefixPath(prefix, "runtimeConfig.workspaceRuntime"));
   }
+  // workspaceRuntime can also be injected via the free-form metadata field because
+  // the service reads metadata.runtimeConfig.workspaceRuntime via
+  // readProjectWorkspaceRuntimeConfig — block that path explicitly.
+  if (
+    isRecord(workspacePatch.metadata) &&
+    isRecord(workspacePatch.metadata.runtimeConfig) &&
+    hasOwn(workspacePatch.metadata.runtimeConfig, "workspaceRuntime")
+  ) {
+    paths.push(prefixPath(prefix, "metadata.runtimeConfig.workspaceRuntime"));
+  }
   return paths;
 }
 

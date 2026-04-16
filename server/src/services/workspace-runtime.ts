@@ -1131,7 +1131,11 @@ export async function realizeExecutionWorkspace(input: {
         throw attachError;
       }
       const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
-      if (!reusablePath || !await isGitCheckout(reusablePath)) {
+      if (!reusablePath) {
+        throw attachError;
+      }
+      const validation = await validateReusableWorktree(reusablePath);
+      if (!validation?.valid) {
         throw attachError;
       }
       return await reuseExistingWorktree(reusablePath);

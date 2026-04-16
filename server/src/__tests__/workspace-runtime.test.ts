@@ -563,6 +563,58 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("rejects reuse in the 'already checked out' fallback path when the found worktree path fails validation (bypass regression)", async () => {
+    // This exercises the catch block in realizeExecutionWorkspace that fires when
+    // `git worktree add` fails with "already checked out". Previously the fallback
+    // called reuseExistingWorktree without validateLinkedGitWorktree, bypassing the
+    // symlink / rev-parse / branch-name checks added by the worktree hardening.
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1355-worktree-reuse";
+    // Create a real registered worktree for the branch
+    const registeredWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(registeredWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, registeredWorktree, "HEAD"], { cwd: repoRoot });
+
+    // Now simulate a second realization from a DIFFERENT target directory — this
+    // causes git worktree add to fail with "already checked out".
+    const alternativePath = path.join(repoRoot, ".paperclip", "other-worktrees", branchName);
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          worktreeParentDir: ".paperclip/other-worktrees",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1355",
+        title: "worktree reuse",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    // Must resolve to the registered worktree (validated), not the alternative path
+    const expectedWorktreePath = await fs.realpath(registeredWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+
+    // The alternative path must NOT have been created
+    await expect(fs.access(alternativePath)).rejects.toThrow();
+  });
+
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
     const repoRoot = await createTempRepo();
 
