@@ -63,4 +63,50 @@ describe("redaction", () => {
       safe: "value",
     });
   });
+
+  it("redacts credential fields from auth request bodies", () => {
+    const signInBody = {
+      email: "user@example.com",
+      password: "super-secret-password",
+    };
+    const result = sanitizeRecord(signInBody);
+    expect(result.email).toBe("user@example.com");
+    expect(result.password).toBe(REDACTED_EVENT_VALUE);
+  });
+
+  it("redacts change-password request bodies with multiple credential fields", () => {
+    const changePasswordBody = {
+      currentPassword: "old-pass",
+      newPassword: "new-pass",
+      userId: "user-123",
+    };
+    const result = sanitizeRecord(changePasswordBody);
+    expect(result.currentPassword).toBe(REDACTED_EVENT_VALUE);
+    expect(result.newPassword).toBe(REDACTED_EVENT_VALUE);
+    expect(result.userId).toBe("user-123");
+  });
+
+  it("preserves non-sensitive fields in error context bodies", () => {
+    const errorContextBody = {
+      email: "test@test.com",
+      password: "leaked",
+      rememberMe: true,
+    };
+    const result = sanitizeRecord(errorContextBody);
+    expect(result.password).toBe(REDACTED_EVENT_VALUE);
+    expect(result.email).toBe("test@test.com");
+    expect(result.rememberMe).toBe(true);
+  });
+
+  it("redacts bare 'token' key not covered by compound forms", () => {
+    const body = {
+      token: "raw-bearer-value",
+      userId: "user-123",
+      email: "user@example.com",
+    };
+    const result = sanitizeRecord(body);
+    expect(result.token).toBe(REDACTED_EVENT_VALUE);
+    expect(result.userId).toBe("user-123");
+    expect(result.email).toBe("user@example.com");
+  });
 });
