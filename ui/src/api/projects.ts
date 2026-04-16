@@ -83,6 +83,11 @@ export const projectsApi = {
     api.post<ProjectFilesSyncResult>(projectPath(projectId, companyId, "/files/sync"), {}),
   syncBranches: (projectId: string, companyId?: string) =>
     api.post<ProjectFilesBranchSyncResult>(projectPath(projectId, companyId, "/files/branches/sync"), {}),
+  publishToRemote: (projectId: string, remoteUrl: string, companyId?: string) =>
+    api.post<{ status: string; message: string | null }>(
+      projectPath(projectId, companyId, "/files/publish-remote"),
+      { remoteUrl },
+    ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),

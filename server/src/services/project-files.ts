@@ -111,6 +111,50 @@ async function existsDir(targetPath: string | null): Promise<boolean> {
   return Boolean(stat?.isDirectory());
 }
 
+async function hasRemoteOrigin(repoRoot: string): Promise<boolean> {
+  try {
+    await runGit(["remote", "get-url", "origin"], repoRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function initLocalGit(dirPath: string): Promise<void> {
+  await fs.mkdir(dirPath, { recursive: true });
+  await runGit(["init"], dirPath);
+  await runGit(
+    ["-c", "user.email=paperclip@local", "-c", "user.name=Paperclip", "commit", "--allow-empty", "-m", "Initial commit"],
+    dirPath,
+  );
+}
+
+async function cloneRepo(repoUrl: string, targetPath: string): Promise<void> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await runGit(["clone", repoUrl, targetPath], path.dirname(targetPath));
+}
+
+export async function initWorkspaceGit(project: ServiceProject): Promise<void> {
+  const rootPath = project.codebase.effectiveLocalFolder;
+  if (!rootPath) return;
+
+  const dirExists = await existsDir(rootPath);
+  if (dirExists) {
+    try {
+      await runGit(["rev-parse", "--git-dir"], rootPath);
+      return; // already a git repo
+    } catch {
+      // directory exists but not initialized
+    }
+  }
+
+  if (project.codebase.repoUrl) {
+    await cloneRepo(project.codebase.repoUrl, rootPath);
+  } else {
+    await initLocalGit(rootPath);
+  }
+}
+
 async function resolveProjectRoot(project: ServiceProject): Promise<string | null> {
   const candidatePaths = [
     project.primaryWorkspace?.cwd ?? null,
@@ -218,6 +262,7 @@ async function buildSummary(project: ServiceProject): Promise<ProjectFilesSummar
       rootPath: null,
       repoRoot: null,
       gitEnabled: false,
+      hasRemote: false,
       currentBranch: null,
       branches: [],
       dirtyWorktree: null,
@@ -233,6 +278,7 @@ async function buildSummary(project: ServiceProject): Promise<ProjectFilesSummar
   }
 
   const gitEnabled = Boolean(repoRoot);
+  const hasRemote = repoRoot ? await hasRemoteOrigin(repoRoot) : false;
   const dirtyWorktree = repoRoot ? await inspectDirtyState(repoRoot) : null;
   const aheadBehind = repoRoot ? await inspectAheadBehind(repoRoot) : null;
   const branchInfo = repoRoot ? await inspectBranches(repoRoot) : { currentBranch: null, branches: [] };
@@ -246,6 +292,7 @@ async function buildSummary(project: ServiceProject): Promise<ProjectFilesSummar
     rootPath,
     repoRoot,
     gitEnabled,
+    hasRemote,
     currentBranch: branchInfo.currentBranch,
     branches: branchInfo.branches,
     dirtyWorktree,
@@ -670,6 +717,41 @@ export function projectFilesService(db: Db) {
         summary: await buildSummary(project),
         message: messageParts.join(", ") || null,
       };
+    },
+
+    async publishToRemote(
+      projectId: string,
+      remoteUrl: string,
+    ): Promise<{ status: "success" | "auth_error" | "error"; message: string | null }> {
+      const project = await ensureProject(projectId, db);
+      const rootPath = await resolveProjectRoot(project);
+      if (!rootPath) {
+        return { status: "error", message: "No local workspace available" };
+      }
+
+      try {
+        try {
+          await runGit(["remote", "get-url", "origin"], rootPath);
+          await runGit(["remote", "set-url", "origin", remoteUrl], rootPath);
+        } catch {
+          await runGit(["remote", "add", "origin", remoteUrl], rootPath);
+        }
+
+        const branchResult = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], rootPath);
+        const branch = branchResult.stdout.trim();
+        if (!branch || branch === "HEAD") {
+          return { status: "error", message: "No commits on branch to push" };
+        }
+
+        await runGit(["push", "-u", "origin", branch], rootPath);
+        return { status: "success", message: null };
+      } catch (error) {
+        const errorMessage = sanitizeGitError(error, "Failed to publish to remote");
+        if (/auth|permission denied|could not read from remote repository|authentication/i.test(errorMessage)) {
+          return { status: "auth_error", message: errorMessage };
+        }
+        return { status: "error", message: errorMessage };
+      }
     },
   };
 }

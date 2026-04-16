@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { ProjectFileDetail, ProjectFilesBranch, ProjectFilesBranchSyncDetail, ProjectFilesBranchSyncResult, ProjectFilesTreeEntry } from "@paperclipai/shared";
-import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitMerge, RefreshCw, Save, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitMerge, Loader2, RefreshCw, Save, UploadCloud, XCircle } from "lucide-react";
 import { projectsApi } from "../api/projects";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
@@ -99,6 +99,7 @@ export function ProjectFilesTab({
   const [dirtyBranchTarget, setDirtyBranchTarget] = useState<string | null>(null);
   const [branchSyncDialogOpen, setBranchSyncDialogOpen] = useState(false);
   const [branchSyncResult, setBranchSyncResult] = useState<ProjectFilesBranchSyncResult | null>(null);
+  const [publishUrl, setPublishUrl] = useState("");
   const [showReloadHint, setShowReloadHint] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [markdownViewMode, setMarkdownViewMode] = useState<"preview" | "source">("preview");
@@ -295,6 +296,25 @@ export function ProjectFilesTab({
     },
   });
 
+  const publishToRemote = useMutation({
+    mutationFn: () => projectsApi.publishToRemote(projectId, publishUrl, companyId),
+    onSuccess: async (result) => {
+      if (result.status === "success") {
+        pushToast({ title: "Published to remote", tone: "success" });
+        setPublishUrl("");
+        await refreshAll();
+      } else {
+        pushToast({ title: result.message ?? "Failed to publish", tone: "error" });
+      }
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: mutationError instanceof Error ? mutationError.message : "Failed to publish to remote",
+        tone: "error",
+      });
+    },
+  });
+
   const saveFile = useMutation({
     mutationFn: (input: { path: string; content: string }) => projectsApi.saveFileContent(projectId, input, companyId),
     onSuccess: async (detail) => {
@@ -462,14 +482,40 @@ export function ProjectFilesTab({
           <GitBranch className="h-4 w-4" />
           {summary.currentBranch ?? "No branch"}
         </Button>
-        <Button variant="outline" size="sm" onClick={() => syncRepo.mutate()} disabled={syncRepo.isPending}>
-          <RefreshCw className={`h-4 w-4 ${syncRepo.isPending ? "animate-spin" : ""}`} />
-          Git Sync
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => syncBranches.mutate()} disabled={syncBranches.isPending}>
-          <GitMerge className={`h-4 w-4 ${syncBranches.isPending ? "animate-spin" : ""}`} />
-          Branch Sync
-        </Button>
+        {summary.hasRemote ? (
+          <>
+            <Button variant="outline" size="sm" onClick={() => syncRepo.mutate()} disabled={syncRepo.isPending}>
+              <RefreshCw className={`h-4 w-4 ${syncRepo.isPending ? "animate-spin" : ""}`} />
+              Git Sync
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => syncBranches.mutate()} disabled={syncBranches.isPending}>
+              <GitMerge className={`h-4 w-4 ${syncBranches.isPending ? "animate-spin" : ""}`} />
+              Branch Sync
+            </Button>
+          </>
+        ) : (
+          <div className="flex flex-1 items-center gap-2">
+            <Input
+              placeholder="https://github.com/org/repo"
+              value={publishUrl}
+              onChange={(e) => setPublishUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && publishUrl) publishToRemote.mutate(); }}
+              className="h-8 text-sm"
+            />
+            <Button
+              size="sm"
+              onClick={() => publishToRemote.mutate()}
+              disabled={!publishUrl.trim() || publishToRemote.isPending}
+            >
+              {publishToRemote.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <UploadCloud className="h-4 w-4" />
+              )}
+              Publish
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className={`grid gap-4 ${treePaneColumns}`}>

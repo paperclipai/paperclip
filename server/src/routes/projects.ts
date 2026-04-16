@@ -17,10 +17,11 @@ import {
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectFilesService, projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
+import { projectFilesService, projectService, logActivity, secretService, workspaceOperationService, initWorkspaceGit } from "../services/index.js";
 import { conflict, notFound } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
@@ -113,8 +114,28 @@ export function projectRoutes(db: Db) {
         return;
       }
       createdWorkspaceId = createdWorkspace.id;
+    } else {
+      // Auto-create a default workspace pointing to the managed folder so every
+      // project has a local git repo, even if no workspace was explicitly provided.
+      const managedPath = resolveManagedProjectWorkspaceDir({ companyId, projectId: project.id });
+      const autoWorkspace = await svc.createWorkspace(project.id, {
+        name: project.name,
+        cwd: managedPath,
+        sourceType: "local_path",
+      });
+      if (autoWorkspace) createdWorkspaceId = autoWorkspace.id;
     }
-    const hydratedProject = workspace ? await svc.getById(project.id) : project;
+    const hydratedProject = await svc.getById(project.id);
+
+    // Fire-and-forget: initialize (or clone) the git workspace without blocking the response.
+    const projectId = project.id;
+    setImmediate(() => {
+      svc.getById(projectId).then((fullProject) => {
+        if (fullProject) return initWorkspaceGit(fullProject);
+      }).catch((err) => {
+        console.error("[git-init] workspace init failed for project", projectId, err);
+      });
+    });
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -701,6 +722,38 @@ export function projectRoutes(db: Db) {
         branchesWithDeletedUpstream: result.details.filter((d) => d.action === "remote_deleted_local_remains").length,
         errors: result.details.filter((d) => d.action === "error").length,
       },
+    });
+    res.json(result);
+  });
+
+  router.post("/projects/:id/files/publish-remote", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const { remoteUrl } = req.body as { remoteUrl?: string };
+    if (!remoteUrl || typeof remoteUrl !== "string" || !remoteUrl.trim()) {
+      res.status(400).json({ error: "remoteUrl is required" });
+      return;
+    }
+    const result = await filesSvc.publishToRemote(id, remoteUrl.trim());
+    if (result.status === "success" && project.primaryWorkspace) {
+      await svc.updateWorkspace(id, project.primaryWorkspace.id, { repoUrl: remoteUrl.trim() });
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.published_to_remote",
+      entityType: "project",
+      entityId: id,
+      details: { remoteUrl: remoteUrl.trim(), status: result.status },
     });
     res.json(result);
   });

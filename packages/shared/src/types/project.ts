@@ -126,6 +126,7 @@ export interface ProjectFilesSummary {
   rootPath: string | null;
   repoRoot: string | null;
   gitEnabled: boolean;
+  hasRemote: boolean;
   currentBranch: string | null;
   branches: ProjectFilesBranch[];
   dirtyWorktree: ProjectFilesDirtyState | null;

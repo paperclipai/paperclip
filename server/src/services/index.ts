@@ -10,7 +10,7 @@ export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { clientService } from "./clients.js";
 export { listActiveProjectClientLinks, type ActiveProjectClientLinkRow } from "./project-clients.js";
 export { projectService } from "./projects.js";
-export { projectFilesService } from "./project-files.js";
+export { projectFilesService, initWorkspaceGit } from "./project-files.js";
 export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
