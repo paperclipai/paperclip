@@ -1,5 +1,4 @@
 import { pgTable, uuid, date, integer, numeric, jsonb, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
-import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 
 export const billingReconciliation = pgTable(
@@ -7,7 +6,9 @@ export const billingReconciliation = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     date: date("date").notNull(),
-    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    // null = company-level (org) row. Per-agent rows are deferred until
+    // metadata.user_id tagging is feasible in the adapter layer.
+    agentId: uuid("agent_id"),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     paperclipCents: integer("paperclip_cents").notNull(),
     anthropicCents: integer("anthropic_cents").notNull(),
@@ -16,7 +17,7 @@ export const billingReconciliation = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    dateAgentUq: uniqueIndex("billing_reconciliation_date_agent_uq").on(table.date, table.agentId),
+    dateCompanyUq: uniqueIndex("billing_reconciliation_date_company_uq").on(table.date, table.companyId),
     companyDateIdx: index("billing_reconciliation_company_date_idx").on(table.companyId, table.date),
   }),
 );

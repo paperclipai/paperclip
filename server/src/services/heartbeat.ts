@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import { resolveModelPricing, computeEquivalentCostCents } from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -706,41 +707,6 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-// Anthropic list pricing per million tokens (USD). Used to compute equivalent
-// cost for subscription runs where the CLI does not report total_cost_usd.
-// Cache reads are 10% of input price; cache writes are 125% of input price.
-const ANTHROPIC_MODEL_PRICING: Record<string, { inputPerMtok: number; outputPerMtok: number }> = {
-  "claude-opus-4": { inputPerMtok: 15, outputPerMtok: 75 },
-  "claude-opus-4-5": { inputPerMtok: 15, outputPerMtok: 75 },
-  "claude-sonnet-4-5": { inputPerMtok: 3, outputPerMtok: 15 },
-  "claude-sonnet-4-6": { inputPerMtok: 3, outputPerMtok: 15 },
-  "claude-haiku-4-5": { inputPerMtok: 1, outputPerMtok: 5 },
-  "claude-haiku-4-5-20251001": { inputPerMtok: 1, outputPerMtok: 5 },
-};
-
-function resolveModelPricing(model: string): { inputPerMtok: number; outputPerMtok: number } {
-  const normalized = model.toLowerCase().trim();
-  if (ANTHROPIC_MODEL_PRICING[normalized]) return ANTHROPIC_MODEL_PRICING[normalized]!;
-  // Prefix match for versioned model IDs (e.g. "claude-opus-4-5-20251001")
-  for (const [key, pricing] of Object.entries(ANTHROPIC_MODEL_PRICING)) {
-    if (normalized.startsWith(key)) return pricing;
-  }
-  // Unknown model: fall back to Opus rates (most conservative / avoids under-counting)
-  logger.warn({ model }, "Unknown model in pricing table; falling back to Opus rates");
-  return { inputPerMtok: 15, outputPerMtok: 75 };
-}
-
-function computeEquivalentCostCents(usage: UsageTotals, model: string): number {
-  const pricing = resolveModelPricing(model);
-  const cacheReadMultiplier = 0.1;
-  const cacheWriteMultiplier = 1.25;
-  const cents =
-    (usage.inputTokens / 1_000_000) * pricing.inputPerMtok * 100 +
-    (usage.cachedInputTokens / 1_000_000) * pricing.inputPerMtok * cacheReadMultiplier * 100 +
-    (usage.cacheCreationInputTokens / 1_000_000) * pricing.inputPerMtok * cacheWriteMultiplier * 100 +
-    (usage.outputTokens / 1_000_000) * pricing.outputPerMtok * 100;
-  return Math.max(0, Math.round(cents));
-}
 
 function normalizeBilledCostCents(
   costUsd: number | null | undefined,
