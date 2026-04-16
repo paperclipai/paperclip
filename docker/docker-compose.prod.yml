@@ -27,8 +27,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -45,7 +48,7 @@ services:
       HOST: "0.0.0.0"
       PORT: "3100"
       DATABASE_URL: "postgres://paperclip:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/paperclip"
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379"
       SERVE_UI: "true"
       PAPERCLIP_HOME: "/paperclip"
       PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"

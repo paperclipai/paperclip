@@ -65,6 +65,7 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
 
   AUTH_SECRET=$(openssl rand -hex 32)
   DB_PASSWORD=$(openssl rand -hex 16)
+  REDIS_PASSWORD=$(openssl rand -hex 16)
   info "Segredos gerados automaticamente."
 
   echo ""
@@ -85,8 +86,8 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
   # Write to a temp file first, then atomically rename to avoid partial .env on failure.
   ENV_TMP=".env.tmp.$$"
   trap 'rm -f "$ENV_TMP"' EXIT
-  printf 'PAPERCLIP_PUBLIC_URL=%s\nBETTER_AUTH_SECRET=%s\nDB_PASSWORD=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nPAPERCLIP_DEPLOYMENT_MODE=authenticated\nPAPERCLIP_DEPLOYMENT_EXPOSURE=private\n' \
-    "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > "$ENV_TMP"
+  printf 'PAPERCLIP_PUBLIC_URL=%s\nBETTER_AUTH_SECRET=%s\nDB_PASSWORD=%s\nREDIS_PASSWORD=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nPAPERCLIP_DEPLOYMENT_MODE=authenticated\nPAPERCLIP_DEPLOYMENT_EXPOSURE=private\n' \
+    "$PUBLIC_URL" "$AUTH_SECRET" "$DB_PASSWORD" "$REDIS_PASSWORD" "${ANTHROPIC_KEY:-}" "${OPENAI_KEY:-}" > "$ENV_TMP"
   chmod 600 "$ENV_TMP"
   mv "$ENV_TMP" .env
   trap - EXIT  # temp file successfully renamed; clear the cleanup trap

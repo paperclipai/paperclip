@@ -1305,7 +1305,6 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     assertCompanyAccess(req, agent.companyId);
 
     const state = await heartbeat.getRuntimeState(id);
@@ -1320,7 +1319,6 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     assertCompanyAccess(req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
