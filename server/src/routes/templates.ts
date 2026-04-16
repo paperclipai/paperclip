@@ -84,8 +84,15 @@ export function templateRoutes(deps: {
     }
   });
 
-  // Reserved for Task 6 (admin-only template import).
-  void requireAdmin;
+  router.post("/refresh", requireAdmin, async (_req, res) => {
+    deps.registry.invalidate();
+    try {
+      const registry = await deps.registry.get();
+      res.json({ ok: true, companies: registry.companies.length });
+    } catch (err) {
+      res.status(503).json({ error: "registry reload failed", detail: (err as Error).message });
+    }
+  });
 
   return router;
 }

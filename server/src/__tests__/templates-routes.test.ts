@@ -93,3 +93,21 @@ describe("POST /api/templates/companies/install", () => {
     expect(res.body.error).toBeTruthy();
   });
 });
+
+describe("POST /api/templates/refresh", () => {
+  it("returns 403 for non-admin board users", async () => {
+    const res = await request(mkApp({ actor: "board" })).post("/api/templates/refresh");
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 200 and invalidates cache for admins", async () => {
+    let invalidated = false;
+    const registry: TemplateRegistryService = {
+      get: async () => validRegistry,
+      invalidate: () => { invalidated = true; },
+    };
+    const res = await request(mkApp({ actor: "admin", registry })).post("/api/templates/refresh");
+    expect(res.status).toBe(200);
+    expect(invalidated).toBe(true);
+  });
+});
