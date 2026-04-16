@@ -19,7 +19,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   if (left === right) return true;
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    if (left[index]?.label !== right[index]?.label || left[index]?.href !== right[index]?.href) {
+    if (left[index]?.label !== right[index]?.label || left[index]?.href !== right[index]?.href || left[index]?.status !== right[index]?.status) {
       return false;
     }
   }
