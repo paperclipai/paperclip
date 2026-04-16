@@ -96,14 +96,30 @@ describe("boardMutationGuard", () => {
   });
 
   it("blocks board mutations when x-forwarded-host does not match origin", async () => {
-    const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://evil.example.com")
-      .send({ ok: true });
-    expect(res.status).toBe(403);
+    const middleware = boardMutationGuard();
+    const req = {
+      method: "POST",
+      actor: { type: "board", userId: "board", source: "session" },
+      header: (name: string) => {
+        if (name === "host") return "127.0.0.1";
+        if (name === "x-forwarded-host") return "10.90.10.20:3443";
+        if (name === "origin") return "https://evil.example.com";
+        return undefined;
+      },
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Board mutation requires trusted browser origin",
+    });
   });
 
   it("does not block authenticated agent mutations", async () => {

@@ -7,6 +7,14 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-se
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
+function shouldExposeFullHealthDetails(
+  actorType: "none" | "board" | "agent" | null | undefined,
+  deploymentMode: DeploymentMode,
+) {
+  if (deploymentMode !== "authenticated") return true;
+  return actorType === "board" || actorType === "agent";
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -23,9 +31,19 @@ export function healthRoutes(
 ) {
   const router = Router();
 
-  router.get("/", async (_req, res) => {
+  router.get("/", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    const exposeFullDetails = shouldExposeFullHealthDetails(
+      actorType,
+      opts.deploymentMode,
+    );
+
     if (!db) {
-      res.json({ status: "ok", version: serverVersion });
+      res.json(
+        exposeFullDetails
+          ? { status: "ok", version: serverVersion }
+          : { status: "ok", deploymentMode: opts.deploymentMode },
+      );
       return;
     }
 
@@ -70,7 +88,7 @@ export function healthRoutes(
 
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
-    if (persistedDevServerStatus) {
+    if (persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
       const activeRunCount = await db
@@ -83,6 +101,16 @@ export function healthRoutes(
         autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
         activeRunCount,
       });
+    }
+
+    if (!exposeFullDetails) {
+      res.json({
+        status: "ok",
+        deploymentMode: opts.deploymentMode,
+        bootstrapStatus,
+        bootstrapInviteActive,
+      });
+      return;
     }
 
     res.json({

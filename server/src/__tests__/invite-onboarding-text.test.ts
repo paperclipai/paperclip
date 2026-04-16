@@ -41,6 +41,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");
+    expect(text).toContain("/api/invites/token-123/skills/paperclip");
     expect(text).toContain("Suggested Paperclip base URLs to try");
     expect(text).toContain("http://localhost:3100");
     expect(text).toContain("host.docker.internal");
