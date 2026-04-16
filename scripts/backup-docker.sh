@@ -30,12 +30,14 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="${OUTPUT_FILE:-$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz}"
 
 # Validate --output stays within the backups directory to prevent path traversal.
-SAFE_PREFIX="$(realpath --canonicalize-missing "$BACKUP_DIR")"
-RESOLVED="$(realpath --canonicalize-missing "$OUTPUT_FILE")"
+# Use python3 for portable path canonicalization (macOS realpath lacks --canonicalize-missing).
+_canonical() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
+SAFE_PREFIX="$(_canonical "$BACKUP_DIR")"
+mkdir -p "$(dirname "$OUTPUT_FILE")"
+RESOLVED="$(_canonical "$OUTPUT_FILE")"
 if [[ "$RESOLVED" != "$SAFE_PREFIX"/* && "$RESOLVED" != "$SAFE_PREFIX" ]]; then
   echo "Erro: --output deve ser dentro de $SAFE_PREFIX" >&2; exit 1
 fi
-mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Prevent concurrent backup runs from racing on temp files / the final output path.
 LOCK_FILE="$BACKUP_DIR/.backup.lock"
