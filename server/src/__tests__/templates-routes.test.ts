@@ -53,3 +53,43 @@ describe("GET /api/templates/companies", () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe("POST /api/templates/companies/install", () => {
+  it("returns 401 unauthenticated", async () => {
+    const res = await request(mkApp({ actor: "none" })).post("/api/templates/companies/install").send({ slug: "a" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when slug missing", async () => {
+    const res = await request(mkApp({ actor: "board" })).post("/api/templates/companies/install").send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when slug not in registry", async () => {
+    const res = await request(mkApp({ actor: "board" })).post("/api/templates/companies/install").send({ slug: "unknown" });
+    expect(res.status).toBe(404);
+  });
+
+  it("delegates to portability.importBundle with github source and returns companyId", async () => {
+    let received: any = null;
+    const portability = {
+      importBundle: async (payload: any, _userId: string | null) => {
+        received = payload;
+        return { company: { id: "new-co", name: "A" }, agents: [{ slug: "x" }], warnings: [] };
+      },
+    };
+    const res = await request(mkApp({ actor: "board", portability })).post("/api/templates/companies/install").send({ slug: "a" });
+    expect(res.status).toBe(200);
+    expect(res.body.companyId).toBe("new-co");
+    expect(res.body.agentsCreated).toBe(1);
+    expect(received.source).toEqual({ type: "github", url: "https://example.com" });
+    expect(received.target.mode).toBe("new");
+  });
+
+  it("returns 422 when importBundle throws", async () => {
+    const portability = { importBundle: async () => { throw new Error("bad bundle"); } };
+    const res = await request(mkApp({ actor: "board", portability })).post("/api/templates/companies/install").send({ slug: "a" });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBeTruthy();
+  });
+});

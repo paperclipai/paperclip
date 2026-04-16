@@ -42,6 +42,48 @@ export function templateRoutes(deps: {
     }
   });
 
+  router.post("/companies/install", requireBoard, async (req, res) => {
+    const slug = typeof req.body?.slug === "string" ? req.body.slug : null;
+    if (!slug) {
+      res.status(400).json({ error: "slug required" });
+      return;
+    }
+
+    let registry;
+    try {
+      registry = await deps.registry.get();
+    } catch (err) {
+      res.status(503).json({ error: "registry unavailable" });
+      return;
+    }
+
+    const tpl = registry.companies.find((c) => c.slug === slug);
+    if (!tpl) {
+      res.status(404).json({ error: `unknown template: ${slug}` });
+      return;
+    }
+
+    const payload = {
+      source: { type: "github" as const, url: tpl.url },
+      target: { mode: "new" as const, newCompanyName: tpl.name },
+      include: ["company", "agents", "skills"],
+      collision: "skip" as const,
+    };
+
+    try {
+      const actor = (req as any).actor;
+      const userId = actor?.type === "board" ? actor.userId : null;
+      const result = await deps.portability.importBundle(payload, userId);
+      res.json({
+        companyId: result.company.id,
+        name: result.company.name ?? tpl.name,
+        agentsCreated: result.agents.length,
+      });
+    } catch (err) {
+      res.status(422).json({ error: "import failed", detail: (err as Error).message });
+    }
+  });
+
   // Reserved for Task 6 (admin-only template import).
   void requireAdmin;
 
