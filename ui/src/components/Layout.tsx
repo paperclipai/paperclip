@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { BookOpen, ChevronsLeft, ChevronsRight, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -395,57 +395,120 @@ export function Layout() {
               <CompanyRail />
               <div
                 className={cn(
-                  "overflow-hidden transition-[width] duration-100 ease-out",
-                  sidebarOpen ? "w-60" : "w-0"
+                  "overflow-hidden transition-[width] duration-150 ease-out",
+                  sidebarOpen ? "w-60" : "w-12"
                 )}
               >
                 {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
               </div>
             </div>
-            <div className="border-t border-r border-border px-3 py-2">
-              <div className="flex items-center gap-1">
-                <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
-                >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
-                </a>
-                {health?.version && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
-                    </TooltipTrigger>
-                    <TooltipContent>v{health.version}</TooltipContent>
-                  </Tooltip>
-                )}
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                  <Link
-                    to={instanceSettingsTarget}
-                    state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
-                    onClick={() => {
-                      if (isMobile) setSidebarOpen(false);
-                    }}
+            <div className={cn(
+              "border-t border-r border-border",
+              sidebarOpen ? "px-3 py-2" : "px-0 py-2"
+            )}>
+              {sidebarOpen ? (
+                <div className="flex items-center gap-1">
+                  <a
+                    href="https://docs.paperclip.ing/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                   >
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground shrink-0"
-                  onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
-                >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </Button>
-              </div>
+                    <BookOpen className="h-4 w-4 shrink-0" />
+                    <span className="truncate">Documentation</span>
+                  </a>
+                  {health?.version && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
+                      </TooltipTrigger>
+                      <TooltipContent>v{health.version}</TooltipContent>
+                    </Tooltip>
+                  )}
+                  <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                    <Link
+                      to={instanceSettingsTarget}
+                      state={SIDEBAR_SCROLL_RESET_STATE}
+                      aria-label="Instance settings"
+                      title="Instance settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground shrink-0"
+                    onClick={toggleTheme}
+                    aria-label={`Switch to ${nextTheme} mode`}
+                    title={`Switch to ${nextTheme} mode`}
+                  >
+                    {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground shrink-0"
+                    onClick={toggleSidebar}
+                    aria-label="Collapse sidebar"
+                    title="Collapse sidebar"
+                  >
+                    <ChevronsLeft className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-center gap-0.5">
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <a
+                        href="https://docs.paperclip.ing/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center h-7 w-7 rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                      >
+                        <BookOpen className="h-3.5 w-3.5" />
+                      </a>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8}>Documentation</TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <Link
+                        to={instanceSettingsTarget}
+                        state={SIDEBAR_SCROLL_RESET_STATE}
+                        className="flex items-center justify-center h-7 w-7 rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                      >
+                        <Settings className="h-3.5 w-3.5" />
+                      </Link>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8}>Settings</TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={toggleTheme}
+                        className="flex items-center justify-center h-7 w-7 rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                      >
+                        {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8}>{`${nextTheme} mode`}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={toggleSidebar}
+                        className="flex items-center justify-center h-7 w-7 rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                      >
+                        <ChevronsRight className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={8}>Expand sidebar</TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
             </div>
           </div>
         )}

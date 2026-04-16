@@ -316,10 +316,11 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
+  const { collapsed } = useSidebar();
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className={cn("max-w-2xl space-y-6", collapsed && "mx-auto")}>
       <div className="space-y-3">
         <Skeleton className="h-3 w-40" />
 
@@ -859,7 +860,7 @@ export function IssueDetail() {
   const navigationType = useNavigationType();
   const location = useLocation();
   const { pushToast } = useToastActions();
-  const { isMobile } = useSidebar();
+  const { isMobile, collapsed } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
@@ -2157,7 +2158,7 @@ export function IssueDetail() {
   );
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className={cn("max-w-2xl space-y-6", collapsed && "mx-auto")}>
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
