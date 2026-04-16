@@ -63,10 +63,14 @@ export function collectAgentAdapterWorkspaceCommandPaths(adapterConfig: unknown)
 
 export function collectProjectExecutionWorkspaceCommandPaths(policy: unknown): string[] {
   if (!isRecord(policy)) return [];
-  return collectWorkspaceStrategyCommandPaths(
+  const paths = collectWorkspaceStrategyCommandPaths(
     policy.workspaceStrategy,
     "executionWorkspacePolicy.workspaceStrategy",
   );
+  if (hasOwn(policy, "workspaceRuntime")) {
+    paths.push("executionWorkspacePolicy.workspaceRuntime");
+  }
+  return paths;
 }
 
 export function collectProjectWorkspaceCommandPaths(
@@ -74,9 +78,15 @@ export function collectProjectWorkspaceCommandPaths(
   prefix = "",
 ): string[] {
   if (!isRecord(workspacePatch)) return [];
-  return hasOwn(workspacePatch, "cleanupCommand")
-    ? [prefixPath(prefix, "cleanupCommand")]
-    : [];
+  const paths: string[] = [];
+  if (hasOwn(workspacePatch, "cleanupCommand")) {
+    paths.push(prefixPath(prefix, "cleanupCommand"));
+  }
+  // workspaceRuntime is stored nested under runtimeConfig in project workspace metadata
+  if (isRecord(workspacePatch.runtimeConfig) && hasOwn(workspacePatch.runtimeConfig, "workspaceRuntime")) {
+    paths.push(prefixPath(prefix, "runtimeConfig.workspaceRuntime"));
+  }
+  return paths;
 }
 
 export function collectIssueWorkspaceCommandPaths(input: {
@@ -85,6 +95,9 @@ export function collectIssueWorkspaceCommandPaths(input: {
 }): string[] {
   const paths: string[] = [];
   if (isRecord(input.executionWorkspaceSettings)) {
+    if (hasOwn(input.executionWorkspaceSettings, "workspaceRuntime")) {
+      paths.push("executionWorkspaceSettings.workspaceRuntime");
+    }
     paths.push(
       ...collectWorkspaceStrategyCommandPaths(
         input.executionWorkspaceSettings.workspaceStrategy,
