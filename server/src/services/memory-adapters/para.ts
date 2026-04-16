@@ -94,9 +94,9 @@ function parseItemsYaml(raw: string): ParaFact[] {
         if (colonIdx !== -1) {
           const k = kv.slice(0, colonIdx).trim();
           let v = kv.slice(colonIdx + 1).trim();
-          if (v === "" || v === "null") {
+          if (v === "null") {
             current[k] = null;
-          } else if (v === "[]") {
+          } else if (v === "" || v === "[]") {
             current[k] = [];
           } else if (/^\d+$/.test(v)) {
             current[k] = Number(v);
@@ -114,7 +114,7 @@ function parseItemsYaml(raw: string): ParaFact[] {
 
 function unquote(v: string): string {
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-    return v.slice(1, -1);
+    return v.slice(1, -1).replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   }
   return v;
 }
@@ -138,8 +138,9 @@ function serializeItemsYaml(facts: ParaFact[]): string {
         }
       } else if (v === null) {
         lines.push(`${prefix}${k}: null`);
-      } else if (typeof v === "string" && /[:#\[\]{},"']/.test(v)) {
-        lines.push(`${prefix}${k}: "${v}"`);
+      } else if (typeof v === "string" && /[:#\[\]{},"'\n\\]/.test(v)) {
+        const escaped = v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+        lines.push(`${prefix}${k}: "${escaped}"`);
       } else {
         lines.push(`${prefix}${k}: ${v}`);
       }
