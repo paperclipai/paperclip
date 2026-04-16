@@ -345,7 +345,7 @@ function NoteThreadView({
       </div>
 
       {/* Original note */}
-      <div className="px-4 py-3 bg-muted/20 border-b border-border">
+      <div className="px-4 py-3 bg-muted/20 border-b border-border shrink-0 max-h-32 overflow-y-auto">
         <p className="text-sm">{note.text}</p>
         <p className="text-xs text-muted-foreground mt-1">{relativeTime(note.createdAt)}</p>
       </div>
