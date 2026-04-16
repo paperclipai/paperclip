@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueRelations, issues } from "@paperclipai/db";
 import type { IssueRelationType } from "@paperclipai/shared";
@@ -186,10 +186,97 @@ export function issueRelationService(db: Db) {
     });
   }
 
+  /**
+   * When a blocking issue reaches a terminal status, auto-transition any
+   * dependents currently in `blocked` that have no remaining open blockers
+   * from `blocked` → `todo`. Returns the list of transitioned issues for
+   * activity logging / wakeup emission by the caller.
+   *
+   * Complements the existing `listWakeableBlockedDependents` wakeup path in
+   * the route: that path fires wakeups for ALL wakeable dependents regardless
+   * of status; this method additionally makes the state change deterministic
+   * for the `blocked` subset so blocked tasks don't require agent action to
+   * re-enter `todo`.
+   */
+  async function autoTransitionBlockedDependents(
+    resolvedIssueId: string,
+  ): Promise<Array<{ id: string; companyId: string; assigneeAgentId: string | null }>> {
+    return db.transaction(async (tx) => {
+      const resolved = await tx
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, resolvedIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!resolved) return [];
+
+      // Candidates: blocked issues that have a `blocks` relation FROM the
+      // resolved issue (i.e. resolved was their blocker).
+      const candidates = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, resolved.companyId),
+            eq(issueRelations.type, "blocks"),
+            eq(issueRelations.issueId, resolvedIssueId),
+          ),
+        );
+
+      const blocked = candidates.filter((c) => c.status === "blocked");
+      if (blocked.length === 0) return [];
+
+      const blockedIds = blocked.map((c) => c.id);
+
+      // Fetch remaining blockers for each candidate.
+      const blockerRows = await tx
+        .select({
+          issueId: issueRelations.relatedIssueId,
+          blockerStatus: issues.status,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, resolved.companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, blockedIds),
+          ),
+        );
+
+      const openBlockersByIssue = new Map<string, number>();
+      for (const row of blockerRows) {
+        if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
+          openBlockersByIssue.set(row.issueId, (openBlockersByIssue.get(row.issueId) ?? 0) + 1);
+        }
+      }
+
+      const toTransition = blocked.filter((c) => (openBlockersByIssue.get(c.id) ?? 0) === 0);
+      if (toTransition.length === 0) return [];
+
+      await tx
+        .update(issues)
+        .set({ status: "todo", updatedAt: new Date() })
+        .where(inArray(issues.id, toTransition.map((c) => c.id)));
+
+      return toTransition.map((c) => ({
+        id: c.id,
+        companyId: c.companyId,
+        assigneeAgentId: c.assigneeAgentId,
+      }));
+    });
+  }
+
   return {
     listForIssue,
     create,
     delete: deleteById,
+    autoTransitionBlockedDependents,
   };
 }
 

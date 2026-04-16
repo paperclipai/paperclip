@@ -1979,6 +1979,25 @@ export function issueRoutes(
 
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
+        // Auto-transition any dependents that are currently `blocked` with
+        // this as their sole remaining blocker: move them to `todo` before
+        // emitting wakeups, so the state change is deterministic even if the
+        // assignee agent is unavailable.
+        const transitioned = await issueRelationsSvc.autoTransitionBlockedDependents(issue.id);
+        for (const t of transitioned) {
+          await logActivity(db, {
+            companyId: t.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.auto_unblocked",
+            entityType: "issue",
+            entityId: t.id,
+            details: { resolvedBlockerIssueId: issue.id },
+          });
+        }
+
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {
