@@ -337,7 +337,10 @@ EOF
 }
 
 if paperclipai_command_available; then
-  run_isolated_worktree_init
+  if ! run_isolated_worktree_init; then
+    echo "paperclipai CLI available but worktree init failed; writing isolated fallback config without DB seeding." >&2
+    write_fallback_worktree_config
+  fi
 else
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
