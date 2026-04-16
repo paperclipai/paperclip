@@ -140,7 +140,7 @@ function buildLoginResult(input: {
   };
 }
 
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
 }
@@ -301,8 +301,25 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // Only inherit process.env; explicit env values override.
+  // If ANTHROPIC_API_KEY is NOT explicitly set in adapterConfig.env,
+  // do NOT inject it from process.env (Option 2 for OAuth/subscription auth).
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+    Object.entries(ensurePathInEnv((() => {
+      if (!hasNonEmptyEnvValue(envConfig, "ANTHROPIC_API_KEY")) {
+        const mergedEnv: NodeJS.ProcessEnv = { ...process.env };
+        delete mergedEnv.ANTHROPIC_API_KEY;
+        for (const [key, value] of Object.entries(env)) {
+          mergedEnv[key] = value;
+        }
+        return mergedEnv;
+      }
+      const mergedEnv: NodeJS.ProcessEnv = { ...process.env };
+      for (const [key, value] of Object.entries(env)) {
+        mergedEnv[key] = value;
+      }
+      return mergedEnv;
+    })())).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -346,7 +363,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
-    env,
+    env: runtimeEnv as Record<string, string>,
     loggedEnv,
     timeoutSec,
     graceSec,
@@ -475,11 +492,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
   );
-  const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const effectiveEnv: Record<string, string> = (() => {
+    // If ANTHROPIC_API_KEY is NOT explicitly set in adapterConfig.env,
+    // do NOT inject it from process.env (Option 2 for OAuth/subscription auth).
+    if (!hasNonEmptyEnvValue(configEnv, "ANTHROPIC_API_KEY")) {
+      const processEnvWithoutApiKey = { ...process.env };
+      delete processEnvWithoutApiKey.ANTHROPIC_API_KEY;
+      const mergedEnv: NodeJS.ProcessEnv = { ...processEnvWithoutApiKey };
+      for (const [key, value] of Object.entries(env)) {
+        mergedEnv[key] = value;
+      }
+      return Object.fromEntries(
+        Object.entries(mergedEnv).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
+    }
+    const mergedEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const [key, value] of Object.entries(env)) {
+      mergedEnv[key] = value;
+    }
+    return Object.fromEntries(
+      Object.entries(mergedEnv).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  })();
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));

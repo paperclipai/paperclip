@@ -222,7 +222,24 @@ export async function testEnvironment(
       }
     }
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  // If ANTHROPIC_API_KEY is NOT explicitly set in adapterConfig.env,
+  // do NOT inject it from process.env (Option 2 for OAuth/subscription auth).
+  const hasExplicitApiKey = isNonEmpty(env.ANTHROPIC_API_KEY);
+  const runtimeEnv = (() => {
+    if (!hasExplicitApiKey) {
+      const mergedEnv: NodeJS.ProcessEnv = { ...process.env };
+      delete mergedEnv.ANTHROPIC_API_KEY;
+      for (const [key, value] of Object.entries(env)) {
+        mergedEnv[key] = value;
+      }
+      return ensurePathInEnv(mergedEnv);
+    }
+    const mergedEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const [key, value] of Object.entries(env)) {
+      mergedEnv[key] = value;
+    }
+    return ensurePathInEnv(mergedEnv);
+  })();
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
