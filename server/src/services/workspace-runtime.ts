@@ -33,7 +33,8 @@ import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-c
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
   const shell = process.env.SHELL?.trim();
-  if (!shell || !path.isAbsolute(shell)) return fallback;
+  if (!shell) return fallback;
+  if (!path.isAbsolute(shell)) return shell;
   if (!existsSync(shell)) return fallback;
   return shell;
 }
