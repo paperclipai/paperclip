@@ -304,14 +304,21 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
-  // Isolate PATH so that provision-worktree.sh sees a fake `paperclipai` (exit 1 = not
-  // available) regardless of whether paperclipai is globally installed on the host. Without
-  // this, tests that call provision-worktree.sh diverge depending on the test runner's PATH.
+  // Isolate PATH and Paperclip env so that provision-worktree.sh behaves deterministically:
+  // - fake `paperclipai` (exit 1) ensures paperclipai_command_available() returns false
+  //   regardless of whether paperclipai is globally installed on the host.
+  // - clearing PAPERCLIP_CONFIG prevents the host's system config from leaking into
+  //   resolvePaperclipConfigPath() calls inside provision tests.
+  // Without both, tests diverge depending on the developer's installed tooling.
   let savedPath: string | undefined;
+  let savedPaperclipConfig: string | undefined;
   let fakePaperclipBinDir: string | undefined;
 
   beforeEach(async () => {
     savedPath = process.env.PATH;
+    savedPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONFIG;
+
     fakePaperclipBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-bin-"));
     const fakePaperclipAi = path.join(fakePaperclipBinDir, "paperclipai");
     await fs.writeFile(fakePaperclipAi, "#!/bin/sh\nexit 1\n", "utf8");
@@ -325,6 +332,10 @@ describe("realizeExecutionWorkspace", () => {
     } else {
       delete process.env.PATH;
     }
+    if (savedPaperclipConfig !== undefined) {
+      process.env.PAPERCLIP_CONFIG = savedPaperclipConfig;
+    }
+    // Top-level afterEach also deletes PAPERCLIP_CONFIG; no double-delete risk.
     if (fakePaperclipBinDir) {
       await fs.rm(fakePaperclipBinDir, { recursive: true, force: true }).catch(() => {});
       fakePaperclipBinDir = undefined;

@@ -1,20 +1,12 @@
 # TODOS
 
-## Server / Workspace Runtime
+## Completed
 
-**Priority:** P0
 **Title:** Fix workspace-runtime provision tests failing with global paperclipai install
 
-Test failures in `server/src/__tests__/workspace-runtime.test.ts`:
-- `writes an isolated repo-local Paperclip config and worktree branding when provisioning`
-- `provisions worktree-local pnpm node_modules instead of reusing base-repo links` (×2)
-- `provisions successfully when install is needed but there are no symlinked node_modules`
-- `retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated`
-- `fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds`
+**Fix:** Added `beforeEach`/`afterEach` in the `realizeExecutionWorkspace` describe block in `server/src/__tests__/workspace-runtime.test.ts` that (1) prepends a fake `paperclipai` (exits 1) to PATH so `paperclipai_command_available()` returns false regardless of global installs, and (2) clears `PAPERCLIP_CONFIG` from the test env so the host system config doesn't leak into `resolvePaperclipConfigPath()` calls. All 56 tests in the suite pass.
 
-**Root cause:** Tests assume `paperclipai` is NOT globally installed. When it is (e.g. via `npx -y paperclipai`), `paperclipai_command_available()` in `provision-worktree.sh` returns `true` and the real CLI is invoked. Different tests expect different behaviors: some expect fallback, some expect hard failure. The conflict is irresolvable without PATH isolation in the tests. Fix: each test that calls provision-worktree.sh should control PATH to include only the intended fake/real CLI (similar to how `fails instead of writing unseeded fallback` uses a fake pnpm bin dir).
-
-## Completed
+---
 
 **Title:** Fix worktree-config port assignment tests
 
