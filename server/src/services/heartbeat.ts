@@ -3998,6 +3998,40 @@ export function heartbeatService(db: Db) {
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+
+    // Fix: Skip LLM invocation for idle timer heartbeats.
+    // When this is a timer wake with no assigned issue and no wake payload,
+    // there is nothing for the agent to do — finalize immediately without
+    // spawning the adapter (which would burn 15-40K+ input tokens per wake).
+    const isTimerWake = context.source === "scheduler" && context.reason === "interval_elapsed";
+    const hasNoWork = !paperclipWakePayload && !issueId;
+    if (isTimerWake && hasNoWork) {
+      // Double-check: query for any assigned issues the agent might have
+      const assignedIssues = await issuesSvc.list(agent.companyId, {
+        assigneeAgentId: agent.id,
+        status: "todo,in_progress,in_review,blocked",
+      });
+      if (assignedIssues.length === 0) {
+        const skipNote = "Timer heartbeat skipped: no assigned issues or pending work";
+        logger.info({ runId, agentId: agent.id }, skipNote);
+        await setRunStatus(runId, "succeeded", {
+          finishedAt: new Date(),
+          resultJson: { skipped: true, reason: "idle_timer_no_work" },
+        });
+        await setWakeupStatus(run.wakeupRequestId, "completed", {
+          finishedAt: new Date(),
+        });
+        await appendRunEvent(run, 1, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: skipNote,
+        });
+        await finalizeAgentStatus(agent.id, "succeeded");
+        return;
+      }
+    }
+
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
     const shouldReuseExisting =
@@ -6123,7 +6157,46 @@ export function heartbeatService(db: Db) {
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Idle backoff: if recent timer runs were all idle (no-ops), multiply
+        // the effective interval to avoid burning tokens on repeated empty wakes.
+        // Backoff: 2x after 3 consecutive idle runs, 4x after 6. Resets when
+        // a non-idle run occurs (on_demand, assignment, or a timer run with work).
+        let effectiveIntervalSec = policy.intervalSec;
+        try {
+          const recentTimerRuns = await db
+            .select({
+              resultJson: heartbeatRuns.resultJson,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.agentId, agent.id),
+                eq(heartbeatRuns.invocationSource, "timer"),
+              ),
+            )
+            .orderBy(desc(heartbeatRuns.createdAt))
+            .limit(6);
+
+          let consecutiveIdle = 0;
+          for (const r of recentTimerRuns) {
+            const rj = r.resultJson as Record<string, unknown> | null;
+            if (rj && rj.skipped === true && rj.reason === "idle_timer_no_work") {
+              consecutiveIdle += 1;
+            } else {
+              break;
+            }
+          }
+          if (consecutiveIdle >= 6) {
+            effectiveIntervalSec = policy.intervalSec * 4;
+          } else if (consecutiveIdle >= 3) {
+            effectiveIntervalSec = policy.intervalSec * 2;
+          }
+        } catch {
+          // Non-fatal: fall back to the base interval on query failure
+        }
+
+        if (elapsedMs < effectiveIntervalSec * 1000) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

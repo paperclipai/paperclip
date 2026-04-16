@@ -29,6 +29,8 @@ Follow these steps every time you wake up:
 
 **Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
 
+**Empty timer-wake fast path.** If this is a timer wake (`PAPERCLIP_WAKE_REASON` is not set or indicates a scheduled interval) with no `PAPERCLIP_TASK_ID` and no wake payload, call `GET /api/agents/me/inbox-lite` only. If the inbox is empty, exit immediately without further reasoning — do NOT call `/api/agents/me`, do NOT process skills or instructions further. Just exit. This avoids burning tokens when there is no work.
+
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
