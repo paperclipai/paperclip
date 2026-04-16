@@ -28,6 +28,7 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listSummaries: vi.fn(),
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -183,11 +184,13 @@ describe("IssuesList", () => {
     mockIssuesApi.listLabels.mockReset();
     mockAuthApi.getSession.mockReset();
     mockExecutionWorkspacesApi.list.mockReset();
+    mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     localStorage.clear();
   });
@@ -216,7 +219,11 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", { q: "server", projectId: undefined });
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "server",
+        projectId: undefined,
+        limit: 200,
+      });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
     });
@@ -250,6 +257,7 @@ describe("IssuesList", () => {
         q: "server",
         projectId: undefined,
         parentId: "parent-1",
+        limit: 200,
       });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
@@ -333,7 +341,7 @@ describe("IssuesList", () => {
     expect(onSearchChange).not.toHaveBeenCalled();
 
     act(() => {
-      vi.advanceTimersByTime(149);
+      vi.advanceTimersByTime(249);
     });
 
     expect(onSearchChange).not.toHaveBeenCalled();
@@ -345,6 +353,109 @@ describe("IssuesList", () => {
 
     expect(onSearchChange).toHaveBeenCalledTimes(1);
     expect(onSearchChange).toHaveBeenCalledWith("ab");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a refinement hint when search results hit the live search cap", async () => {
+    const serverIssues = Array.from({ length: 200 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Server result ${index + 1}`,
+      }),
+    );
+
+    mockIssuesApi.list.mockResolvedValue(serverIssues);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialSearch="server"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("caps the first paint for large issue lists", async () => {
+    const manyIssues = Array.from({ length: 220 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={manyIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(150);
+      expect(container.textContent).toContain("Rendering 150 of 220 issues");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("skips deferred row sizing for expanded parent rows with visible children", async () => {
+    const parentIssue = createIssue({
+      id: "issue-parent",
+      identifier: "PAP-1",
+      title: "Parent issue",
+    });
+    const childIssue = createIssue({
+      id: "issue-child",
+      identifier: "PAP-2",
+      title: "Child issue",
+      parentId: "issue-parent",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[parentIssue, childIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      const parentRow = rows.find((row) => row.textContent?.includes("Parent issue"));
+      const childRow = rows.find((row) => row.textContent?.includes("Child issue"));
+      expect(parentRow).not.toBeUndefined();
+      expect(childRow).not.toBeUndefined();
+      expect((parentRow?.parentElement as HTMLDivElement | null)?.style.contentVisibility).toBe("");
+      expect((parentRow?.parentElement as HTMLDivElement | null)?.style.containIntrinsicSize).toBe("");
+      expect((childRow?.parentElement as HTMLDivElement | null)?.style.contentVisibility).toBe("auto");
+      expect((childRow?.parentElement as HTMLDivElement | null)?.style.containIntrinsicSize).toBe("44px");
+    });
 
     act(() => {
       root.unmount();
@@ -423,7 +534,7 @@ describe("IssuesList", () => {
   it("filters the list to a single workspace when a workspace name is clicked", async () => {
     localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "workspace"]));
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    mockExecutionWorkspacesApi.list.mockResolvedValue([
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-alpha",
         name: "Alpha",
@@ -491,7 +602,7 @@ describe("IssuesList", () => {
     });
   });
 
-  it("hides routine-backed issues by default and reveals them when the routine filter is enabled", async () => {
+  it("shows routine-backed issues by default and hides them when the routine filter is toggled off", async () => {
     const manualIssue = createIssue({
       id: "issue-manual",
       identifier: "PAP-10",
@@ -519,7 +630,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Manual issue");
-      expect(container.textContent).not.toContain("Routine issue");
+      expect(container.textContent).toContain("Routine issue");
     });
 
     await act(async () => {
@@ -532,21 +643,21 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("Show routine runs"),
+        (label) => label.textContent?.includes("Hide routine runs"),
       );
       expect(toggle).not.toBeUndefined();
     });
 
     await act(async () => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("Show routine runs"),
+        (label) => label.textContent?.includes("Hide routine runs"),
       );
       toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Routine issue");
+      expect(container.textContent).not.toContain("Routine issue");
     });
 
     act(() => {
@@ -619,6 +730,31 @@ describe("IssuesList", () => {
     });
 
     expect(document.activeElement).not.toBe(input);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses workspace summaries instead of the full workspace list on the issues page", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1");
+      expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    });
 
     act(() => {
       root.unmount();

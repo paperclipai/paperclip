@@ -9,6 +9,8 @@ const mockAgentService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRunLogAccess: vi.fn(),
+  readLog: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -100,6 +102,19 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    });
+    mockHeartbeatService.readLog.mockResolvedValue({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "chunk",
+      nextOffset: 5,
+    });
   });
 
   it("returns a compact active run payload for issue polling", async () => {
@@ -161,6 +176,29 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
+    });
+  });
+
+  it("uses narrow run log metadata lookups for log polling", async () => {
+    const res = await request(await createApp()).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    }, {
+      offset: 12,
+      limitBytes: 64,
+    });
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "chunk",
+      nextOffset: 5,
     });
   });
 });

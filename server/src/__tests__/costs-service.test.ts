@@ -1,6 +1,15 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { randomUUID } from "node:crypto";
+import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { costService } from "../services/costs.ts";
+import { financeService } from "../services/finance.ts";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -228,5 +237,156 @@ describe("cost routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
+  let db!: ReturnType<typeof createDb>;
+  let costs!: ReturnType<typeof costService>;
+  let finance!: ReturnType<typeof financeService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-costs-service-");
+    db = createDb(tempDb.connectionString);
+    costs = costService(db);
+    finance = financeService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Overflow Project",
+      status: "active",
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        projectId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 2_000_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 200_000_000,
+        costCents: 2_000_000_000,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 2_000_000_000,
+        cachedInputTokens: 10,
+        outputTokens: 200_000_000,
+        costCents: 2_000_000_000,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const [byAgentRow] = await costs.byAgent(companyId, range);
+    const [byProjectRow] = await costs.byProject(companyId, range);
+    const [byAgentModelRow] = await costs.byAgentModel(companyId, range);
+
+    expect(byAgentRow?.costCents).toBe(4_000_000_000);
+    expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
+    expect(byProjectRow?.costCents).toBe(4_000_000_000);
+    expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(financeEvents).values([
+      {
+        companyId,
+        biller: "openai",
+        eventKind: "invoice",
+        amountCents: 2_000_000_000,
+        currency: "USD",
+        direction: "debit",
+        estimated: false,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        biller: "openai",
+        eventKind: "invoice",
+        amountCents: 2_000_000_000,
+        currency: "USD",
+        direction: "debit",
+        estimated: true,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const summary = await finance.summary(companyId, range);
+    const [byKindRow] = await finance.byKind(companyId, range);
+
+    expect(summary.debitCents).toBe(4_000_000_000);
+    expect(summary.estimatedDebitCents).toBe(2_000_000_000);
+    expect(byKindRow?.debitCents).toBe(4_000_000_000);
+    expect(byKindRow?.netCents).toBe(4_000_000_000);
   });
 });

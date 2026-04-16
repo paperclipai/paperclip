@@ -9,12 +9,7 @@ import {
   extractCompanyPrefixFromPath,
   normalizeCompanyPrefix,
 } from "@/lib/company-routes";
-
-function parseIssuePathIdFromPath(pathname: string | null | undefined): string | null {
-  if (!pathname) return null;
-  const match = pathname.match(/(?:^|\/)issues\/([^/?#]+)/);
-  return match?.[1] ?? null;
-}
+import { parseIssuePathIdFromPath } from "@/lib/issue-reference";
 
 function resolveTo(to: To, companyPrefix: string | null): To {
   if (typeof to === "string") {

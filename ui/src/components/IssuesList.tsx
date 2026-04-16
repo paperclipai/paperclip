@@ -19,6 +19,7 @@ import {
   defaultIssueFilterState,
   issueFilterLabel,
   issuePriorityOrder,
+  normalizeIssueFilterState,
   resolveIssueFilterWorkspaceId,
   issueStatusOrder,
   type IssueFilterState,
@@ -54,7 +55,11 @@ import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import type { Issue, Project } from "@paperclipai/shared";
-const ISSUE_SEARCH_DEBOUNCE_MS = 150;
+const ISSUE_SEARCH_DEBOUNCE_MS = 250;
+const ISSUE_SEARCH_RESULT_LIMIT = 200;
+const INITIAL_ISSUE_ROW_RENDER_LIMIT = 150;
+const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
+const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
 
 /* ── View state ── */
 
@@ -82,7 +87,10 @@ const defaultViewState: IssueViewState = {
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultViewState, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...defaultViewState, ...parsed, ...normalizeIssueFilterState(parsed) };
+    }
   } catch { /* ignore */ }
   return { ...defaultViewState };
 }
@@ -156,6 +164,13 @@ interface Agent {
   id: string;
   name: string;
 }
+
+type CreatorOption = {
+  id: string;
+  label: string;
+  kind: "agent" | "user";
+  searchText?: string;
+};
 
 type ProjectOption = Pick<Project, "id" | "name"> & Partial<Pick<Project, "color" | "workspaces" | "executionWorkspacePolicy" | "primaryWorkspace">>;
 type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>;
@@ -283,6 +298,7 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
+  const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
@@ -333,12 +349,14 @@ export function IssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         q: normalizedIssueSearch,
         projectId,
+        limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
       }),
@@ -347,9 +365,9 @@ export function IssuesList({
   });
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.list(selectedCompanyId)
+      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.list(selectedCompanyId!),
+    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 
@@ -424,6 +442,66 @@ export function IssuesList({
       .sort((a, b) => a[1].localeCompare(b[1]))
       .map(([id, name]) => ({ id, name }));
   }, [workspaceNameMap]);
+
+  const creatorOptions = useMemo<CreatorOption[]>(() => {
+    const options = new Map<string, CreatorOption>();
+    const knownAgentIds = new Set<string>();
+
+    if (currentUserId) {
+      options.set(`user:${currentUserId}`, {
+        id: `user:${currentUserId}`,
+        label: currentUserId === "local-board" ? "Board" : "Me",
+        kind: "user",
+        searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
+      });
+    }
+
+    for (const issue of issues) {
+      if (issue.createdByUserId) {
+        const id = `user:${issue.createdByUserId}`;
+        if (!options.has(id)) {
+          options.set(id, {
+            id,
+            label: formatAssigneeUserLabel(issue.createdByUserId, currentUserId) ?? issue.createdByUserId.slice(0, 5),
+            kind: "user",
+            searchText: `${issue.createdByUserId} board user human`,
+          });
+        }
+      }
+    }
+
+    for (const agent of agents ?? []) {
+      knownAgentIds.add(agent.id);
+      const id = `agent:${agent.id}`;
+      if (!options.has(id)) {
+        options.set(id, {
+          id,
+          label: agent.name,
+          kind: "agent",
+          searchText: `${agent.name} ${agent.id} agent`,
+        });
+      }
+    }
+
+    for (const issue of issues) {
+      if (issue.createdByAgentId && !knownAgentIds.has(issue.createdByAgentId)) {
+        const id = `agent:${issue.createdByAgentId}`;
+        if (!options.has(id)) {
+          options.set(id, {
+            id,
+            label: issue.createdByAgentId.slice(0, 8),
+            kind: "agent",
+            searchText: `${issue.createdByAgentId} agent`,
+          });
+        }
+      }
+    }
+
+    return [...options.values()].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [agents, currentUserId, issues]);
 
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
@@ -529,6 +607,26 @@ export function IssuesList({
     }));
   }, [filtered, viewState.groupBy, agents, agentName, currentUserId, workspaceNameMap, issueTitleMap]);
 
+  useEffect(() => {
+    if (viewState.viewMode !== "list") return;
+    setRenderedIssueRowLimit(Math.min(filtered.length, INITIAL_ISSUE_ROW_RENDER_LIMIT));
+  }, [filtered, viewState.viewMode]);
+
+  useEffect(() => {
+    if (viewState.viewMode !== "list") return;
+    if (renderedIssueRowLimit >= filtered.length) return;
+
+    const timeoutId = window.setTimeout(() => {
+      startTransition(() => {
+        setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
+      });
+    }, ISSUE_ROW_RENDER_BATCH_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [filtered.length, renderedIssueRowLimit, viewState.viewMode]);
+
+  const remainingIssueRowCount = Math.max(filtered.length - renderedIssueRowLimit, 0);
+
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -578,6 +676,7 @@ export function IssuesList({
     setAssigneeSearch("");
   }, [onUpdateIssue]);
 
+  let remainingRowsToRender = viewState.viewMode === "list" ? renderedIssueRowLimit : Number.POSITIVE_INFINITY;
 
   return (
     <div className="space-y-4">
@@ -643,6 +742,7 @@ export function IssuesList({
             onChange={updateView}
             activeFilterCount={activeFilterCount}
             agents={agents}
+            creators={creatorOptions}
             projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
@@ -732,7 +832,11 @@ export function IssuesList({
 
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
-
+      {normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
+        <p className="text-xs text-muted-foreground">
+          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+        </p>
+      )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
@@ -750,7 +854,10 @@ export function IssuesList({
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
-        groupedContent.map((group) => (
+        <>
+          {groupedContent.map((group) => {
+          if (remainingRowsToRender <= 0) return null;
+          return (
           <Collapsible
             key={group.key}
             open={!viewState.collapsedGroups.includes(group.key)}
@@ -793,10 +900,14 @@ export function IssuesList({
                   : { roots: group.items, childMap: new Map<string, Issue[]>() };
 
                 const renderIssueRow = (issue: Issue, depth: number) => {
+                  if (remainingRowsToRender <= 0) return null;
+                  remainingRowsToRender -= 1;
+
                   const children = childMap.get(issue.id) ?? [];
                   const hasChildren = children.length > 0;
                   const totalDescendants = hasChildren ? countDescendants(issue.id, childMap) : 0;
                   const isExpanded = !viewState.collapsedParents.includes(issue.id);
+                  const useDeferredRowRendering = !(hasChildren && isExpanded);
                   const issueProject = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
@@ -810,7 +921,18 @@ export function IssuesList({
                   };
 
                   return (
-                    <div key={issue.id} style={depth > 0 ? { paddingLeft: `${depth * 16}px` } : undefined}>
+                    <div
+                      key={issue.id}
+                      style={{
+                        ...(depth > 0 ? { paddingLeft: `${depth * 16}px` } : {}),
+                        ...(useDeferredRowRendering
+                          ? {
+                            contentVisibility: "auto",
+                            containIntrinsicSize: "44px",
+                          }
+                          : {}),
+                      }}
+                    >
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
@@ -984,11 +1106,18 @@ export function IssuesList({
                   );
                 };
 
-                return roots.map((issue) => renderIssueRow(issue, 0));
+                return roots.map((issue) => renderIssueRow(issue, 0)).filter((node) => node !== null);
               })()}
             </CollapsibleContent>
           </Collapsible>
-        ))
+          );
+          })}
+          {remainingIssueRowCount > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Rendering {Math.min(renderedIssueRowLimit, filtered.length)} of {filtered.length} issues
+            </p>
+          )}
+        </>
       )}
     </div>
   );

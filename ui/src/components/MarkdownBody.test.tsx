@@ -96,6 +96,14 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="skill"');
   });
 
+  it("sanitizes unsafe javascript markdown links", () => {
+    const html = renderMarkdown("[click me](javascript:alert(document.cookie))");
+
+    expect(html).toContain('<a href="" rel="noreferrer"');
+    expect(html).toContain(">click me</a>");
+    expect(html).not.toContain("javascript:");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 
@@ -166,7 +174,7 @@ describe("MarkdownBody", () => {
     ]);
 
     expect(html).toContain('href="/issues/PAP-1271"');
-    expect(html).toContain("<code>PAP-1271</code>");
+    expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
     expect(html).toContain("text-green-600");
   });
 
@@ -184,5 +192,27 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('href="/issues/PAP-1271"');
     expect(html).toContain("Depends on PAP-1271");
     expect(html).toContain('href="PAP-1271"');
+  });
+
+  it("applies wrap-friendly styles to long inline content", () => {
+    const html = renderMarkdown("averyveryveryveryveryveryveryveryveryverylongtoken");
+
+    expect(html).toContain('class="paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden');
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
+    expect(html).toContain("<p");
+  });
+
+  it("applies wrap-friendly styles to long links", () => {
+    const html = renderMarkdown("[link](https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong)");
+
+    expect(html).toContain('<a href="https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong"');
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
+  });
+
+  it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {
+    const html = renderMarkdown("```text\nGET /heartbeat-runs/ca5d23fc-c15b-4826-8ff1-2b6dd11be096/log?offset=2062357&limitBytes=256000\n```");
+
+    expect(html).toContain("<pre");
+    expect(html).toContain('style="max-width:100%;overflow-x:auto"');
   });
 });

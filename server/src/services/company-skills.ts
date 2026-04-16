@@ -36,6 +36,50 @@ import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
+type CompanySkillListDbRow = Pick<
+  CompanySkillRow,
+  | "id"
+  | "companyId"
+  | "key"
+  | "slug"
+  | "name"
+  | "description"
+  | "sourceType"
+  | "sourceLocator"
+  | "sourceRef"
+  | "trustLevel"
+  | "compatibility"
+  | "fileInventory"
+  | "metadata"
+  | "createdAt"
+  | "updatedAt"
+>;
+type CompanySkillListRow = Pick<
+  CompanySkill,
+  | "id"
+  | "companyId"
+  | "key"
+  | "slug"
+  | "name"
+  | "description"
+  | "sourceType"
+  | "sourceLocator"
+  | "sourceRef"
+  | "trustLevel"
+  | "compatibility"
+  | "fileInventory"
+  | "metadata"
+  | "createdAt"
+  | "updatedAt"
+>;
+type SkillReferenceTarget = Pick<CompanySkill, "id" | "key" | "slug">;
+type SkillSourceInfoTarget = Pick<
+  CompanySkill,
+  | "companyId"
+  | "sourceType"
+  | "sourceLocator"
+  | "metadata"
+>;
 
 type ImportedSkill = {
   key: string;
@@ -1150,6 +1194,28 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
   };
 }
 
+function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow {
+  return {
+    ...row,
+    description: row.description ?? null,
+    sourceType: row.sourceType as CompanySkillSourceType,
+    sourceLocator: row.sourceLocator ?? null,
+    sourceRef: row.sourceRef ?? null,
+    trustLevel: row.trustLevel as CompanySkillTrustLevel,
+    compatibility: row.compatibility as CompanySkillCompatibility,
+    fileInventory: Array.isArray(row.fileInventory)
+      ? row.fileInventory.flatMap((entry) => {
+        if (!isPlainRecord(entry)) return [];
+        return [{
+          path: String(entry.path ?? ""),
+          kind: (String(entry.kind ?? "other") as CompanySkillFileInventoryEntry["kind"]),
+        }];
+      })
+      : [],
+    metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+  };
+}
+
 function serializeFileInventory(
   fileInventory: CompanySkillFileInventoryEntry[],
 ): Array<Record<string, unknown>> {
@@ -1159,14 +1225,14 @@ function serializeFileInventory(
   }));
 }
 
-function getSkillMeta(skill: CompanySkill): SkillSourceMeta {
+function getSkillMeta(skill: Pick<CompanySkill, "metadata">): SkillSourceMeta {
   return isPlainRecord(skill.metadata) ? skill.metadata as SkillSourceMeta : {};
 }
 
 function resolveSkillReference(
-  skills: CompanySkill[],
+  skills: SkillReferenceTarget[],
   reference: string,
-): { skill: CompanySkill | null; ambiguous: boolean } {
+): { skill: SkillReferenceTarget | null; ambiguous: boolean } {
   const trimmed = reference.trim();
   if (!trimmed) {
     return { skill: null, ambiguous: false };
@@ -1242,7 +1308,7 @@ function resolveRequestedSkillKeysOrThrow(
 }
 
 function resolveDesiredSkillKeys(
-  skills: CompanySkill[],
+  skills: SkillReferenceTarget[],
   config: Record<string, unknown>,
 ) {
   const preference = readPaperclipSkillSyncPreference(config);
@@ -1253,7 +1319,7 @@ function resolveDesiredSkillKeys(
   ));
 }
 
-function normalizeSkillDirectory(skill: CompanySkill) {
+function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
   if ((skill.sourceType !== "local_path" && skill.sourceType !== "catalog") || !skill.sourceLocator) return null;
   const resolved = path.resolve(skill.sourceLocator);
   if (path.basename(resolved).toLowerCase() === "skill.md") {
@@ -1329,7 +1395,7 @@ function isMarkdownPath(filePath: string) {
   return fileName === "skill.md" || fileName.endsWith(".md");
 }
 
-function deriveSkillSourceInfo(skill: CompanySkill): {
+function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   editable: boolean;
   editableReason: string | null;
   sourceLabel: string | null;
@@ -1428,7 +1494,7 @@ function enrichSkill(skill: CompanySkill, attachedAgentCount: number, usedByAgen
   };
 }
 
-function toCompanySkillListItem(skill: CompanySkill, attachedAgentCount: number): CompanySkillListItem {
+function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: number): CompanySkillListItem {
   const source = deriveSkillSourceInfo(skill);
   return {
     id: skill.id,
@@ -1526,7 +1592,29 @@ export function companySkillService(db: Db) {
   }
 
   async function list(companyId: string): Promise<CompanySkillListItem[]> {
-    const rows = await listFull(companyId);
+    await ensureSkillInventoryCurrent(companyId);
+    const rows = await db
+      .select({
+        id: companySkills.id,
+        companyId: companySkills.companyId,
+        key: companySkills.key,
+        slug: companySkills.slug,
+        name: companySkills.name,
+        description: companySkills.description,
+        sourceType: companySkills.sourceType,
+        sourceLocator: companySkills.sourceLocator,
+        sourceRef: companySkills.sourceRef,
+        trustLevel: companySkills.trustLevel,
+        compatibility: companySkills.compatibility,
+        fileInventory: companySkills.fileInventory,
+        metadata: companySkills.metadata,
+        createdAt: companySkills.createdAt,
+        updatedAt: companySkills.updatedAt,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId))
+      .orderBy(asc(companySkills.name), asc(companySkills.key))
+      .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow)));
     const agentRows = await agents.list(companyId);
     return rows.map((skill) => {
       const attachedAgentCount = agentRows.filter((agent) => {
