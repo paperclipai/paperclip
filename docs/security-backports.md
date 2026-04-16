@@ -37,7 +37,6 @@ new backport. Whitespace inside values is not supported.
 branch=security/env-var-injection            issue=2752 pr=2856
 branch=security/password-log-redaction       issue=3072 pr=3138
 branch=security/mermaid-xss                  issue=2754 pr=2857
-branch=security/auth-hardcoded-secret        issue=2554 pr=657
 branch=security/rce-command-injection        issue=883  pr=657
 branch=security/http-adapter-ssrf            issue=2554 pr=657
 branch=security/shell-escape-issue-title     issue=2554 pr=657
@@ -56,7 +55,6 @@ branch=security/session-handoff-injection    issue=2755 pr=2779
 | `security/env-var-injection` | [#2752](https://github.com/paperclipai/paperclip/issues/2752) | [#2856](https://github.com/paperclipai/paperclip/pull/2856) | CRITICAL | RCE on host via `LD_PRELOAD`/`NODE_OPTIONS` set through agent `config.env` | _pending_ | _pending_ |
 | `security/password-log-redaction` | [#3072](https://github.com/paperclipai/paperclip/issues/3072) | [#3138](https://github.com/paperclipai/paperclip/pull/3138) | MEDIUM | Plaintext passwords logged on failed sign-in attempts | _pending_ | _pending_ |
 | `security/mermaid-xss` | [#2754](https://github.com/paperclipai/paperclip/issues/2754) | [#2857](https://github.com/paperclipai/paperclip/pull/2857) | MEDIUM | Client-side XSS via Mermaid SVG rendering and `urlTransform` bypass | _pending_ | _pending_ |
-| `security/auth-hardcoded-secret` | [#2554](https://github.com/paperclipai/paperclip/issues/2554) | [#657](https://github.com/paperclipai/paperclip/pull/657) | CRITICAL | Hardcoded `"paperclip-dev-secret"` fallback enables session forgery | _pending_ | _pending_ |
 | `security/rce-command-injection` | [#883](https://github.com/paperclipai/paperclip/issues/883) | [#657](https://github.com/paperclipai/paperclip/pull/657) | CRITICAL | RCE via `provisionCommand`/`teardownCommand` passed unescaped to shell | _pending_ | _pending_ |
 | `security/http-adapter-ssrf` | [#2554](https://github.com/paperclipai/paperclip/issues/2554) | [#657](https://github.com/paperclipai/paperclip/pull/657) | HIGH | HTTP adapter fetches arbitrary URLs; agents can hit `169.254.169.254` cloud metadata | _pending_ | _pending_ |
 | `security/shell-escape-issue-title` | [#2554](https://github.com/paperclipai/paperclip/issues/2554) | [#657](https://github.com/paperclipai/paperclip/pull/657) | HIGH | Issue titles passed unescaped via `PAPERCLIP_ISSUE_TITLE` env var allow `$(cmd)` shell injection | _pending_ | _pending_ |
@@ -78,6 +76,7 @@ reviewers know this isn't an oversight.
 
 | Issue | Severity (local) | Reason |
 |---|---|---|
+| [#2554 C1](https://github.com/paperclipai/paperclip/issues/2554) — Hardcoded `"paperclip-dev-secret"` fallback | CRITICAL (public) / informational (local_trusted) | **Already fixed in upstream master** via commit `b7a7dacf fix: remove hardcoded JWT secret fallback from createBetterAuthInstance`. We inherited the fix in the rebase before we started this backport effort. The fork's local `~/.paperclip/instances/default/.env` already contains a properly-generated `PAPERCLIP_AGENT_JWT_SECRET` (mode 0600) which the auth path accepts as a fallback to `BETTER_AUTH_SECRET`. No branch needed. |
 | [#2329](https://github.com/paperclipai/paperclip/issues/2329) — `local_trusted` has no auth | MEDIUM | Governance decision about deployment mode defaults — too high-level for a fork patch. Wait for upstream. |
 | [#447](https://github.com/paperclipai/paperclip/issues/447) — Agentic Panic infinite approval loop | MEDIUM | UX/design issue, not a code fix. Wait for upstream's approach. |
 | [#1502](https://github.com/paperclipai/paperclip/issues/1502) — Issue description prompt injection | MEDIUM | Subsumed by `security/session-handoff-injection` once PR #2779 lands — same mitigation pattern covers both paths. |
