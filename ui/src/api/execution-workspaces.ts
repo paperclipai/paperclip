@@ -1,5 +1,6 @@
 import type {
   ExecutionWorkspace,
+  ExecutionWorkspaceSummary,
   ExecutionWorkspaceCloseReadiness,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
@@ -8,6 +9,28 @@ import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
 export const executionWorkspacesApi = {
+  listSummaries: (
+    companyId: string,
+    filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.projectWorkspaceId) params.set("projectWorkspaceId", filters.projectWorkspaceId);
+    if (filters?.issueId) params.set("issueId", filters.issueId);
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.reuseEligible) params.set("reuseEligible", "true");
+    params.set("summary", "true");
+    const qs = params.toString();
+    return api.get<ExecutionWorkspaceSummary[]>(
+      `/companies/${companyId}/execution-workspaces${qs ? `?${qs}` : ""}`,
+    );
+  },
   list: (
     companyId: string,
     filters?: {

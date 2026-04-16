@@ -19,6 +19,7 @@ const openNewIssueMock = vi.fn();
 const setSelectedCompanyIdMock = vi.fn();
 const navigateMock = vi.fn();
 const confirmMock = vi.fn(() => false);
+const listAdaptersMock = vi.fn();
 
 vi.mock("../api/agents", () => ({
   agentsApi: {
@@ -81,6 +82,10 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: { get: vi.fn(), update: vi.fn() },
 }));
 
+vi.mock("@/api/adapters", () => ({
+  adaptersApi: { list: () => listAdaptersMock() },
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     companies: [],
@@ -128,6 +133,9 @@ vi.mock("../lib/queryKeys", () => ({
     },
     budgets: {
       overview: (companyId: string) => ["budgets", "overview", companyId],
+    },
+    adapters: {
+      all: ["adapters", "all"],
     },
     dashboard: (companyId: string) => ["dashboard", companyId],
   },
@@ -274,6 +282,7 @@ describe("AgentDetail", () => {
     issuesListMock.mockResolvedValue([]);
     listKeysMock.mockResolvedValue([]);
     configRevisionsMock.mockResolvedValue([]);
+    listAdaptersMock.mockResolvedValue([]);
     setBreadcrumbsMock.mockReset();
     closePanelMock.mockReset();
     openNewIssueMock.mockReset();

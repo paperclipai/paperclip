@@ -59,6 +59,13 @@ interface AdapterInstallRequest {
   version?: string;
 }
 
+interface AdapterCapabilities {
+  supportsInstructionsBundle: boolean;
+  supportsSkills: boolean;
+  supportsLocalAgentJwt: boolean;
+  requiresMaterializedRuntimeSkills: boolean;
+}
+
 interface AdapterInfo {
   type: string;
   label: string;
@@ -66,6 +73,7 @@ interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  capabilities: AdapterCapabilities;
   /** True when an external plugin has replaced a built-in adapter of the same type. */
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
@@ -103,6 +111,15 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
   }
 }
 
+function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+  return {
+    supportsInstructionsBundle: adapter.supportsInstructionsBundle ?? false,
+    supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
+    supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
+    requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
+  };
+}
+
 function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
@@ -112,6 +129,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     modelsCount: (adapter.models ?? []).length,
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
+    capabilities: buildAdapterCapabilities(adapter),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.

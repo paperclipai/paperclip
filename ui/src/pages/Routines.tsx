@@ -1022,17 +1022,20 @@ export function Routines() {
       {runDialogRoutine ? (
         <RoutineRunVariablesDialog
           open
-          onOpenChange={(open) => {
-            if (!open) setRunDialogRoutine(null);
+          onOpenChange={(next) => {
+            if (!next) setRunDialogRoutine(null);
           }}
           companyId={selectedCompanyId}
+          routineName={runDialogRoutine.title}
           agents={agents ?? []}
           projects={projects ?? []}
           defaultProjectId={runDialogRoutine.projectId ?? null}
           defaultAssigneeAgentId={runDialogRoutine.assigneeAgentId ?? null}
           variables={runDialogRoutine.variables}
-          onSubmit={(data) => runRoutine.mutate({ id: runDialogRoutine.id, data })}
           isPending={runRoutine.isPending}
+          onSubmit={(data) => {
+            runRoutine.mutate({ id: runDialogRoutine.id, data });
+          }}
         />
       ) : null}
     </div>

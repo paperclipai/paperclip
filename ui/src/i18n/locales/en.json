@@ -1337,6 +1337,8 @@
   "instancePlugins.available.enable": "Enable",
   "instancePlugins.available.openSettings": "Open Settings",
   "instancePlugins.available.review": "Review",
+  "inbox.searchSection.archived": "Archived",
+  "inbox.searchSection.otherResults": "Other results",
   "instancePlugins.available.installExample": "Install Example",
   "instancePlugins.installed.title": "Installed Plugins",
   "instancePlugins.installed.emptyTitle": "No plugins installed",

@@ -7,7 +7,7 @@ export type IssueFilterState = {
   labels: string[];
   projects: string[];
   workspaces: string[];
-  showRoutineExecutions: boolean;
+  hideRoutineExecutions: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -17,7 +17,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   labels: [],
   projects: [],
   workspaces: [],
-  showRoutineExecutions: false,
+  hideRoutineExecutions: false,
 };
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -58,7 +58,7 @@ export function applyIssueFilters(
   enableRoutineVisibilityFilter = false,
 ): Issue[] {
   let result = issues;
-  if (enableRoutineVisibilityFilter && !state.showRoutineExecutions) {
+  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
@@ -99,6 +99,6 @@ export function countActiveIssueFilters(
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
-  if (enableRoutineVisibilityFilter && state.showRoutineExecutions) count += 1;
+  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
 }

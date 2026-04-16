@@ -1337,6 +1337,8 @@
   "instancePlugins.available.enable": "启用",
   "instancePlugins.available.openSettings": "打开设置",
   "instancePlugins.available.review": "查看",
+  "inbox.searchSection.archived": "已归档",
+  "inbox.searchSection.otherResults": "其他结果",
   "instancePlugins.available.installExample": "安装示例",
   "instancePlugins.installed.title": "已安装插件",
   "instancePlugins.installed.emptyTitle": "尚未安装插件",

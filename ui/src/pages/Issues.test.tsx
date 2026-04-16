@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Issues } from "./Issues";
+import { buildIssuesSearchUrl, Issues } from "./Issues";
 import { I18nProvider, I18N_LOCALE_STORAGE_KEY } from "@/i18n/runtime";
 
 const listIssuesMock = vi.fn();
@@ -185,5 +185,19 @@ describe("Issues", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("buildIssuesSearchUrl", () => {
+  it("preserves trailing spaces in the synced search param", () => {
+    expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug", "bug ")).toBe("/issues?q=bug+");
+  });
+
+  it("removes the search param when the input is cleared", () => {
+    expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug#details", "")).toBe("/issues#details");
+  });
+
+  it("returns null when the URL already matches the current search", () => {
+    expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug+", "bug ")).toBeNull();
   });
 });

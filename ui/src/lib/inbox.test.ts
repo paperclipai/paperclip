@@ -12,6 +12,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
+  buildGroupedInboxSections,
   buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -718,7 +719,7 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -736,7 +737,7 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }),
     ).toEqual([]);
@@ -754,10 +755,49 @@ describe("inbox helpers", () => {
           labels: [],
           projects: [],
           workspaces: [],
-          showRoutineExecutions: false,
+          hideRoutineExecutions: true,
         },
       }),
     ).toEqual([]);
+  });
+
+  it("keeps inbox search matches ahead of archived and other result sections", () => {
+    const inboxIssue = makeIssue("inbox", false);
+    inboxIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const archivedIssue = makeIssue("archived", false);
+    archivedIssue.lastActivityAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const otherIssue = makeIssue("other", false);
+    otherIssue.lastActivityAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const sections = [
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [inboxIssue], approvals: [] }),
+        "none",
+        {},
+      ),
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [archivedIssue], approvals: [] }),
+        "none",
+        {},
+        { keyPrefix: "archived-search:", searchSection: "archived" },
+      ),
+      ...buildGroupedInboxSections(
+        getInboxWorkItems({ issues: [otherIssue], approvals: [] }),
+        "none",
+        {},
+        { keyPrefix: "other-search:", searchSection: "other" },
+      ),
+    ];
+
+    expect(sections.map((section) => section.searchSection)).toEqual(["none", "archived", "other"]);
+    expect(
+      sections.map((section) => {
+        const [item] = section.displayItems;
+        return item?.kind === "issue" ? item.issue.id : null;
+      }),
+    ).toEqual(["inbox", "archived", "other"]);
   });
 
   it("defaults the remembered inbox tab to mine and persists all", () => {
@@ -779,7 +819,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: true,
+        hideRoutineExecutions: false,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -792,7 +832,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: true,
       },
     });
 
@@ -806,7 +846,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: true,
+        hideRoutineExecutions: false,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -819,7 +859,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: true,
       },
     });
   });
@@ -835,7 +875,7 @@ describe("inbox helpers", () => {
         labels: null,
         projects: ["project-1"],
         workspaces: ["workspace-1", false],
-        showRoutineExecutions: "yes",
+        hideRoutineExecutions: "yes",
       },
     }));
 
@@ -849,7 +889,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: false,
+        hideRoutineExecutions: false,
       },
     });
   });
@@ -1003,12 +1043,12 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 
-  it("hides routine execution issues until the toggle is enabled", () => {
+  it("hides routine execution issues when the hide toggle is enabled", () => {
     const manualIssue = { ...makeIssue("manual", true), originKind: "manual" as const };
     const routineIssue = { ...makeIssue("routine", true), originKind: "routine_execution" as const };
 
-    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue]);
-    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue, routineIssue]);
+    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue, routineIssue]);
+    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue]);
   });
 
   it("groups mixed inbox items by type while preserving item order within each group", () => {
