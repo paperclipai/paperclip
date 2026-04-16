@@ -1379,7 +1379,6 @@ export function issueRoutes(
           delegatingRunId: actor.runId,
           delegatedAgentId: issue.assigneeAgentId,
           issueId: issue.id,
-          subtaskId: issue.id,
           reason: "subtask_creation",
           identifier: issue.identifier,
         },
