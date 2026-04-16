@@ -403,7 +403,7 @@ export function Layout() {
               </div>
             </div>
             <div className={cn(
-              "border-t border-border",
+              "border-t border-r border-border",
               sidebarOpen ? "px-3 py-2" : "px-0 py-2"
             )}>
               {sidebarOpen ? (
