@@ -20,7 +20,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -39,17 +39,15 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
   return (
     <div className="flex items-start gap-1.5 min-w-0 flex-1">
       <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-      <span className="text-sm font-mono min-w-0 break-all">
-        {value}
-      </span>
       <button
         type="button"
-        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+        className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? "Copied!" : "Click to copy"}
       >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {value}
       </button>
+      {copied && <Check className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />}
     </div>
   );
 }
@@ -704,16 +702,25 @@ export function IssueProperties({
     if (!issue.parentId) return null;
     return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
   }, [allIssues, issue.parentId]);
+  const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
+  const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
-    <span className="text-sm break-words min-w-0">
-      {issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier
-        ? `${issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier} `
-        : ""}
-      {issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId.slice(0, 8)}
+    <span className="text-sm break-words min-w-0 inline">
+      {parentIdentifier ? `${parentIdentifier} ` : ""}
+      {parentTitle}
     </span>
   ) : (
     <span className="text-sm text-muted-foreground">No parent</span>
   );
+  const parentLink = issue.parentId ? (
+    <Link
+      to={`/issues/${parentIdentifier ?? issue.parentId}`}
+      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <ArrowUpRight className="h-3 w-3" />
+    </Link>
+  ) : undefined;
   const parentOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
@@ -939,15 +946,7 @@ export function IssueProperties({
           triggerContent={parentTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName="w-72"
-          extra={issue.parentId ? (
-            <Link
-              to={`/issues/${issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier ?? issue.parentId}`}
-              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          ) : undefined}
+          extra={parentLink}
         >
           {parentContent}
         </PropertyPicker>
@@ -1060,10 +1059,21 @@ export function IssueProperties({
         )}
       </div>
 
-      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>
           <Separator />
           <div className="space-y-1">
+            {issue.executionWorkspaceId && (
+              <PropertyRow label="Workspace">
+                <Link
+                  to={`/execution-workspaces/${issue.executionWorkspaceId}`}
+                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  View workspace
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </PropertyRow>
+            )}
             {issue.currentExecutionWorkspace?.branchName && (
               <PropertyRow label="Branch">
                 <TruncatedCopyable

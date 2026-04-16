@@ -323,6 +323,9 @@ describe("IssueProperties", () => {
     const selectedParentTrigger = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
     expect(selectedParentTrigger).not.toBeUndefined();
+    const parentLink = container.querySelector('a[href="/issues/PAP-2"]');
+    expect(parentLink).not.toBeNull();
+    expect(selectedParentTrigger!.contains(parentLink)).toBe(false);
 
     await act(async () => {
       selectedParentTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));

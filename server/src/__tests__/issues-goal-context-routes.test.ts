@@ -190,6 +190,10 @@ describe("issue goal context routes", () => {
         title: projectGoal.title,
       }),
     );
+    expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { includeCommentBodies: false },
+    );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
