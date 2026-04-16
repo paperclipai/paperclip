@@ -6,8 +6,9 @@ import { useToast } from "../context/ToastContext";
 import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { KeyRound, Pencil, Trash2 } from "lucide-react";
+import { KeyRound, Pencil, Trash2, Copy } from "lucide-react";
 import { Field } from "../components/agent-config-primitives";
+import { CopyText } from "../components/CopyText";
 import type { CompanySecret, SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
 
 const DEFAULT_PROVIDER: SecretProvider = "local_encrypted";
@@ -309,6 +310,14 @@ export function CompanySecrets() {
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {secret.provider} · created{" "}
                       {new Date(secret.createdAt).toLocaleDateString()}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                      <CopyText text={secret.id} copiedLabel="UUID copied!">
+                        <span className="inline-flex items-center gap-1 font-mono">
+                          {secret.id.slice(0, 8)}…
+                          <Copy className="h-3 w-3" />
+                        </span>
+                      </CopyText>
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
