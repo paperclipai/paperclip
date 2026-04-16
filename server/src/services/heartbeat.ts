@@ -109,6 +109,7 @@ function emitAgentRunPluginEvent(
   run: typeof heartbeatRuns.$inferSelect,
   eventType: "agent.run.started" | "agent.run.finished" | "agent.run.failed" | "agent.run.cancelled",
 ) {
+  const publicStatus = run.status === "timed_out" ? "failed" : run.status;
   emitPluginEvent({
     eventId: randomUUID(),
     eventType,
@@ -122,7 +123,7 @@ function emitAgentRunPluginEvent(
       runId: run.id,
       agentId: run.agentId,
       companyId: run.companyId,
-      status: run.status,
+      status: publicStatus,
       invocationSource: run.invocationSource,
       triggerDetail: run.triggerDetail,
       error: run.error ?? null,

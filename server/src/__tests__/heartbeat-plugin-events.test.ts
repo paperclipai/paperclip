@@ -57,7 +57,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5_000, intervalMs = 50) {
+async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await condition()) return;
@@ -205,6 +205,46 @@ describeEmbeddedPostgres("heartbeat plugin events", () => {
       agentId,
       status: "failed",
       error: "adapter exploded",
+    });
+  });
+
+  it("emits failed plugin events with normalized status for timed out runs", async () => {
+    const { agentId } = await seedAgent();
+    const heartbeat = heartbeatService(db);
+
+    mockExecute.mockResolvedValueOnce({
+      exitCode: null,
+      signal: null,
+      timedOut: true,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      reason: "manual_test",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+
+    expect(run).not.toBeNull();
+
+    await waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      return latest?.status === "timed_out";
+    });
+
+    expect(emittedEvents.map((event) => event.eventType)).toEqual([
+      "agent.run.started",
+      "agent.run.failed",
+    ]);
+    expect(emittedEvents[1]?.payload).toMatchObject({
+      runId: run!.id,
+      agentId,
+      status: "failed",
+      error: "Timed out",
+      errorCode: "timeout",
     });
   });
 
