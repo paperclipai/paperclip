@@ -64,7 +64,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$LOCK_PID_FILE"
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -f "$LOCK_PID_FILE"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # Discover running db container
 DB_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q db 2>/dev/null | head -1)
@@ -82,7 +82,7 @@ echo "→ Realizando backup do banco..."
 TMP_BACKUP=$(mktemp "$(dirname "$OUTPUT_FILE")/.backup_tmp_XXXXXXXX.sql.gz")
 # Restrict permissions immediately — mktemp's umask is not reliable on macOS.
 chmod 600 "$TMP_BACKUP"
-trap 'rm -f "$TMP_BACKUP"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -f "$TMP_BACKUP" "$LOCK_PID_FILE"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \
@@ -114,6 +114,7 @@ if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
 fi
 
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
+rm -f "$LOCK_PID_FILE"; rmdir "$LOCK_DIR" 2>/dev/null || true
 trap - EXIT INT TERM
 
 SIZE=$(du -sh "$OUTPUT_FILE" | cut -f1)

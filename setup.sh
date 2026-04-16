@@ -48,7 +48,7 @@ if [[ -f .env ]]; then
     # Read PUBLIC_URL and HTTP_PORT from existing .env so health check uses the correct values
     PUBLIC_URL=$(grep -E '^PAPERCLIP_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '"'"'"'"' || true)
     _ENV_HTTP_PORT=$(grep -E '^HTTP_PORT=' .env | cut -d= -f2- | tr -d '"'"'"'"' || true)
-    [[ -n "$_ENV_HTTP_PORT" ]] && HTTP_PORT="$_ENV_HTTP_PORT"
+    [[ "$_ENV_HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && HTTP_PORT="$_ENV_HTTP_PORT"
   fi
 fi
 
