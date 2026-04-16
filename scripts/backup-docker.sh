@@ -29,6 +29,14 @@ mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="${OUTPUT_FILE:-$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz}"
 
+# Prevent concurrent backup runs from racing on temp files / the final output path.
+LOCK_FILE="$BACKUP_DIR/.backup.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "Erro: outro backup já está em execução (lockfile: $LOCK_FILE). Aguarde e tente novamente." >&2
+  exit 1
+fi
+
 # Discover running db container
 DB_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q db 2>/dev/null | head -1)
 if [[ -z "$DB_CONTAINER" ]]; then
