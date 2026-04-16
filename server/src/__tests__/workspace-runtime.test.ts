@@ -1136,7 +1136,11 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
-  it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
+  it("writes an unseeded fallback config (and does not throw) when worktree init errors after CLI detection succeeds", async () => {
+    // Fork behavior: when paperclipai CLI is available but worktree init fails,
+    // provision-worktree.sh falls back to writing an isolated config rather than
+    // propagating the error — allowing self-hosted deployments to continue with
+    // a basic worktree config even if the full DB-seeded init is unavailable.
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-provision-fail-"));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -1183,10 +1187,10 @@ describe("realizeExecutionWorkspace", () => {
         caught = error as Error;
       }
 
-      expect(caught).toBeTruthy();
-      expect(String(caught)).toContain("simulated init failure");
-      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).rejects.toThrow();
-      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", ".env"))).rejects.toThrow();
+      // Script should succeed (fallback path) — no exception propagated
+      expect(caught).toBeNull();
+      // Fallback config should have been written
+      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).resolves.toBeDefined();
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
