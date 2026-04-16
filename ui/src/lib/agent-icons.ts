@@ -42,7 +42,8 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { AGENT_ICON_NAMES, type AgentIconName } from "@paperclipai/shared";
+import type { AgentIconName } from "@paperclipai/shared";
+import { AGENT_ICON_NAMES } from "../../../packages/shared/src/constants.js";
 
 export const AGENT_ICONS: Record<AgentIconName, LucideIcon> = {
   bot: Bot,

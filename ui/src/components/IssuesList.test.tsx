@@ -5,9 +5,10 @@ import { createRoot } from "react-dom/client";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssuesList } from "./IssuesList";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+let IssuesList: typeof import("./IssuesList").IssuesList;
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -59,6 +60,38 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("@/lib/router", () => ({
+  Link: ({
+    children,
+    to,
+    ...props
+  }: {
+    children?: ReactNode;
+    to?: string | { pathname?: string };
+  } & Record<string, unknown>) => (
+    <a href={typeof to === "string" ? to : to?.pathname ?? "#"} {...props}>
+      {children}
+    </a>
+  ),
+  NavLink: ({
+    children,
+    to,
+    ...props
+  }: {
+    children?: ReactNode;
+    to?: string | { pathname?: string };
+  } & Record<string, unknown>) => (
+    <a href={typeof to === "string" ? to : to?.pathname ?? "#"} {...props}>
+      {children}
+    </a>
+  ),
+  Navigate: () => null,
+  useNavigate: () => vi.fn(),
+  useLocation: () => ({ pathname: "/issues", search: "", hash: "" }),
+  useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  useParams: () => ({}),
+}));
+
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
@@ -83,6 +116,55 @@ vi.mock("./KanbanBoard", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof globalThis.localStorage?.getItem === "function"
+    && typeof globalThis.localStorage?.setItem === "function"
+    && typeof globalThis.localStorage?.removeItem === "function"
+    && typeof globalThis.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
+
+type TestGlobals = typeof globalThis & {
+  __PAPERCLIP_TEST_COMPANY_CONTEXT__?: {
+    selectedCompanyId?: string;
+  };
+  __PAPERCLIP_TEST_DIALOG_CONTEXT__?: {
+    openNewIssue?: typeof dialogState.openNewIssue;
+  };
+};
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(status === 204 ? null : JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+beforeAll(async () => {
+  ({ IssuesList } = await import("./IssuesList"));
+});
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -131,6 +213,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
 async function flush() {
   await act(async () => {
     await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
 }
 
@@ -177,6 +260,49 @@ describe("IssuesList", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    ensureLocalStorageMock();
+    const testGlobals = globalThis as TestGlobals;
+    testGlobals.__PAPERCLIP_TEST_COMPANY_CONTEXT__ = {
+      selectedCompanyId: companyState.selectedCompanyId,
+    };
+    testGlobals.__PAPERCLIP_TEST_DIALOG_CONTEXT__ = {
+      openNewIssue: dialogState.openNewIssue,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? "GET";
+      const parsedUrl = new URL(url, "http://localhost");
+
+      if (parsedUrl.pathname === "/api/auth/get-session") {
+        return jsonResponse(await mockAuthApi.getSession());
+      }
+
+      if (parsedUrl.pathname === "/api/instance/settings/experimental") {
+        return jsonResponse(await mockInstanceSettingsApi.getExperimental());
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/labels") {
+        return jsonResponse(await mockIssuesApi.listLabels("company-1"));
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/execution-workspaces") {
+        return jsonResponse(await mockExecutionWorkspacesApi.list("company-1"));
+      }
+
+      if (parsedUrl.pathname === "/api/companies/company-1/issues" && method === "GET") {
+        const filters = {
+          q: parsedUrl.searchParams.get("q") ?? undefined,
+          projectId: parsedUrl.searchParams.get("projectId") ?? undefined,
+          parentId: parsedUrl.searchParams.get("parentId") ?? undefined,
+          includeRoutineExecutions: parsedUrl.searchParams.get("includeRoutineExecutions") === "true" || undefined,
+          executionWorkspaceId: parsedUrl.searchParams.get("executionWorkspaceId") ?? undefined,
+          originKind: parsedUrl.searchParams.get("originKind") ?? undefined,
+        };
+        return jsonResponse(await mockIssuesApi.list("company-1", filters));
+      }
+
+      throw new Error(`Unhandled fetch in IssuesList.test.tsx: ${method} ${parsedUrl.pathname}${parsedUrl.search}`);
+    }));
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.openNewIssue.mockReset();
@@ -196,6 +322,10 @@ describe("IssuesList", () => {
   });
 
   afterEach(() => {
+    const testGlobals = globalThis as TestGlobals;
+    delete testGlobals.__PAPERCLIP_TEST_COMPANY_CONTEXT__;
+    delete testGlobals.__PAPERCLIP_TEST_DIALOG_CONTEXT__;
+    vi.unstubAllGlobals();
     vi.useRealTimers();
     container.remove();
   });
@@ -212,11 +342,25 @@ describe("IssuesList", () => {
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
-        initialSearch="server"
         onUpdateIssue={() => undefined}
       />,
       container,
     );
+
+    const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    expect(valueSetter).toBeTypeOf("function");
+
+    act(() => {
+      if (!input || !valueSetter) return;
+      valueSetter.call(input, "server");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    });
 
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
@@ -325,7 +469,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
@@ -579,16 +723,16 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Alpha issue");
       expect(container.textContent).toContain("Beta issue");
       const workspaceButton = Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Alpha",
+        (button) => button.textContent?.includes("Alpha"),
       );
       expect(workspaceButton).not.toBeUndefined();
     });
 
     await act(async () => {
       const workspaceButton = Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Alpha",
+        (button) => button.textContent?.includes("Alpha"),
       );
-      workspaceButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      workspaceButton?.click();
       await Promise.resolve();
     });
 
@@ -679,13 +823,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
@@ -715,13 +859,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[data-page-search-target="true"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Escape",

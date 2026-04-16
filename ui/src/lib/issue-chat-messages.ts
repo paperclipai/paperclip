@@ -8,9 +8,11 @@ import type {
   ThreadUserMessage,
 } from "@assistant-ui/react";
 import type { Agent, IssueComment } from "@paperclipai/shared";
+import { createTranslator } from "../../../packages/shared/src/i18n.js";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import { getCurrentLocale } from "./locale-store";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -337,26 +339,27 @@ function createTimelineEventMessage(args: {
   currentUserId?: string | null;
 }) {
   const { event, agentMap, currentUserId } = args;
+  const { t } = createTranslator(getCurrentLocale());
   const actorName = event.actorType === "agent"
     ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
     : event.actorType === "system"
-      ? "System"
-      : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? "Board");
+      ? t("common.system")
+      : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? t("common.board"));
 
-  const lines: string[] = [`${actorName} updated this issue`];
+  const lines: string[] = [`${actorName} ${t("activity.updatedTheIssue")}`];
   if (event.statusChange) {
     lines.push(
-      `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
+      `${t("common.status")}: ${event.statusChange.from ?? t("common.none")} -> ${event.statusChange.to ?? t("common.none")}`,
     );
   }
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId) ?? t("issueList.unassigned"));
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId) ?? "Unassigned");
-    lines.push(`Assignee: ${from} -> ${to}`);
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId) ?? t("issueList.unassigned"));
+    lines.push(`${t("common.assignee")}: ${from} -> ${to}`);
   }
 
   const message: ThreadSystemMessage = {

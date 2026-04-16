@@ -35,6 +35,28 @@ const STORAGE_KEY = "paperclip.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
+const defaultCompanyContextValue: CompanyContextValue = {
+  companies: [],
+  selectedCompanyId: null,
+  selectedCompany: null,
+  selectionSource: "bootstrap",
+  loading: false,
+  error: null,
+  setSelectedCompanyId: () => {},
+  reloadCompanies: async () => {},
+  createCompany: async () => {
+    throw new Error("useCompany must be used within CompanyProvider");
+  },
+};
+
+function getTestCompanyContextOverride(): Partial<CompanyContextValue> | null {
+  if (import.meta.env.MODE !== "test") return null;
+  const globalScope = globalThis as typeof globalThis & {
+    __PAPERCLIP_TEST_COMPANY_CONTEXT__?: Partial<CompanyContextValue>;
+  };
+  return globalScope.__PAPERCLIP_TEST_COMPANY_CONTEXT__ ?? null;
+}
+
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
@@ -144,6 +166,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
 export function useCompany() {
   const ctx = useContext(CompanyContext);
   if (!ctx) {
+    if (import.meta.env.MODE === "test") {
+      return {
+        ...defaultCompanyContextValue,
+        ...getTestCompanyContextOverride(),
+      };
+    }
     throw new Error("useCompany must be used within CompanyProvider");
   }
   return ctx;

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
