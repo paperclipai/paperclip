@@ -34,6 +34,7 @@ import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ScrollToBottom } from "../components/ScrollToBottom";
+import { IssueNavPill } from "../components/IssueNavPill";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { StatusBadge } from "../components/StatusBadge";
@@ -1407,6 +1408,7 @@ export function IssueDetail() {
         </SheetContent>
       </Sheet>
       <ScrollToBottom />
+      <IssueNavPill />
     </div>
   );
 }

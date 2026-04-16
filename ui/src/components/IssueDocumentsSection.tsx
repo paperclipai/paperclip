@@ -517,7 +517,7 @@ export function IssueDocumentsSection({
   };
 
   return (
-    <div className="space-y-3">
+    <div id="issue-documents" className="space-y-3">
       {isEmpty && !draft?.isNew ? (
         <div className="flex items-center justify-end gap-2 min-w-0">
           {extraActions}

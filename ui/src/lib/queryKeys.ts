@@ -147,6 +147,11 @@ export const queryKeys = {
     list: (companyId: string) => ["youtube", companyId] as const,
     detail: (id: string) => ["youtube", "detail", id] as const,
   },
+  quickNotes: {
+    list: (companyId: string) => ["quickNotes", companyId] as const,
+    detail: (noteId: string) => ["quickNotes", "detail", noteId] as const,
+    threads: (noteId: string) => ["quickNotes", noteId, "threads"] as const,
+  },
   skills: {
     available: ["skills", "available"] as const,
   },

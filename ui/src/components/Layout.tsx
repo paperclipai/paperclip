@@ -14,6 +14,9 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { GlobalChatBubble } from "./GlobalChatBubble";
+import { CommandModal } from "./CommandModal";
+import { QuickNotesModal } from "./QuickNotesModal";
+import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
@@ -438,6 +441,9 @@ export function Layout() {
       <NewAgentDialog />
       <ToastViewport />
       <GlobalChatBubble />
+      <CommandModal />
+      <QuickNotesModal />
+      <KeyboardShortcutsModal />
     </div>
   );
 }
