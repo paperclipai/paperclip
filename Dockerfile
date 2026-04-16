@@ -33,7 +33,8 @@ FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client && rm -rf /var/lib/apt/lists/*
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest playwright
+ARG CLAUDE_CODE_VERSION=2.1.111
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@latest playwright
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
