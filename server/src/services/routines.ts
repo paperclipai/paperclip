@@ -634,7 +634,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const contextualIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -657,6 +657,23 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (contextualIssue) return contextualIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function clearStaleExecutionLockForRoutineIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
