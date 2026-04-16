@@ -3,7 +3,7 @@
 #
 # Usage:
 #   cp .env.example .env        # edit BETTER_AUTH_SECRET, PAPERCLIP_PUBLIC_URL, etc.
-#   docker compose -f docker/docker-compose.prod.yml up -d
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 #
 # Or use the interactive installer:
 #   ./setup.sh
