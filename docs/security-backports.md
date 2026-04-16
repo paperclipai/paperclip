@@ -43,7 +43,6 @@ branch=security/opencode-safe-default        issue=2554 pr=
 branch=security/codex-safe-default           issue=2554 pr=
 branch=security/extraargs-allowlist          issue=2554 pr=
 branch=security/api-env-var-leak             issue=1818 pr=
-branch=security/api-companies-auth           issue=2386 pr=
 branch=security/session-handoff-injection    issue=2755 pr=2779
 <!-- END security-backports-index -->
 
@@ -60,7 +59,6 @@ branch=security/session-handoff-injection    issue=2755 pr=2779
 | `security/codex-safe-default` | [#2554](https://github.com/paperclipai/paperclip/issues/2554) | _none_ | HIGH | `dangerouslyBypassApprovalsAndSandbox=true` default removes approval workflow and sandbox for new Codex agents | _pending_ | _pending_ |
 | `security/extraargs-allowlist` | [#2554](https://github.com/paperclipai/paperclip/issues/2554) | _none_ | HIGH | Subprocess `extraArgs` merged unfiltered; agents can inject `--mcp-server http://attacker.com` | _pending_ | _pending_ |
 | `security/api-env-var-leak` | [#1818](https://github.com/paperclipai/paperclip/issues/1818) | _none_ | HIGH | `GET /api/companies/:id/agents` returns plaintext env-var values including API keys | _pending_ | _pending_ |
-| `security/api-companies-auth` | [#2386](https://github.com/paperclipai/paperclip/issues/2386) | _none_ | MEDIUM | `GET /api/companies` returns company data without an auth gate | _pending_ | _pending_ |
 | `security/session-handoff-injection` | [#2755](https://github.com/paperclipai/paperclip/issues/2755) | [#2779](https://github.com/paperclipai/paperclip/pull/2779) | MEDIUM | Agent output injected unsanitized into next agent's prompt; attacker-controlled markdown can steer subsequent agents | _pending_ | _pending_ |
 
 Entries with "_pending_" placeholders will be filled in as each branch is
@@ -76,6 +74,7 @@ reviewers know this isn't an oversight.
 |---|---|---|
 | [#2554 C1](https://github.com/paperclipai/paperclip/issues/2554) — Hardcoded `"paperclip-dev-secret"` fallback | CRITICAL (public) / informational (local_trusted) | **Already fixed in upstream master** via commit `b7a7dacf fix: remove hardcoded JWT secret fallback from createBetterAuthInstance`. We inherited the fix in the rebase before we started this backport effort. The fork's local `~/.paperclip/instances/default/.env` already contains a properly-generated `PAPERCLIP_AGENT_JWT_SECRET` (mode 0600) which the auth path accepts as a fallback to `BETTER_AUTH_SECRET`. No branch needed. |
 | [#2554 H1](https://github.com/paperclipai/paperclip/issues/2554) — Issue title shell injection via `PAPERCLIP_ISSUE_TITLE` | HIGH (theoretical) | **Subsumed by the command allowlist in `security/rce-command-injection`.** The env var is passed via `spawn(shell, ["-c", cmd], { env })` where `env` is an object — bash does not recursively evaluate env var values. The only exploit path required the attacker to also control the command string itself, which the command allowlist now prevents. Upstream PR #657 does not ship a separate shell-escape fix for this specific case. |
+| [#2386](https://github.com/paperclipai/paperclip/issues/2386) — `/api/companies` accessible without authentication | MEDIUM | **Already guarded by `assertBoard(req)`** in `server/src/routes/companies.ts:98`. In `local_trusted` mode, loopback requests auto-inject a board principal by design; remote requests are rejected. Same root issue as #2329 — the complaint is about the local_trusted trust model, not a missing auth check. |
 | [#2329](https://github.com/paperclipai/paperclip/issues/2329) — `local_trusted` has no auth | MEDIUM | Governance decision about deployment mode defaults — too high-level for a fork patch. Wait for upstream. |
 | [#447](https://github.com/paperclipai/paperclip/issues/447) — Agentic Panic infinite approval loop | MEDIUM | UX/design issue, not a code fix. Wait for upstream's approach. |
 | [#1502](https://github.com/paperclipai/paperclip/issues/1502) — Issue description prompt injection | MEDIUM | Subsumed by `security/session-handoff-injection` once PR #2779 lands — same mitigation pattern covers both paths. |
