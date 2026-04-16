@@ -447,6 +447,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
+    // Move dynamic per-machine sections (cwd, env vars, git status, memory paths)
+    // from the system prompt into the first user message. This keeps the system
+    // prompt stable across heartbeats so Anthropic can cache it, reducing input
+    // token costs on repeated wakes. Only effective on fresh sessions — resumed
+    // sessions already benefit from context caching.
+    if (!resumeSessionId) {
+      args.push("--exclude-dynamic-system-prompt-sections");
+    }
     args.push("--add-dir", promptBundle.addDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
