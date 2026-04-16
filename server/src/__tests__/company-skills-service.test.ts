@@ -115,7 +115,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(skill?.fileInventory).toEqual(expect.arrayContaining([
       { path: "SKILL.md", kind: "skill" },
       { path: "README.md", kind: "markdown" },
-      { path: "references/guide.md", kind: "markdown" },
+      { path: "references/guide.md", kind: "reference" },
       { path: "scripts/run.sh", kind: "script" },
     ]));
     expect(skill?.fileInventory).toHaveLength(4);
