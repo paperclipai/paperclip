@@ -139,6 +139,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-issue-links",
+    pluginKey: "paperclip-issue-links",
+    displayName: "Issue Links",
+    description: "Plugin that adds local path and GitHub PR URL fields to issues.",
+    localPath: "packages/plugins/issue-links",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
