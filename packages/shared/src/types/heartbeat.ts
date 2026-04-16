@@ -70,6 +70,18 @@ export interface HeartbeatRunEvent {
   createdAt: Date;
 }
 
+/** Payload shape for heartbeat.run.event where eventType === "file.edit" */
+export interface FileEditEventData {
+  filePath: string;
+  editType: "create" | "modify" | "delete";
+  diff: string;
+  linesAdded: number;
+  linesRemoved: number;
+  timestamp: string;
+  repoUrl?: string;
+  branch?: string;
+}
+
 export interface AgentRuntimeState {
   agentId: string;
   companyId: string;

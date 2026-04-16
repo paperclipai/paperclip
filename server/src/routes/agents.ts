@@ -2420,6 +2420,23 @@ export function agentRoutes(db: Db) {
     res.json(liveRuns);
   });
 
+  router.get("/companies/:companyId/heartbeat-runs/active/file-events", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const result = await heartbeat.listFileEventsForActiveRuns(companyId);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    for (const entry of Object.values(result)) {
+      entry.events = entry.events.map((event) =>
+        redactCurrentUserValue({
+          ...event,
+          payload: redactEventPayload(event.payload),
+        }, currentUserRedactionOptions),
+      );
+    }
+    res.json({ runs: result });
+  });
+
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
@@ -2475,6 +2492,38 @@ export function agentRoutes(db: Db) {
       }, currentUserRedactionOptions),
     );
     res.json(redactedEvents);
+  });
+
+  router.post("/heartbeat-runs/:runId/events", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const { eventType, stream, level, color, message, payload } = req.body ?? {};
+    if (!eventType || typeof eventType !== "string") {
+      res.status(400).json({ error: "eventType is required" });
+      return;
+    }
+
+    const result = await heartbeat.appendExternalRunEvent(runId, {
+      eventType,
+      stream,
+      level,
+      color,
+      message,
+      payload,
+    });
+
+    if (!result) {
+      res.status(409).json({ error: "Run is not active" });
+      return;
+    }
+
+    res.status(201).json(result);
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
