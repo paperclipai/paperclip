@@ -3061,6 +3061,7 @@ const enMessages = {
 
 type MessageKey = keyof typeof enMessages;
 type MessageCatalog = Record<MessageKey, string>;
+type TranslationKey = MessageKey | string;
 
 const zhCNMessages: MessageCatalog = {
   ...enMessages,
@@ -8736,29 +8737,31 @@ function formatMessage(template: string, params?: MessageParams): string {
   });
 }
 
-export function translate(locale: SupportedLocale, key: MessageKey, params?: MessageParams): string {
+export function translate(locale: string, key: TranslationKey, params?: MessageParams): string {
   const catalog = catalogs[locale] ?? catalogs[DEFAULT_LOCALE];
-  return formatMessage(catalog[key] ?? catalogs[DEFAULT_LOCALE][key], params);
+  const fallbackCatalog = catalogs[DEFAULT_LOCALE] as Record<string, string>;
+  const template = (catalog as Record<string, string>)[key] ?? fallbackCatalog[key] ?? key;
+  return formatMessage(template, params);
 }
 
-export function translateText(locale: SupportedLocale, text: string, params?: MessageParams): string {
+export function translateText(locale: string, text: string, params?: MessageParams): string {
   const key = englishLiteralToKey.get(text);
   return key ? translate(locale, key, params) : formatMessage(text, params);
 }
 
-export function translateSystemMessage(locale: SupportedLocale, message: string): string {
+export function translateSystemMessage(locale: string, message: string): string {
   return translateText(locale, message);
 }
 
-export function createTranslator(locale: SupportedLocale) {
+export function createTranslator(locale: string) {
   return {
     locale,
-    t: (key: MessageKey, params?: MessageParams) => translate(locale, key, params),
+    t: (key: TranslationKey, params?: MessageParams) => translate(locale, key, params),
     tx: (text: string, params?: MessageParams) => translateText(locale, text, params),
   };
 }
 
-export function formatDateForLocale(locale: SupportedLocale, date: Date | string): string {
+export function formatDateForLocale(locale: string, date: Date | string): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
@@ -8766,7 +8769,7 @@ export function formatDateForLocale(locale: SupportedLocale, date: Date | string
   }).format(new Date(date));
 }
 
-export function formatDateTimeForLocale(locale: SupportedLocale, date: Date | string): string {
+export function formatDateTimeForLocale(locale: string, date: Date | string): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
@@ -8776,14 +8779,14 @@ export function formatDateTimeForLocale(locale: SupportedLocale, date: Date | st
   }).format(new Date(date));
 }
 
-export function formatShortDateForLocale(locale: SupportedLocale, date: Date | string): string {
+export function formatShortDateForLocale(locale: string, date: Date | string): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
   }).format(new Date(date));
 }
 
-export function formatRelativeTimeForLocale(locale: SupportedLocale, date: Date | string): string {
+export function formatRelativeTimeForLocale(locale: string, date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
