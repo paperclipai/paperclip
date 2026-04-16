@@ -111,7 +111,7 @@ HEALTH_URL="http://localhost:${HTTP_PORT_LOCAL}/health"
 RETRIES=30
 for i in $(seq 1 $RETRIES); do
   HEALTH_RESPONSE=$(curl -sf "$HEALTH_URL" 2>/dev/null || true)
-  if echo "$HEALTH_RESPONSE" | grep -qE '"status"\s*:\s*"ok"[,}]'; then
+  if echo "$HEALTH_RESPONSE" | grep -qE '"status"\s*:\s*"ok"'; then
     echo ""
     info "Aplicação pronta!"
     break
