@@ -8,7 +8,7 @@ import {
   memoryForgetSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertAgentScope, getActorInfo } from "./authz.js";
 import {
   logActivity,
   memoryBindingService,
@@ -120,6 +120,7 @@ export function memoryOperationRoutes(db: Db) {
         res.status(403).json({ error: "Source companyId does not match binding company" });
         return;
       }
+      assertAgentScope(req, req.body.scope);
 
       const result = await opSvc.write(binding.id, req.body);
 
@@ -158,6 +159,7 @@ export function memoryOperationRoutes(db: Db) {
         res.status(403).json({ error: "Scope companyId does not match binding company" });
         return;
       }
+      assertAgentScope(req, req.body.scope);
 
       const result = await opSvc.query(binding.id, req.body);
 
@@ -196,6 +198,7 @@ export function memoryOperationRoutes(db: Db) {
         res.status(403).json({ error: "Scope companyId does not match binding company" });
         return;
       }
+      assertAgentScope(req, req.body.scope);
 
       const result = await opSvc.forget(binding.id, req.body);
 

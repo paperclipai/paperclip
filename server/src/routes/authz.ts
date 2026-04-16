@@ -34,6 +34,17 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+/**
+ * For agent-authenticated requests, assert that a scope's agentId matches
+ * the authenticated agent. Prevents cross-agent scope spoofing within a
+ * company. Board users are not constrained (they manage the system).
+ */
+export function assertAgentScope(req: Request, scope: { agentId?: string }) {
+  if (req.actor.type === "agent" && scope.agentId && scope.agentId !== req.actor.agentId) {
+    throw forbidden("Agent cannot operate under another agent's scope");
+  }
+}
+
 export function getActorInfo(req: Request) {
   assertAuthenticated(req);
   if (req.actor.type === "agent") {
