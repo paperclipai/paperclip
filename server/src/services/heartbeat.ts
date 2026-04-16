@@ -2980,6 +2980,11 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  // Error codes that represent transient failures (e.g. subscription quota).
+  // When the latest recovery run failed with one of these, we skip escalation
+  // to `blocked` and let the normal heartbeat cycle retry after the window resets.
+  const TRANSIENT_ERROR_CODES = new Set(["rate_limited", "timeout"]);
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -2989,6 +2994,13 @@ export function heartbeatService(db: Db) {
     > | null;
     comment: string;
   }) {
+    // Don't escalate when the failure is transient — the issue will be
+    // picked up again on the next heartbeat cycle after the rate-limit /
+    // timeout window resets.
+    if (input.latestRun?.errorCode && TRANSIENT_ERROR_CODES.has(input.latestRun.errorCode)) {
+      return null;
+    }
+
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
     });

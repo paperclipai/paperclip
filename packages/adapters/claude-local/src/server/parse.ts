@@ -167,6 +167,24 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+const CLAUDE_RATE_LIMIT_RE =
+  /you(?:'ve| have) hit your limit|rate limit|quota exceeded|usage limit|too many requests|resets \d{1,2}(?:am|pm)/i;
+
+/**
+ * Detect whether a Claude result represents a transient rate-limit / quota error.
+ * Returns true when the output text or error messages match known rate-limit patterns.
+ */
+export function isClaudeRateLimitError(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) => CLAUDE_RATE_LIMIT_RE.test(msg));
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
