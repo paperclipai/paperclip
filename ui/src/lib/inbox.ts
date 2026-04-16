@@ -9,6 +9,7 @@ import type {
 import {
   applyIssueFilters,
   defaultIssueFilterState,
+  normalizeIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
 
@@ -137,25 +138,6 @@ const defaultInboxFilterPreferences: InboxFilterPreferences = {
   issueFilters: defaultIssueFilterState,
 };
 
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-function normalizeIssueFilterState(value: unknown): IssueFilterState {
-  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
-  const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
-  return {
-    statuses: normalizeStringArray(candidate.statuses),
-    priorities: normalizeStringArray(candidate.priorities),
-    assignees: normalizeStringArray(candidate.assignees),
-    labels: normalizeStringArray(candidate.labels),
-    projects: normalizeStringArray(candidate.projects),
-    workspaces: normalizeStringArray(candidate.workspaces),
-    hideRoutineExecutions: candidate.hideRoutineExecutions === true,
-  };
-}
-
 function normalizeInboxCategoryFilter(value: unknown): InboxCategoryFilter {
   return value === "issues_i_touched"
     || value === "join_requests"
@@ -244,7 +226,7 @@ export function loadCollapsedInboxGroupKeys(
     const raw = localStorage.getItem(storageKey);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw);
-    return new Set(normalizeStringArray(parsed));
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
   } catch {
     return new Set();
   }

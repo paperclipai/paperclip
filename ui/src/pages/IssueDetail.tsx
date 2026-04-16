@@ -573,7 +573,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetchInterval: liveRunCount > 0 ? false : 3000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
-  const hasLiveRuns = liveRunCount > 0 || !!activeRun;
+  const resolvedActiveRun = useMemo(
+    () => resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
+    [activeRun, executionRunId, issueStatus],
+  );
+  const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -584,8 +588,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const resolvedLinkedRuns = linkedRuns ?? [];
 
   const runningIssueRun = useMemo(
-    () => resolveRunningIssueRun(activeRun, resolvedLiveRuns),
-    [activeRun, resolvedLiveRuns],
+    () => resolveRunningIssueRun(resolvedActiveRun, resolvedLiveRuns),
+    [resolvedActiveRun, resolvedLiveRuns],
   );
   const timelineRuns = useMemo(() => {
     const liveIds = new Set<string>();
@@ -672,7 +676,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         linkedRuns={timelineRuns}
         timelineEvents={timelineEvents}
         liveRuns={resolvedLiveRuns}
-        activeRun={activeRun}
+        activeRun={resolvedActiveRun}
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
@@ -950,7 +954,8 @@ export function IssueDetail() {
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
-  const hasLiveRuns = liveRunCount > 0 || hasActiveRun;
+  const resolvedHasActiveRun = issue ? shouldTrackIssueActiveRun(issue) && hasActiveRun : hasActiveRun;
+  const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
   const sourceBreadcrumb = useMemo(
     () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
     [issueId, location.state, location.search],

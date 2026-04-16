@@ -4,6 +4,7 @@ export type IssueFilterState = {
   statuses: string[];
   priorities: string[];
   assignees: string[];
+  creators: string[];
   labels: string[];
   projects: string[];
   workspaces: string[];
@@ -14,6 +15,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   statuses: [],
   priorities: [],
   assignees: [],
+  creators: [],
   labels: [],
   projects: [],
   workspaces: [],
@@ -39,6 +41,26 @@ export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
   const sortedA = [...a].sort();
   const sortedB = [...b].sort();
   return sortedA.every((value, index) => value === sortedB[index]);
+}
+
+function normalizeIssueFilterValueArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+export function normalizeIssueFilterState(value: unknown): IssueFilterState {
+  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
+  const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
+  return {
+    statuses: normalizeIssueFilterValueArray(candidate.statuses),
+    priorities: normalizeIssueFilterValueArray(candidate.priorities),
+    assignees: normalizeIssueFilterValueArray(candidate.assignees),
+    creators: normalizeIssueFilterValueArray(candidate.creators),
+    labels: normalizeIssueFilterValueArray(candidate.labels),
+    projects: normalizeIssueFilterValueArray(candidate.projects),
+    workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
+    hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+  };
 }
 
 export function toggleIssueFilterValue(values: string[], value: string): string[] {
@@ -73,6 +95,15 @@ export function applyIssueFilters(
       return false;
     });
   }
+  if (state.creators.length > 0) {
+    result = result.filter((issue) => {
+      for (const creator of state.creators) {
+        if (creator.startsWith("agent:") && issue.createdByAgentId === creator.slice("agent:".length)) return true;
+        if (creator.startsWith("user:") && issue.createdByUserId === creator.slice("user:".length)) return true;
+      }
+      return false;
+    });
+  }
   if (state.labels.length > 0) {
     result = result.filter((issue) => (issue.labelIds ?? []).some((id) => state.labels.includes(id)));
   }
@@ -96,6 +127,7 @@ export function countActiveIssueFilters(
   if (state.statuses.length > 0) count += 1;
   if (state.priorities.length > 0) count += 1;
   if (state.assignees.length > 0) count += 1;
+  if (state.creators.length > 0) count += 1;
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
