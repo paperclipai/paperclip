@@ -965,7 +965,7 @@ export function CommentThread({
 
     </div>
   );
-});
+}
 
 CommentThread.displayName = "CommentThread";
 
@@ -1171,4 +1171,4 @@ const CommentComposer = memo(function CommentComposer({
       </div>
     </div>
   );
-}
+});
