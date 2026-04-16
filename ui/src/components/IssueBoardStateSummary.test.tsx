@@ -115,4 +115,32 @@ describe("IssueBoardStateSummary", () => {
       root.unmount();
     });
   });
+
+  it("renders redirect copy from boardState", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueBoardStateSummary
+          issue={createIssue({
+            status: "blocked",
+            boardState: {
+              kind: "redirected",
+              headline: "Superseded by COMA-1122",
+              reasonCode: "recovery",
+              actorType: "issue",
+              actorId: "issue-successor",
+              primaryAction: null,
+            },
+          })}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Superseded by COMA-1122");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

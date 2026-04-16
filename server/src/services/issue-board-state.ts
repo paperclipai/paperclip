@@ -33,6 +33,8 @@ type RootPath = {
   path: string[];
 };
 
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
 export type ComputedIssueBoardState = {
   boardState: IssueBoardState;
   primaryBlocker: IssuePrimaryBlocker | null;
@@ -92,6 +94,10 @@ function makeBlockerAction(blockerIssueId: string): IssueBoardState["primaryActi
 
 function blockedHeadline(blocker: { identifier: string | null; title: string }) {
   return `Blocked by ${blocker.identifier ?? blocker.title}`;
+}
+
+function redirectedHeadline(target: { identifier: string | null; title: string }) {
+  return `Superseded by ${target.identifier ?? target.title}`;
 }
 
 function qaHeadline(agent: AgentSummary | null) {
@@ -251,6 +257,17 @@ function createWaitingRecoveryBoardState(issueId: string): IssueBoardState {
   };
 }
 
+function createRedirectedBoardState(target: Pick<IssueBoardStateRow, "id" | "identifier" | "title">): IssueBoardState {
+  return {
+    kind: "redirected",
+    headline: redirectedHeadline(target),
+    reasonCode: "recovery",
+    actorType: "issue",
+    actorId: target.id,
+    primaryAction: makeIssueAction(target.id, "Open successor"),
+  };
+}
+
 function createWaitingAssigneeBoardState(issue: IssueBoardStateRow, assignee: AgentSummary | null): IssueBoardState {
   if (issue.assigneeAgentId) {
     return {
@@ -396,6 +413,78 @@ async function countUniqueDescendants(
   return count;
 }
 
+async function collectRecoveryDescendantRows(
+  db: Db,
+  companyId: string,
+  startIssueIds: string[],
+) {
+  const rows: Array<{ sourceIssueId: string; successorIssueId: string }> = [];
+  const seenSourceIssueIds = new Set<string>();
+  const seenEdgeKeys = new Set<string>();
+  let frontier = [...new Set(startIssueIds.filter(Boolean))];
+
+  while (frontier.length > 0) {
+    const sourceIssueIds = frontier.filter((issueId) => !seenSourceIssueIds.has(issueId));
+    if (sourceIssueIds.length === 0) break;
+    sourceIssueIds.forEach((issueId) => seenSourceIssueIds.add(issueId));
+
+    const fetchedRows = await db
+      .select({
+        sourceIssueId: issueRelations.issueId,
+        successorIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "recovered_by"),
+          inArray(issueRelations.issueId, sourceIssueIds),
+        ),
+      );
+
+    frontier = [];
+    for (const row of fetchedRows) {
+      const edgeKey = `${row.sourceIssueId}:${row.successorIssueId}`;
+      if (!seenEdgeKeys.has(edgeKey)) {
+        rows.push(row);
+        seenEdgeKeys.add(edgeKey);
+      }
+      if (!seenSourceIssueIds.has(row.successorIssueId)) {
+        frontier.push(row.successorIssueId);
+      }
+    }
+  }
+
+  return rows;
+}
+
+function resolveTerminalRecoveryTarget(
+  issueId: string,
+  recoverySuccessorsByIssueId: Map<string, string[]>,
+  issueById: Map<string, IssueBoardStateRow>,
+) {
+  const directSuccessors = recoverySuccessorsByIssueId.get(issueId) ?? [];
+  if (directSuccessors.length === 0) return null;
+
+  const seen = new Set<string>([issueId]);
+  let currentSuccessorId = directSuccessors[0] ?? null;
+  let terminalTarget: IssueBoardStateRow | null = null;
+
+  while (currentSuccessorId) {
+    if (seen.has(currentSuccessorId)) return null;
+    seen.add(currentSuccessorId);
+
+    const currentSuccessor = issueById.get(currentSuccessorId);
+    if (!currentSuccessor) return null;
+    terminalTarget = currentSuccessor;
+
+    const nextSuccessors = recoverySuccessorsByIssueId.get(currentSuccessorId) ?? [];
+    currentSuccessorId = nextSuccessors[0] ?? null;
+  }
+
+  return terminalTarget;
+}
+
 export async function computeIssueBoardStateMap(
   db: Db,
   companyId: string,
@@ -406,7 +495,7 @@ export async function computeIssueBoardStateMap(
   const result = new Map<string, ComputedIssueBoardState>();
   if (uniqueIssueIds.length === 0) return result;
 
-  const [blockRows, recoveryRows] = await Promise.all([
+  const [blockRows, directRecoveryRows, recoveryDescendantRows] = await Promise.all([
     collectAncestorBlockRows(db, companyId, uniqueIssueIds),
     db
       .select({
@@ -424,6 +513,7 @@ export async function computeIssueBoardStateMap(
           ),
         ),
       ),
+    collectRecoveryDescendantRows(db, companyId, uniqueIssueIds),
   ]);
 
   const blockersByIssueId = new Map<string, string[]>();
@@ -434,7 +524,8 @@ export async function computeIssueBoardStateMap(
   }
 
   const ancestorIds = collectAncestorIds(uniqueIssueIds, blockersByIssueId);
-  const allRelevantIds = [...new Set([...uniqueIssueIds, ...ancestorIds])];
+  const recoveryDescendantIds = recoveryDescendantRows.map((row) => row.successorIssueId);
+  const allRelevantIds = [...new Set([...uniqueIssueIds, ...ancestorIds, ...recoveryDescendantIds])];
   const issueRows = await db
     .select({
       id: issues.id,
@@ -452,6 +543,14 @@ export async function computeIssueBoardStateMap(
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, allRelevantIds)));
 
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
+  const activeBlockersByIssueId = new Map<string, string[]>();
+  for (const row of blockRows) {
+    const blocker = issueById.get(row.blockerIssueId);
+    if (!blocker || TERMINAL_ISSUE_STATUSES.has(blocker.status)) continue;
+    const blockers = activeBlockersByIssueId.get(row.blockedIssueId) ?? [];
+    blockers.push(row.blockerIssueId);
+    activeBlockersByIssueId.set(row.blockedIssueId, blockers);
+  }
   const assigneeAgentIds = [...new Set(
     issueRows
       .map((row) => row.assigneeAgentId)
@@ -473,11 +572,17 @@ export async function computeIssueBoardStateMap(
   for (const issueId of uniqueIssueIds) {
     recoveryStateByIssueId.set(issueId, { hasRecoverySource: false, hasRecoverySuccessor: false });
   }
-  for (const row of recoveryRows) {
+  for (const row of directRecoveryRows) {
     const source = recoveryStateByIssueId.get(row.sourceIssueId);
     if (source) source.hasRecoverySuccessor = true;
     const successor = recoveryStateByIssueId.get(row.successorIssueId);
     if (successor) successor.hasRecoverySource = true;
+  }
+  const recoverySuccessorsByIssueId = new Map<string, string[]>();
+  for (const row of recoveryDescendantRows) {
+    const existing = recoverySuccessorsByIssueId.get(row.sourceIssueId) ?? [];
+    existing.push(row.successorIssueId);
+    recoverySuccessorsByIssueId.set(row.sourceIssueId, existing);
   }
 
   const descendantCountMemo = new Map<string, number>();
@@ -486,7 +591,7 @@ export async function computeIssueBoardStateMap(
     const issue = issueById.get(issueId);
     if (!issue) continue;
 
-    const rootPaths = collectRootPaths(issueId, blockersByIssueId);
+    const rootPaths = collectRootPaths(issueId, activeBlockersByIssueId);
     const pathByRootId = new Map<string, string[]>();
     for (const candidate of rootPaths) {
       const existing = pathByRootId.get(candidate.rootId);
@@ -545,23 +650,28 @@ export async function computeIssueBoardStateMap(
         ? executionCurrentParticipantId(issue.executionState, currentParticipantType)
         : null;
     const assignee = issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId) ?? null : null;
-    const hasBlockers = (blockersByIssueId.get(issueId) ?? []).length > 0;
+    const hasBlockers = (activeBlockersByIssueId.get(issueId) ?? []).length > 0;
     const recoveryState = recoveryStateByIssueId.get(issueId) ?? {
       hasRecoverySource: false,
       hasRecoverySuccessor: false,
     };
+    const recoveryRedirectTarget = recoveryState.hasRecoverySuccessor
+      ? resolveTerminalRecoveryTarget(issueId, recoverySuccessorsByIssueId, issueById)
+      : null;
 
     let boardState: IssueBoardState;
-    if (issue.status === "done" || issue.status === "cancelled") {
+    if (recoveryRedirectTarget) {
+      boardState = createRedirectedBoardState(recoveryRedirectTarget);
+    } else if (issue.status === "done" || issue.status === "cancelled") {
       boardState = createDoneBoardState(issue);
     } else if (hasBlockers && primaryBlocker) {
       boardState = createBlockedBoardState(primaryBlocker);
+    } else if (recoveryState.hasRecoverySuccessor) {
+      boardState = createWaitingRecoveryBoardState(issue.id);
     } else if (issue.status === "blocked") {
       boardState = createSystemErrorBoardState(issue.id);
     } else if (issue.status === "in_review") {
       boardState = createWaitingReviewBoardState(issue.id, assignee, currentParticipantType, currentParticipantId);
-    } else if (recoveryState.hasRecoverySuccessor) {
-      boardState = createWaitingRecoveryBoardState(issue.id);
     } else {
       boardState = createWaitingAssigneeBoardState(issue, assignee);
     }

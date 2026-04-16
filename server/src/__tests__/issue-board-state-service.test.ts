@@ -398,4 +398,134 @@ describeEmbeddedPostgres("issue board state service", () => {
     expect(computed?.boardState.reasonCode).toBe("invalid_state");
     expect(computed?.boardState.headline).toBe("System error in issue state");
   });
+
+  it("collapses recovery chains into a redirect to the terminal successor", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const intermediateIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        issueNumber: 1500,
+        identifier: "COMA-1500",
+        title: "Recovered source issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        issueNumber: 1502,
+        identifier: "COMA-1502",
+        title: "Latest continuation issue",
+        status: "in_progress",
+        priority: "high",
+      },
+      {
+        id: intermediateIssueId,
+        companyId,
+        issueNumber: 1501,
+        identifier: "COMA-1501",
+        title: "Intermediate continuation issue",
+        status: "blocked",
+        priority: "high",
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId,
+        relatedIssueId: intermediateIssueId,
+        type: "recovered_by",
+      },
+      {
+        companyId,
+        issueId: intermediateIssueId,
+        relatedIssueId: successorIssueId,
+        type: "recovered_by",
+      },
+    ]);
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId, intermediateIssueId]);
+    const computed = result.get(issueId);
+    const intermediateComputed = result.get(intermediateIssueId);
+
+    expect(computed?.boardState.kind).toBe("redirected");
+    expect(computed?.boardState.reasonCode).toBe("recovery");
+    expect(computed?.boardState.headline).toBe("Superseded by COMA-1502");
+    expect(computed?.boardState.primaryAction).toEqual({
+      type: "open_issue",
+      label: "Open successor",
+      targetEntity: "issue",
+      targetId: successorIssueId,
+    });
+
+    expect(intermediateComputed?.boardState.kind).toBe("redirected");
+    expect(intermediateComputed?.boardState.headline).toBe("Superseded by COMA-1502");
+  });
+
+  it("ignores cancelled blockers when computing the active blocker headline", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const activeBlockerId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        issueNumber: 1608,
+        identifier: "LEB-608",
+        title: "Blocked leaf",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: cancelledBlockerId,
+        companyId,
+        issueNumber: 1609,
+        identifier: "LEB-609",
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "high",
+      },
+      {
+        id: activeBlockerId,
+        companyId,
+        issueNumber: 1610,
+        identifier: "LEB-610",
+        title: "Active blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueRelations).values([
+      { companyId, issueId: cancelledBlockerId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: activeBlockerId, relatedIssueId: issueId, type: "blocks" },
+    ]);
+
+    const result = await computeIssueBoardStateMap(db, companyId, [issueId], { includePaths: true });
+    const computed = result.get(issueId);
+
+    expect(computed?.boardState.kind).toBe("blocked");
+    expect(computed?.boardState.headline).toBe("Blocked by LEB-610");
+    expect(computed?.primaryBlocker?.identifier).toBe("LEB-610");
+    expect(computed?.rootBlockers?.map((blocker) => blocker.identifier)).toEqual(["LEB-610"]);
+  });
 });

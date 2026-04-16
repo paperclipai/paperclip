@@ -21,6 +21,7 @@ export type IssueRoutingIssue = {
   id?: string;
   identifier?: string | null;
   title?: string | null;
+  description?: string | null;
   projectId?: string | null;
   projectName?: string | null;
 };
@@ -46,8 +47,9 @@ function normalizeText(value: string | null | undefined) {
 export function buildIssueRoutingText(issue: IssueRoutingIssue): string {
   return [
     normalizeText(issue.projectName),
-    normalizeText(issue.identifier),
     normalizeText(issue.title),
+    normalizeText(issue.description),
+    normalizeText(issue.identifier),
   ]
     .filter(Boolean)
     .join(" ");
@@ -55,6 +57,46 @@ export function buildIssueRoutingText(issue: IssueRoutingIssue): string {
 
 export function buildCandidateDescriptorText(candidate: Pick<OperationsAssignmentCandidate, "name" | "title">): string {
   return [normalizeText(candidate.name), normalizeText(candidate.title)].filter(Boolean).join(" ");
+}
+
+function buildCandidateSearchText(
+  candidate: Pick<OperationsAssignmentCandidate, "name" | "title" | "capabilities">,
+): string {
+  return [
+    normalizeText(candidate.name),
+    normalizeText(candidate.title),
+    normalizeText(candidate.capabilities),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function isQaCandidate(candidate: OperationsAssignmentCandidate) {
+  return candidate.role === "qa" || QA_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isLeadCandidate(candidate: OperationsAssignmentCandidate) {
+  return candidate.role === "researcher" || LEAD_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isOnboardingCandidate(candidate: OperationsAssignmentCandidate) {
+  return candidate.role === "pm" || ONBOARDING_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isEngineerCandidate(candidate: OperationsAssignmentCandidate) {
+  return candidate.role === "engineer" || ENGINEERING_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isAppEngineerCandidate(candidate: OperationsAssignmentCandidate) {
+  return isEngineerCandidate(candidate) && APP_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isWebEngineerCandidate(candidate: OperationsAssignmentCandidate) {
+  return isEngineerCandidate(candidate) && WEB_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+}
+
+function isPlatformEngineerCandidate(candidate: OperationsAssignmentCandidate) {
+  return isEngineerCandidate(candidate) && PLATFORM_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
 }
 
 export function isLikelyTechnicalIssueText(issueText: string | null | undefined): boolean {
@@ -71,6 +113,64 @@ function classifyIssueSignals(issueText: string) {
     isWebLikeEngineeringIssue: WEB_LIKE_ENGINEERING_ISSUE_PATTERN.test(issueText),
     isPlatformLikeEngineeringIssue: PLATFORM_LIKE_ENGINEERING_ISSUE_PATTERN.test(issueText),
   };
+}
+
+function pickReadySpecialists(
+  specialists: OperationsAssignmentCandidate[],
+  isReadyCandidate: (candidate: Pick<OperationsAssignmentCandidate, "status">) => boolean,
+) {
+  const readySpecialists = specialists.filter(isReadyCandidate);
+  return readySpecialists.length > 0 ? readySpecialists : specialists;
+}
+
+export function resolveEligibleOperationsAssignmentCandidates(
+  issue: IssueRoutingIssue,
+  candidates: OperationsAssignmentCandidate[],
+) {
+  const issueText = buildIssueRoutingText(issue);
+  const signals = classifyIssueSignals(issueText);
+  const descriptionSignals = classifyIssueSignals(normalizeText(issue.description));
+  const engineerCandidates = candidates.filter(isEngineerCandidate);
+  const qaCandidates = candidates.filter(isQaCandidate);
+  const leadCandidates = candidates.filter(isLeadCandidate);
+  const onboardingCandidates = candidates.filter(isOnboardingCandidate);
+  const appEngineerCandidates = engineerCandidates.filter(isAppEngineerCandidate);
+  const webEngineerCandidates = engineerCandidates.filter(isWebEngineerCandidate);
+  const platformEngineerCandidates = engineerCandidates.filter(isPlatformEngineerCandidate);
+
+  if (signals.isEngineeringIssue) {
+    if (descriptionSignals.isQaLikeIssue) {
+      return qaCandidates.length > 0 ? qaCandidates : engineerCandidates;
+    }
+    if (descriptionSignals.isWebLikeEngineeringIssue) {
+      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
+    }
+    if (descriptionSignals.isPlatformLikeEngineeringIssue) {
+      return platformEngineerCandidates.length > 0 ? platformEngineerCandidates : engineerCandidates;
+    }
+    if (signals.isAppLikeEngineeringIssue) {
+      return appEngineerCandidates.length > 0 ? appEngineerCandidates : engineerCandidates;
+    }
+    if (signals.isWebLikeEngineeringIssue) {
+      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
+    }
+    if (signals.isPlatformLikeEngineeringIssue) {
+      return platformEngineerCandidates.length > 0 ? platformEngineerCandidates : engineerCandidates;
+    }
+    return engineerCandidates;
+  }
+
+  if (signals.isQaLikeIssue) {
+    return qaCandidates.length > 0 ? qaCandidates : candidates;
+  }
+  if (signals.isLeadLikeIssue) {
+    return leadCandidates.length > 0 ? leadCandidates : candidates;
+  }
+  if (signals.isOnboardingLikeIssue) {
+    return onboardingCandidates.length > 0 ? onboardingCandidates : candidates;
+  }
+
+  return candidates;
 }
 
 export function pickOperationsAssignmentCandidate(input: {
@@ -93,6 +193,7 @@ export function pickOperationsAssignmentCandidate(input: {
 
   const issueText = buildIssueRoutingText(input.issue);
   const signals = classifyIssueSignals(issueText);
+  const descriptionSignals = classifyIssueSignals(normalizeText(input.issue.description));
   const healthyCandidates = input.availableCandidates.filter((candidate) => candidate.status !== "error");
   let baseCandidatePool = healthyCandidates.length > 0 ? healthyCandidates : input.availableCandidates;
   if (baseCandidatePool.length === 0 && input.allowPausedFallback) {
@@ -115,10 +216,9 @@ export function pickOperationsAssignmentCandidate(input: {
 
   if (signals.isEngineeringIssue) {
     const engineerCandidates = specializationSourcePool.filter((candidate) => candidate.role === "engineer");
-    if (engineerCandidates.length === 0) return null;
-
-    const readyEngineers = engineerCandidates.filter(isReadyCandidate);
-    if (readyEngineers.length === 0) return null;
+    const qaCandidates = specializationSourcePool.filter((candidate) => (
+      candidate.role === "qa" || QA_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
+    ));
 
     const appEngineerCandidates = engineerCandidates.filter((candidate) => (
       APP_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
@@ -129,18 +229,27 @@ export function pickOperationsAssignmentCandidate(input: {
     const platformEngineerCandidates = engineerCandidates.filter((candidate) => (
       PLATFORM_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
     ));
+    const hasExplicitQaIntent = descriptionSignals.isQaLikeIssue;
+    const hasExplicitWebIntent = descriptionSignals.isWebLikeEngineeringIssue;
+    const hasExplicitPlatformIntent = descriptionSignals.isPlatformLikeEngineeringIssue;
 
-    const preferReadySpecialists = (specialists: OperationsAssignmentCandidate[]) => {
-      const readySpecialists = specialists.filter(isReadyCandidate);
-      return readySpecialists.length > 0 ? readySpecialists : readyEngineers;
-    };
+    const readyEngineers = engineerCandidates.filter(isReadyCandidate);
+    if (engineerCandidates.length === 0 && !hasExplicitQaIntent) return null;
+    if (readyEngineers.length === 0 && !hasExplicitQaIntent) return null;
 
-    if (signals.isAppLikeEngineeringIssue) {
-      baseCandidatePool = preferReadySpecialists(appEngineerCandidates);
+    if (hasExplicitQaIntent) {
+      const qaPool = pickReadySpecialists(qaCandidates, isReadyCandidate);
+      baseCandidatePool = qaPool.length > 0 ? qaPool : (readyEngineers.length > 0 ? readyEngineers : qaCandidates);
+    } else if (hasExplicitWebIntent) {
+      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
+    } else if (hasExplicitPlatformIntent) {
+      baseCandidatePool = pickReadySpecialists(platformEngineerCandidates, isReadyCandidate);
+    } else if (signals.isAppLikeEngineeringIssue) {
+      baseCandidatePool = pickReadySpecialists(appEngineerCandidates, isReadyCandidate);
     } else if (signals.isWebLikeEngineeringIssue) {
-      baseCandidatePool = preferReadySpecialists(webEngineerCandidates);
+      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else if (signals.isPlatformLikeEngineeringIssue) {
-      baseCandidatePool = preferReadySpecialists(platformEngineerCandidates);
+      baseCandidatePool = pickReadySpecialists(platformEngineerCandidates, isReadyCandidate);
     } else {
       baseCandidatePool = readyEngineers;
     }

@@ -8,6 +8,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { createManagedChildSpawnOptions, signalChildProcessTree } from "../server/src/dev-runner-process.ts";
+import { selectAvailableDevRunnerPort } from "../server/src/dev-server-ports.ts";
 import { installStdinErrorHandler } from "../server/src/stdin-error-handler.ts";
 import {
   findAdoptableLocalService,
@@ -570,6 +571,17 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
   clearDevServerRuntimeFile();
+  const portSelection = await selectAvailableDevRunnerPort(requestedServerPort);
+  const childEnv: NodeJS.ProcessEnv = {
+    ...env,
+    PORT: String(portSelection.selectedPort),
+  };
+
+  if (portSelection.selectedPort !== requestedServerPort) {
+    console.log(
+      `[paperclip] requested port ${requestedServerPort} is busy; starting child on ${portSelection.selectedPort} (hmr ${portSelection.hmrPort})`,
+    );
+  }
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(
@@ -577,7 +589,7 @@ async function startServerChild() {
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
     {
       stdio: ["ignore", "inherit", "inherit"],
-      env,
+      env: childEnv,
       shell: process.platform === "win32",
       ...createManagedChildSpawnOptions(),
     },

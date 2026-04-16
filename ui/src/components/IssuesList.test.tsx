@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { epicTone } from "../lib/roadmapEpicStyles";
 import { IssuesList } from "./IssuesList";
 
+const DEFAULT_ACTIVE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
 }));
@@ -38,6 +40,10 @@ const mockCompaniesApi = vi.hoisted(() => ({
 
 const toastState = vi.hoisted(() => ({
   pushToast: vi.fn(),
+}));
+
+const kanbanPropsState = vi.hoisted(() => ({
+  latest: null as { issues: Issue[] } | null,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -92,7 +98,10 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: () => null,
+  KanbanBoard: (props: { issues: Issue[] }) => {
+    kanbanPropsState.latest = props;
+    return <div>Kanban board</div>;
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -200,6 +209,7 @@ describe("IssuesList", () => {
     mockCompaniesApi.pauseRoadmapEpic.mockReset();
     mockCompaniesApi.resumeRoadmapEpic.mockReset();
     toastState.pushToast.mockReset();
+    kanbanPropsState.latest = null;
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockRoadmapApi.get.mockResolvedValue({
@@ -370,6 +380,341 @@ describe("IssuesList", () => {
     });
   });
 
+  it("can hide done and cancelled issues by default when configured with active statuses", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-visible", identifier: "PAP-4", title: "Visible issue", status: "todo" }),
+          createIssue({ id: "issue-done", identifier: "PAP-5", title: "Done issue", status: "done" }),
+          createIssue({ id: "issue-cancelled", identifier: "PAP-6", title: "Cancelled issue", status: "cancelled" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultStatuses={DEFAULT_ACTIVE_STATUSES}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Visible issue");
+      expect(container.textContent).not.toContain("Done issue");
+      expect(container.textContent).not.toContain("Cancelled issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("migrates legacy saved empty status filters to the configured default statuses", async () => {
+    window.localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({
+        schemaVersion: 3,
+        statuses: [],
+      }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-visible", identifier: "PAP-7", title: "Open issue", status: "todo" }),
+          createIssue({ id: "issue-done", identifier: "PAP-8", title: "Closed issue", status: "done" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultStatuses={DEFAULT_ACTIVE_STATUSES}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Open issue");
+      expect(container.textContent).not.toContain("Closed issue");
+    });
+
+    const savedState = JSON.parse(window.localStorage.getItem("paperclip:test-issues:company-1") ?? "{}");
+    expect(savedState.schemaVersion).toBe(4);
+    expect(savedState.statuses).toEqual(DEFAULT_ACTIVE_STATUSES);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("preserves an explicit show-all choice once the new schema is saved", async () => {
+    window.localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({
+        schemaVersion: 4,
+        statuses: [],
+      }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-visible", identifier: "PAP-9", title: "Open issue", status: "todo" }),
+          createIssue({ id: "issue-done", identifier: "PAP-10", title: "Closed issue", status: "done" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultStatuses={DEFAULT_ACTIVE_STATUSES}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Open issue");
+      expect(container.textContent).toContain("Closed issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("sorts active issues by most recent activity by default", async () => {
+    const recentActivityIssue = createIssue({
+      id: "issue-recent-activity",
+      identifier: "PAP-40",
+      title: "Recent activity issue",
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const olderActivityIssue = createIssue({
+      id: "issue-older-activity",
+      identifier: "PAP-41",
+      title: "Older activity issue",
+      updatedAt: new Date("2026-04-08T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-08T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderActivityIssue, recentActivityIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const titles = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.firstElementChild?.textContent);
+      expect(titles).toEqual(["Recent activity issue", "Older activity issue"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("sorts terminal issues by completion recency by default", async () => {
+    const recentlyCompletedIssue = createIssue({
+      id: "issue-recently-completed",
+      identifier: "PAP-50",
+      title: "Recently completed issue",
+      status: "done",
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+      completedAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const olderCompletedIssue = createIssue({
+      id: "issue-older-completed",
+      identifier: "PAP-51",
+      title: "Older completed issue",
+      status: "done",
+      updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+      completedAt: new Date("2026-04-08T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderCompletedIssue, recentlyCompletedIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const titles = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.firstElementChild?.textContent);
+      expect(titles).toEqual(["Recently completed issue", "Older completed issue"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("migrates legacy saved updated-ascending state to most-recent descending", async () => {
+    window.localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({
+        sortField: "updated",
+        sortDir: "asc",
+      }),
+    );
+
+    const recentActivityIssue = createIssue({
+      id: "issue-migrated-recent",
+      identifier: "PAP-52",
+      title: "Migrated recent issue",
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const olderActivityIssue = createIssue({
+      id: "issue-migrated-older",
+      identifier: "PAP-53",
+      title: "Migrated older issue",
+      updatedAt: new Date("2026-04-08T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-08T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderActivityIssue, recentActivityIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const titles = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.firstElementChild?.textContent);
+      expect(titles).toEqual(["Migrated recent issue", "Migrated older issue"]);
+    });
+
+    const savedState = JSON.parse(window.localStorage.getItem("paperclip:test-issues:company-1") ?? "{}");
+    expect(savedState.schemaVersion).toBe(4);
+    expect(savedState.sortField).toBe("recent");
+    expect(savedState.sortDir).toBe("desc");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("migrates schema-versioned updated sorting to the new recent sort key", async () => {
+    window.localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({
+        schemaVersion: 2,
+        sortField: "updated",
+        sortDir: "asc",
+      }),
+    );
+
+    const recentActivityIssue = createIssue({
+      id: "issue-schema-migrated-recent",
+      identifier: "PAP-54",
+      title: "Schema migrated recent issue",
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const olderActivityIssue = createIssue({
+      id: "issue-schema-migrated-older",
+      identifier: "PAP-55",
+      title: "Schema migrated older issue",
+      updatedAt: new Date("2026-04-08T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-08T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderActivityIssue, recentActivityIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const titles = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.firstElementChild?.textContent);
+      expect(titles).toEqual(["Schema migrated recent issue", "Schema migrated older issue"]);
+    });
+
+    const savedState = JSON.parse(window.localStorage.getItem("paperclip:test-issues:company-1") ?? "{}");
+    expect(savedState.schemaVersion).toBe(4);
+    expect(savedState.sortField).toBe("recent");
+    expect(savedState.sortDir).toBe("desc");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the sort control in board view and passes most-recent ordering to the board", async () => {
+    const recentActivityIssue = createIssue({
+      id: "issue-board-recent",
+      identifier: "PAP-60",
+      title: "Board recent issue",
+      status: "todo",
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const olderActivityIssue = createIssue({
+      id: "issue-board-older",
+      identifier: "PAP-61",
+      title: "Board older issue",
+      status: "todo",
+      updatedAt: new Date("2026-04-08T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-04-08T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderActivityIssue, recentActivityIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Sort");
+    });
+
+    const boardViewButton = container.querySelector<HTMLButtonElement>('button[title="Board view"]');
+    expect(boardViewButton).not.toBeNull();
+
+    act(() => {
+      boardViewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Kanban board");
+      expect(container.textContent).toContain("Sort");
+      expect(kanbanPropsState.latest?.issues.map((issue) => issue.title)).toEqual([
+        "Board recent issue",
+        "Board older issue",
+      ]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders a what's blocked on me section for blocked issues waiting on my work", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       user: { id: "user-me" },
@@ -464,6 +809,105 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Blocked by COMA-1098");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides redirected recovery ancestors when explicit recovery-source exclusion is enabled", async () => {
+    const redirectedIssue = createIssue({
+      id: "issue-redirected",
+      identifier: "COMA-1056",
+      title: "Superseded work item",
+      status: "blocked",
+      recoverySuccessor: {
+        id: "issue-successor",
+        identifier: "COMA-1122",
+        title: "Latest active work item",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      boardState: {
+        kind: "redirected",
+        headline: "Superseded by COMA-1122",
+        reasonCode: "recovery",
+        actorType: "issue",
+        actorId: "issue-successor",
+        primaryAction: null,
+      },
+    });
+    const activeIssue = createIssue({
+      id: "issue-active",
+      identifier: "COMA-1122",
+      title: "Latest active work item",
+      status: "in_progress",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[redirectedIssue, activeIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        excludeRecoverySourcesWithOpenSuccessors
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Latest active work item");
+      expect(container.textContent).not.toContain("Superseded work item");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps redirected closed recovery history visible when the successor is no longer open", async () => {
+    const redirectedClosedIssue = createIssue({
+      id: "issue-redirected-closed",
+      identifier: "COMA-1056",
+      title: "Superseded closed work item",
+      status: "cancelled",
+      recoverySuccessor: {
+        id: "issue-successor",
+        identifier: "COMA-1122",
+        title: "Completed continuation",
+        status: "done",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      boardState: {
+        kind: "redirected",
+        headline: "Superseded by COMA-1122",
+        reasonCode: "recovery",
+        actorType: "issue",
+        actorId: "issue-successor",
+        primaryAction: null,
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[redirectedClosedIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        excludeRecoverySourcesWithOpenSuccessors
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Superseded closed work item");
     });
 
     act(() => {

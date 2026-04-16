@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | No automatic reassignment; work recovery stays manual/explicit |
+| Recovery | COO may autonomously correct ownership on the same issue and reclaim fake WIP; successor issues remain board-controlled exceptions |
 | Agent adapters | Built-in `process` and `http` adapters |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
@@ -78,7 +78,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
 - Multi-board governance or role-based human permission granularity
-- Automatic self-healing orchestration (auto-reassign/retry planners)
+- Automatic self-healing orchestration beyond same-issue ownership correction (for example economic schedulers or cross-issue retry planners)
 
 ## 6. Architecture
 

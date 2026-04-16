@@ -1,7 +1,7 @@
 # PrivateClip UI Spec
 
 Status: Draft
-Date: 2026-02-17
+Date: 2026-04-16
 
 ## 1. Design Philosophy
 
@@ -71,6 +71,14 @@ The app is a three-zone layout:
 - **Properties panel:** Right side, 320px. Shown on detail views (issue detail, project detail, agent detail). Hidden on list views and dashboard. Resizable.
 
 The properties panel slides in when you click into a detail view and slides out when you go back to a list. It is NOT a sidebar — it's contextual to the selected entity.
+
+### 2.1 Board Copilot Rail
+
+The board copilot chat rail is session-scoped to the current browser session and route context.
+
+- Opening chat from a new page context should start a fresh copilot thread by default.
+- Reopening chat on the same page within the same browser session should reuse the current copilot thread.
+- Previous copilot threads remain available from the rail's **History** menu instead of being silently merged into the current chat.
 
 ---
 
@@ -202,6 +210,7 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 - Current segment is non-clickable, slightly bolder text.
 - Star icon to favorite/pin the current entity.
 - Three-dot menu for entity actions (delete, archive, duplicate, copy link, etc.)
+- On mobile detail views, replace the menu affordance with a back button that returns to the nearest previous breadcrumb target.
 
 **Right side:**
 - Notification bell (if in a detail view — subscribe to changes on this entity)
@@ -257,8 +266,9 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 - **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
+- **Sort button:** Available in both list and board layouts. Defaults to **Most recent**, which sorts active issues by latest activity and terminal issues by completion/cancellation time.
 - **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
-- **Closed visibility:** `Done` and `Cancelled` issues remain visible in both list and board views by default. In kanban, large columns are trimmed with the same per-column `Show more` pagination used elsewhere rather than a global closed-items toggle.
+- **Closed visibility:** The main board issues view defaults to open work (`backlog`, `todo`, `in_progress`, `in_review`, `blocked`). `Done` and `Cancelled` stay one click away through the quick filters, and kanban still uses per-column `Show more` pagination rather than a global closed-items toggle.
 
 **Grouping:**
 - Issues are grouped by status by default (matching the reference screenshots).
@@ -470,6 +480,8 @@ Cards are draggable between columns. Dragging a card to a new column changes its
 
 Each column header has a `+` button to create a new issue in that status.
 
+Within each column, cards default to **Most recent** ordering. `Done` cards sort by `completedAt`, `Cancelled` cards sort by `cancelledAt`, and all other statuses sort by latest activity.
+
 ---
 
 ## 6. Projects
@@ -655,6 +667,10 @@ Clicking a row navigates to agent detail.
 
 **Heartbeats tab:** table of heartbeat runs — time, source (manual/scheduler), status, duration, error (if any). Invoke button at top.
 
+Manual invoke behavior:
+- If a run is created, navigate directly to that run.
+- If the invoke is skipped (for example live-run limit reached, manual wakeups disabled, or company archived), keep the operator on the page and show a visible warning instead of failing silently.
+
 **Issues tab:** issues assigned to this agent.
 
 **Costs tab:** cost breakdown for this agent — by model, by time period, with budget progress bar.
@@ -662,6 +678,8 @@ Clicking a row navigates to agent detail.
 **Right pane properties:** Status, Role, Title, Reports To, Adapter Type, Context Mode, Budget (monthly), Spent (monthly), Last Heartbeat.
 
 **Quick actions** in breadcrumb bar: [Pause] [Resume] [Invoke Heartbeat] [···]
+
+**Mobile:** board copilot/chat must remain reachable on agent and board pages through a visible Chat launcher that opens the copilot in a sheet rather than hiding the feature below desktop breakpoints.
 
 ---
 

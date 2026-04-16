@@ -169,6 +169,65 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
+  it("wakes dependents when the final blocker transitions to cancelled", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Cancel blocker",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Cancel blocker",
+      description: null,
+      status: "cancelled",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["issue-1", "issue-3"],
+      },
+    ]);
+
+    const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: "cancelled" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-2",
+      expect.objectContaining({
+        reason: "issue_blockers_resolved",
+        payload: expect.objectContaining({
+          issueId: "issue-2",
+          resolvedBlockerIssueId: "issue-1",
+        }),
+      }),
+    );
+  });
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",

@@ -928,6 +928,8 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
     const ageMs = now.getTime() - movementAt.getTime();
     const issueLabel = issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title;
 
+    let issueActionItem: BoardBriefActionItem | null = null;
+
     if (issue.status === "blocked" && ageMs >= STALE_BLOCKED_ISSUE_AT_RISK_MS) {
       const severity = ageMs >= STALE_BLOCKED_ISSUE_BLOCKED_MS ? "critical" : "high";
       incidents.push({
@@ -942,7 +944,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         lastSeenAt: now,
         shouldAlert: severity === "critical",
       });
-      issueActionItems.push({
+      issueActionItem = {
         key: `issue:block:${issue.id}`,
         kind: "issue",
         entityId: issue.id,
@@ -952,10 +954,8 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         timestamp: movementAt,
         href: `/issues/${issue.identifier ?? issue.id}`,
         ctaLabel: "Open issue",
-      });
-    }
-
-    if (issue.assigneeAgentId && ageMs >= STALE_OPEN_ASSIGNED_ISSUE_MS) {
+      };
+    } else if (issue.assigneeAgentId && ageMs >= STALE_OPEN_ASSIGNED_ISSUE_MS) {
       incidents.push({
         fingerprint: `stale_issue:${issue.id}`,
         type: "stale_issue",
@@ -968,7 +968,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         lastSeenAt: now,
         shouldAlert: true,
       });
-      issueActionItems.push({
+      issueActionItem = {
         key: `issue:stale:${issue.id}`,
         kind: "issue",
         entityId: issue.id,
@@ -978,9 +978,9 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         timestamp: movementAt,
         href: `/issues/${issue.identifier ?? issue.id}`,
         ctaLabel: "Open issue",
-      });
+      };
     } else if (issue.assigneeUserId) {
-      issueActionItems.push({
+      issueActionItem = {
         key: `issue:board:${issue.id}`,
         kind: "issue",
         entityId: issue.id,
@@ -990,9 +990,9 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         timestamp: movementAt,
         href: `/issues/${issue.identifier ?? issue.id}`,
         ctaLabel: "Open issue",
-      });
+      };
     } else if (!issue.assigneeAgentId && !issue.assigneeUserId && recentMovementIssueIds.has(issue.id)) {
-      issueActionItems.push({
+      issueActionItem = {
         key: `issue:routing:${issue.id}`,
         kind: "issue",
         entityId: issue.id,
@@ -1002,8 +1002,10 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         timestamp: movementAt,
         href: `/issues/${issue.identifier ?? issue.id}`,
         ctaLabel: "Open issue",
-      });
+      };
     }
+
+    if (issueActionItem) issueActionItems.push(issueActionItem);
   }
 
   for (const output of outputs) {

@@ -99,6 +99,147 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     return { companyId, opsAgentId, workerAgentId, issuePrefix };
   }
 
+  it("demotes fake WIP by preferring the stale in-progress issue over backlog work", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const fakeWipIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: fakeWipIssueId,
+        companyId,
+        title: "Checkout bug that only looks in progress",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog issue",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: fakeWipIssueId,
+      mode: "cross_agent_recovery",
+      autoReissueEligible: true,
+    });
+    expect(target?.reason).toContain("in_progress with no execution run");
+  });
+
+  it("reassigns wrong-specialist engineering work ahead of backlog work", async () => {
+    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const wrongSpecialistIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Specialist",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: wrongSpecialistIssueId,
+        companyId,
+        title: "Fix checkout cart crash in the web app",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: qaAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog issue",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: wrongSpecialistIssueId,
+      mode: "cross_agent_recovery",
+      autoReissueEligible: true,
+    });
+    expect(target?.reason).toContain("in_progress with no execution run");
+  });
+
+  it("rebalances overloaded recovery work toward the stronger signal", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const staleIssueId = randomUUID();
+    const falseCompleteIssueId = randomUUID();
+    const staleRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: staleIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: staleIssueId,
+        companyId,
+        title: "Stale assigned issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: workerAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: falseCompleteIssueId,
+        companyId,
+        title: "Assigned issue with a stronger false-complete signal",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: staleRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: falseCompleteIssueId,
+      mode: "cross_agent_recovery",
+      autoReissueEligible: true,
+    });
+    expect(target?.reason).toContain("run completed without completion/blocker/handoff truth");
+  });
+
   it("can pick an operations-assigned issue when it is the highest-priority recovery target", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
 
@@ -293,6 +434,198 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       authorAgentId: workerAgentId,
       body: "Status: blocked\nWaiting on external dependency from vendor.",
     });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+      reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
+    });
+  });
+
+  it("ignores fresh workflow-gated completion truth and falls back correctly", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
+    const backlogIssueId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue with workflow-gated completion truth",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: assignedRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Unassigned TODO",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: workerAgentId,
+      body: [
+        "DONE: Fix already verified and committed.",
+        "Workflow gate: requires QA assignee before entering in_review.",
+        "Missing permission: tasks:assign.",
+        "Board action required.",
+      ].join("\n"),
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+      reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
+    });
+  });
+
+  it("does not let incidental transcript prose suppress cross-agent recovery", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values({
+      id: assignedIssueId,
+      companyId,
+      title: "Assigned issue with transcript-style incidental wait phrases",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      executionRunId: assignedRunId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: workerAgentId,
+      body: [
+        "Working on issue e2ddfdb4-3d86-4a68-b551-f214305c14c7 — Cart UX trust audit QA gate.",
+        "The API still rejects patch requests because of a stale execution lock and a missing permission error from a prior session.",
+        "I will inspect what should happen before entering in_review once the lock is cleared.",
+      ].join("\n"),
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: assignedIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("run completed without completion/blocker/handoff truth");
+  });
+
+  it("keeps the latest structured truth comment even when newer chatter exists", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
+    const backlogIssueId = randomUUID();
+    const truthCreatedAt = new Date();
+    truthCreatedAt.setMinutes(truthCreatedAt.getMinutes() - 45);
+    const chatterCreatedAt = new Date();
+    chatterCreatedAt.setMinutes(chatterCreatedAt.getMinutes() - 15);
+
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue with recent workflow gate and later chatter",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: assignedRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Unassigned TODO",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: assignedIssueId,
+        authorAgentId: workerAgentId,
+        body: [
+          "Workflow gate: requires QA assignee before entering in_review.",
+          "Missing permission: tasks:assign.",
+          "Board action required.",
+        ].join("\n"),
+        createdAt: truthCreatedAt,
+        updatedAt: truthCreatedAt,
+      },
+      {
+        companyId,
+        issueId: assignedIssueId,
+        authorAgentId: workerAgentId,
+        body: "I pinged QA to take a look once assignment access is restored.",
+        createdAt: chatterCreatedAt,
+        updatedAt: chatterCreatedAt,
+      },
+    ]);
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 

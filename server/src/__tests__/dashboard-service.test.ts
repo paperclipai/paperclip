@@ -371,6 +371,56 @@ describeEmbeddedPostgres("dashboardService executive brief", () => {
     ]);
   });
 
+  it("emits only one attention item for a blocked assigned issue that is also stale", async () => {
+    const now = new Date("2026-04-16T10:00:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Athena",
+      issuePrefix: `ATH${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      budgetMonthlyCents: 10_000,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Growth Operator",
+      role: "operator",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Publish listings",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      createdByUserId: "board-user",
+      updatedAt: new Date("2026-04-11T19:58:53.511Z"),
+    });
+
+    const summary = await dashboardService(db).summary(companyId, now);
+    const issueItems = summary.brief.needsAttention.filter((item) => item.entityId === issueId);
+
+    expect(issueItems).toHaveLength(1);
+    expect(issueItems[0]).toEqual(
+      expect.objectContaining({
+        kind: "issue",
+        reason: "Blocked for over 8 hours",
+        severity: "critical",
+      }),
+    );
+  });
+
   it("returns a healthy empty brief when the company has no active work", async () => {
     const companyId = randomUUID();
 

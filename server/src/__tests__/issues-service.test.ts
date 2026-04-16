@@ -1725,6 +1725,54 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  it("treats cancelled blockers as resolved for dependency wake readiness", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerA = randomUUID();
+    const blockerB = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerA, companyId, title: "Blocker A", status: "done", priority: "medium" },
+      { id: blockerB, companyId, title: "Blocker B", status: "cancelled", priority: "medium" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    await svc.update(blockedIssueId, { blockedByIssueIds: [blockerA, blockerB] });
+
+    await expect(svc.listWakeableBlockedDependents(blockerA)).resolves.toEqual([
+      expect.objectContaining({
+        id: blockedIssueId,
+        assigneeAgentId,
+        blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
+      }),
+    ]);
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

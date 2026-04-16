@@ -186,7 +186,7 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
-export const ISSUE_BOARD_STATE_KINDS = ["blocked", "waiting", "ready", "done", "system_error"] as const;
+export const ISSUE_BOARD_STATE_KINDS = ["blocked", "redirected", "waiting", "ready", "done", "system_error"] as const;
 export type IssueBoardStateKind = (typeof ISSUE_BOARD_STATE_KINDS)[number];
 
 export const ISSUE_STALL_REASON_CODES = [

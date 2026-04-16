@@ -1,6 +1,6 @@
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Menu } from "lucide-react";
+import { ArrowLeft, Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -41,6 +41,7 @@ export function BreadcrumbBar() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const lifecycleMutation = useMutation({
     mutationFn: ({ action, companyId }: { action: "pause" | "resume"; companyId: string }) =>
@@ -141,13 +142,35 @@ export function BreadcrumbBar() {
       <Menu className="h-5 w-5" />
     </Button>
   );
+  const mobileBackCrumb =
+    isMobile && breadcrumbs.length > 1
+      ? [...breadcrumbs.slice(0, -1)].reverse().find((crumb) => typeof crumb.href === "string" && crumb.href.length > 0) ?? null
+      : null;
+  const mobileBackButton = mobileBackCrumb ? (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="mr-2 shrink-0"
+      onClick={() => {
+        if (mobileBackCrumb.href) {
+          navigate(mobileBackCrumb.href);
+          return;
+        }
+        navigate(-1);
+      }}
+      aria-label={`Back to ${mobileBackCrumb.label}`}
+      title={`Back to ${mobileBackCrumb.label}`}
+    >
+      <ArrowLeft className="h-5 w-5" />
+    </Button>
+  ) : null;
 
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
     return (
       <div className="relative border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
         {desktopCenterBrand}
-        {menuButton}
+        {mobileBackButton ?? menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
           <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
             {breadcrumbs[0].label}
@@ -162,7 +185,7 @@ export function BreadcrumbBar() {
   return (
     <div className="relative border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
       {desktopCenterBrand}
-      {menuButton}
+      {mobileBackButton ?? menuButton}
       <div className="min-w-0 overflow-hidden flex-1">
         <Breadcrumb className="min-w-0 overflow-hidden">
           <BreadcrumbList className="flex-nowrap">

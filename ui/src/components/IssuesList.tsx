@@ -41,6 +41,13 @@ import type { Issue, IssueRelationIssueSummary } from "@paperclipai/shared";
 const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
 const statusLabel = formatIssueStatusLabel;
+const OPEN_RECOVERY_SUCCESSOR_STATUSES = new Set<Issue["status"]>([
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+]);
 
 interface EpicPresentation {
   id: string;
@@ -63,6 +70,72 @@ function blockedOnMeSummary(blockers: IssueRelationIssueSummary[]): string {
   return `Waiting on ${blockers.length} of your issues`;
 }
 
+function shouldHideRecoverySourceIssue(issue: Issue) {
+  if (issue.status !== "blocked") return false;
+  const successorStatus = issue.recoverySuccessor?.status;
+  return successorStatus ? OPEN_RECOVERY_SUCCESSOR_STATUSES.has(successorStatus) : false;
+}
+
+function normalizeTimestamp(value: Date | string | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function issueMostRecentTimestamp(issue: Issue): number {
+  if (issue.status === "done") {
+    const completedAt = normalizeTimestamp(issue.completedAt);
+    if (completedAt > 0) return completedAt;
+  }
+
+  if (issue.status === "cancelled") {
+    const cancelledAt = normalizeTimestamp(issue.cancelledAt);
+    if (cancelledAt > 0) return cancelledAt;
+  }
+
+  const lastActivityAt = normalizeTimestamp(issue.lastActivityAt);
+  if (lastActivityAt > 0) return lastActivityAt;
+
+  const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
+  if (lastExternalCommentAt > 0) return lastExternalCommentAt;
+
+  return normalizeTimestamp(issue.updatedAt) || normalizeTimestamp(issue.createdAt);
+}
+
+function defaultSortDirForField(field: IssueViewState["sortField"]): IssueViewState["sortDir"] {
+  return field === "recent" ? "desc" : "asc";
+}
+
+function createDefaultViewState(defaultStatuses: readonly Issue["status"][] = []): IssueViewState {
+  return {
+    statuses: [...defaultStatuses],
+    priorities: [],
+    assignees: [],
+    labels: [],
+    projects: [],
+    epicId: null,
+    sortField: "recent",
+    sortDir: "desc",
+    groupBy: "none",
+    viewMode: "list",
+    collapsedGroups: [],
+    collapsedParents: [],
+  };
+}
+
+function defaultFilterPatch(
+  defaultStatuses: readonly Issue["status"][] = [],
+): Pick<IssueViewState, "statuses" | "priorities" | "assignees" | "labels" | "projects" | "epicId"> {
+  return {
+    statuses: [...defaultStatuses],
+    priorities: [],
+    assignees: [],
+    labels: [],
+    projects: [],
+    epicId: null,
+  };
+}
+
 /* ── View state ── */
 
 export type IssueViewState = {
@@ -72,27 +145,12 @@ export type IssueViewState = {
   labels: string[];
   projects: string[];
   epicId: string | null;
-  sortField: "status" | "priority" | "title" | "created" | "updated";
+  sortField: "status" | "priority" | "title" | "created" | "recent";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
   viewMode: "list" | "board";
   collapsedGroups: string[];
   collapsedParents: string[];
-};
-
-const defaultViewState: IssueViewState = {
-  statuses: [],
-  priorities: [],
-  assignees: [],
-  labels: [],
-  projects: [],
-  epicId: null,
-  sortField: "updated",
-  sortDir: "desc",
-  groupBy: "none",
-  viewMode: "list",
-  collapsedGroups: [],
-  collapsedParents: [],
 };
 
 const quickFilterPresets = [
@@ -101,19 +159,81 @@ const quickFilterPresets = [
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
-function getViewState(key: string): IssueViewState {
+
+const ISSUE_VIEW_STATE_SCHEMA_VERSION = 4;
+
+type PersistedIssueViewState = Partial<Omit<IssueViewState, "sortField">> & {
+  sortField?: IssueViewState["sortField"] | "updated";
+  schemaVersion?: number;
+};
+
+function normalizePersistedViewState(
+  raw: PersistedIssueViewState,
+  defaultStatuses: readonly Issue["status"][] = [],
+): IssueViewState {
+  const schemaVersion = raw.schemaVersion ?? 1;
+  const baseState = createDefaultViewState(defaultStatuses);
+  const { schemaVersion: _schemaVersion, ...rawWithoutSchemaVersion } = raw;
+  const migrated: IssueViewState = {
+    ...baseState,
+    ...rawWithoutSchemaVersion,
+    sortField: raw.sortField === "updated" ? "recent" : (raw.sortField ?? baseState.sortField),
+  };
+
+  // The old persisted "updated" field predates the dedicated semantic recent sort.
+  // Always remap it to the new default recency ordering on top.
+  if (raw.sortField === "updated") {
+    migrated.sortDir = "desc";
+  }
+
+  // Pre-v4 issue views treated an empty status array as "show everything".
+  // v4 allows callers to define a baseline status set, so upgrade legacy empty
+  // selections to that caller-provided default while preserving explicit v4
+  // "show everything" choices.
+  if (
+    schemaVersion < ISSUE_VIEW_STATE_SCHEMA_VERSION
+    && Array.isArray(raw.statuses)
+    && raw.statuses.length === 0
+    && defaultStatuses.length > 0
+  ) {
+    migrated.statuses = [...defaultStatuses];
+  }
+
+  return migrated;
+}
+
+function getViewState(key: string, defaultStatuses: readonly Issue["status"][] = []): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultViewState, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedIssueViewState;
+      const migrated = normalizePersistedViewState(parsed, defaultStatuses);
+      if ((parsed.schemaVersion ?? 1) < ISSUE_VIEW_STATE_SCHEMA_VERSION) {
+        localStorage.setItem(
+          key,
+          JSON.stringify({
+            schemaVersion: ISSUE_VIEW_STATE_SCHEMA_VERSION,
+            ...migrated,
+          }),
+        );
+      }
+      return migrated;
+    }
   } catch { /* ignore */ }
-  return { ...defaultViewState };
+  return createDefaultViewState(defaultStatuses);
 }
 
 function saveViewState(key: string, state: IssueViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      schemaVersion: ISSUE_VIEW_STATE_SCHEMA_VERSION,
+      ...state,
+    }),
+  );
 }
 
-function arraysEqual(a: string[], b: string[]): boolean {
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = [...a].sort();
   const sb = [...b].sort();
@@ -168,8 +288,13 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
         return dir * a.title.localeCompare(b.title);
       case "created":
         return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      case "updated":
-        return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+      case "recent":
+        return dir * (
+          issueMostRecentTimestamp(a) - issueMostRecentTimestamp(b)
+          || normalizeTimestamp(a.updatedAt) - normalizeTimestamp(b.updatedAt)
+          || normalizeTimestamp(a.createdAt) - normalizeTimestamp(b.createdAt)
+          || a.title.localeCompare(b.title)
+        );
       default:
         return 0;
     }
@@ -177,9 +302,9 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   return sorted;
 }
 
-function countActiveFilters(state: IssueViewState): number {
+function countActiveFilters(state: IssueViewState, defaultStatuses: readonly Issue["status"][] = []): number {
   let count = 0;
-  if (state.statuses.length > 0) count++;
+  if (!arraysEqual(state.statuses, defaultStatuses)) count++;
   if (state.priorities.length > 0) count++;
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
@@ -204,6 +329,7 @@ interface IssuesListProps {
   issues: Issue[];
   isLoading?: boolean;
   error?: Error | null;
+  defaultStatuses?: readonly Issue["status"][];
   agents?: Agent[];
   projects?: ProjectOption[];
   liveIssueIds?: Set<string>;
@@ -226,6 +352,7 @@ export function IssuesList({
   issues,
   isLoading,
   error,
+  defaultStatuses = [],
   agents,
   projects,
   liveIssueIds,
@@ -253,12 +380,15 @@ export function IssuesList({
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
+  const defaultStatusKey = defaultStatuses.join(",");
+  const viewConfigKey = `${scopedKey}:${defaultStatusKey}`;
+  const defaultFilters = useMemo(() => defaultFilterPatch(defaultStatuses), [defaultStatusKey]);
 
   const [viewState, setViewState] = useState<IssueViewState>(() => {
     if (initialAssignees) {
-      return { ...defaultViewState, assignees: initialAssignees, statuses: [] };
+      return { ...createDefaultViewState(defaultStatuses), assignees: initialAssignees };
     }
-    return getViewState(scopedKey);
+    return getViewState(scopedKey, defaultStatuses);
   });
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -271,15 +401,15 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state from localStorage when company changes (scopedKey changes).
-  const prevScopedKey = useRef(scopedKey);
+  const prevViewConfigKey = useRef(viewConfigKey);
   useEffect(() => {
-    if (prevScopedKey.current !== scopedKey) {
-      prevScopedKey.current = scopedKey;
+    if (prevViewConfigKey.current !== viewConfigKey) {
+      prevViewConfigKey.current = viewConfigKey;
       setViewState(initialAssignees
-        ? { ...defaultViewState, assignees: initialAssignees, statuses: [] }
-        : getViewState(scopedKey));
+        ? { ...createDefaultViewState(defaultStatuses), assignees: initialAssignees }
+        : getViewState(scopedKey, defaultStatuses));
     }
-  }, [scopedKey, initialAssignees]);
+  }, [viewConfigKey, scopedKey, initialAssignees, defaultStatuses]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
@@ -335,10 +465,11 @@ export function IssuesList({
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
 
-  const sourceIssues = useMemo(
-    () => (normalizedIssueSearch.length > 0 ? searchedIssues : issues),
-    [issues, searchedIssues, normalizedIssueSearch],
-  );
+  const sourceIssues = useMemo(() => {
+    const baseIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
+    if (!excludeRecoverySourcesWithOpenSuccessors) return baseIssues;
+    return baseIssues.filter((issue) => !shouldHideRecoverySourceIssue(issue));
+  }, [issues, searchedIssues, normalizedIssueSearch, excludeRecoverySourcesWithOpenSuccessors]);
 
   const epicIdsByIssueId = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -508,7 +639,7 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
-  const activeFilterCount = countActiveFilters(viewState);
+  const activeFilterCount = countActiveFilters(viewState, defaultStatuses);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -637,7 +768,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [], epicId: null });
+                      updateView(defaultFilters);
                     }}
                   />
                 )}
@@ -650,7 +781,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [], epicId: null })}
+                      onClick={() => updateView(defaultFilters)}
                     >
                       Clear
                     </button>
@@ -799,49 +930,46 @@ export function IssuesList({
             </PopoverContent>
           </Popover>
 
-          {/* Sort (list view only) */}
-          {viewState.viewMode === "list" && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs">
-                  <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Sort</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-48 p-0">
-                <div className="p-2 space-y-0.5">
-                  {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
-                    <button
-                      key={field}
-                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
-                      }`}
-                      onClick={() => {
-                        if (viewState.sortField === field) {
-                          updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
-                        } else {
-                          updateView({ sortField: field, sortDir: "asc" });
-                        }
-                      }}
-                    >
-                      <span>{label}</span>
-                      {viewState.sortField === field && (
-                        <span className="text-xs text-muted-foreground">
-                          {viewState.sortDir === "asc" ? "\u2191" : "\u2193"}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-xs">
+                <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                <span className="hidden sm:inline">Sort</span>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-48 p-0">
+              <div className="p-2 space-y-0.5">
+                {([
+                  ["status", "Status"],
+                  ["priority", "Priority"],
+                  ["title", "Title"],
+                  ["created", "Created"],
+                  ["recent", "Most recent"],
+                ] as const).map(([field, label]) => (
+                  <button
+                    key={field}
+                    className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
+                      viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                    }`}
+                    onClick={() => {
+                      if (viewState.sortField === field) {
+                        updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
+                      } else {
+                        updateView({ sortField: field, sortDir: defaultSortDirForField(field) });
+                      }
+                    }}
+                  >
+                    <span>{label}</span>
+                    {viewState.sortField === field && (
+                      <span className="text-xs text-muted-foreground">
+                        {viewState.sortDir === "asc" ? "\u2191" : "\u2193"}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
 
           {/* Group (list view only) */}
           {viewState.viewMode === "list" && (

@@ -17,6 +17,13 @@ export function getIssueBoardStateTone(kind: IssueBoardState["kind"]): Tone {
         dotClassName: "bg-red-500",
         summaryClassName: "text-red-600 dark:text-red-300",
       };
+    case "redirected":
+      return {
+        panelClassName: "border-slate-500/25 bg-slate-500/8",
+        eyebrow: "Redirected",
+        dotClassName: "bg-slate-500",
+        summaryClassName: "text-slate-600 dark:text-slate-300",
+      };
     case "system_error":
       return {
         panelClassName: "border-amber-500/30 bg-amber-500/10",
@@ -56,6 +63,8 @@ export function describeIssueBoardState(issue: Issue): string | null {
   switch (boardState.kind) {
     case "blocked":
       return "This issue is waiting on the root blocker below. Open it directly to resolve the real dependency.";
+    case "redirected":
+      return "This issue was superseded by a newer issue. Open the latest successor instead of continuing work here.";
     case "system_error":
       return "This issue is marked blocked without a linked blocker. Fix the issue state or add the missing dependency.";
     case "waiting":
@@ -87,6 +96,9 @@ export function resolveIssueBoardStateActionHref(issue: Issue): string | null {
   }
   if (action.type === "open_blocker") {
     return createIssueDetailPath(issue.primaryBlocker?.identifier ?? action.targetId);
+  }
+  if (action.targetId !== issue.id) {
+    return createIssueDetailPath(action.targetId);
   }
   return createIssueDetailPath(issue.identifier ?? action.targetId);
 }

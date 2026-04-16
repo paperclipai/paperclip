@@ -20,6 +20,14 @@ describe("issue routing heuristics", () => {
       status: "idle",
     },
     {
+      id: "qa-agent",
+      name: "QA Agent",
+      role: "qa",
+      title: "QA Specialist",
+      capabilities: "Verifies releases and reproduces bugs.",
+      status: "idle",
+    },
+    {
       id: "platform-engineer",
       name: "Platform Engineer",
       role: "engineer",
@@ -38,22 +46,24 @@ describe("issue routing heuristics", () => {
     },
   ] as const;
 
-  it("includes project context in routing text", () => {
-    expect(
-      buildIssueRoutingText({
-        identifier: "COMA-1061",
-        title: "Merge branches",
-        projectName: "App",
-      }),
-    ).toContain("app");
+  it("includes description in routing text and keeps identifier as fallback", () => {
+    const routingText = buildIssueRoutingText({
+      identifier: "COMA-1061",
+      description: "QA follow-up for the checkout flow",
+      title: "Merge branches",
+      projectName: "App",
+    });
+
+    expect(routingText).toContain("qa follow-up for the checkout flow");
+    expect(routingText).toContain("coma-1061");
   });
 
-  it("routes app branch merge work to the app engineer", () => {
+  it("routes baseline app work to the app engineer", () => {
     const candidate = pickOperationsAssignmentCandidate({
       issue: {
         id: "issue-1",
         identifier: "COMA-1061",
-        title: "Merge branches",
+        title: "Fix cart checkout bug",
         projectId: "project-app",
         projectName: "App",
       },
@@ -63,6 +73,60 @@ describe("issue routing heuristics", () => {
     });
 
     expect(candidate?.name).toBe("Product Engineer - App");
+  });
+
+  it("routes explicit QA intent in the description to the QA agent", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-2",
+        identifier: "COMA-2001",
+        title: "Fix cart checkout bug",
+        description: "QA verification required before release",
+        projectId: "project-app",
+        projectName: "App",
+      },
+      openAssignedIssues: [],
+      availableCandidates: [...baseCandidates],
+      pausedFallbackCandidates: [...baseCandidates],
+    });
+
+    expect(candidate?.name).toBe("QA Agent");
+  });
+
+  it("routes explicit platform intent in the description to the platform engineer", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-3",
+        identifier: "COMA-2002",
+        title: "Fix cart checkout bug",
+        description: "Platform runtime investigation for the checkout service",
+        projectId: "project-app",
+        projectName: "App",
+      },
+      openAssignedIssues: [],
+      availableCandidates: [...baseCandidates],
+      pausedFallbackCandidates: [...baseCandidates],
+    });
+
+    expect(candidate?.name).toBe("Platform Engineer");
+  });
+
+  it("routes explicit web intent in the description to the web engineer", () => {
+    const candidate = pickOperationsAssignmentCandidate({
+      issue: {
+        id: "issue-4",
+        identifier: "COMA-2003",
+        title: "Fix cart checkout bug",
+        description: "Web browser-only rendering issue for checkout",
+        projectId: "project-app",
+        projectName: "App",
+      },
+      openAssignedIssues: [],
+      availableCandidates: [...baseCandidates],
+      pausedFallbackCandidates: [...baseCandidates],
+    });
+
+    expect(candidate?.name).toBe("Product Engineer - Web");
   });
 
   it("routes onboarding work to the onboarding agent", () => {

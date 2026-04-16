@@ -2237,7 +2237,9 @@ export function issueService(db: Db) {
           return {
             ...candidate,
             blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
+            allBlockersDone:
+              blockers.length > 0
+              && blockers.every((blocker) => blocker.blockerStatus === "done" || blocker.blockerStatus === "cancelled"),
           };
         })
         .filter((candidate) => candidate.allBlockersDone)

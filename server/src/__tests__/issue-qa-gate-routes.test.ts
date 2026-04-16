@@ -6,6 +6,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   update: vi.fn(),
+  assertCheckoutOwner: vi.fn(),
   listComments: vi.fn(),
   getAncestors: vi.fn(),
   findMentionedProjectIds: vi.fn(),
@@ -170,7 +171,14 @@ describe("issue QA gate routes", () => {
   }, 30_000);
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockHeartbeatService.wakeup.mockImplementation(async () => undefined);
+    mockHeartbeatService.reportRunActivity.mockImplementation(async () => undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
@@ -502,6 +510,73 @@ describe("issue QA gate routes", () => {
       "agent-engineer",
       expect.objectContaining({
         reason: "qa_autofix_requested",
+      }),
+    );
+  });
+
+  it("routes assignee completion comments into QA when delivery work is ready", async () => {
+    const existing = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment
+      .mockResolvedValueOnce({
+        id: "comment-ready",
+        companyId: "company-1",
+        issueId: existing.id,
+        authorAgentId: "agent-engineer",
+        authorUserId: null,
+        body: "DONE: Implemented the fix and verified the regression coverage.",
+        createdAt: new Date("2026-04-10T10:00:00Z"),
+        updatedAt: new Date("2026-04-10T10:00:00Z"),
+      })
+      .mockResolvedValueOnce({
+        id: "comment-qa-route",
+        companyId: "company-1",
+        issueId: existing.id,
+        authorAgentId: null,
+        authorUserId: null,
+        body: "[QA ROUTE]\nRouted to QA",
+        createdAt: new Date("2026-04-10T10:01:00Z"),
+        updatedAt: new Date("2026-04-10T10:01:00Z"),
+      });
+    mockIssueService.update.mockResolvedValue({
+      ...existing,
+      status: "in_review",
+      assigneeAgentId: "agent-qa",
+      assigneeUserId: null,
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-engineer",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "DONE: Implemented the fix and verified the regression coverage." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "agent-qa",
+        assigneeUserId: null,
+        actorAgentId: "agent-engineer",
+        actorUserId: null,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(
+      2,
+      "11111111-1111-4111-8111-111111111111",
+      expect.stringContaining("[qa-routing]"),
+      {},
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-qa",
+      expect.objectContaining({
+        reason: "issue_commented",
       }),
     );
   });

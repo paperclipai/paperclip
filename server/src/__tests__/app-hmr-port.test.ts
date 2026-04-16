@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrPort } from "../app.ts";
+import { resolveViteHmrPort } from "../dev-server-ports.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {

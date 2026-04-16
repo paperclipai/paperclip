@@ -41,6 +41,10 @@ This starts:
 - API server: `http://localhost:3100`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
+If `3100` is already occupied, the dev runner now probes for the next available
+server port and paired Vite HMR port automatically, then prints the selected
+URL in the startup banner.
+
 If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `pnpm -s dev` with warning/error log filtering.
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.

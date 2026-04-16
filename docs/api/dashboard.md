@@ -24,6 +24,8 @@ Returns a summary including:
   - `brief.snapshot` — four summary cards for progress, risk, decisions, and spend
   - `brief.focusAreas` — the few workstreams where recent change is material
   - `brief.needsAttention` — ordered board action items such as blocked issues, failed runs, approvals, and join requests
+    - issue items are de-duplicated to at most one row per issue in the dashboard queue
+    - `severity` reflects queue urgency and is separate from the issue's workflow status
 
 ## Use Cases
 

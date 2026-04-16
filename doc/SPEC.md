@@ -417,15 +417,16 @@ PrivateClip manages task-linked work artifacts: issue documents (rich-text plans
 - Real-time updates to the UI — WebSocket? SSE? Polling?
 - Agent API key scoping — what exactly can an Agent access? Only their own tasks? Their team's? The whole Company?
 
-### Crash Recovery: Manual, Not Automatic
+### Crash Recovery: Same-Issue Correction First
 
-When an agent crashes or disappears mid-task, PrivateClip does **not** auto-reassign or auto-release the task. Instead:
+When an agent crashes or disappears mid-task, PrivateClip may correct ownership on the **same issue** when issue-level truth shows the current assignment is stale or wrong. In practice:
 
-- PrivateClip surfaces stale tasks (tasks in `in_progress` with no recent activity) through dashboards and reporting
-- PrivateClip does not fail silently — the auditing and visibility tools make problems obvious
-- Recovery is handled by humans or by emergent processes (e.g. a project manager agent whose job is to monitor for stale work and surface it)
+- fake `in_progress` work can be demoted back to `todo`
+- wrong-specialist ownership can be reassigned on the same issue
+- free execution slots can be filled by assigning the best eligible owner without creating successor tasks
+- successor issues linked by `recovered_by` remain exceptional board-controlled recovery only
 
-**Principle: PrivateClip reports problems, it doesn't silently fix them.** Automatic recovery hides failures. Good visibility lets the right entity (human or agent) decide what to do.
+**Principle: PrivateClip should not hide failures, but it may repair the same issue when the control plane has strong evidence.** Cross-issue recovery and silent planner-style rewrites remain out of scope.
 
 ### Plugin / Extension Architecture
 
@@ -511,9 +512,9 @@ Things PrivateClip explicitly does **not** do:
 - **Not a knowledge base** — core has no wiki/docs/vector-DB (plugin territory)
 - **Not a SaaS** — single-tenant, self-hosted
 - **Not opinionated about Agent implementation** — any language, any framework, any runtime
-- **Not automatically self-healing** — surfaces problems, doesn't silently fix them
+- **Not automatically self-healing across issues** — same-issue ownership correction is allowed, but PrivateClip does not silently spawn cross-issue recovery plans
 - **Does not manage delivery infrastructure** — no repo management, no deployment, no file systems (but does manage task-linked documents and attachments)
-- **Does not auto-reassign work** — stale tasks are surfaced, not silently redistributed
+- **Does not auto-reassign work across issues** — same-issue specialist correction is allowed, but successor-issue recovery remains explicit and board-controlled
 - **Does not track external revenue/expenses** — that's a future plugin. Token/LLM cost budgeting is core.
 
 ---

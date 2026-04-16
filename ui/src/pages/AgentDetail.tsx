@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/r
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
+  type AgentInvokeResponse,
   type AgentKey,
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
@@ -22,6 +23,7 @@ import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { describeHeartbeatInvokeResponse } from "../lib/heartbeat-invoke-feedback";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
@@ -624,6 +626,7 @@ export function AgentDetail() {
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -762,7 +765,7 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const agentAction = useMutation({
-    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate") => {
+    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate"): Promise<AgentInvokeResponse | Agent> => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       switch (action) {
         case "invoke": return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
@@ -783,8 +786,18 @@ export function AgentDetail() {
           queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id) });
         }
       }
-      if (action === "invoke" && data && typeof data === "object" && "id" in data) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
+      if (action === "invoke") {
+        const outcome = describeHeartbeatInvokeResponse(data as AgentInvokeResponse);
+        if (outcome.kind === "run") {
+          navigate(`/agents/${canonicalAgentRef}/runs/${outcome.runId}`);
+          return;
+        }
+        setActionError(outcome.message);
+        pushToast({
+          title: "Heartbeat skipped",
+          body: outcome.message,
+          tone: "warn",
+        });
       }
     },
     onError: (err) => {
@@ -942,6 +955,7 @@ export function AgentDetail() {
           <RunButton
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
+            pending={agentAction.isPending && agentAction.variables === "invoke"}
             label="Run Heartbeat"
           />
           <PauseResumeButton

@@ -5,6 +5,7 @@ import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
 export type ExecutionBlockCode =
+  | "company_archived"
   | "company_paused_manual"
   | "company_paused_budget"
   | "company_budget_hard_stop"
@@ -20,7 +21,7 @@ export type ExecutionBlock = {
   scopeId: string;
   scopeName: string;
   message: string;
-  skipReason: "company.paused" | "project.paused" | "budget.blocked";
+  skipReason: "company.archived" | "company.paused" | "project.paused" | "budget.blocked";
 };
 
 type ExecutionContext = {
@@ -76,6 +77,17 @@ export function executionGateService(db: Db) {
         .where(eq(companies.id, companyId))
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
+
+      if (company.status === "archived") {
+        return {
+          code: "company_archived",
+          scopeType: "company",
+          scopeId: company.id,
+          scopeName: company.name,
+          message: "Company is archived and cannot start new work.",
+          skipReason: "company.archived",
+        };
+      }
 
       if (company.status === "paused") {
         return {

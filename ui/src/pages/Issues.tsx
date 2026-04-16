@@ -16,6 +16,8 @@ import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
 
 const ARCHIVE_CLOSED_CONFIRM_WINDOW_MS = 5000;
+const DEFAULT_ISSUES_PAGE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -91,14 +93,12 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
-      "show-closed",
-      showClosed ? "true" : "false",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         participantAgentId,
         includeRelations: true,
-        ...(showClosed ? {} : { status: OPEN_ISSUE_STATUSES }),
+        excludeRecoverySourcesWithOpenSuccessors: true,
       }),
     enabled: !!selectedCompanyId && !legacyIssueRedirectPath,
   });
@@ -167,6 +167,7 @@ export function Issues() {
       issues={issues ?? []}
       isLoading={isLoading}
       error={error as Error | null}
+      defaultStatuses={DEFAULT_ISSUES_PAGE_STATUSES}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
@@ -177,6 +178,7 @@ export function Issues() {
       onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId ? { participantAgentId } : undefined}
+      excludeRecoverySourcesWithOpenSuccessors
       onArchiveClosed={handleArchiveClosed}
       archiveClosedPending={archiveClosedIssues.isPending}
     />

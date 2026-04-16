@@ -24,6 +24,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - `In Progress` = active implementation or rework
 - `In Review` = mandatory QA gate
 - `Done` = QA passed and released
+- `assigneeAgentId` = next owner
+- `In Progress` = an issue that is actively consuming an execution slot
 
 ## Hard Rules
 
@@ -33,6 +35,7 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Any delivery issue in `Done` without visible `[QA PASS]` and `[RELEASE CONFIRMED]` is invalid and must be recovered.
 - Any delivery issue in `In Review` must be assigned to QA and Release Engineer, include visible `[QA ROUTE]`, and include explicit QA wake-up.
 - Same-issue recovery is the default for stuck work.
+- You may autonomously correct ownership on the same issue when specialist routing or truthful WIP requires it.
 - Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
 - If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
 

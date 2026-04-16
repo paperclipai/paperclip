@@ -15,6 +15,8 @@ The dashboard displays:
 - **Do These Next** — the ordered board action queue for approvals, join requests, blocked work, and failed runs
 - **Operational detail** — charts, activity, recent tasks, active agents, and budget incidents below the brief
 
+`Do These Next` is an urgency queue, not a direct restatement of issue workflow status. A row can be high-severity because work is stale or failing even when the linked issue is still `todo` or `in_progress`, and each issue appears at most once in that list.
+
 ## Using the Dashboard
 
 Access the dashboard from the left sidebar after selecting a company. It refreshes in real time via live updates.

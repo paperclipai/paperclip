@@ -4,6 +4,7 @@ import { Check, History, MessageSquare, MessageSquarePlus, PanelRightClose, Pane
 import type { Agent, CopilotThreadHistoryEntry, IssueComment } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { useSidebar } from "../context/SidebarContext";
 import { useToast } from "../context/ToastContext";
 import { activityApi } from "../api/activity";
 import { copilotApi } from "../api/copilot";
@@ -25,9 +26,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { IssueChatThread } from "./IssueChatThread";
 
 const STORAGE_KEY = "paperclip:board-copilot-visible";
+const SESSION_STORAGE_KEY = "paperclip:board-copilot-session";
 const CONTEXT_BLOCK_PREFIX = "<!-- paperclip:board-copilot-context";
 const COMMENTS_PAGE_SIZE = 60;
 const THREAD_HISTORY_LIMIT = 50;
@@ -49,6 +58,31 @@ function writePreference(value: boolean) {
   } catch {
     // Ignore storage failures in restricted browser contexts.
   }
+}
+
+function readSessionKey() {
+  try {
+    return window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionKey(value: string | null) {
+  try {
+    if (value) {
+      window.sessionStorage.setItem(SESSION_STORAGE_KEY, value);
+    } else {
+      window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+}
+
+function buildRouteSessionKey(companyId: string | null, pagePath: string) {
+  if (!companyId) return null;
+  return `${companyId}::${pagePath}`;
 }
 
 function stripCopilotContext(body: string) {
@@ -77,16 +111,20 @@ function threadHistoryLabel(thread: CopilotThreadHistoryEntry) {
 
 export function BoardCopilotRail() {
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const { pushToast } = useToast();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const [visible, setVisible] = useState(readPreference);
+  const [desktopVisible, setDesktopVisible] = useState(readPreference);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [selectedThreadIssueId, setSelectedThreadIssueId] = useState<string | null>(null);
+  const [currentSessionKey, setCurrentSessionKey] = useState<string | null>(readSessionKey);
   const scrollHostRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const prependRestoreRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const autoScrolledThreadRef = useRef<string | null>(null);
   const newestCommentIdRef = useRef<string | null>(null);
+  const requestedSessionKeyRef = useRef<string | null>(null);
 
   const routeContext = useMemo(
     () => buildCopilotRouteContext(location.pathname, location.search),
@@ -97,9 +135,15 @@ export function BoardCopilotRail() {
     [location.pathname, location.search],
   );
   const copilotEnabledForRoute = Boolean(selectedCompanyId) && routeContext.pageKind !== "instance";
+  const panelOpen = isMobile ? mobileOpen : desktopVisible;
+  const routeSessionKey = useMemo(
+    () => buildRouteSessionKey(selectedCompanyId, routeContext.pagePath),
+    [selectedCompanyId, routeContext.pagePath],
+  );
+  const hasCurrentRouteSession = Boolean(routeSessionKey) && currentSessionKey === routeSessionKey;
   const threadQueryKey = useMemo(
-    () => [...queryKeys.copilot.thread(selectedCompanyId ?? "__none__"), contextIssueRef ?? "__none__"] as const,
-    [selectedCompanyId, contextIssueRef],
+    () => [...queryKeys.copilot.thread(selectedCompanyId ?? "__none__"), routeSessionKey ?? "__none__"] as const,
+    [selectedCompanyId, routeSessionKey],
   );
 
   const resolveViewport = useCallback(() => {
@@ -125,7 +169,7 @@ export function BoardCopilotRail() {
       copilotApi.getThread(selectedCompanyId!, {
         contextIssueId: contextIssueRef,
       }),
-    enabled: copilotEnabledForRoute,
+    enabled: copilotEnabledForRoute && hasCurrentRouteSession,
   });
 
   const threadIssueId = threadQuery.data?.issueId ?? null;
@@ -239,20 +283,26 @@ export function BoardCopilotRail() {
   });
 
   const createThread = useMutation({
-    mutationFn: async () => {
-      if (!selectedCompanyId) throw new Error("No company selected");
-      return copilotApi.createThread(selectedCompanyId, {
-        contextIssueId: contextIssueRef,
+    mutationFn: async (input: {
+      companyId: string;
+      routeSessionKey: string;
+      contextIssueId: string | null;
+    }) => {
+      return copilotApi.createThread(input.companyId, {
+        contextIssueId: input.contextIssueId,
       });
     },
-    onSuccess: async (thread) => {
-      queryClient.setQueryData(threadQueryKey, thread);
+    onSuccess: async (thread, input) => {
+      const targetThreadQueryKey = [...queryKeys.copilot.thread(input.companyId), input.routeSessionKey] as const;
+      writeSessionKey(input.routeSessionKey);
+      setCurrentSessionKey(input.routeSessionKey);
+      queryClient.setQueryData(targetThreadQueryKey, thread);
       setSelectedThreadIssueId(thread.issueId);
       autoScrolledThreadRef.current = null;
       newestCommentIdRef.current = null;
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.copilot.thread(selectedCompanyId ?? "__none__") }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.copilot.history(selectedCompanyId ?? "__none__") }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.copilot.thread(input.companyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.copilot.history(input.companyId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(thread.issueId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(thread.issueId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(thread.issueId) }),
@@ -329,13 +379,39 @@ export function BoardCopilotRail() {
       ? activeRunQuery.data
       : (liveRunsQuery.data ?? []).find((run) => run.status === "running") ?? null;
   const isLoadingThreadBody =
-    threadQuery.isLoading || (Boolean(activeThreadIssueId) && commentsQuery.status === "pending");
+    (panelOpen && copilotEnabledForRoute && Boolean(routeSessionKey) && !hasCurrentRouteSession) ||
+    threadQuery.isLoading ||
+    (Boolean(activeThreadIssueId) && commentsQuery.status === "pending");
+  const threadLoadError = createThread.error ?? threadQuery.error;
 
   useEffect(() => {
     setSelectedThreadIssueId(null);
     autoScrolledThreadRef.current = null;
     newestCommentIdRef.current = null;
-  }, [selectedCompanyId, contextIssueRef]);
+    requestedSessionKeyRef.current = null;
+  }, [routeSessionKey]);
+
+  useEffect(() => {
+    if (!panelOpen || !copilotEnabledForRoute || !routeSessionKey) return;
+    if (hasCurrentRouteSession || createThread.isPending) return;
+    if (requestedSessionKeyRef.current === routeSessionKey) return;
+    requestedSessionKeyRef.current = routeSessionKey;
+    setSelectedThreadIssueId(null);
+    createThread.mutate({
+      companyId: selectedCompanyId!,
+      routeSessionKey,
+      contextIssueId: contextIssueRef,
+    });
+  }, [
+    contextIssueRef,
+    selectedCompanyId,
+    copilotEnabledForRoute,
+    createThread,
+    createThread.isPending,
+    hasCurrentRouteSession,
+    panelOpen,
+    routeSessionKey,
+  ]);
 
   useEffect(() => {
     if (!selectedThreadIssueId) return;
@@ -357,12 +433,12 @@ export function BoardCopilotRail() {
   }, [commentsQuery.fetchNextPage, commentsQuery.hasNextPage, commentsQuery.isFetchingNextPage, resolveViewport]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!panelOpen) return;
     resolveViewport();
-  }, [visible, activeThreadIssueId, resolveViewport]);
+  }, [panelOpen, activeThreadIssueId, resolveViewport]);
 
   useEffect(() => {
-    if (!visible || !activeThreadIssueId) return;
+    if (!panelOpen || !activeThreadIssueId) return;
     const viewport = resolveViewport();
     if (!viewport) return;
     const onScroll = () => {
@@ -372,7 +448,7 @@ export function BoardCopilotRail() {
     return () => {
       viewport.removeEventListener("scroll", onScroll);
     };
-  }, [maybeLoadOlderHistory, resolveViewport, activeThreadIssueId, visible]);
+  }, [maybeLoadOlderHistory, resolveViewport, activeThreadIssueId, panelOpen]);
 
   useEffect(() => {
     if (commentsQuery.isFetchingNextPage) return;
@@ -385,7 +461,7 @@ export function BoardCopilotRail() {
   }, [commentsQuery.isFetchingNextPage, commentsQuery.data?.pages.length, resolveViewport]);
 
   useEffect(() => {
-    if (!visible || !activeThreadIssueId || commentsQuery.status !== "success") return;
+    if (!panelOpen || !activeThreadIssueId || commentsQuery.status !== "success") return;
     if (autoScrolledThreadRef.current !== activeThreadIssueId) {
       autoScrolledThreadRef.current = activeThreadIssueId;
       newestCommentIdRef.current = newestLoadedCommentId;
@@ -414,27 +490,228 @@ export function BoardCopilotRail() {
     resolveViewport,
     scrollToBottom,
     activeThreadIssueId,
-    visible,
+    panelOpen,
   ]);
 
   if (!copilotEnabledForRoute) return null;
+
+  const setDesktopRailVisible = (next: boolean) => {
+    setDesktopVisible(next);
+    writePreference(next);
+  };
+
+  const panelContent = (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-b border-border px-3 py-2">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Board Copilot</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto h-7 px-2 text-[11px]"
+                disabled={threadHistoryQuery.isLoading}
+                title="Chat history"
+              >
+                <History className="mr-1 h-3.5 w-3.5" />
+                History
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80">
+              <DropdownMenuLabel>Chat history</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => {
+                  if (threadIssueId) setSelectedThreadIssueId(threadIssueId);
+                }}
+                disabled={!threadIssueId}
+              >
+                {activeThreadIssueId === threadIssueId ? <Check className="h-3.5 w-3.5" /> : null}
+                <div className="min-w-0">
+                  <p className="truncate font-medium">Current chat</p>
+                  <p className="truncate text-[11px] text-muted-foreground">
+                    {threadIssueId ? "Active priority thread" : "No active chat"}
+                  </p>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {threadHistory.filter((thread) => thread.issueId !== threadIssueId).length === 0 ? (
+                <DropdownMenuItem disabled>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">No chat history yet</p>
+                  </div>
+                </DropdownMenuItem>
+              ) : (
+                threadHistory
+                  .filter((thread) => thread.issueId !== threadIssueId)
+                  .map((thread) => (
+                    <DropdownMenuItem
+                      key={thread.issueId}
+                      onClick={() => setSelectedThreadIssueId(thread.issueId)}
+                    >
+                      {activeThreadIssueId === thread.issueId ? <Check className="h-3.5 w-3.5" /> : null}
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {thread.issueIdentifier ?? thread.issueId.slice(0, 8)} · {threadHistoryLabel(thread)}
+                        </p>
+                        <p className="truncate text-[11px] text-muted-foreground">
+                          {thread.issueTitle}
+                        </p>
+                      </div>
+                    </DropdownMenuItem>
+                  ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            disabled={createThread.isPending || threadQuery.isLoading}
+            onClick={() => {
+              if (!routeSessionKey || !selectedCompanyId) return;
+              requestedSessionKeyRef.current = routeSessionKey;
+              setSelectedThreadIssueId(null);
+              createThread.mutate({
+                companyId: selectedCompanyId,
+                routeSessionKey,
+                contextIssueId: contextIssueRef,
+              });
+            }}
+          >
+            <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
+            {createThread.isPending ? "Starting..." : "New chat"}
+          </Button>
+          {!isMobile ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title="Collapse board copilot"
+              onClick={() => {
+                setDesktopRailVisible(false);
+              }}
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          Context: {contextLabel(routeContext.pageKind, routeContext.entityType, routeContext.entityId)}
+        </div>
+        {activeThreadSummary ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Chat: {threadHistoryLabel(activeThreadSummary)} · Updated {formatShortDate(activeThreadSummary.updatedAt)}
+          </div>
+        ) : null}
+      </div>
+
+      <div ref={scrollHostRef} className="flex-1 min-h-0">
+        <ScrollArea className="h-full">
+          <div className="p-3">
+            {activeThreadIssueId && commentsQuery.hasNextPage ? (
+              <p className="mb-2 text-[11px] text-muted-foreground">
+                Older messages are hidden by default. Scroll up to load history.
+              </p>
+            ) : null}
+            {commentsQuery.isFetchingNextPage ? (
+              <p className="mb-2 text-[11px] text-muted-foreground">Loading older messages…</p>
+            ) : null}
+            {isLoadingThreadBody ? (
+              <p className="text-xs text-muted-foreground">Preparing copilot thread…</p>
+            ) : threadLoadError ? (
+              <p className="text-xs text-destructive">
+                {threadLoadError instanceof Error ? threadLoadError.message : "Failed to load copilot thread"}
+              </p>
+            ) : !activeThreadIssueId ? (
+              <p className="text-xs text-muted-foreground">No thread available.</p>
+            ) : (
+              <IssueChatThread
+                comments={comments}
+                linkedRuns={runsQuery.data ?? []}
+                timelineEvents={timelineEvents}
+                liveRuns={liveRunsQuery.data ?? []}
+                activeRun={activeRunQuery.data ?? null}
+                companyId={selectedCompanyId}
+                issueStatus={activeThreadSummary?.issueStatus ?? threadQuery.data?.issueStatus}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                draftKey={`paperclip:board-copilot-draft:${activeThreadIssueId}`}
+                emptyMessage="Ask the board copilot to review this page, summarize status, or clean up board state."
+                submitHotkey="enter"
+                composerDisabledReason={
+                  isViewingHistoryThread
+                    ? "Viewing chat history. Switch to the current chat or start a new chat to send messages."
+                    : null
+                }
+                onAdd={async (body) => {
+                  if (isViewingHistoryThread) return;
+                  await sendMessage.mutateAsync(body);
+                }}
+                onCancelRun={
+                  !isViewingHistoryThread && runningRun
+                    ? async () => cancelRun.mutateAsync(runningRun.id)
+                    : undefined
+                }
+              />
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        {!mobileOpen ? (
+          <div className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 md:hidden">
+            <Button
+              type="button"
+              className="rounded-full px-4 shadow-lg"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open board copilot"
+              title="Open board copilot"
+            >
+              <MessageSquare className="mr-1.5 h-4 w-4" />
+              Chat
+            </Button>
+          </div>
+        ) : null}
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+          <SheetContent
+            side="bottom"
+            className="h-[min(85dvh,48rem)] rounded-t-2xl p-0 gap-0 md:hidden"
+          >
+            <SheetHeader className="sr-only">
+              <SheetTitle>Board Copilot</SheetTitle>
+              <SheetDescription>
+                Review the current board context and chat with the board copilot.
+              </SheetDescription>
+            </SheetHeader>
+            {panelContent}
+          </SheetContent>
+        </Sheet>
+      </>
+    );
+  }
 
   return (
     <aside
       className={cn(
         "hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-[width] duration-200 ease-in-out",
-        visible ? "w-[420px]" : "w-12",
+        panelOpen ? "w-[420px]" : "w-12",
       )}
     >
-      {!visible ? (
+      {!panelOpen ? (
         <div className="flex h-full items-start justify-center pt-2">
           <Button
             variant="ghost"
             size="icon-xs"
             title="Open board copilot"
             onClick={() => {
-              setVisible(true);
-              writePreference(true);
+              setDesktopRailVisible(true);
             }}
           >
             <PanelRightOpen className="h-4 w-4" />
@@ -442,153 +719,7 @@ export function BoardCopilotRail() {
         </div>
       ) : (
         <div className="flex h-full min-w-[420px] flex-col">
-          <div className="border-b border-border px-3 py-2">
-            <div className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Board Copilot</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="ml-auto h-7 px-2 text-[11px]"
-                    disabled={threadHistoryQuery.isLoading}
-                    title="Chat history"
-                  >
-                    <History className="mr-1 h-3.5 w-3.5" />
-                    History
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-80">
-                  <DropdownMenuLabel>Chat history</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={() => {
-                      if (threadIssueId) setSelectedThreadIssueId(threadIssueId);
-                    }}
-                    disabled={!threadIssueId}
-                  >
-                    {activeThreadIssueId === threadIssueId ? <Check className="h-3.5 w-3.5" /> : null}
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">Current chat</p>
-                      <p className="truncate text-[11px] text-muted-foreground">
-                        {threadIssueId ? "Active priority thread" : "No active chat"}
-                      </p>
-                    </div>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {threadHistory.filter((thread) => thread.issueId !== threadIssueId).length === 0 ? (
-                    <DropdownMenuItem disabled>
-                      <div className="min-w-0">
-                        <p className="truncate font-medium">No chat history yet</p>
-                      </div>
-                    </DropdownMenuItem>
-                  ) : (
-                    threadHistory
-                      .filter((thread) => thread.issueId !== threadIssueId)
-                      .map((thread) => (
-                      <DropdownMenuItem
-                        key={thread.issueId}
-                        onClick={() => setSelectedThreadIssueId(thread.issueId)}
-                      >
-                        {activeThreadIssueId === thread.issueId ? <Check className="h-3.5 w-3.5" /> : null}
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">
-                            {thread.issueIdentifier ?? thread.issueId.slice(0, 8)} · {threadHistoryLabel(thread)}
-                          </p>
-                          <p className="truncate text-[11px] text-muted-foreground">
-                            {thread.issueTitle}
-                          </p>
-                        </div>
-                      </DropdownMenuItem>
-                      ))
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-[11px]"
-                disabled={createThread.isPending || threadQuery.isLoading}
-                onClick={() => createThread.mutate()}
-              >
-                <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
-                {createThread.isPending ? "Starting..." : "New chat"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                title="Collapse board copilot"
-                onClick={() => {
-                  setVisible(false);
-                  writePreference(false);
-                }}
-              >
-                <PanelRightClose className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              Context: {contextLabel(routeContext.pageKind, routeContext.entityType, routeContext.entityId)}
-            </div>
-            {activeThreadSummary ? (
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                Chat: {threadHistoryLabel(activeThreadSummary)} · Updated {formatShortDate(activeThreadSummary.updatedAt)}
-              </div>
-            ) : null}
-          </div>
-
-          <div ref={scrollHostRef} className="flex-1 min-h-0">
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                {activeThreadIssueId && commentsQuery.hasNextPage ? (
-                  <p className="mb-2 text-[11px] text-muted-foreground">
-                    Older messages are hidden by default. Scroll up to load history.
-                  </p>
-                ) : null}
-                {commentsQuery.isFetchingNextPage ? (
-                  <p className="mb-2 text-[11px] text-muted-foreground">Loading older messages…</p>
-                ) : null}
-                {isLoadingThreadBody ? (
-                  <p className="text-xs text-muted-foreground">Preparing copilot thread…</p>
-                ) : threadQuery.error ? (
-                  <p className="text-xs text-destructive">
-                    {threadQuery.error instanceof Error ? threadQuery.error.message : "Failed to load copilot thread"}
-                  </p>
-                ) : !activeThreadIssueId ? (
-                  <p className="text-xs text-muted-foreground">No thread available.</p>
-                ) : (
-                  <IssueChatThread
-                    comments={comments}
-                    linkedRuns={runsQuery.data ?? []}
-                    timelineEvents={timelineEvents}
-                    liveRuns={liveRunsQuery.data ?? []}
-                    activeRun={activeRunQuery.data ?? null}
-                    companyId={selectedCompanyId}
-                    issueStatus={activeThreadSummary?.issueStatus ?? threadQuery.data?.issueStatus}
-                    agentMap={agentMap}
-                    currentUserId={currentUserId}
-                    draftKey={`paperclip:board-copilot-draft:${activeThreadIssueId}`}
-                    emptyMessage="Ask the board copilot to review this page, summarize status, or clean up board state."
-                    submitHotkey="enter"
-                    composerDisabledReason={
-                      isViewingHistoryThread
-                        ? "Viewing chat history. Switch to the current chat or start a new chat to send messages."
-                        : null
-                    }
-                    onAdd={async (body) => {
-                      if (isViewingHistoryThread) return;
-                      await sendMessage.mutateAsync(body);
-                    }}
-                    onCancelRun={
-                      !isViewingHistoryThread && runningRun
-                        ? async () => cancelRun.mutateAsync(runningRun.id)
-                        : undefined
-                    }
-                  />
-                )}
-              </div>
-            </ScrollArea>
-          </div>
+          {panelContent}
         </div>
       )}
     </aside>

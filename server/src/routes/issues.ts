@@ -68,6 +68,7 @@ import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../s
 import { buildIssueQaGate, isDeliveryScopedAssigneeRole, issueQaGateReasonMessage } from "../services/qa-gate.js";
 import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
 import { computeIssueBoardStateMap } from "../services/issue-board-state.js";
+import { classifyIssueTruthFromCommentBody, hasReadyForQaTruthFromCommentBody } from "../services/heartbeat.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const AUTO_FIX_ATTEMPT_MARKER = "[AUTO-FIX ATTEMPT]";
@@ -206,6 +207,103 @@ export function issueRoutes(
       `Routed to QA ${mention} because this delivery issue entered in_review.`,
       "QA now owns the release gate for this issue.",
     ].join("\n");
+  }
+
+  async function maybePromoteCommentReadyForQa<
+    TIssue extends {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      identifier?: string | null;
+      title?: string | null;
+      description?: string | null;
+      executionPolicy?: unknown;
+    },
+  >(input: {
+    issue: TIssue;
+    comment: Pick<IssueComment, "authorAgentId" | "body">;
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+    };
+  }) {
+    if (input.issue.status !== "in_progress") {
+      return { issue: input.issue, qaAutoRouting: null as { agentId: string; agentName: string | null } | null };
+    }
+    if (input.issue.assigneeAgentId == null || input.comment.authorAgentId !== input.issue.assigneeAgentId) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+    if (input.issue.executionPolicy != null) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
+    const commentBody = input.comment.body ?? "";
+    const truthType = classifyIssueTruthFromCommentBody(commentBody);
+    const readyForQa =
+      hasReadyForQaTruthFromCommentBody(commentBody)
+      || truthType === "completion";
+    if (!readyForQa) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
+    const assigneeRole = await getAgentRole(input.issue.assigneeAgentId, input.issue.companyId);
+    if (!isDeliveryScopedAssigneeRole(assigneeRole)) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
+    const eligibleQaAgents = await listEligibleQaAgents(input.issue.companyId);
+    if (eligibleQaAgents.length !== 1) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
+    const qaAgent = eligibleQaAgents[0]!;
+    const promotedIssue = await svc.update(input.issue.id, {
+      status: "in_review",
+      assigneeAgentId: qaAgent.id,
+      assigneeUserId: null,
+      actorAgentId: input.actor.agentId ?? null,
+      actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+    if (!promotedIssue) {
+      return { issue: input.issue, qaAutoRouting: null };
+    }
+
+    await routinesSvc.syncRunStatusForIssue(promotedIssue.id);
+
+    await logActivity(db, {
+      companyId: promotedIssue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: promotedIssue.id,
+      details: {
+        status: "in_review",
+        assigneeAgentId: qaAgent.id,
+        assigneeUserId: null,
+        identifier: promotedIssue.identifier,
+        source: "comment",
+        _previous: {
+          status: input.issue.status,
+          assigneeAgentId: input.issue.assigneeAgentId,
+          assigneeUserId: input.issue.assigneeUserId,
+        },
+      },
+    });
+
+    return {
+      issue: promotedIssue as unknown as TIssue,
+      qaAutoRouting: {
+        agentId: qaAgent.id,
+        agentName: qaAgent.name ?? null,
+      },
+    };
   }
 
   async function readLatestIssueCommentStatus(issue: { executionRunId?: string | null }) {
@@ -2444,8 +2542,9 @@ export function issueRoutes(
         }
       }
 
-      const becameDone = existing.status !== "done" && issue.status === "done";
-      if (becameDone) {
+      const becameTerminalForDependents =
+        !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+      if (becameTerminalForDependents) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {
@@ -2936,6 +3035,37 @@ export function issueRoutes(
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },
     });
+
+    const readyForQaPromotion = await maybePromoteCommentReadyForQa({
+      issue: currentIssue,
+      comment,
+      actor,
+    });
+    currentIssue = readyForQaPromotion.issue;
+
+    if (readyForQaPromotion.qaAutoRouting) {
+      await svc.addComment(
+        currentIssue.id,
+        buildQaRoutingComment(
+          readyForQaPromotion.qaAutoRouting.agentId,
+          readyForQaPromotion.qaAutoRouting.agentName,
+        ),
+        {},
+      );
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: "system",
+        actorId: "qa-routing",
+        action: "issue.qa_routed",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          identifier: currentIssue.identifier,
+          qaAgentId: readyForQaPromotion.qaAutoRouting.agentId,
+          qaAgentName: readyForQaPromotion.qaAutoRouting.agentName,
+        },
+      });
+    }
 
     const mergeResult = await maybeAutoMergeValidatedIssue({
       issue: currentIssue,

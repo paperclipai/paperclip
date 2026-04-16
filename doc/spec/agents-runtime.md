@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide  
-Last updated: 2026-02-17  
+Last updated: 2026-04-16  
 Audience: Operators setting up and running agents in PrivateClip
 
 ## 1. What this system does
@@ -27,6 +27,7 @@ An agent can be woken up in four ways:
 - `automation`: system-triggered wakeup for future automations
 
 If an agent is already running, new wakeups are merged (coalesced) instead of launching duplicate runs.
+If a manual wakeup is blocked by policy or company state, the request should return a visible skipped reason rather than appearing to do nothing.
 
 ## 3. What to configure per agent
 
@@ -50,6 +51,8 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnAssignment`: wake when assigned work
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
+
+Archived companies do not start new work. Queued runs for archived companies should be cancelled instead of remaining queued indefinitely.
 
 ## 3.3 Working directory and execution limits
 
@@ -129,6 +132,44 @@ If the connection drops, the UI reconnects automatically.
 2. Conservative prompt
 3. Monitor errors + cancel quickly when needed
 4. Reset sessions when drift appears
+
+## 7.4 Leaving issue-level truth for COO recovery
+
+Operations heartbeats only suppress cross-agent recovery when an assignee leaves explicit issue-level truth.
+
+Use structured line-start markers or headings such as:
+
+- `Status: blocked`
+- `Blocked: ...`
+- `Handoff: ...`
+- `[BLOCKER]`
+- `[HANDOFF]`
+- `[QA ROUTE]`
+- `[READY FOR QA]`
+- `[AUTO-FIX BLOCKED]`
+- `[POISONED SESSION]`
+- `DONE: ...`
+- `Workflow gate: ...`
+- `Missing permission: ...`
+- `Board action required.`
+
+Free-form transcript narration does not count. Mentioning phrases like `QA gate`, `missing permission`, or `before entering in_review` inside ordinary prose should not suppress COO recovery on its own, and markers pasted only inside fenced code blocks or blockquotes are ignored. Once explicit truth is present, newer ordinary chatter does not clear it by itself.
+
+## 7.5 Truthful WIP and same-issue ownership correction
+
+COO treats `assigneeAgentId` and `status` differently:
+
+- `assigneeAgentId` means “who should own this next”
+- `status = in_progress` means “this issue is actively consuming an execution slot”
+
+That means COO may correct the same issue without creating a successor issue:
+
+- wrong-specialist ownership can be reassigned on the same issue
+- `in_progress` without a live execution run or fresh structured wait/handoff truth can be demoted back to `todo`
+- assigned `todo` is valid queued ownership and does not consume a slot
+- wakes should only be issued when the selected owner has a real free heartbeat slot
+
+This is intentionally limited to same-issue correction. `recovered_by` successor issues remain exceptional board-controlled recovery only.
 
 ## 8. Troubleshooting
 

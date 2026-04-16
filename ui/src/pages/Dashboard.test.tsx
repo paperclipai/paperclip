@@ -319,4 +319,51 @@ describe("Dashboard executive brief", () => {
       root.unmount();
     });
   });
+
+  it("shows severity text for attention items instead of implying blocked issue status", async () => {
+    mockDashboardApi.summary.mockResolvedValueOnce({
+      companyId: "company-1",
+      agents: { active: 1, running: 0, paused: 0, error: 0 },
+      tasks: { open: 1, inProgress: 0, blocked: 0, done: 0 },
+      costs: { monthSpendCents: 4200, monthBudgetCents: 10000, monthUtilizationPercent: 42 },
+      pendingApprovals: 0,
+      budgets: { activeIncidents: 0, pendingApprovals: 0, pausedAgents: 0, pausedProjects: 0 },
+      brief: {
+        health: "watch",
+        snapshot: {
+          progress: { value: "0", label: "In flight", headline: "Work is queued but not yet moving", detail: "0 completed recently", tone: "watch" },
+          risk: { value: "0", label: "Blocked", headline: "No critical execution risk right now", detail: "0 failed runs on active work", tone: "healthy" },
+          decisions: { value: "0", label: "Waiting", headline: "No board decisions waiting", detail: "0 approvals, 0 join requests, 0 board-owned issues", tone: "healthy" },
+          spend: { value: "$42.00", label: "Month spend", headline: "Budget is under control", detail: "42% of monthly budget", tone: "healthy" },
+        },
+        focusAreas: [],
+        needsAttention: [
+          {
+            key: "issue:1",
+            kind: "issue",
+            entityId: "issue-1",
+            title: "ATHA-17 Find me paid jobs that I can automate with Paperclip",
+            reason: "No meaningful movement in the last 24 hours",
+            severity: "high",
+            timestamp: new Date("2026-04-14T10:00:00.000Z"),
+            href: "/issues/ATHA-17",
+            ctaLabel: "Open issue",
+          },
+        ],
+      },
+    } as any);
+
+    const { root } = renderDashboard(container);
+
+    await waitForAssertion(() => {
+      const row = container.querySelector('a[href="/issues/ATHA-17"]');
+      expect(row).not.toBeNull();
+      expect(row?.textContent).toContain("High");
+      expect(row?.textContent).not.toContain("Blocked");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

@@ -89,6 +89,34 @@ function briefToneClasses(tone: DashboardBriefTone): {
   }
 }
 
+function attentionSeverityTone(item: DashboardAttentionItem): DashboardBriefTone {
+  switch (item.severity) {
+    case "critical":
+      return "blocked";
+    case "high":
+      return "at_risk";
+    case "medium":
+      return "watch";
+    case "low":
+    default:
+      return "healthy";
+  }
+}
+
+function attentionSeverityLabel(item: DashboardAttentionItem): string {
+  switch (item.severity) {
+    case "critical":
+      return "Critical";
+    case "high":
+      return "High";
+    case "medium":
+      return "Medium";
+    case "low":
+    default:
+      return "Low";
+  }
+}
+
 function companyStateCopy(
   tone: DashboardBriefTone,
   {
@@ -189,12 +217,7 @@ function FocusAreaCard({ area }: { area: DashboardFocusArea }) {
 }
 
 function AttentionRow({ item }: { item: DashboardAttentionItem }) {
-  const severityTone: DashboardBriefTone =
-    item.severity === "critical" || item.severity === "high"
-      ? "blocked"
-      : item.severity === "medium"
-        ? "watch"
-        : "healthy";
+  const severityTone = attentionSeverityTone(item);
   const tone = briefToneClasses(severityTone);
 
   return (
@@ -207,7 +230,7 @@ function AttentionRow({ item }: { item: DashboardAttentionItem }) {
           <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${tone.badge}`}>
             {item.kind.replace("_", " ")}
           </span>
-          <span className={`text-xs ${tone.headline}`}>{briefToneLabel(severityTone)}</span>
+          <span className={`text-xs ${tone.headline}`}>{attentionSeverityLabel(item)}</span>
         </div>
         <p className="mt-2 text-sm font-medium">{item.title}</p>
         <p className="mt-1 text-xs text-muted-foreground">{item.reason}</p>

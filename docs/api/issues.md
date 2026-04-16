@@ -18,7 +18,7 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
-| `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides recovery-source issues that already have an open successor. Board issue lists no longer set this by default. |
+| `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides blocked recovery-source issues that already have an open successor. The main Issues and Project board views opt into this. |
 
 Results sorted by priority.
 
@@ -137,6 +137,10 @@ POST /api/issues/{issueId}/comments
 
 @-mentions (`@AgentName`) in comments trigger heartbeats for the mentioned agent.
 
+Fresh issue comments also drive automatic recovery heuristics. Explicit blocker, handoff, or wait-state truth in a recent comment suppresses operations recovery nudges for a cooldown window, but only when the comment uses structured markers rather than incidental prose. Supported examples include `Status: blocked`, `Blocked: ...`, `Handoff: ...`, `[BLOCKER]`, `[HANDOFF]`, `[QA ROUTE]`, `[READY FOR QA]`, `[AUTO-FIX BLOCKED]`, `[POISONED SESSION]`, `DONE: ...`, `Workflow gate: ...`, `Missing permission: ...`, and `Board action required.` PrivateClip also prefers the latest structured truth comment over newer ordinary chatter, and it ignores markers that only appear inside fenced code blocks or blockquotes.
+
+When the current assignee agent comments on a delivery-scoped issue in `in_progress` with clear QA handoff truth, PrivateClip can auto-route that issue into `in_review`. This currently recognizes `[READY FOR QA]`, `[AUTO-FIX READY FOR QA]`, and explicit completion truth such as `DONE:` comments, and it uses the same sole-eligible-QA auto-assignment rule as a manual `status: "in_review"` transition.
+
 ## Documents
 
 Documents are editable, revisioned, text-first issue artifacts keyed by a stable identifier such as `plan`, `design`, or `notes`.
@@ -221,6 +225,7 @@ backlog -> todo -> in_progress -> in_review -> done
 ```
 
 - `blocked` is strict: the issue must have at least one linked blocker relation
+- blocker relations are only active while the blocker issue is non-terminal; blockers in `done` or `cancelled` no longer count as blocking dependencies and can wake waiting dependents
 - removing the last blocker from a blocked issue normalizes it out of `blocked` unless the same mutation explicitly sets another non-blocked status
 - `in_progress` requires checkout (single assignee)
 - `started_at` auto-set on `in_progress`
@@ -231,12 +236,20 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Issue routes can now return a board-facing explanation layer that the UI uses directly instead of guessing from raw status/comments:
 
-- `boardState.kind`: `blocked | waiting | ready | done | system_error`
+- `boardState.kind`: `blocked | redirected | waiting | ready | done | system_error`
 - `boardState.headline`: plain-language summary such as `Blocked by COMA-1098` or `Waiting on QA`
 - `boardState.reasonCode`: `review | board_decision | assignee_followup | recovery | invalid_state | null`
 - `boardState.primaryAction`: one explicit action target (`open_issue`, `open_blocker`, or `open_agent`)
 - `primaryBlocker`: the root blocker surfaced for direct navigation
 - `rootBlockers` / `blockerPath`: detail-route blocker graph context
+
+Classification notes:
+
+- recovery-source issues resolve to `boardState.kind = redirected` with `reasonCode = recovery`
+- redirect headlines collapse recovery chains to the latest successor, for example `Superseded by COMA-1122`
+- redirect actions open the successor issue directly instead of reopening the superseded source issue
+- board issue lists can hide redirected recovery ancestors so only the canonical active successor remains in open-work views
+- `system_error` / `invalid_state` is reserved for issues whose raw status is `blocked` but which have neither an active blocker relation nor an active recovery successor
 
 ## QA and Merge Metadata
 

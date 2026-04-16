@@ -40,9 +40,9 @@ import {
   selectReadyUnassignedCandidate,
 } from "./operations-heartbeat-target.js";
 import {
-  buildIssueRoutingText,
-  isLikelyTechnicalIssueText,
   pickOperationsAssignmentCandidate,
+  resolveEligibleOperationsAssignmentCandidates,
+  type OperationsAssignmentCandidate,
 } from "./issue-routing-heuristics.js";
 import { countLiveRunLimitRelevantRuns, hasReachedLiveRunLimit } from "./heartbeat-run-limit.js";
 import { secretService } from "./secrets.js";
@@ -103,6 +103,7 @@ const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
 const OPERATIONS_OPERATOR_RECOVERY_MARKER = "[operations-heartbeat-operator-recovery]";
 const OPERATIONS_REQUEUE_MARKER = "[operations-heartbeat-requeue]";
 const OPERATIONS_ASSIGNMENT_MARKER = "[operations-heartbeat-assignment]";
+const OPERATIONS_OWNERSHIP_CORRECTION_MARKER = "[operations-heartbeat-ownership-correction]";
 const ISSUE_COMMENT_RECOVERY_MARKER = "[issue-comment-recovery]";
 const WATCHDOG_ISSUE_PATTERN = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/i;
 const OPERATIONS_IDLE_WAKE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
@@ -175,6 +176,7 @@ function isOperationsAutomationCommentBody(body: string | null | undefined): boo
     || body.includes(OPERATIONS_OPERATOR_RECOVERY_MARKER)
     || body.includes(OPERATIONS_REQUEUE_MARKER)
     || body.includes(OPERATIONS_ASSIGNMENT_MARKER)
+    || body.includes(OPERATIONS_OWNERSHIP_CORRECTION_MARKER)
   );
 }
 
@@ -191,36 +193,86 @@ export function resolveOperationsTruthComment<T extends { body: string | null | 
   return latestComment;
 }
 
+type OperationsTruthCommentRow = {
+  issueId: string;
+  body: string | null | undefined;
+  createdAt: Date;
+  authorAgentId?: string | null;
+};
+
+function normalizeIssueTruthCommentBody(body: string | null | undefined): string {
+  if (!body) return "";
+  const lines = body.replace(/\r\n?/g, "\n").split("\n");
+  const normalized: string[] = [];
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (/^(?:```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (trimmed.startsWith(">")) continue;
+    normalized.push(line);
+  }
+
+  return normalized.join("\n");
+}
+
+export function hasReadyForQaTruthFromCommentBody(body: string | null | undefined): boolean {
+  const normalizedBody = normalizeIssueTruthCommentBody(body);
+  if (!normalizedBody) return false;
+  return [
+    /(^|\n)\s*(?:[-*+]\s+)?\[(?:AUTO-FIX\s+)?READY FOR QA\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:#{1,6}\s*)?(?:AUTO-FIX\s+)?READY FOR QA(?:\s*:.*)?(?=\s*(?:\n|$))/i,
+  ].some((rx) => rx.test(normalizedBody));
+}
+
+function hasExplicitIssueTruthFromCommentBody(body: string | null | undefined): boolean {
+  return classifyIssueTruthFromCommentBody(body) !== null || hasWaitStateTruthFromCommentBody(body);
+}
+
+export function resolveLatestStructuredTruthComment<T extends { body: string | null | undefined }>(
+  commentsNewestFirst: T[] | null | undefined,
+): T | null {
+  for (const comment of commentsNewestFirst ?? []) {
+    if (hasExplicitIssueTruthFromCommentBody(comment.body)) {
+      return comment;
+    }
+  }
+  return null;
+}
+
 export function classifyIssueTruthFromCommentBody(body: string | null | undefined): "completion" | "blocker" | "handoff" | null {
-  if (!body) return null;
-  const text = body.toLowerCase();
+  const normalizedBody = normalizeIssueTruthCommentBody(body);
+  if (!normalizedBody) return null;
 
   const completionSignals = [
-    /\b(status|outcome)\s*:\s*(done|completed|resolved)\b/,
-    /\bissue\s+resolved\b/,
-    /(^|\n)\s*done\s*:/,
-    /(^|\n)\s*completed\s*:/,
-    /(^|\n)\s*resolved\s*:/,
+    /(^|\n)\s*(?:[-*+]\s+)?(status|outcome)\s*:\s*(done|completed|resolved)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[(?:QA PASS|RELEASE CONFIRMED)\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*#{1,6}\s*(?:done|completed|resolved|issue\s+resolved)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:issue\s+resolved|done|completed|resolved)\s*:/i,
   ];
   const blockerSignals = [
-    /\b(status|outcome)\s*:\s*(blocked|needs[_ -]?help|blocked_on_external)\b/,
-    /(^|\n)\s*blocked\s*:/,
-    /(^|\n)\s*blocker\s*:/,
-    /(^|\n)\s*waiting on\s*:/,
-    /(^|\n)\s*#{1,6}\s*blocked\b/,
+    /(^|\n)\s*(?:[-*+]\s+)?(status|outcome)\s*:\s*(blocked|needs[_ -]?help|blocked_on_external)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[(?:AUTO-FIX\s+)?BLOCK(?:ED|ER)\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[POISONED SESSION\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*#{1,6}\s*blocked\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:blocked|blocker|waiting on)\s*:/i,
   ];
   const handoffSignals = [
-    /\b(status|outcome)\s*:\s*(handoff|needs_review|needs_handoff)\b/,
-    /(^|\n)\s*handoff\s*:/,
-    /(^|\n)\s*needs review\s*:/,
-    /\bready for review\b/,
-    /(^|\n)\s*#{1,6}\s*reassigned\b/,
-    /\breassign(?:ed|ing)\s+to\b/,
+    /(^|\n)\s*(?:[-*+]\s+)?(status|outcome)\s*:\s*(handoff|needs_review|needs_handoff)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[(?:HANDOFF|QA ROUTE)\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:handoff|needs review|ready for review)\s*:/i,
+    /(^|\n)\s*#{1,6}\s*(?:reassigned|ready for review)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?reassign(?:ed|ing)\s+to\b/i,
   ];
 
-  if (completionSignals.some((rx) => rx.test(text))) return "completion";
-  if (blockerSignals.some((rx) => rx.test(text))) return "blocker";
-  if (handoffSignals.some((rx) => rx.test(text))) return "handoff";
+  if (completionSignals.some((rx) => rx.test(normalizedBody))) return "completion";
+  if (blockerSignals.some((rx) => rx.test(normalizedBody))) return "blocker";
+  if (hasReadyForQaTruthFromCommentBody(normalizedBody)) return "handoff";
+  if (handoffSignals.some((rx) => rx.test(normalizedBody))) return "handoff";
   return null;
 }
 
@@ -231,22 +283,32 @@ export function shouldSuppressOperationsRecoveryTarget(input: {
   hasBlockers: boolean;
 }): boolean {
   const truthType = classifyIssueTruthFromCommentBody(input.latestCommentBody);
+  const hasFreshWaitStateTruth =
+    hasWaitStateTruthFromCommentBody(input.latestCommentBody) && input.latestCommentAgeHours < 6;
   const hasFreshTruth = (truthType === "blocker" || truthType === "handoff") && input.latestCommentAgeHours < 6;
+  if (hasFreshWaitStateTruth) return true;
   if (!hasFreshTruth) return false;
   if (truthType === "handoff") return true;
   return input.status === "blocked" && input.hasBlockers;
 }
 
 function hasWaitStateTruthFromCommentBody(body: string | null | undefined): boolean {
-  if (!body) return false;
-  const text = body.toLowerCase();
+  const normalizedBody = normalizeIssueTruthCommentBody(body);
+  if (!normalizedBody) return false;
   const waitSignals = [
-    /\b(status|outcome)\s*:\s*(waiting|wait|standby|paused|blocked_on_external|waiting_on)\b/,
-    /(^|\n)\s*waiting\s*:/,
-    /(^|\n)\s*standby\s*:/,
-    /(^|\n)\s*paused\s*:/,
+    /(^|\n)\s*(?:[-*+]\s+)?(status|outcome)\s*:\s*(waiting|wait|standby|paused|blocked_on_external|waiting_on)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:waiting|standby|paused)\s*:/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[(?:AUTO-FIX\s+)?BLOCK(?:ED|ER)\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*(?:[-*+]\s+)?\[POISONED SESSION\](?=\s*(?:\n|$))/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:workflow gate|qa gate)\s*:/i,
+    /(^|\n)\s*(?:[-*+]\s+)?(?:waiting on qa|blocked on qa)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?requires qa (assignee|agent|reviewer)\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?before entering in_review\b/i,
+    /(^|\n)\s*(?:[-*+]\s+)?missing permission\s*:/i,
+    /(^|\n)\s*(?:[-*+]\s+)?board action required(?:\s*[:.].*)?\s*$/i,
+    /(^|\n)\s*(?:[-*+]\s+)?admin(?:istrator)?(?: access)? required(?:\s*[:.].*)?\s*$/i,
   ];
-  return waitSignals.some((rx) => rx.test(text));
+  return waitSignals.some((rx) => rx.test(normalizedBody));
 }
 
 function isWatchdogIssueLabel(label: string | null | undefined): boolean {
@@ -312,6 +374,7 @@ function buildOperationsAssignmentComment(input: {
   assigneeAgentId: string;
   assigneeName: string | null;
   reason: string;
+  wakeDeferred?: boolean;
 }) {
   const mentionLabel = `@${(input.assigneeName ?? "assigned-agent").trim() || "assigned-agent"}`;
   const mention = `[${mentionLabel}](${buildAgentMentionHref(input.assigneeAgentId)})`;
@@ -319,7 +382,32 @@ function buildOperationsAssignmentComment(input: {
     OPERATIONS_ASSIGNMENT_MARKER,
     `${mention} operations heartbeat assigned this issue for active work.`,
     `Reason: ${input.reason}.`,
-    "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
+    input.wakeDeferred
+      ? "Wake deferred: the assigned owner has no free heartbeat slot, so this issue remains queued under the correct owner."
+      : "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
+  ].join("\n");
+}
+
+function buildOperationsOwnershipCorrectionComment(input: {
+  correctionReason: "wrong_specialist_reassigned" | "fake_wip_demoted" | "slot_rebalanced";
+  wakeDeferred: boolean;
+  detail: string;
+  nextStatus: string;
+  assigneeAgentId: string | null;
+  assigneeName: string | null;
+}) {
+  const mention = input.assigneeAgentId
+    ? `[${`@${(input.assigneeName ?? "assigned-agent").trim() || "assigned-agent"}`}](${buildAgentMentionHref(input.assigneeAgentId)})`
+    : "unassigned queue";
+  return [
+    OPERATIONS_OWNERSHIP_CORRECTION_MARKER,
+    `Broken state: ${input.detail}.`,
+    `Correction reason: ${input.correctionReason}.`,
+    `Action taken: ownership corrected on the same issue; status is now ${input.nextStatus}.`,
+    `Next owner: ${mention}.`,
+    input.wakeDeferred
+      ? "Wake status: ownership_corrected_wake_deferred."
+      : "Next required action: resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
   ].join("\n");
 }
 
@@ -406,23 +494,10 @@ async function resolveOperationsHeartbeatTargets(
     const runById = new Map(runRows.map((row) => [row.id, row]));
 
     const issueIds = openAssignedIssues.map((row) => row.id);
-    const latestCommentRows =
+    const nonOperationsCommentRows =
       issueIds.length > 0
         ? await db
-            .selectDistinctOn([issueComments.issueId], {
-              issueId: issueComments.issueId,
-              createdAt: issueComments.createdAt,
-              authorAgentId: issueComments.authorAgentId,
-              body: issueComments.body,
-            })
-            .from(issueComments)
-            .where(and(eq(issueComments.companyId, input.companyId), inArray(issueComments.issueId, issueIds)))
-            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
-        : [];
-    const latestNonOperationsCommentRows =
-      issueIds.length > 0
-        ? await db
-            .selectDistinctOn([issueComments.issueId], {
+            .select({
               issueId: issueComments.issueId,
               createdAt: issueComments.createdAt,
               authorAgentId: issueComments.authorAgentId,
@@ -438,21 +513,24 @@ async function resolveOperationsHeartbeatTargets(
                 sql`${issueComments.body} not like ${`${OPERATIONS_OPERATOR_RECOVERY_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_OWNERSHIP_CORRECTION_MARKER}%`}`,
               ),
             )
-            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt), desc(issueComments.id))
         : [];
-    const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
-    const latestNonOperationsCommentByIssueId = new Map(
-      latestNonOperationsCommentRows.map((row) => [row.issueId, row]),
-    );
-    const effectiveLatestCommentByIssueId = new Map(
+    const nonOperationsCommentsByIssueId = new Map<string, OperationsTruthCommentRow[]>();
+    for (const row of nonOperationsCommentRows) {
+      const existing = nonOperationsCommentsByIssueId.get(row.issueId);
+      if (existing) {
+        existing.push(row);
+      } else {
+        nonOperationsCommentsByIssueId.set(row.issueId, [row]);
+      }
+    }
+    const latestStructuredTruthCommentByIssueId = new Map(
       issueIds.map((issueId) => [
         issueId,
-        resolveOperationsTruthComment({
-          latestComment: latestCommentByIssueId.get(issueId),
-          latestNonOperationsComment: latestNonOperationsCommentByIssueId.get(issueId),
-        }),
+        resolveLatestStructuredTruthComment(nonOperationsCommentsByIssueId.get(issueId)),
       ]),
     );
     const blockerRows =
@@ -514,12 +592,13 @@ async function resolveOperationsHeartbeatTargets(
     const ranked = openAssignedIssues
       .map((issue) => {
         const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
-        const latestComment = effectiveLatestCommentByIssueId.get(issue.id);
+        const latestNonOperationsComment = nonOperationsCommentsByIssueId.get(issue.id)?.[0] ?? null;
+        const latestTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
         const issueAgeHours = Math.floor((now - issue.updatedAt.getTime()) / (60 * 60 * 1000));
-        const latestCommentAgeHours = latestComment
-          ? Math.floor((now - latestComment.createdAt.getTime()) / (60 * 60 * 1000))
+        const latestCommentAgeHours = latestTruthComment
+          ? Math.floor((now - latestTruthComment.createdAt.getTime()) / (60 * 60 * 1000))
           : Number.POSITIVE_INFINITY;
-        const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
+        const truthType = classifyIssueTruthFromCommentBody(latestTruthComment?.body);
         const hasBlockers = issuesWithBlockers.has(issue.id);
         const computedBoardState = computedBoardStateMap.get(issue.id)?.boardState ?? null;
         const hasDependencyBlockedState = computedBoardState?.kind === "blocked";
@@ -546,7 +625,7 @@ async function resolveOperationsHeartbeatTargets(
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
         const suppressRecovery = shouldSuppressOperationsRecoveryTarget({
           status: issue.status,
-          latestCommentBody: latestComment?.body,
+          latestCommentBody: latestTruthComment?.body,
           latestCommentAgeHours,
           hasBlockers,
         });
@@ -606,13 +685,18 @@ async function resolveOperationsHeartbeatTargets(
           reasons.push(`contradictory issue truth: ${truthType} truth while status is backlog`);
         }
 
-        if (!latestComment) {
+        if (!latestNonOperationsComment) {
           score += 90;
           reasons.push("no issue comments found");
         }
-        if (latestComment && !truthType && latestCommentAgeHours >= 12) {
-          score += 100;
-          reasons.push(`stale comment without explicit truth (${latestCommentAgeHours}h)`);
+        if (latestNonOperationsComment && !truthType) {
+          const latestNonOperationsCommentAgeHours = Math.floor(
+            (now - latestNonOperationsComment.createdAt.getTime()) / (60 * 60 * 1000),
+          );
+          if (latestNonOperationsCommentAgeHours >= 12) {
+            score += 100;
+            reasons.push(`stale comment without explicit truth (${latestNonOperationsCommentAgeHours}h)`);
+          }
         }
         if (issueAgeHours >= 24) {
           score += 100;
@@ -2595,6 +2679,24 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findLatestIssueComment(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   function isInvokableCoordinatorStatus(status: string | null | undefined) {
     return status !== "paused" && status !== "terminated" && status !== "pending_approval";
   }
@@ -2637,6 +2739,11 @@ export function heartbeatService(db: Db) {
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!issue) return;
+
+    const latestComment = await findLatestIssueComment(issue.companyId, issue.id);
+    if (latestComment?.body?.startsWith(ISSUE_COMMENT_RECOVERY_MARKER)) {
+      return;
+    }
 
     try {
       await issuesSvc.addComment(
@@ -3108,17 +3215,29 @@ export function heartbeatService(db: Db) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
+        skipStartNextQueuedRun: true,
+      });
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable", {
+        skipStartNextQueuedRun: true,
+      });
       return null;
     }
 
     const companyStatus = await getCompanyStatus(run.companyId);
     if (!companyStatus) {
-      await cancelRunInternal(run.id, "Cancelled because the company no longer exists");
+      await cancelRunInternal(run.id, "Cancelled because the company no longer exists", {
+        skipStartNextQueuedRun: true,
+      });
+      return null;
+    }
+    if (companyStatus === "archived") {
+      await cancelRunInternal(run.id, "Cancelled because the company is archived", {
+        skipStartNextQueuedRun: true,
+      });
       return null;
     }
 
@@ -3137,7 +3256,9 @@ export function heartbeatService(db: Db) {
       projectId: readNonEmptyString(context.projectId),
     });
     if (executionBlock) {
-      await cancelRunInternal(run.id, executionBlock.message);
+      await cancelRunInternal(run.id, executionBlock.message, {
+        skipStartNextQueuedRun: true,
+      });
       return null;
     }
 
@@ -3476,6 +3597,18 @@ export function heartbeatService(db: Db) {
         return [];
       }
       const companyStatus = await getCompanyStatus(agent.companyId);
+      if (companyStatus === "archived") {
+        const queuedRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+        for (const queuedRun of queuedRuns) {
+          await cancelRunInternal(queuedRun.id, "Cancelled because the company is archived", {
+            skipStartNextQueuedRun: true,
+          });
+        }
+        return [];
+      }
       if (companyStatus !== "active") return [];
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
@@ -3538,8 +3671,10 @@ export function heartbeatService(db: Db) {
           priority: issues.priority,
           identifier: issues.identifier,
           title: issues.title,
+          description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
+          executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeName: agents.name,
           assigneeRole: agents.role,
@@ -3563,6 +3698,7 @@ export function heartbeatService(db: Db) {
           priority: issues.priority,
           identifier: issues.identifier,
           title: issues.title,
+          description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
         })
@@ -3606,11 +3742,14 @@ export function heartbeatService(db: Db) {
       }
     }
     const issueIds = openAssignedIssues.map((issue) => issue.id);
+    const issueExecutionRunIds = Array.from(
+      new Set(openAssignedIssues.map((issue) => issue.executionRunId).filter((id): id is string => Boolean(id))),
+    );
     const assigneeAgentIds = Array.from(
       new Set(openAssignedIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
     );
 
-    const [liveRunRows, latestAssigneeRunRows, latestCommentRows, latestNonOperationsCommentRows, latestOpsCommentRows] = await Promise.all([
+    const [liveRunRows, latestAssigneeRunRows, latestNonOperationsCommentRows, latestOpsCommentRows, issueExecutionRunRows] = await Promise.all([
       assigneeAgentIds.length > 0
         ? db
             .select({ agentId: heartbeatRuns.agentId })
@@ -3646,18 +3785,7 @@ export function heartbeatService(db: Db) {
         : Promise.resolve([]),
       issueIds.length > 0
         ? db
-            .selectDistinctOn([issueComments.issueId], {
-              issueId: issueComments.issueId,
-              body: issueComments.body,
-              createdAt: issueComments.createdAt,
-            })
-            .from(issueComments)
-            .where(and(eq(issueComments.companyId, companyId), inArray(issueComments.issueId, issueIds)))
-            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
-        : Promise.resolve([]),
-      issueIds.length > 0
-        ? db
-            .selectDistinctOn([issueComments.issueId], {
+            .select({
               issueId: issueComments.issueId,
               body: issueComments.body,
               createdAt: issueComments.createdAt,
@@ -3672,9 +3800,10 @@ export function heartbeatService(db: Db) {
                 sql`${issueComments.body} not like ${`${OPERATIONS_OPERATOR_RECOVERY_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_REQUEUE_MARKER}%`}`,
                 sql`${issueComments.body} not like ${`${OPERATIONS_ASSIGNMENT_MARKER}%`}`,
+                sql`${issueComments.body} not like ${`${OPERATIONS_OWNERSHIP_CORRECTION_MARKER}%`}`,
               ),
             )
-            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt), desc(issueComments.id))
         : Promise.resolve([]),
       issueIds.length > 0
         ? db
@@ -3693,21 +3822,38 @@ export function heartbeatService(db: Db) {
             )
             .orderBy(issueComments.issueId, desc(issueComments.createdAt))
         : Promise.resolve([]),
+      issueExecutionRunIds.length > 0
+        ? db
+            .select({
+              id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, companyId),
+                inArray(heartbeatRuns.id, issueExecutionRunIds),
+              ),
+            )
+        : Promise.resolve([]),
     ]);
 
-    const activeAssigneeIds = new Set(liveRunRows.map((row) => row.agentId));
     const latestRunByAssigneeId = new Map(latestAssigneeRunRows.map((row) => [row.agentId, row]));
-    const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
-    const latestNonOperationsCommentByIssueId = new Map(
-      latestNonOperationsCommentRows.map((row) => [row.issueId, row]),
-    );
-    const effectiveLatestCommentByIssueId = new Map(
+    const issueExecutionRunById = new Map(issueExecutionRunRows.map((row) => [row.id, row]));
+    const nonOperationsCommentsByIssueId = new Map<string, OperationsTruthCommentRow[]>();
+    for (const row of latestNonOperationsCommentRows) {
+      const existing = nonOperationsCommentsByIssueId.get(row.issueId);
+      if (existing) {
+        existing.push(row);
+      } else {
+        nonOperationsCommentsByIssueId.set(row.issueId, [row]);
+      }
+    }
+    const latestStructuredTruthCommentByIssueId = new Map(
       issueIds.map((issueId) => [
         issueId,
-        resolveOperationsTruthComment({
-          latestComment: latestCommentByIssueId.get(issueId),
-          latestNonOperationsComment: latestNonOperationsCommentByIssueId.get(issueId),
-        }),
+        resolveLatestStructuredTruthComment(nonOperationsCommentsByIssueId.get(issueId)),
       ]),
     );
     const latestOpsCommentByIssueId = new Map(latestOpsCommentRows.map((row) => [row.issueId, row]));
@@ -3717,24 +3863,425 @@ export function heartbeatService(db: Db) {
         .map((target) => target.issueId),
     );
 
+    const assignmentCandidateRows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        capabilities: agents.capabilities,
+        status: agents.status,
+        runtimeConfig: agents.runtimeConfig,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const nonOperationsAssignmentCandidates = assignmentCandidateRows.filter((row) => (
+      row.id !== input.agent.id &&
+      row.status !== "terminated" &&
+      row.status !== "pending_approval" &&
+      !isOrchestratorOnlyAgent(row)
+    ));
+    const availableAssignmentCandidates = nonOperationsAssignmentCandidates.filter((row) => (
+      row.status !== "paused"
+    ));
+    const availableAssignmentCandidateById = new Map(availableAssignmentCandidates.map((row) => [row.id, row]));
+    const assignmentCandidateById = new Map(nonOperationsAssignmentCandidates.map((row) => [row.id, row]));
+    const assignmentCandidateIds = availableAssignmentCandidates.map((row) => row.id);
+    const runningAssignmentCountRows = assignmentCandidateIds.length > 0
+      ? await db
+          .select({
+            agentId: heartbeatRuns.agentId,
+            runningCount: sql<number>`count(*)`,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              inArray(heartbeatRuns.agentId, assignmentCandidateIds),
+              eq(heartbeatRuns.status, "running"),
+            ),
+          )
+          .groupBy(heartbeatRuns.agentId)
+      : [];
+    const runningAssignmentCountById = new Map(
+      runningAssignmentCountRows.map((row) => [row.agentId, Number(row.runningCount ?? 0)]),
+    );
+    const freeSlotCountByAgentId = new Map(
+      availableAssignmentCandidates.map((candidate) => {
+        const policy = parseHeartbeatPolicy(candidate as typeof agents.$inferSelect);
+        const runningCount = runningAssignmentCountById.get(candidate.id) ?? 0;
+        return [candidate.id, Math.max(0, policy.maxConcurrentRuns - runningCount)] as const;
+      }),
+    );
+    const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
+    const openUnassignedIssueById = new Map(openUnassignedIssues.map((issue) => [issue.id, issue]));
+
+    const hasFreeSlot = (agentId: string | null | undefined) => {
+      if (!agentId) return false;
+      return (freeSlotCountByAgentId.get(agentId) ?? 0) > 0;
+    };
+    const consumeFreeSlot = (agentId: string | null | undefined) => {
+      if (!agentId) return;
+      const currentFreeSlots = freeSlotCountByAgentId.get(agentId) ?? 0;
+      freeSlotCountByAgentId.set(agentId, Math.max(0, currentFreeSlots - 1));
+    };
+    const shouldWakeReadyOwnedIssue = (issue: {
+      status: string;
+      assigneeAgentId: string | null;
+    }) => (
+      Boolean(issue.assigneeAgentId) &&
+      (issue.status === "todo" || issue.status === "backlog") &&
+      hasFreeSlot(issue.assigneeAgentId)
+    );
+    const shouldDeferReadyOwnedIssueWake = (issue: {
+      status: string;
+      assigneeAgentId: string | null;
+    }) => (
+      Boolean(issue.assigneeAgentId) &&
+      (issue.status === "todo" || issue.status === "backlog") &&
+      !hasFreeSlot(issue.assigneeAgentId)
+    );
+    const buildRoutingIssueInput = (issue: {
+      id: string;
+      identifier: string | null;
+      title: string;
+      description?: string | null;
+      projectId: string | null;
+      projectName?: string | null;
+    }) => {
+      const routingDescriptionParts = [
+        readNonEmptyString(issue.description),
+        readNonEmptyString(latestStructuredTruthCommentByIssueId.get(issue.id)?.body),
+      ].filter((value): value is string => Boolean(value));
+      return {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: routingDescriptionParts.length > 0 ? routingDescriptionParts.join("\n\n") : (issue.description ?? null),
+        projectId: issue.projectId,
+        projectName: issue.projectName,
+      };
+    };
+    const resolveEligibleCandidatePool = (issue: {
+      id: string;
+      identifier: string | null;
+      title: string;
+      description?: string | null;
+      projectId: string | null;
+      projectName?: string | null;
+    }, candidatePool: OperationsAssignmentCandidate[] = availableAssignmentCandidates) => (
+      resolveEligibleOperationsAssignmentCandidates(buildRoutingIssueInput(issue), candidatePool)
+    );
+    const pickAssignmentCandidate = (issue: {
+      id: string;
+      identifier: string | null;
+      title: string;
+      description?: string | null;
+      projectId: string | null;
+      projectName?: string | null;
+    }, opts?: {
+      excludeAgentId?: string | null;
+      candidatePool?: OperationsAssignmentCandidate[];
+    }) => {
+      const candidatePool = opts?.candidatePool ?? availableAssignmentCandidates;
+      if (candidatePool.length === 0) return null;
+      return pickOperationsAssignmentCandidate({
+        issue: buildRoutingIssueInput(issue),
+        openAssignedIssues,
+        availableCandidates: candidatePool,
+        pausedFallbackCandidates: candidatePool,
+        excludeAgentId: opts?.excludeAgentId,
+        allowPausedFallback: false,
+      });
+    };
+    const syncLocalAssignedIssue = (issueId: string, patch: {
+      assigneeAgentId: string | null;
+      status?: string;
+    }) => {
+      const existingAssigned = openAssignedIssueById.get(issueId) ?? null;
+      const existingUnassigned = openUnassignedIssueById.get(issueId) ?? null;
+      const base = existingAssigned ?? existingUnassigned;
+      if (!base) return null;
+
+      if (!patch.assigneeAgentId) {
+        const nextUnassigned = {
+          id: base.id,
+          status: patch.status ?? base.status,
+          priority: base.priority,
+          identifier: base.identifier,
+          title: base.title,
+          description: base.description,
+          projectId: base.projectId,
+          projectName: base.projectName,
+        };
+        openAssignedIssueById.delete(issueId);
+        openAssignedIssues = openAssignedIssues.filter((issue) => issue.id !== issueId);
+        openUnassignedIssueById.set(issueId, nextUnassigned);
+        openUnassignedIssues = [
+          nextUnassigned,
+          ...openUnassignedIssues.filter((issue) => issue.id !== issueId),
+        ];
+        return null;
+      }
+
+      const assignee = assignmentCandidateById.get(patch.assigneeAgentId) ?? null;
+      const nextStatus = patch.status ?? base.status;
+      const nextAssigned = {
+        id: base.id,
+        status: nextStatus,
+        priority: base.priority,
+        identifier: base.identifier,
+        title: base.title,
+        description: base.description,
+        projectId: base.projectId,
+        projectName: base.projectName,
+        executionRunId:
+          nextStatus === "in_progress" && existingAssigned?.assigneeAgentId === patch.assigneeAgentId
+            ? (existingAssigned?.executionRunId ?? null)
+            : null,
+        assigneeAgentId: patch.assigneeAgentId,
+        assigneeName: assignee?.name ?? null,
+        assigneeRole: assignee?.role ?? null,
+        assigneeStatus: assignee?.status ?? null,
+      };
+      openAssignedIssueById.set(issueId, nextAssigned);
+      openAssignedIssues = [
+        ...openAssignedIssues.filter((issue) => issue.id !== issueId),
+        nextAssigned,
+      ];
+      openUnassignedIssueById.delete(issueId);
+      openUnassignedIssues = openUnassignedIssues.filter((issue) => issue.id !== issueId);
+      return nextAssigned;
+    };
+
+    let wakeCommentCount = 0;
+    let wakeupCount = 0;
+    let recoveryCommentCount = 0;
+    let recoveryWakeupCount = 0;
+    let recoveryReissueCount = 0;
+    let recoveryReissueWakeupCount = 0;
+    let requeuedOperationsIssueCount = 0;
+    let assignedIssueCount = 0;
+    let assignmentCommentCount = 0;
+    let assignmentWakeupCount = 0;
+    let ownershipCorrectionCommentCount = 0;
+    let ownershipCorrectionWakeupCount = 0;
+    let wrongSpecialistReassignCount = 0;
+    let fakeWipDemotionCount = 0;
+    let slotRebalanceCount = 0;
+    let ownershipCorrectedWakeDeferredCount = 0;
+    const ownershipCorrectedIssueIds = new Set<string>();
+    const targetReasonByIssueId = new Map<string, string>();
+    const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+
+    const maybeWakeOwnedIssue = async (issue: (typeof openAssignedIssues)[number], reason: string) => {
+      if (!issue.assigneeAgentId || !shouldWakeReadyOwnedIssue(issue)) return false;
+
+      try {
+        await enqueueWakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "operations_assignment",
+          payload: {
+            issueId: issue.id,
+            mutation: "operations_assignment",
+            sourceRunId: input.run.id,
+            ownershipReason: reason,
+          },
+          requestedByActorType: "agent",
+          requestedByActorId: input.agent.id,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            source: "operations.heartbeat",
+            wakeReason: "operations_assignment",
+          },
+        });
+        consumeFreeSlot(issue.assigneeAgentId);
+        return true;
+      } catch (err) {
+        if (isAgentNotInvokableConflict(err)) return false;
+        logger.warn(
+          { err, issueId: issue.id, assigneeAgentId: issue.assigneeAgentId },
+          "operations heartbeat failed to enqueue owned-issue wakeup",
+        );
+        return false;
+      }
+    };
+    const recordOwnershipCorrection = async (inputCorrection: {
+      issue: (typeof openAssignedIssues)[number];
+      correctionReason: "wrong_specialist_reassigned" | "fake_wip_demoted" | "slot_rebalanced";
+      detail: string;
+    }) => {
+      const wakeDeferred = shouldDeferReadyOwnedIssueWake(inputCorrection.issue);
+      try {
+        await issuesSvc.addComment(
+          inputCorrection.issue.id,
+          buildOperationsOwnershipCorrectionComment({
+            correctionReason: inputCorrection.correctionReason,
+            wakeDeferred,
+            detail: inputCorrection.detail,
+            nextStatus: inputCorrection.issue.status,
+            assigneeAgentId: inputCorrection.issue.assigneeAgentId,
+            assigneeName: inputCorrection.issue.assigneeName,
+          }),
+          { agentId: input.agent.id, runId: input.run.id },
+        );
+        ownershipCorrectionCommentCount += 1;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: inputCorrection.issue.id, assigneeAgentId: inputCorrection.issue.assigneeAgentId },
+          "operations heartbeat failed to post ownership correction comment",
+        );
+      }
+
+      if (await maybeWakeOwnedIssue(inputCorrection.issue, inputCorrection.correctionReason)) {
+        ownershipCorrectionWakeupCount += 1;
+      } else if (wakeDeferred) {
+        ownershipCorrectedWakeDeferredCount += 1;
+      }
+    };
+
+    for (const issue of [...openAssignedIssues]) {
+      if (!issue.assigneeAgentId) continue;
+      if (issue.assigneeAgentId === input.agent.id) continue;
+      if (isWatchdogIssueLabel(`${issue.identifier ?? ""} ${issue.title}`)) continue;
+
+      const executionRun = issue.executionRunId ? issueExecutionRunById.get(issue.executionRunId) ?? null : null;
+      if (executionRun?.status === "running") continue;
+
+      const latestTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
+      const latestTruthAgeHours = latestTruthComment
+        ? Math.floor((nowMs - latestTruthComment.createdAt.getTime()) / (60 * 60 * 1000))
+        : Number.POSITIVE_INFINITY;
+      const truthType = classifyIssueTruthFromCommentBody(latestTruthComment?.body);
+      const hasFreshStructuredWaitOrHandoffTruth = Boolean(
+        latestTruthComment &&
+        latestTruthAgeHours < 6 &&
+        (hasWaitStateTruthFromCommentBody(latestTruthComment.body) || truthType === "handoff")
+      );
+
+      const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
+      const eligibleCandidateIds = new Set(eligibleCandidatePool.map((candidate) => candidate.id));
+      const currentAssigneeIsEligible = eligibleCandidateIds.has(issue.assigneeAgentId);
+      const freeSlotEligibleCandidates = eligibleCandidatePool.filter((candidate) => hasFreeSlot(candidate.id));
+      const bestEligibleCandidate = pickAssignmentCandidate(issue, { candidatePool: eligibleCandidatePool });
+      const bestFreeSlotCandidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotEligibleCandidates });
+      const currentAssigneeHasFreeSlot = hasFreeSlot(issue.assigneeAgentId);
+
+      if (eligibleCandidatePool.length > 0 && !currentAssigneeIsEligible) {
+        const nextOwner = bestFreeSlotCandidate ?? bestEligibleCandidate;
+        if (!nextOwner) continue;
+        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
+        try {
+          await issuesSvc.update(issue.id, {
+            assigneeAgentId: nextOwner.id,
+            ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
+            actorAgentId: input.agent.id,
+          });
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: nextOwner.id,
+            status: nextStatus,
+          });
+          if (!updatedIssue) continue;
+          wrongSpecialistReassignCount += 1;
+          ownershipCorrectedIssueIds.add(issue.id);
+          await recordOwnershipCorrection({
+            issue: updatedIssue,
+            correctionReason: "wrong_specialist_reassigned",
+            detail: "assigned specialist no longer matches project, description, or structured routing truth",
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: nextOwner.id },
+            "operations heartbeat failed to reassign wrong-specialist issue",
+          );
+        }
+        continue;
+      }
+
+      if (
+        issue.assigneeAgentId &&
+        currentAssigneeIsEligible &&
+        !currentAssigneeHasFreeSlot &&
+        bestFreeSlotCandidate &&
+        bestFreeSlotCandidate.id !== issue.assigneeAgentId
+      ) {
+        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
+        try {
+          await issuesSvc.update(issue.id, {
+            assigneeAgentId: bestFreeSlotCandidate.id,
+            ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
+            actorAgentId: input.agent.id,
+          });
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: bestFreeSlotCandidate.id,
+            status: nextStatus,
+          });
+          if (!updatedIssue) continue;
+          slotRebalanceCount += 1;
+          ownershipCorrectedIssueIds.add(issue.id);
+          await recordOwnershipCorrection({
+            issue: updatedIssue,
+            correctionReason: "slot_rebalanced",
+            detail: "current owner had no free heartbeat slot while another eligible specialist did",
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: bestFreeSlotCandidate.id },
+            "operations heartbeat failed to rebalance owned issue",
+          );
+        }
+        continue;
+      }
+
+      if (issue.status === "in_progress" && !hasFreshStructuredWaitOrHandoffTruth) {
+        if (!isAgentInvokableStatus(issue.assigneeStatus) && eligibleCandidatePool.length === 0) {
+          continue;
+        }
+        const nextOwnerId = currentAssigneeIsEligible
+          ? issue.assigneeAgentId
+          : (bestEligibleCandidate?.id ?? issue.assigneeAgentId);
+        if (!nextOwnerId) continue;
+        try {
+          await issuesSvc.update(issue.id, {
+            assigneeAgentId: nextOwnerId,
+            status: "todo",
+            actorAgentId: input.agent.id,
+          });
+          const updatedIssue = syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: nextOwnerId,
+            status: "todo",
+          });
+          if (!updatedIssue) continue;
+          fakeWipDemotionCount += 1;
+          ownershipCorrectedIssueIds.add(issue.id);
+          await recordOwnershipCorrection({
+            issue: updatedIssue,
+            correctionReason: "fake_wip_demoted",
+            detail: "issue was marked in_progress without a live execution run or fresh structured wait/handoff truth",
+          });
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to demote fake WIP");
+        }
+      }
+    }
+
     const idleOwnedIssues = openAssignedIssues.filter((issue) => {
+      if (ownershipCorrectedIssueIds.has(issue.id)) return false;
       if (autoReissueTargetIssueIds.has(issue.id)) return false;
       const assigneeAgentId = issue.assigneeAgentId;
       if (!assigneeAgentId) return false;
       if (assigneeAgentId === input.agent.id) return false;
+      if (!hasFreeSlot(assigneeAgentId)) return false;
 
       const assigneeUnavailable =
         issue.assigneeStatus === "paused" ||
         issue.assigneeStatus === "terminated" ||
         issue.assigneeStatus === "pending_approval";
       if (assigneeUnavailable) return false;
-      if (activeAssigneeIds.has(assigneeAgentId)) return false;
 
-      const latestComment = effectiveLatestCommentByIssueId.get(issue.id);
-      const hasTruth =
-        classifyIssueTruthFromCommentBody(latestComment?.body) !== null ||
-        hasWaitStateTruthFromCommentBody(latestComment?.body);
-      if (hasTruth) return false;
+      if (latestStructuredTruthCommentByIssueId.get(issue.id)) return false;
 
       const latestOpsComment = latestOpsCommentByIssueId.get(issue.id);
       if (!latestOpsComment?.body.includes(OPERATIONS_IDLE_WAKE_MARKER)) return true;
@@ -3752,11 +4299,10 @@ export function heartbeatService(db: Db) {
       return nowMs - latestOpsComment.createdAt.getTime() >= wakeCooldownMs;
     });
 
-    let wakeCommentCount = 0;
-    let wakeupCount = 0;
     for (const issue of idleOwnedIssues) {
       const assigneeAgentId = issue.assigneeAgentId;
       if (!assigneeAgentId) continue;
+      if (!hasFreeSlot(assigneeAgentId)) continue;
 
       try {
         await issuesSvc.addComment(
@@ -3794,6 +4340,7 @@ export function heartbeatService(db: Db) {
             wakeReason: "operations_idle_assignment_wakeup",
           },
         });
+        consumeFreeSlot(assigneeAgentId);
         wakeupCount += 1;
       } catch (err) {
         logger.warn(
@@ -3803,22 +4350,15 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    let recoveryCommentCount = 0;
-    let recoveryWakeupCount = 0;
-    let recoveryReissueCount = 0;
-    let recoveryReissueWakeupCount = 0;
-    let requeuedOperationsIssueCount = 0;
-    let assignedIssueCount = 0;
-    let assignmentCommentCount = 0;
-    let assignmentWakeupCount = 0;
-    const idleHandledIssueIds = new Set(idleOwnedIssues.map((issue) => issue.id));
-    const openAssignedIssueById = new Map(openAssignedIssues.map((issue) => [issue.id, issue]));
-    const targetReasonByIssueId = new Map<string, string>();
-    const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+    const idleHandledIssueIds = new Set([
+      ...idleOwnedIssues.map((issue) => issue.id),
+      ...ownershipCorrectedIssueIds,
+    ]);
 
     const requestCrossAgentRecoveryWake = async (targetIssue: (typeof openAssignedIssues)[number], reason: string) => {
       if (!targetIssue.assigneeAgentId) return;
       if (!isAgentInvokableStatus(targetIssue.assigneeStatus)) return;
+      if (!hasFreeSlot(targetIssue.assigneeAgentId)) return;
 
       try {
         await issuesSvc.addComment(
@@ -3857,6 +4397,7 @@ export function heartbeatService(db: Db) {
             wakeReason: "operations_cross_agent_recovery",
           },
         });
+        consumeFreeSlot(targetIssue.assigneeAgentId);
         recoveryWakeupCount += 1;
       } catch (err) {
         if (isAgentNotInvokableConflict(err)) return;
@@ -3883,6 +4424,10 @@ export function heartbeatService(db: Db) {
       if (handledTargetIssueIds.has(target.issueId)) continue;
       const targetIssue = openAssignedIssueById.get(target.issueId) ?? null;
       if (!targetIssue) continue;
+      if (ownershipCorrectedIssueIds.has(targetIssue.id)) {
+        handledTargetIssueIds.add(targetIssue.id);
+        continue;
+      }
       if (idleHandledIssueIds.has(targetIssue.id)) {
         handledTargetIssueIds.add(targetIssue.id);
         continue;
@@ -3967,99 +4512,17 @@ export function heartbeatService(db: Db) {
             ...(targetIssue.status === "in_progress" ? { status: "todo" } : {}),
             actorAgentId: input.agent.id,
           });
+          syncLocalAssignedIssue(targetIssue.id, {
+            assigneeAgentId: null,
+            status: targetIssue.status === "in_progress" ? "todo" : targetIssue.status,
+          });
           requeuedOperationsIssueCount += 1;
+          ownershipCorrectedIssueIds.add(targetIssue.id);
+          opsActiveTargetIssueIdsForAssignment.add(targetIssue.id);
         } catch (err) {
           logger.warn({ err, issueId: targetIssue.id }, "operations heartbeat failed to requeue ops-owned issue");
         }
       }
-    }
-
-    const misassignedEngineeringIssues = openAssignedIssues.filter((issue) => {
-      if (!issue.assigneeAgentId) return false;
-      if (issue.assigneeAgentId === input.agent.id) return false;
-      if (isWatchdogIssueLabel(`${issue.identifier ?? ""} ${issue.title}`)) return false;
-      if (!isLikelyTechnicalIssueText(buildIssueRoutingText(issue))) return false;
-      return issue.assigneeRole !== "engineer";
-    });
-    for (const issue of misassignedEngineeringIssues) {
-      try {
-        await issuesSvc.addComment(
-          issue.id,
-          buildOperationsRequeueComment({
-            reason: "engineering task was assigned to non-engineering role; requeueing for engineer assignment",
-          }),
-          { agentId: input.agent.id, runId: input.run.id },
-        );
-      } catch (err) {
-        logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to post misassignment requeue comment");
-      }
-
-      try {
-        await issuesSvc.update(issue.id, {
-          assigneeAgentId: null,
-          ...(issue.status === "in_progress" ? { status: "todo" } : {}),
-          actorAgentId: input.agent.id,
-        });
-        requeuedOperationsIssueCount += 1;
-        opsActiveTargetIssueIdsForAssignment.add(issue.id);
-      } catch (err) {
-        logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to requeue misassigned engineering issue");
-      }
-    }
-
-    const availableAssignmentCandidates = await db
-      .select({
-        id: agents.id,
-        name: agents.name,
-        role: agents.role,
-        title: agents.title,
-        capabilities: agents.capabilities,
-        status: agents.status,
-        runtimeConfig: agents.runtimeConfig,
-      })
-      .from(agents)
-      .where(eq(agents.companyId, companyId))
-      .then((rows) => rows.filter((row) => (
-        row.id !== input.agent.id &&
-        row.status !== "paused" &&
-        row.status !== "terminated" &&
-        row.status !== "pending_approval" &&
-        !isOrchestratorOnlyAgent(row)
-      )));
-    const pausedFallbackAssignmentCandidates = await db
-      .select({
-        id: agents.id,
-        name: agents.name,
-        role: agents.role,
-        title: agents.title,
-        capabilities: agents.capabilities,
-        status: agents.status,
-        runtimeConfig: agents.runtimeConfig,
-      })
-      .from(agents)
-      .where(eq(agents.companyId, companyId))
-      .then((rows) => rows.filter((row) => (
-        row.id !== input.agent.id &&
-        row.status !== "terminated" &&
-        row.status !== "pending_approval" &&
-        !isOrchestratorOnlyAgent(row)
-      )));
-
-    function pickAssignmentCandidate(issue: {
-      id: string;
-      identifier: string | null;
-      title: string;
-      projectId: string | null;
-      projectName?: string | null;
-    }, opts?: { excludeAgentId?: string | null; allowPausedFallback?: boolean }) {
-      return pickOperationsAssignmentCandidate({
-        issue,
-        openAssignedIssues,
-        availableCandidates: availableAssignmentCandidates,
-        pausedFallbackCandidates: pausedFallbackAssignmentCandidates,
-        excludeAgentId: opts?.excludeAgentId,
-        allowPausedFallback: opts?.allowPausedFallback,
-      });
     }
 
     const issuesNeedingAssignment = [
@@ -4072,6 +4535,7 @@ export function heartbeatService(db: Db) {
           status: issue.status,
           identifier: issue.identifier,
           title: issue.title,
+          description: issue.description,
           projectId: issue.projectId,
           projectName: issue.projectName,
         }];
@@ -4081,14 +4545,21 @@ export function heartbeatService(db: Db) {
 
     for (const issue of issuesNeedingAssignment) {
       if (assignedIssueIds.has(issue.id)) continue;
-      const candidate = pickAssignmentCandidate(issue);
+      const freeSlotCandidates = availableAssignmentCandidates.filter((candidate) => hasFreeSlot(candidate.id));
+      const candidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotCandidates })
+        ?? pickAssignmentCandidate(issue);
       if (!candidate) continue;
+      const wakeDeferred = !hasFreeSlot(candidate.id);
 
       try {
         await issuesSvc.update(issue.id, {
           assigneeAgentId: candidate.id,
           ...(issue.status === "backlog" ? { status: "todo" } : {}),
           actorAgentId: input.agent.id,
+        });
+        syncLocalAssignedIssue(issue.id, {
+          assigneeAgentId: candidate.id,
+          status: issue.status === "backlog" ? "todo" : issue.status,
         });
         assignedIssueCount += 1;
         assignedIssueIds.add(issue.id);
@@ -4104,6 +4575,7 @@ export function heartbeatService(db: Db) {
             assigneeAgentId: candidate.id,
             assigneeName: candidate.name,
             reason: targetReasonByIssueId.get(issue.id) ?? "ready unassigned work requires ownership",
+            wakeDeferred,
           }),
           { agentId: input.agent.id, runId: input.run.id },
         );
@@ -4115,35 +4587,38 @@ export function heartbeatService(db: Db) {
         );
       }
 
-      try {
-        await enqueueWakeup(candidate.id, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "operations_assignment",
-          payload: {
-            issueId: issue.id,
-            mutation: "operations_assignment",
-            sourceRunId: input.run.id,
-          },
-          requestedByActorType: "agent",
-          requestedByActorId: input.agent.id,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            source: "operations.heartbeat",
-            wakeReason: "operations_assignment",
-          },
-        });
-        assignmentWakeupCount += 1;
-      } catch (err) {
-        logger.warn(
-          { err, issueId: issue.id, assigneeAgentId: candidate.id },
-          "operations heartbeat failed to enqueue assignment wakeup",
-        );
+      if (!wakeDeferred) {
+        try {
+          await enqueueWakeup(candidate.id, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "operations_assignment",
+            payload: {
+              issueId: issue.id,
+              mutation: "operations_assignment",
+              sourceRunId: input.run.id,
+            },
+            requestedByActorType: "agent",
+            requestedByActorId: input.agent.id,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              source: "operations.heartbeat",
+              wakeReason: "operations_assignment",
+            },
+          });
+          consumeFreeSlot(candidate.id);
+          assignmentWakeupCount += 1;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, assigneeAgentId: candidate.id },
+            "operations heartbeat failed to enqueue assignment wakeup",
+          );
+        }
       }
     }
 
-    const primaryTarget = targets[0] ?? null;
+    const primaryTarget = targets.find((target) => !ownershipCorrectedIssueIds.has(target.issueId)) ?? null;
 
     return {
       target: primaryTarget,
@@ -4162,6 +4637,12 @@ export function heartbeatService(db: Db) {
         assignedIssueCount,
         assignmentCommentCount,
         assignmentWakeupCount,
+        ownershipCorrectionCommentCount,
+        ownershipCorrectionWakeupCount,
+        wrongSpecialistReassignCount,
+        fakeWipDemotionCount,
+        slotRebalanceCount,
+        ownershipCorrectedWakeDeferredCount,
       },
     };
   }
@@ -5580,11 +6061,7 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
-    const bypassIssueExecutionLock =
-      reason === "issue_comment_mentioned" ||
-      readNonEmptyString(enrichedContextSnapshot.wakeReason) === "issue_comment_mentioned";
-
-    if (issueId && !bypassIssueExecutionLock) {
+    if (issueId) {
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
@@ -6086,7 +6563,13 @@ export function heartbeatService(db: Db) {
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options?: {
+      skipStartNextQueuedRun?: boolean;
+    },
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
@@ -6125,7 +6608,9 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!options?.skipStartNextQueuedRun) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 

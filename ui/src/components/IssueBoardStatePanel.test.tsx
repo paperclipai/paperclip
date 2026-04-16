@@ -179,4 +179,39 @@ describe("IssueBoardStatePanel", () => {
       root.unmount();
     });
   });
+
+  it("renders redirect copy and opens the successor issue when recovery has moved work elsewhere", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueBoardStatePanel
+          issue={createIssue({
+            boardState: {
+              kind: "redirected",
+              headline: "Superseded by COMA-1122",
+              reasonCode: "recovery",
+              actorType: "issue",
+              actorId: "issue-successor",
+              primaryAction: {
+                type: "open_issue",
+                label: "Open successor",
+                targetEntity: "issue",
+                targetId: "issue-successor",
+              },
+            },
+          })}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Superseded by COMA-1122");
+    expect(container.textContent).toContain("Open successor");
+    const actionLink = Array.from(container.querySelectorAll("a")).find((node) => node.textContent === "Open successor");
+    expect(actionLink?.getAttribute("href")).toBe("/issues/issue-successor");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

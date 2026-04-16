@@ -43,6 +43,20 @@ describe("heartbeat operations recovery logic", () => {
     })).toBe(true);
   });
 
+  it("suppresses recovery for fresh workflow-gated completion truth", () => {
+    expect(shouldSuppressOperationsRecoveryTarget?.({
+      status: "in_progress",
+      latestCommentBody: [
+        "DONE: Fix already verified and committed.",
+        "Workflow gate: requires QA assignee before entering in_review.",
+        "Missing permission: tasks:assign.",
+        "Board action required.",
+      ].join("\n"),
+      latestCommentAgeHours: 0,
+      hasBlockers: false,
+    })).toBe(true);
+  });
+
   it("does not suppress recovery for stale blocked issues without blocker truth or blockers", () => {
     expect(shouldSuppressOperationsRecoveryTarget?.({
       status: "blocked",
