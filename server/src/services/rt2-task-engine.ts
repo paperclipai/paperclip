@@ -1,12 +1,14 @@
 import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  companyMemberships,
   issueWorkProducts,
   issues,
   rt2V33TaskParticipants,
   rt2V33TaskProfiles,
 } from "@paperclipai/db";
 import type {
+  AssignRt2Participant,
   CreateRt2Task,
   CreateRt2Todo,
   EndRt2Participant,
@@ -28,6 +30,7 @@ type TaskMeta = {
 
 type ParticipantRow = typeof rt2V33TaskParticipants.$inferSelect;
 type WorkProductRow = typeof issueWorkProducts.$inferSelect;
+type CompanyMembershipRow = typeof companyMemberships.$inferSelect;
 
 function readRt2Metadata(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -85,7 +88,7 @@ export function rt2TaskEngineService(db: Db) {
     for (const deliverable of deliverables) {
       await txWorkProducts.createForIssue(issueId, companyId, {
         projectId,
-        type: "document",
+        type: deliverable.type,
         provider: "paperclip",
         title: deliverable.title,
         status: "draft",
@@ -178,6 +181,68 @@ export function rt2TaskEngineService(db: Db) {
       summary: row.summary ?? null,
       isRequired: metadata?.rt2Required !== false,
     };
+  }
+
+  function buildAssignableUserSummary(row: CompanyMembershipRow) {
+    return {
+      userId: row.principalId,
+      membershipRole: row.membershipRole ?? null,
+    };
+  }
+
+  async function addParticipant(
+    task: TaskMeta,
+    actorUserId: string,
+    participantUserId: string,
+  ) {
+    const [activeParticipants, membership] = await Promise.all([
+      db
+        .select()
+        .from(rt2V33TaskParticipants)
+        .where(
+          and(
+            eq(rt2V33TaskParticipants.taskIssueId, task.issueId),
+            eq(rt2V33TaskParticipants.state, "active"),
+          ),
+        ),
+      db
+        .select()
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, task.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, participantUserId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    if (!membership) {
+      throw conflict("RT2_PARTICIPANT_MUST_BE_ACTIVE_COMPANY_MEMBER");
+    }
+
+    if (activeParticipants.some((participant) => participant.userId === participantUserId)) {
+      throw conflict("RT2_PARTICIPANT_ALREADY_ACTIVE");
+    }
+
+    if (activeParticipants.length >= task.capacity) {
+      throw conflict("RT2_TASK_CAPACITY_REACHED");
+    }
+
+    const [participant] = await db
+      .insert(rt2V33TaskParticipants)
+      .values({
+        companyId: task.companyId,
+        taskIssueId: task.issueId,
+        userId: participantUserId,
+        state: "active",
+        joinedByUserId: actorUserId,
+      })
+      .returning();
+
+    return participant;
   }
 
   return {
@@ -392,36 +457,47 @@ export function rt2TaskEngineService(db: Db) {
 
     joinTask: async (taskIssueId: string, actorUserId: string) => {
       const task = await getTaskMeta(taskIssueId);
-      const activeParticipants = await db
-        .select()
-        .from(rt2V33TaskParticipants)
-        .where(
-          and(
-            eq(rt2V33TaskParticipants.taskIssueId, taskIssueId),
-            eq(rt2V33TaskParticipants.state, "active"),
+      return addParticipant(task, actorUserId, actorUserId);
+    },
+
+    assignParticipant: async (
+      taskIssueId: string,
+      actorUserId: string,
+      input: AssignRt2Participant,
+    ) => {
+      const task = await getTaskMeta(taskIssueId);
+      return addParticipant(task, actorUserId, input.userId);
+    },
+
+    listAssignableUsers: async (taskIssueId: string) => {
+      const task = await getTaskMeta(taskIssueId);
+      const [memberships, activeParticipants] = await Promise.all([
+        db
+          .select()
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, task.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .orderBy(asc(companyMemberships.createdAt)),
+        db
+          .select({ userId: rt2V33TaskParticipants.userId })
+          .from(rt2V33TaskParticipants)
+          .where(
+            and(
+              eq(rt2V33TaskParticipants.taskIssueId, taskIssueId),
+              eq(rt2V33TaskParticipants.state, "active"),
+            ),
           ),
-        );
+      ]);
 
-      if (activeParticipants.some((participant) => participant.userId === actorUserId)) {
-        throw conflict("RT2_PARTICIPANT_ALREADY_ACTIVE");
-      }
-
-      if (activeParticipants.length >= task.capacity) {
-        throw conflict("RT2_TASK_CAPACITY_REACHED");
-      }
-
-      const [participant] = await db
-        .insert(rt2V33TaskParticipants)
-        .values({
-          companyId: task.companyId,
-          taskIssueId,
-          userId: actorUserId,
-          state: "active",
-          joinedByUserId: actorUserId,
-        })
-        .returning();
-
-      return participant;
+      const activeUserIds = new Set(activeParticipants.map((participant) => participant.userId));
+      return memberships
+        .filter((membership) => !activeUserIds.has(membership.principalId))
+        .map(buildAssignableUserSummary);
     },
 
     createTodo: async (taskIssueId: string, actorUserId: string, input: CreateRt2Todo) => {

@@ -20,11 +20,12 @@ vi.mock("@/components/ui/button", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("Rt2TaskPanel", () => {
-  it("shows demo-flow state and wires start plus capacity-reduction actions", () => {
+  it("shows demo-flow state and wires start, assignment, plus capacity-reduction actions", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
     const onJoin = vi.fn();
+    const onAssignParticipant = vi.fn();
     const onChangeCapacity = vi.fn();
     const onEndParticipant = vi.fn();
     const onCreateTodo = vi.fn();
@@ -95,6 +96,13 @@ describe("Rt2TaskPanel", () => {
             }],
           }}
           onJoin={onJoin}
+          assignableUsers={[
+            {
+              userId: "user-4",
+              membershipRole: "member",
+            },
+          ]}
+          onAssignParticipant={onAssignParticipant}
           onChangeCapacity={onChangeCapacity}
           onEndParticipant={onEndParticipant}
           onCreateTodo={onCreateTodo}
@@ -108,22 +116,32 @@ describe("Rt2TaskPanel", () => {
     expect(container.textContent).toContain("Event brief");
     expect(container.textContent).toContain("capacity_reduced");
     expect(container.textContent).toContain("0 / 1 deliverables");
+    expect(container.textContent).toContain("Assign participant");
 
     const buttons = Array.from(container.querySelectorAll("button"));
     const joinButton = buttons.find((button) => button.textContent === "Join");
+    const assignButton = buttons.find((button) => button.textContent === "Assign");
     const createTodoButton = buttons.find((button) => button.textContent === "New To-Do");
     const startButton = buttons.find((button) => button.textContent === "Start");
     const reduceCapacityButton = buttons.find((button) => button.textContent === "-1");
     const firstEndButton = buttons.find((button) => button.textContent === "End");
+    const assignSelect = container.querySelector("select");
 
     expect(joinButton).toBeDefined();
+    expect(assignButton).toBeDefined();
+    expect(assignSelect).toBeDefined();
     expect(createTodoButton).toBeDefined();
     expect(startButton).toBeDefined();
     expect(reduceCapacityButton).toBeDefined();
     expect(firstEndButton).toBeDefined();
 
     act(() => {
+      if (assignSelect instanceof HTMLSelectElement) {
+        assignSelect.value = "user-4";
+        assignSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
       joinButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      assignButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       createTodoButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       startButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       reduceCapacityButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -131,6 +149,7 @@ describe("Rt2TaskPanel", () => {
     });
 
     expect(onJoin).toHaveBeenCalledTimes(1);
+    expect(onAssignParticipant).toHaveBeenCalledWith("user-4");
     expect(onCreateTodo).toHaveBeenCalledTimes(1);
     expect(onStartTodo).toHaveBeenCalledWith("todo-1");
     expect(onChangeCapacity).toHaveBeenCalledWith(1, ["user-2"]);

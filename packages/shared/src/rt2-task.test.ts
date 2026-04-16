@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { LIVE_EVENT_TYPES, createRt2TaskSchema, createRt2TodoSchema } from "./index.js";
+import {
+  LIVE_EVENT_TYPES,
+  assignRt2ParticipantSchema,
+  createRt2TaskSchema,
+  createRt2TodoSchema,
+} from "./index.js";
 
 describe("RT2 task shared contracts", () => {
   it("rejects tasks with empty deliverables", () => {
@@ -38,5 +43,10 @@ describe("RT2 task shared contracts", () => {
         "rt2.deliverable.updated",
       ]),
     );
+  });
+
+  it("requires a participant userId for manager assignment", () => {
+    expect(() => assignRt2ParticipantSchema.parse({})).toThrow();
+    expect(assignRt2ParticipantSchema.parse({ userId: "user-1" })).toEqual({ userId: "user-1" });
   });
 });

@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  assignRt2ParticipantSchema,
   createRt2TaskSchema,
   createRt2TodoSchema,
   endRt2ParticipantSchema,
@@ -65,6 +66,14 @@ export function rt2TaskRoutes(db: Db) {
     res.json(detail);
   });
 
+  router.get("/rt2/tasks/:taskIssueId/assignable-users", async (req, res) => {
+    const task = await svc.getTaskMeta(req.params.taskIssueId as string);
+    assertCompanyAccess(req, task.companyId);
+
+    const users = await svc.listAssignableUsers(task.issueId);
+    res.json(users);
+  });
+
   router.post("/rt2/tasks/:taskIssueId/join", async (req, res) => {
     const actorUserId = assertBoardActor(req);
     const task = await svc.getTaskMeta(req.params.taskIssueId as string);
@@ -79,6 +88,26 @@ export function rt2TaskRoutes(db: Db) {
         projectId: task.projectId,
         participantUserId: participant.userId,
         mutation: "joined",
+      },
+    });
+
+    res.status(201).json(participant);
+  });
+
+  router.post("/rt2/tasks/:taskIssueId/participants", validate(assignRt2ParticipantSchema), async (req, res) => {
+    const actorUserId = assertBoardActor(req);
+    const task = await svc.getTaskMeta(req.params.taskIssueId as string);
+    assertCompanyAccess(req, task.companyId);
+
+    const participant = await svc.assignParticipant(task.issueId, actorUserId, req.body);
+    publishLiveEvent({
+      companyId: task.companyId,
+      type: "rt2.participant.updated",
+      payload: {
+        taskIssueId: task.issueId,
+        projectId: task.projectId,
+        participantUserId: participant.userId,
+        mutation: "assigned",
       },
     });
 

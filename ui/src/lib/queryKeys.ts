@@ -60,6 +60,7 @@ export const queryKeys = {
     listByProject: (companyId: string, projectId: string) =>
       ["rt2-tasks", companyId, "project", projectId] as const,
     detail: (taskIssueId: string) => ["rt2-tasks", "detail", taskIssueId] as const,
+    assignableUsers: (taskIssueId: string) => ["rt2-tasks", "assignable-users", taskIssueId] as const,
   },
   routines: {
     list: (companyId: string) => ["routines", companyId] as const,

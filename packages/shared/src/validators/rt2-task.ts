@@ -35,6 +35,12 @@ export const createRt2TodoSchema = z.object({
 
 export type CreateRt2Todo = z.infer<typeof createRt2TodoSchema>;
 
+export const assignRt2ParticipantSchema = z.object({
+  userId: z.string().trim().min(1),
+});
+
+export type AssignRt2Participant = z.infer<typeof assignRt2ParticipantSchema>;
+
 export const updateRt2TaskCapacitySchema = z.object({
   capacity: z.number().int().min(1),
   endedUserIds: z.array(z.string().trim().min(1)).default([]),

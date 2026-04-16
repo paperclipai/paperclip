@@ -179,10 +179,12 @@ export {
   rt2DeliverableInputSchema,
   createRt2TaskSchema,
   createRt2TodoSchema,
+  assignRt2ParticipantSchema,
   updateRt2TaskCapacitySchema,
   endRt2ParticipantSchema,
   type CreateRt2Task,
   type CreateRt2Todo,
+  type AssignRt2Participant,
   type UpdateRt2TaskCapacity,
   type EndRt2Participant,
 } from "./rt2-task.js";

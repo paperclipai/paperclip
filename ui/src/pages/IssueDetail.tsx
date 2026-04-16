@@ -911,6 +911,11 @@ export function IssueDetail() {
     enabled: !!issue?.id,
     retry: false,
   });
+  const { data: rt2AssignableUsers = [] } = useQuery({
+    queryKey: issue?.id ? queryKeys.rt2Tasks.assignableUsers(issue.id) : ["rt2-tasks", "assignable-users", "pending"],
+    queryFn: () => rt2TasksApi.listAssignableUsers(issue!.id),
+    enabled: !!issue?.id && !!rt2TaskDetail,
+  });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
@@ -1174,6 +1179,7 @@ export function IssueDetail() {
   }, [queryClient, selectedCompanyId]);
   const invalidateRt2TaskState = useCallback((taskIssueId: string, projectId: string | null | undefined) => {
     queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.detail(taskIssueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.assignableUsers(taskIssueId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(taskIssueId) });
     if (resolvedCompanyId && projectId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.listByProject(resolvedCompanyId, projectId) });
@@ -1297,6 +1303,13 @@ export function IssueDetail() {
     mutationFn: (taskIssueId: string) => rt2TasksApi.join(taskIssueId),
     onSuccess: (_participant, taskIssueId) => {
       invalidateRt2TaskState(taskIssueId, rt2TaskDetail?.projectId ?? issue?.projectId ?? null);
+    },
+  });
+  const assignRt2Participant = useMutation({
+    mutationFn: ({ taskIssueId, userId }: { taskIssueId: string; userId: string }) =>
+      rt2TasksApi.assignParticipant(taskIssueId, { userId }),
+    onSuccess: (_participant, variables) => {
+      invalidateRt2TaskState(variables.taskIssueId, rt2TaskDetail?.projectId ?? issue?.projectId ?? null);
     },
   });
   const updateRt2Capacity = useMutation({
@@ -2453,7 +2466,14 @@ export function IssueDetail() {
       {rt2TaskDetail ? (
         <Rt2TaskPanel
           detail={rt2TaskDetail}
+          assignableUsers={rt2AssignableUsers}
           onJoin={() => joinRt2Task.mutate(issue.id)}
+          onAssignParticipant={(userId) => {
+            assignRt2Participant.mutate({
+              taskIssueId: issue.id,
+              userId,
+            });
+          }}
           onChangeCapacity={(nextCapacity, endedUserIds) => {
             updateRt2Capacity.mutate({
               taskIssueId: issue.id,

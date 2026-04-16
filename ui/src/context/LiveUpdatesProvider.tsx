@@ -773,6 +773,7 @@ function handleLiveEvent(
     }
     if (taskIssueId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.detail(taskIssueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.assignableUsers(taskIssueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(taskIssueId) });
     }
     return;

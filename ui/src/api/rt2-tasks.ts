@@ -1,4 +1,5 @@
 import type {
+  AssignRt2Participant,
   CreateRt2Task,
   CreateRt2Todo,
   EndRt2Participant,
@@ -15,6 +16,11 @@ export type Rt2TaskParticipant = {
   endedReason: EndRt2Participant["reason"] | null;
   joinedAt: Date;
   endedAt: Date | null;
+};
+
+export type Rt2AssignableUser = {
+  userId: string;
+  membershipRole: string | null;
 };
 
 export type Rt2TaskSummary = {
@@ -78,10 +84,14 @@ export const rt2TasksApi = {
     api.get<Rt2TaskSummary[]>(`/companies/${companyId}/rt2/tasks?projectId=${encodeURIComponent(projectId)}`),
   get: (taskIssueId: string) =>
     api.get<Rt2TaskDetail>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}`),
+  listAssignableUsers: (taskIssueId: string) =>
+    api.get<Rt2AssignableUser[]>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}/assignable-users`),
   create: (companyId: string, data: CreateRt2Task) =>
     api.post<{ issueId: string }>(`/companies/${companyId}/rt2/tasks`, data),
   join: (taskIssueId: string) =>
     api.post<Rt2TaskParticipant>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}/join`, {}),
+  assignParticipant: (taskIssueId: string, data: AssignRt2Participant) =>
+    api.post<Rt2TaskParticipant>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}/participants`, data),
   updateCapacity: (taskIssueId: string, data: UpdateRt2TaskCapacity) =>
     api.patch<Rt2TaskCapacityResponse>(`/rt2/tasks/${encodeURIComponent(taskIssueId)}/capacity`, data),
   createTodo: (taskIssueId: string, data: CreateRt2Todo) =>

@@ -271,6 +271,38 @@ describeEmbeddedPostgres("rt2 task routes", () => {
     );
   });
 
+  it("preserves artifact deliverable types when creating task definitions", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+
+    const response = await request(app)
+      .post(`/api/companies/${fixture.companyId}/rt2/tasks`)
+      .send({
+        projectId: fixture.projectId,
+        title: "Prepare launch kit",
+        taskMode: "collab",
+        capacity: 2,
+        deliverables: [{ title: "Prototype asset pack", type: "artifact" }],
+      });
+
+    expect(response.status).toBe(201);
+
+    const deliverables = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, response.body.issueId));
+
+    expect(deliverables).toHaveLength(1);
+    expect(deliverables[0]).toEqual(
+      expect.objectContaining({
+        type: "artifact",
+        metadata: expect.objectContaining({
+          rt2Type: "artifact",
+        }),
+      }),
+    );
+  });
+
   it("rejects capacity shrink without explicitly ending overflow participants", async () => {
     fixture = await seedFixture();
     const app = await createApp(fixture.companyId, fixture.managerUserId);
@@ -322,6 +354,43 @@ describeEmbeddedPostgres("rt2 task routes", () => {
 
     expect(endedParticipant?.state).toBe("ended");
     expect(endedParticipant?.endedReason).toBe("manager_removed");
+  });
+
+  it("lets a manager directly assign an active company member as a participant", async () => {
+    fixture = await seedFixture();
+    const app = await createApp(fixture.companyId, fixture.managerUserId);
+    const task = await createTaskFixture({
+      capacity: 2,
+      participants: [],
+    });
+
+    const response = await request(app)
+      .post(`/api/rt2/tasks/${task.issueId}/participants`)
+      .send({ userId: fixture.userAId });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        taskIssueId: task.issueId,
+        userId: fixture.userAId,
+        state: "active",
+        joinedByUserId: fixture.managerUserId,
+      }),
+    );
+
+    const detail = await request(app)
+      .get(`/api/rt2/tasks/${task.issueId}`)
+      .expect(200);
+
+    expect(detail.body.participants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: fixture.userAId,
+          state: "active",
+          endedReason: null,
+        }),
+      ]),
+    );
   });
 
   it("moves the parent task to in_progress when the first todo starts", async () => {
