@@ -1,0 +1,1 @@
+ALTER TABLE "youtube_extractions" ADD COLUMN "vault_status" text DEFAULT 'pending' NOT NULL;

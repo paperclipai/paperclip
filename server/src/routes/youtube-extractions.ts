@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { youtubeExtractionService } from "../services/youtube-extractions.js";
-import { processYoutubeExtraction } from "../services/youtube-worker.js";
+import { processYoutubeExtraction, writeVaultNoteFromRow } from "../services/youtube-worker.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 const createSchema = z.object({
@@ -73,6 +73,39 @@ export function youtubeExtractionRoutes(db: Db) {
     }
     assertCompanyAccess(req, row.companyId);
     res.json(row);
+  });
+
+  // Save an extraction to the knowledge vault
+  router.post("/youtube-extractions/:id/save-to-vault", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const row = await svc.getById(id);
+    if (!row) {
+      res.status(404).json({ error: "Extraction not found" });
+      return;
+    }
+    assertCompanyAccess(req, row.companyId);
+    if (row.status !== "completed") {
+      res.status(422).json({ error: "Extraction must be completed before saving to vault" });
+      return;
+    }
+    await writeVaultNoteFromRow(row);
+    const updated = await svc.update(id, { vaultStatus: "saved" });
+    res.json(updated);
+  });
+
+  // Skip vault integration for an extraction
+  router.post("/youtube-extractions/:id/skip-vault", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const row = await svc.getById(id);
+    if (!row) {
+      res.status(404).json({ error: "Extraction not found" });
+      return;
+    }
+    assertCompanyAccess(req, row.companyId);
+    const updated = await svc.update(id, { vaultStatus: "skipped" });
+    res.json(updated);
   });
 
   // Delete an extraction

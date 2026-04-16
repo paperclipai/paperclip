@@ -151,7 +151,7 @@ function formatDurationStr(sec: number | undefined): string {
   return `${m}m ${s}s`;
 }
 
-async function writeVaultNote(
+export async function writeVaultNote(
   meta: YtDlpMeta,
   url: string,
   report: string,
@@ -197,6 +197,26 @@ async function writeVaultNote(
   }
 }
 
+/** Write a vault note from a completed DB row (called from the save-to-vault route). */
+export async function writeVaultNoteFromRow(row: {
+  videoId: string | null;
+  title: string | null;
+  channel: string | null;
+  durationSec: number | null;
+  viewCount: number | null;
+  url: string;
+  report: string | null;
+}): Promise<void> {
+  const meta: YtDlpMeta = {
+    id: row.videoId ?? undefined,
+    title: row.title ?? "Untitled",
+    channel: row.channel ?? undefined,
+    duration: row.durationSec ?? undefined,
+    view_count: row.viewCount ?? undefined,
+  };
+  await writeVaultNote(meta, row.url, row.report ?? "");
+}
+
 export async function processYoutubeExtraction(db: Db, extractionId: string, url: string): Promise<void> {
   const svc = youtubeExtractionService(db);
   const outDir = await mkdtemp(join(tmpdir(), "yt-extract-"));
@@ -231,8 +251,7 @@ export async function processYoutubeExtraction(db: Db, extractionId: string, url
 
     const report = await analyzeWithClaude(meta, transcript);
 
-    await svc.update(extractionId, { report, status: "completed" });
-    await writeVaultNote(meta, url, report);
+    await svc.update(extractionId, { report, status: "completed", vaultStatus: "pending" });
   } catch (err) {
     await svc.update(extractionId, {
       status: "failed",

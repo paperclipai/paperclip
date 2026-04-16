@@ -13,6 +13,8 @@ import {
   ExternalLink,
   CheckCircle2,
   XCircle,
+  BookOpen,
+  MinusCircle,
 } from "lucide-react";
 import { MarkdownBody } from "../components/MarkdownBody";
 
@@ -81,12 +83,36 @@ function VerdictBadge({ report }: { report: string | null }) {
   return null;
 }
 
+function VaultStatusBadge({ vaultStatus }: { vaultStatus: string }) {
+  if (vaultStatus === "saved") {
+    return (
+      <span className="flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+        <BookOpen className="h-3 w-3" />
+        Saved
+      </span>
+    );
+  }
+  if (vaultStatus === "skipped") {
+    return (
+      <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+        <MinusCircle className="h-3 w-3" />
+        Skipped
+      </span>
+    );
+  }
+  return null;
+}
+
 function ExtractionRow({
   extraction,
   onDelete,
+  onSaveToVault,
+  onSkipVault,
 }: {
   extraction: YoutubeExtraction;
   onDelete: (id: string) => void;
+  onSaveToVault: (id: string) => void;
+  onSkipVault: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -133,7 +159,12 @@ function ExtractionRow({
           {new Date(extraction.createdAt).toLocaleDateString()}
         </td>
         <td className="py-3 pr-4">
-          <StatusBadge status={extraction.status} />
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <StatusBadge status={extraction.status} />
+            {extraction.status === "completed" && (
+              <VaultStatusBadge vaultStatus={extraction.vaultStatus} />
+            )}
+          </div>
         </td>
         <td className="py-3 pr-4">
           <div className="flex items-center gap-2">
@@ -176,9 +207,32 @@ function ExtractionRow({
               </div>
             )}
             {extraction.status === "completed" && extraction.report && (
-              <div className="rounded-lg bg-gray-50 dark:bg-gray-800/50 p-4">
-                <MarkdownBody>{extraction.report}</MarkdownBody>
-              </div>
+              <>
+                {extraction.vaultStatus === "pending" && (
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">
+                      Save this report to the knowledge base?
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onSaveToVault(extraction.id); }}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 transition-colors"
+                    >
+                      <BookOpen className="h-3.5 w-3.5" />
+                      Save to Knowledge Base
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onSkipVault(extraction.id); }}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <MinusCircle className="h-3.5 w-3.5" />
+                      Skip
+                    </button>
+                  </div>
+                )}
+                <div className="rounded-lg bg-gray-50 dark:bg-gray-800/50 p-4">
+                  <MarkdownBody>{extraction.report}</MarkdownBody>
+                </div>
+              </>
             )}
           </td>
         </tr>
@@ -230,6 +284,20 @@ export function YouTube() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => youtubeApi.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.youtube.list(selectedCompanyId!) });
+    },
+  });
+
+  const saveToVaultMutation = useMutation({
+    mutationFn: (id: string) => youtubeApi.saveToVault(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.youtube.list(selectedCompanyId!) });
+    },
+  });
+
+  const skipVaultMutation = useMutation({
+    mutationFn: (id: string) => youtubeApi.skipVault(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.youtube.list(selectedCompanyId!) });
     },
@@ -351,6 +419,8 @@ export function YouTube() {
                   key={extraction.id}
                   extraction={extraction}
                   onDelete={(id) => deleteMutation.mutate(id)}
+                  onSaveToVault={(id) => saveToVaultMutation.mutate(id)}
+                  onSkipVault={(id) => skipVaultMutation.mutate(id)}
                 />
               ))}
             </tbody>
