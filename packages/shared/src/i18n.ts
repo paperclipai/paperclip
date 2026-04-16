@@ -1,6 +1,6 @@
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from "./constants.js";
 
-type MessageParams = Record<string, string | number | boolean | null | undefined>;
+type MessageParams = Record<string, unknown>;
 
 const enMessages = {
   "common.loading": "Loading...",
@@ -8828,7 +8828,7 @@ export function createTranslator(locale: string) {
   };
 }
 
-export function formatDateForLocale(locale: string, date: Date | string): string {
+export function formatDateForLocale(locale: string, date: Date | string | number): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
@@ -8836,7 +8836,7 @@ export function formatDateForLocale(locale: string, date: Date | string): string
   }).format(new Date(date));
 }
 
-export function formatDateTimeForLocale(locale: string, date: Date | string): string {
+export function formatDateTimeForLocale(locale: string, date: Date | string | number): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
@@ -8846,14 +8846,14 @@ export function formatDateTimeForLocale(locale: string, date: Date | string): st
   }).format(new Date(date));
 }
 
-export function formatShortDateForLocale(locale: string, date: Date | string): string {
+export function formatShortDateForLocale(locale: string, date: Date | string | number): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
   }).format(new Date(date));
 }
 
-export function formatRelativeTimeForLocale(locale: string, date: Date | string): string {
+export function formatRelativeTimeForLocale(locale: string, date: Date | string | number): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
