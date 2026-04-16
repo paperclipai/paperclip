@@ -666,6 +666,12 @@ export async function startServer(): Promise<StartedServer> {
       void runScheduledBackup();
     }, backupIntervalMs);
   }
+
+  // Start stale agent cleanup to auto-reset agents stuck in "running" status
+  // without actual running heartbeat runs (handles adapter process crashes)
+  const { startStaleAgentCleanup } = await import("./services/agent-stale-cleanup.js");
+  startStaleAgentCleanup(db);
+  logger.info("Stale agent cleanup service started (10-minute threshold, 2-minute sweep interval)");
   
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
