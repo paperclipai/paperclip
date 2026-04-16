@@ -8804,7 +8804,8 @@ function formatMessage(template: string, params?: MessageParams): string {
 }
 
 export function translate(locale: string, key: TranslationKey, params?: MessageParams): string {
-  const catalog = catalogs[locale] ?? catalogs[DEFAULT_LOCALE];
+  const resolvedLocale = matchSupportedLocale(locale) ?? DEFAULT_LOCALE;
+  const catalog = catalogs[resolvedLocale];
   const fallbackCatalog = catalogs[DEFAULT_LOCALE] as Record<string, string>;
   const template = (catalog as Record<string, string>)[key] ?? fallbackCatalog[key] ?? key;
   return formatMessage(template, params);
