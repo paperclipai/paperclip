@@ -370,16 +370,24 @@ export function executionWorkspaceRoutes(db: Db) {
             : selectedRuntimeServiceId
               ? (existing.runtimeServices ?? []).find((s) => s.id === selectedRuntimeServiceId)?.configIndex ?? null
               : null;
+        // Guard: if targeting by runtimeServiceId but configIndex is null (service was
+        // registered without a config position), falling through with serviceIndex=null
+        // would apply the action to ALL services. Preserve current state instead.
         const nextRuntimeState: {
           desiredState: "running" | "stopped";
           serviceStates: Record<string, "running" | "stopped"> | null | undefined;
-        } = buildWorkspaceRuntimeDesiredStatePatch({
-          config: { workspaceRuntime: effectiveRuntimeConfig },
-          currentDesiredState,
-          currentServiceStates: existing.config?.serviceStates ?? null,
-          action,
-          serviceIndex: resolvedServiceIndex,
-        });
+        } = selectedRuntimeServiceId && (resolvedServiceIndex === undefined || resolvedServiceIndex === null)
+          ? {
+              desiredState: currentDesiredState,
+              serviceStates: existing.config?.serviceStates ?? null,
+            }
+          : buildWorkspaceRuntimeDesiredStatePatch({
+              config: { workspaceRuntime: effectiveRuntimeConfig },
+              currentDesiredState,
+              currentServiceStates: existing.config?.serviceStates ?? null,
+              action,
+              serviceIndex: resolvedServiceIndex,
+            });
         const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
           desiredState: nextRuntimeState.desiredState,
           serviceStates: nextRuntimeState.serviceStates,

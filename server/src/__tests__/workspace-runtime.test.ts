@@ -2607,6 +2607,29 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
     ]);
   });
 
+  it("applies action to ALL services when serviceIndex is null (global operation)", () => {
+    const patch = buildWorkspaceRuntimeDesiredStatePatch({
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev" },
+            { name: "worker", command: "pnpm worker" },
+          ],
+        },
+      },
+      currentDesiredState: "running",
+      currentServiceStates: { "0": "running", "1": "running" },
+      action: "stop",
+      serviceIndex: null,
+    });
+    // Regression: serviceIndex=null must target ALL services, not be silently ignored.
+    // Route guards must prevent this from being called when only one service is intended.
+    expect(patch).toEqual({
+      desiredState: "stopped",
+      serviceStates: { "0": "stopped", "1": "stopped" },
+    });
+  });
+
   it("preserves sibling service state when updating a single configured runtime service", () => {
     const patch = buildWorkspaceRuntimeDesiredStatePatch({
       config: {
