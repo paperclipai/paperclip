@@ -5,7 +5,12 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import {
+  IssueChatThread,
+  canStopIssueChatRun,
+  getMessageCustomMetadata,
+  resolveAssistantMessageFoldedState,
+} from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -660,5 +665,25 @@ describe("IssueChatThread", () => {
       runStatus: "cancelled",
       activeRunIds: new Set<string>(),
     })).toBe(false);
+  });
+
+  it("returns empty custom metadata when message metadata is missing", () => {
+    expect(getMessageCustomMetadata({ metadata: undefined })).toEqual({});
+    expect(getMessageCustomMetadata({ metadata: null })).toEqual({});
+    expect(getMessageCustomMetadata({ metadata: { custom: null } })).toEqual({});
+  });
+
+  it("preserves object custom metadata when present", () => {
+    expect(getMessageCustomMetadata({
+      metadata: {
+        custom: {
+          anchorId: "comment-1",
+          runId: "run-1",
+        },
+      },
+    })).toEqual({
+      anchorId: "comment-1",
+      runId: "run-1",
+    });
   });
 });
