@@ -28,7 +28,9 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # Write password to a config file at startup so it never appears in
-    # /proc/<pid>/cmdline or `docker inspect` output (--requirepass would expose it).
+    # /proc/<pid>/cmdline (--requirepass would expose it there).
+    # Note: REDIS_PASSWORD and REDISCLI_AUTH are still visible via `docker inspect`
+    # to anyone with Docker socket access — use Docker secrets for stricter isolation.
     entrypoint:
       - sh
       - -c

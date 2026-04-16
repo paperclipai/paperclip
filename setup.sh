@@ -100,6 +100,8 @@ fi
 
 heading "Iniciando serviços..."
 # Build locally — never pull the app image from a registry (avoids auth errors on private GHCR)
+# Fork-specific: APP_IMAGE=toca-da-ia:local is the Toca da IA build tag. Upstream adopters
+# should substitute their own image name (e.g. APP_IMAGE=paperclip:local).
 APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env build
 APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --pull never
 
