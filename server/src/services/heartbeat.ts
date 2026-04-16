@@ -193,7 +193,9 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.issueId, input.issueId),
         eq(issueComments.companyId, input.companyId),
       ),
-    );
+    )
+    .orderBy(issueComments.createdAt)
+    .limit(500);
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
     issue.title,
     issue.description ?? "",
