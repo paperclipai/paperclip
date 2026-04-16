@@ -36,7 +36,10 @@ services:
       - redisdata:/data
 
   app:
-    image: "${APP_IMAGE:-ghcr.io/connect-distribuidora/toca-da-ia:v2026.414.0}"
+    image: "${APP_IMAGE:-toca-da-ia:local}"
+    build:
+      context: ..
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       HOST: "0.0.0.0"

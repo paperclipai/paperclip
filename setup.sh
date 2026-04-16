@@ -95,7 +95,7 @@ fi
 # ─── Subir serviços ──────────────────────────────────────────────────────────
 
 heading "Iniciando serviços..."
-docker compose -f docker/docker-compose.prod.yml --env-file .env pull
+docker compose -f docker/docker-compose.prod.yml --env-file .env build
 docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
 
 # ─── Aguardar app ficar saudável ─────────────────────────────────────────────
