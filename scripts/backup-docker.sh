@@ -38,15 +38,32 @@ RESOLVED="$(_canonical "$OUTPUT_FILE")"
 if [[ "$RESOLVED" != "$SAFE_PREFIX"/* && "$RESOLVED" != "$SAFE_PREFIX" ]]; then
   echo "Erro: --output deve ser dentro de $SAFE_PREFIX" >&2; exit 1
 fi
+# Use the canonicalized path for all file operations to eliminate TOCTOU between validation and use.
+OUTPUT_FILE="$RESOLVED"
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Prevent concurrent backup runs from racing on temp files / the final output path.
 # Use mkdir-based locking (POSIX) — flock(1) requires util-linux and is not available on macOS.
 LOCK_DIR="$BACKUP_DIR/.backup.lock.d"
+LOCK_PID_FILE="$LOCK_DIR/pid"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  echo "Erro: outro backup já está em execução (lockdir: $LOCK_DIR). Aguarde e tente novamente." >&2
-  exit 1
+  # Stale-lock recovery: if the PID file exists and the process is dead, remove the lock.
+  if [[ -f "$LOCK_PID_FILE" ]]; then
+    LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null || true)
+    if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
+      echo "Aviso: removendo lock obsoleto do PID $LOCK_PID (processo não encontrado)." >&2
+      rm -rf "$LOCK_DIR"
+      mkdir "$LOCK_DIR"
+    else
+      echo "Erro: outro backup já está em execução (lockdir: $LOCK_DIR, PID: ${LOCK_PID:-desconhecido}). Aguarde e tente novamente." >&2
+      exit 1
+    fi
+  else
+    echo "Erro: outro backup já está em execução (lockdir: $LOCK_DIR). Aguarde e tente novamente." >&2
+    exit 1
+  fi
 fi
+echo "$$" > "$LOCK_PID_FILE"
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # Discover running db container
