@@ -16,6 +16,7 @@ import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -251,14 +252,15 @@ function mergeOptimisticFeedbackVote(
 }
 
 function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
+  const { t } = useLocale();
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
-  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
-  return <Identity name={id || "Unknown"} size="sm" />;
+  if (evt.actorType === "system") return <Identity name={t("common.system")} size="sm" />;
+  if (evt.actorType === "user") return <Identity name={t("common.board")} size="sm" />;
+  return <Identity name={id || t("common.unknown")} size="sm" />;
 }
 
 function IssueSectionSkeleton({
@@ -316,6 +318,7 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
+  const { t } = useLocale();
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
@@ -334,7 +337,7 @@ function IssueDetailLoadingState({
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
                   <Repeat className="h-3 w-3" />
-                  Routine
+                  {t("issueDetail.routine")}
                 </span>
               ) : null}
               {headerSeed.projectId ? (
@@ -347,7 +350,7 @@ function IssueDetailLoadingState({
               ) : (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
                   <Hexagon className="h-3 w-3 shrink-0" />
-                  No project
+                  {t("issueDetail.noProject")}
                 </span>
               )}
             </>
@@ -414,6 +417,7 @@ function InboxMobileToolbar({
   onHide,
 }: InboxMobileToolbarProps) {
   const navigate = useNavigate();
+  const { t } = useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -431,7 +435,7 @@ function InboxMobileToolbar({
             navigate(backHref);
           }
         }}
-        aria-label="Back to inbox"
+        aria-label={t("issueDetail.backToInbox")}
       >
         <ArrowLeft className="h-5 w-5" />
       </Button>
@@ -443,7 +447,7 @@ function InboxMobileToolbar({
             size="icon-sm"
             onClick={onArchive}
             disabled={archivePending}
-            aria-label="Archive from inbox"
+            aria-label={t("issueDetail.archiveFromInbox")}
           >
             <Archive className="h-5 w-5" />
           </Button>
@@ -451,7 +455,7 @@ function InboxMobileToolbar({
 
         <Popover open={menuOpen} onOpenChange={setMenuOpen}>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="More actions">
+            <Button variant="ghost" size="icon-sm" aria-label={t("issueChat.moreActions")}>
               <MoreVertical className="h-5 w-5" />
             </Button>
           </PopoverTrigger>
@@ -461,14 +465,14 @@ function InboxMobileToolbar({
               onClick={() => { onCopy(); setMenuOpen(false); }}
             >
               <Copy className="h-3 w-3" />
-              Copy as markdown
+              {t("comments.copyCommentAsMarkdown")}
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
               onClick={() => { onProperties(); setMenuOpen(false); }}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Properties
+              {t("issueDetail.properties")}
             </button>
             {issueIdProp && (
               <button
@@ -476,7 +480,7 @@ function InboxMobileToolbar({
                 onClick={() => { onHide(); setMenuOpen(false); }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this issue
+                {t("issueDetail.hideThisIssue")}
               </button>
             )}
           </PopoverContent>
@@ -553,6 +557,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   interruptingQueuedRunId,
   onImageClick,
 }: IssueDetailChatTabProps) {
+  const { t } = useLocale();
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -663,7 +668,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             disabled={commentsLoadingOlder}
             onClick={onLoadOlderComments}
           >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+            {commentsLoadingOlder ? t("issueDetail.loadingEarlierComments") : t("issueDetail.loadEarlierComments")}
           </Button>
         </div>
       ) : null}
@@ -724,6 +729,7 @@ function IssueDetailActivityTab({
   pendingApprovalAction,
   onApprovalAction,
 }: IssueDetailActivityTabProps) {
+  const { t } = useLocale();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -809,9 +815,9 @@ function IssueDetailActivityTab({
       )}
       {linkedRuns && linkedRuns.length > 0 && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">{t("issueDetail.costSummary")}</div>
           {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
+            <div className="text-xs text-muted-foreground">{t("issueDetail.noCostDataYet")}</div>
           ) : (
             <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
               {issueCostSummary.hasCost && (
@@ -821,10 +827,17 @@ function IssueDetailActivityTab({
               )}
               {issueCostSummary.hasTokens && (
                 <span>
-                  Tokens {formatTokens(issueCostSummary.totalTokens)}
+                  {t("issueDetail.tokens", { count: formatTokens(issueCostSummary.totalTokens) })}
                   {issueCostSummary.cached > 0
-                    ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                    : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                    ? ` (${t("issueDetail.tokensBreakdownWithCached", {
+                      input: formatTokens(issueCostSummary.input),
+                      output: formatTokens(issueCostSummary.output),
+                      cached: formatTokens(issueCostSummary.cached),
+                    })})`
+                    : ` (${t("issueDetail.tokensBreakdown", {
+                      input: formatTokens(issueCostSummary.input),
+                      output: formatTokens(issueCostSummary.output),
+                    })})`}
                 </span>
               )}
             </div>
@@ -832,13 +845,13 @@ function IssueDetailActivityTab({
         </div>
       )}
       {!activity || activity.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No activity yet.</p>
+        <p className="text-xs text-muted-foreground">{t("issueDetail.noActivityYet")}</p>
       ) : (
         <div className="space-y-1.5">
           {activity.slice(0, 20).map((evt) => (
             <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <ActorIdentity evt={evt} agentMap={agentMap} />
-              <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId })}</span>
+              <span>{formatIssueActivityAction(t, evt.action, evt.details, { agentMap, currentUserId })}</span>
               <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
             </div>
           ))}
@@ -849,6 +862,7 @@ function IssueDetailActivityTab({
 }
 
 export function IssueDetail() {
+  const { t } = useLocale();
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -957,8 +971,8 @@ export function IssueDetail() {
   const resolvedHasActiveRun = issue ? shouldTrackIssueActiveRun(issue) && hasActiveRun : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [issueId, location.state, location.search],
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: t("nav.issues"), href: "/issues" },
+    [issueId, location.state, location.search, t],
   );
 
   const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
@@ -1092,10 +1106,10 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("issueList.me") });
     }
     return options;
-  }, [agents, currentUserId]);
+  }, [agents, currentUserId, t]);
 
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(issue ?? {}),
@@ -1116,7 +1130,7 @@ export function IssueDetail() {
     () => mergeIssueComments(comments ?? [], optimisticComments),
     [comments, optimisticComments],
   );
-  const breadcrumbTitle = issue?.title ?? issueId ?? "Issue";
+  const breadcrumbTitle = issue?.title ?? issueId ?? t("issueDetail.issueFallback");
 
   const invalidateIssueDetail = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -1237,8 +1251,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: t("issueDetail.issueUpdateFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToSaveIssueChanges"),
         tone: "error",
       });
     },
@@ -1263,8 +1277,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-issue changes",
+        title: t("issueDetail.issueUpdateFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToSaveSubIssueChanges"),
         tone: "error",
       });
     },
@@ -1292,14 +1306,14 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title: variables.action === "approve" ? t("issueDetail.approvalApproved") : t("issueDetail.approvalRejected"),
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        title: variables.action === "approve" ? t("issueDetail.approvalFailed") : t("issueDetail.rejectionFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToUpdateApproval"),
         tone: "error",
       });
     },
@@ -1359,8 +1373,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.cancelFailed"),
+            body: err instanceof Error ? err.message : t("issueDetail.unableToCancelQueuedComment"),
             tone: "error",
           });
         }
@@ -1386,8 +1400,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.commentFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToPostComment"),
         tone: "error",
       });
     },
@@ -1472,8 +1486,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.cancelFailed"),
+            body: err instanceof Error ? err.message : t("issueDetail.unableToCancelQueuedComment"),
             tone: "error",
           });
         }
@@ -1501,8 +1515,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.commentFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToPostComment"),
         tone: "error",
       });
     },
@@ -1560,8 +1574,8 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
-        body: "The active run is stopping so queued comments can continue next.",
+        title: t("issueDetail.interruptRequested"),
+        body: t("issueDetail.interruptRequestedDescription"),
         tone: "success",
       });
     },
@@ -1570,8 +1584,8 @@ export function IssueDetail() {
       queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
       queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: t("issueDetail.interruptFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToInterruptRun"),
         tone: "error",
       });
     },
@@ -1586,15 +1600,15 @@ export function IssueDetail() {
       invalidateIssueThreadLazily();
       invalidateIssueCollections();
       pushToast({
-        title: "Queued comment canceled",
-        body: "The queued message was restored to the composer.",
+        title: t("issueDetail.queuedCommentCanceled"),
+        body: t("issueDetail.queuedCommentRestored"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        title: t("issueDetail.cancelFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToCancelQueuedComment"),
         tone: "error",
       });
     },
@@ -1612,8 +1626,8 @@ export function IssueDetail() {
       if (cancelledCommentBody) {
         restoreQueuedCommentDraft(cancelledCommentBody);
         pushToast({
-          title: "Queued comment canceled",
-          body: "The queued message was restored to the composer.",
+          title: t("issueDetail.queuedCommentCanceled"),
+          body: t("issueDetail.queuedCommentRestored"),
           tone: "success",
         });
       }
@@ -1668,11 +1682,11 @@ export function IssueDetail() {
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
             ? variables.allowSharing
-              ? "Feedback saved. Future votes will share"
-              : "Feedback saved. Future votes will stay local"
+              ? t("issueDetail.feedbackSavedFutureShare")
+              : t("issueDetail.feedbackSavedFutureLocal")
             : variables.allowSharing
-              ? "Feedback saved and sharing enabled"
-              : "Feedback saved",
+              ? t("issueDetail.feedbackSavedAndSharingEnabled")
+              : t("issueDetail.feedbackSaved"),
         tone: "success",
       });
     },
@@ -1681,8 +1695,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("issueDetail.failedToSaveFeedback"),
+        body: err instanceof Error ? err.message : t("issueDetail.unknownError"),
         tone: "error",
       });
     },
@@ -1690,7 +1704,7 @@ export function IssueDetail() {
 
   const uploadAttachment = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error(t("issueDetail.noCompanySelected"));
       return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
     },
     onSuccess: () => {
@@ -1699,7 +1713,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.uploadFailed"));
     },
   });
 
@@ -1724,7 +1738,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.documentImportFailed"));
     },
   });
 
@@ -1736,7 +1750,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.deleteFailed"));
     },
   });
 
@@ -1745,12 +1759,12 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Issue archived from inbox", tone: "success" });
+      pushToast({ title: t("issueDetail.issueArchivedFromInbox"), tone: "success" });
     },
     onError: (err) => {
       pushToast({
-        title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        title: t("issueDetail.archiveFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToArchiveFromInbox"),
         tone: "error",
       });
     },
@@ -1996,7 +2010,7 @@ export function IssueDetail() {
     const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
     await navigator.clipboard.writeText(md);
     setCopied(true);
-    pushToast({ title: "Copied to clipboard", tone: "success" });
+    pushToast({ title: t("issueDetail.copiedToClipboard"), tone: "success" });
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -2146,10 +2160,10 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? t("issueDetail.uploading") : (
           <>
-            <span className="hidden sm:inline">Upload attachment</span>
-            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">{t("issueDetail.uploadAttachment")}</span>
+            <span className="sm:hidden">{t("issueDetail.upload")}</span>
           </>
         )}
       </Button>
@@ -2188,7 +2202,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          {t("issueDetail.hidden")}
         </div>
       )}
 
@@ -2210,7 +2224,7 @@ export function IssueDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
               </span>
-              Live
+              {t("issueDetail.live")}
             </span>
           )}
 
@@ -2220,7 +2234,7 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
             >
               <Repeat className="h-3 w-3" />
-              Routine
+              {t("issueDetail.routine")}
             </Link>
           )}
 
@@ -2235,7 +2249,7 @@ export function IssueDetail() {
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
               <Hexagon className="h-3 w-3 shrink-0" />
-              No project
+              {t("issueDetail.noProject")}
             </span>
           )}
 
@@ -2266,7 +2280,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={copyIssueToClipboard}
-                title="Copy issue as markdown"
+                title={t("issueDetail.copyIssueAsMarkdown")}
               >
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
               </Button>
@@ -2274,7 +2288,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => setMobilePropsOpen(true)}
-                title="Properties"
+                title={t("issueDetail.properties")}
               >
                 <SlidersHorizontal className="h-4 w-4" />
               </Button>
@@ -2286,7 +2300,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={t("issueDetail.copyIssueAsMarkdown")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -2298,7 +2312,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title={t("issueDetail.showProperties")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -2321,7 +2335,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                {t("issueDetail.hideThisIssue")}
               </button>
             </PopoverContent>
             </Popover>
@@ -2340,7 +2354,7 @@ export function IssueDetail() {
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
           className="text-[15px] leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("issueDetail.addDescription")}
           multiline
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
@@ -2397,7 +2411,7 @@ export function IssueDetail() {
       {showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">{t("issueDetail.subIssues")}</h3>
           </div>
           <IssuesList
             issues={childIssues}
@@ -2409,7 +2423,7 @@ export function IssueDetail() {
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ parentId: issue.id }}
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
-            createIssueLabel="Sub-issue"
+            createIssueLabel={t("issueDetail.subIssue")}
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>
@@ -2417,7 +2431,7 @@ export function IssueDetail() {
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Sub-issue
+            {t("issueDetail.addSubIssue")}
           </Button>
         </div>
       )}
@@ -2468,7 +2482,7 @@ export function IssueDetail() {
         onDrop={(evt) => void handleAttachmentDrop(evt)}
       >
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("issueDetail.attachments")}</h3>
           {attachmentUploadButton}
         </div>
 
@@ -2490,7 +2504,7 @@ export function IssueDetail() {
               >
                 <img
                   src={attachment.contentPath}
-                  alt={attachment.originalFilename ?? "attachment"}
+                  alt={attachment.originalFilename ?? t("issueDetail.attachment")}
                   className="h-full w-full object-cover"
                   loading="lazy"
                 />
@@ -2500,7 +2514,7 @@ export function IssueDetail() {
                     className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <p className="text-xs text-white font-medium">Delete?</p>
+                    <p className="text-xs text-white font-medium">{t("issueDetail.deleteQuestion")}</p>
                     <div className="flex gap-1.5">
                       <button
                         type="button"
@@ -2534,7 +2548,7 @@ export function IssueDetail() {
                       e.stopPropagation();
                       setConfirmDeleteId(attachment.id);
                     }}
-                    title="Delete attachment"
+                    title={t("issueDetail.deleteAttachment")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -2563,7 +2577,7 @@ export function IssueDetail() {
                     className="text-muted-foreground hover:text-destructive"
                     onClick={() => deleteAttachment.mutate(attachment.id)}
                     disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
+                    title={t("issueDetail.deleteAttachment")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -2597,11 +2611,11 @@ export function IssueDetail() {
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Chat
+            {t("issueDetail.chat")}
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
+            {t("issueDetail.activity")}
           </TabsTrigger>
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
@@ -2680,7 +2694,7 @@ export function IssueDetail() {
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
+            <SheetTitle className="text-sm">{t("issueDetail.properties")}</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">

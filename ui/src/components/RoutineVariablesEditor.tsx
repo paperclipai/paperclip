@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useLocale } from "../context/LocaleContext";
 
 const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select"];
 
@@ -35,6 +36,26 @@ function updateVariableList(
   return variables.map((variable) => (variable.name === name ? mutate(variable) : variable));
 }
 
+function variableTypeLabel(
+  type: RoutineVariable["type"],
+  t: ReturnType<typeof useLocale>["t"],
+) {
+  switch (type) {
+    case "text":
+      return t("routineVariables.typeText");
+    case "textarea":
+      return t("routineVariables.typeTextarea");
+    case "number":
+      return t("routineVariables.typeNumber");
+    case "boolean":
+      return t("routineVariables.typeBoolean");
+    case "select":
+      return t("routineVariables.typeSelect");
+    default:
+      return type;
+  }
+}
+
 export function RoutineVariablesEditor({
   title,
   description,
@@ -46,6 +67,7 @@ export function RoutineVariablesEditor({
   value: RoutineVariable[];
   onChange: (value: RoutineVariable[]) => void;
 }) {
+  const { t } = useLocale();
   const [open, setOpen] = useState(true);
   const syncedVariables = useMemo(
     () => syncRoutineVariablesWithTemplate([title, description], value),
@@ -68,9 +90,9 @@ export function RoutineVariablesEditor({
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-left">
         <div>
-          <p className="text-sm font-medium">Variables</p>
+          <p className="text-sm font-medium">{t("routineVariables.title")}</p>
           <p className="text-xs text-muted-foreground">
-            Detected from `{"{{name}}"}` placeholders in the routine title and instructions.
+            {t("routineVariables.detectedHint")}
           </p>
         </div>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
@@ -83,13 +105,13 @@ export function RoutineVariablesEditor({
                 {`{{${variable.name}}}`}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                Prompt the user for this value before each manual run.
+                {t("routineVariables.promptEachRun")}
               </span>
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
-                <Label className="text-xs">Label</Label>
+                <Label className="text-xs">{t("routineVariables.label")}</Label>
                 <Input
                   value={variable.label ?? ""}
                   onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
@@ -101,7 +123,7 @@ export function RoutineVariablesEditor({
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs">Type</Label>
+                <Label className="text-xs">{t("routineVariables.type")}</Label>
                 <Select
                   value={variable.type}
                   onValueChange={(type) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
@@ -116,7 +138,7 @@ export function RoutineVariablesEditor({
                   </SelectTrigger>
                   <SelectContent>
                     {variableTypes.map((type) => (
-                      <SelectItem key={type} value={type}>{type}</SelectItem>
+                      <SelectItem key={type} value={type}>{variableTypeLabel(type, t)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -124,7 +146,7 @@ export function RoutineVariablesEditor({
 
               <div className="space-y-1.5 md:col-span-2">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs">Default value</Label>
+                  <Label className="text-xs">{t("routineVariables.defaultValue")}</Label>
                   <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
@@ -134,7 +156,7 @@ export function RoutineVariablesEditor({
                         required: event.target.checked,
                       })))}
                     />
-                    Required
+                    {t("routineVariables.required")}
                   </label>
                 </div>
 
@@ -159,15 +181,15 @@ export function RoutineVariablesEditor({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__unset__">No default</SelectItem>
-                      <SelectItem value="true">True</SelectItem>
-                      <SelectItem value="false">False</SelectItem>
+                      <SelectItem value="__unset__">{t("routineVariables.noDefault")}</SelectItem>
+                      <SelectItem value="true">{t("routineVariables.true")}</SelectItem>
+                      <SelectItem value="false">{t("routineVariables.false")}</SelectItem>
                     </SelectContent>
                   </Select>
                 ) : variable.type === "select" ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Options</Label>
+                      <Label className="text-xs">{t("routineVariables.options")}</Label>
                       <Input
                         value={variable.options.join(", ")}
                         onChange={(event) => {
@@ -181,11 +203,11 @@ export function RoutineVariablesEditor({
                                 : null,
                           })));
                         }}
-                        placeholder="high, medium, low"
+                        placeholder={t("routineVariables.optionsPlaceholder")}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Default option</Label>
+                      <Label className="text-xs">{t("routineVariables.defaultOption")}</Label>
                       <Select
                         value={typeof variable.defaultValue === "string" ? variable.defaultValue : "__unset__"}
                         onValueChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
@@ -194,10 +216,10 @@ export function RoutineVariablesEditor({
                         })))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="No default" />
+                          <SelectValue placeholder={t("routineVariables.noDefault")} />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="__unset__">No default</SelectItem>
+                          <SelectItem value="__unset__">{t("routineVariables.noDefault")}</SelectItem>
                           {variable.options.map((option) => (
                             <SelectItem key={option} value={option}>{option}</SelectItem>
                           ))}
@@ -213,7 +235,7 @@ export function RoutineVariablesEditor({
                       ...current,
                       defaultValue: event.target.value || null,
                     })))}
-                    placeholder={variable.type === "number" ? "42" : "Default value"}
+                    placeholder={variable.type === "number" ? "42" : t("routineVariables.defaultValuePlaceholder")}
                   />
                 )}
               </div>
@@ -226,9 +248,11 @@ export function RoutineVariablesEditor({
 }
 
 export function RoutineVariablesHint() {
+  const { t } = useLocale();
+
   return (
     <div className="rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
-      Use `{"{{variable_name}}"}` placeholders in the instructions to prompt for inputs when the routine runs.
+      {t("routineVariables.hint")}
     </div>
   );
 }

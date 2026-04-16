@@ -31,7 +31,7 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildAgentMentionHref, buildProjectMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref } from "../../../packages/shared/src/project-mentions.js";
 import { Boxes } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
@@ -42,6 +42,7 @@ import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
+import { useLocale } from "../context/LocaleContext";
 
 /* ---- Mention types ---- */
 
@@ -486,6 +487,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
+  const { t } = useLocale();
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -597,7 +599,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         const activeElement = document.activeElement;
         if (activeElement === editable || editable.contains(activeElement)) return;
         if (isRichEditorDomEmpty(editable, editorValue, placeholder)) {
-          setRichEditorError("Rich editor failed to load content");
+          setRichEditorError(t("markdownEditor.failedToLoadContent"));
         }
       }, 0);
     };
@@ -616,7 +618,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       window.clearTimeout(timeoutId);
       observer.disconnect();
     };
-  }, [editorValue, placeholder, richEditorError]);
+  }, [editorValue, placeholder, richEditorError, t]);
 
   // Whether the image plugin should be included (boolean is stable across renders
   // as long as the handler presence doesn't toggle)
@@ -651,7 +653,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : t("markdownEditor.imageUploadFailed");
             setUploadError(message);
             throw err;
           }
@@ -678,7 +680,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       all.push(imagePlugin({ imageUploadHandler: imageHandler }));
     }
     return all;
-  }, [hasImageUpload]);
+  }, [hasImageUpload, t]);
 
   useEffect(() => {
     if (editorValue !== latestValueRef.current) {
@@ -914,7 +916,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>{t("markdownEditor.richEditorUnavailable")}</p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
@@ -922,7 +924,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
+            {t("markdownEditor.retryRichEditor")}
           </button>
         </div>
         <textarea

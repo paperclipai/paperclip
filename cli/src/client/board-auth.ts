@@ -4,6 +4,7 @@ import path from "node:path";
 import pc from "picocolors";
 import { buildCliCommandLabel } from "./command-label.js";
 import { resolveDefaultCliAuthPath } from "../config/home.js";
+import { cliT, getCliLocale, localizeCliMessage } from "../i18n.js";
 
 type RequestedAccess = "board" | "instance_admin_required";
 
@@ -151,6 +152,9 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   if (!headers.has("accept")) {
     headers.set("accept", "application/json");
   }
+  if (!headers.has("x-paperclip-locale")) {
+    headers.set("x-paperclip-locale", getCliLocale());
+  }
 
   const response = await fetch(url, {
     ...init,
@@ -163,7 +167,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : `Request failed: ${response.status}`;
-    throw new Error(message);
+    throw new Error(localizeCliMessage(message));
   }
 
   return response.json() as Promise<T>;
@@ -199,6 +203,7 @@ export async function loginBoardCli(params: {
   storePath?: string;
   print?: boolean;
 }): Promise<{ token: string; approvalUrl: string; userId?: string | null }> {
+  const { t } = cliT();
   const apiBase = normalizeApiBase(params.apiBase);
   const createUrl = `${apiBase}/api/cli-auth/challenges`;
   const command = params.command?.trim() || buildCliCommandLabel();
@@ -215,13 +220,13 @@ export async function loginBoardCli(params: {
 
   const approvalUrl = challenge.approvalUrl ?? `${apiBase}${challenge.approvalPath}`;
   if (params.print !== false) {
-    console.error(pc.bold("Board authentication required"));
-    console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
+    console.error(pc.bold(t("cli.boardAuthRequired")));
+    console.error(t("cli.openApprovalUrl", { url: approvalUrl }));
   }
 
   const opened = openUrl(approvalUrl);
   if (params.print !== false && opened) {
-    console.error(pc.dim("Opened the approval page in your browser."));
+    console.error(pc.dim(t("cli.browserOpened")));
   }
 
   const expiresAtMs = Date.parse(challenge.expiresAt);
@@ -255,16 +260,16 @@ export async function loginBoardCli(params: {
     }
 
     if (status.status === "cancelled") {
-      throw new Error("CLI auth challenge was cancelled.");
+      throw new Error(t("cli.challengeCancelled"));
     }
     if (status.status === "expired") {
-      throw new Error("CLI auth challenge expired before approval.");
+      throw new Error(t("cli.challengeExpired"));
     }
 
     await sleep(pollMs);
   }
 
-  throw new Error("CLI auth challenge expired before approval.");
+  throw new Error(t("cli.challengeExpired"));
 }
 
 export async function revokeStoredBoardCredential(params: {

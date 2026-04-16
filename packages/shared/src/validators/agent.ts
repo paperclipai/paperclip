@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,

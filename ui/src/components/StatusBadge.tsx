@@ -1,7 +1,11 @@
 import { cn } from "../lib/utils";
+import { useLocale } from "../context/LocaleContext";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 
 export function StatusBadge({ status }: { status: string }) {
+  const { t } = useLocale();
+  const label = statusLabel(status, t);
+
   return (
     <span
       className={cn(
@@ -9,7 +13,34 @@ export function StatusBadge({ status }: { status: string }) {
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {status.replace("_", " ")}
+      {label}
     </span>
   );
+}
+
+function statusLabel(status: string, t: ReturnType<typeof useLocale>["t"]) {
+  switch (status) {
+    case "active":
+      return t("status.active");
+    case "paused":
+      return t("status.paused");
+    case "running":
+      return t("status.running");
+    case "idle":
+      return t("status.idle");
+    case "error":
+      return t("status.error");
+    case "terminated":
+      return t("status.terminated");
+    case "queued":
+      return t("status.queued");
+    case "done":
+      return t("status.done");
+    case "cancelled":
+      return t("status.cancelled");
+    case "pending_approval":
+      return t("status.pendingApproval");
+    default:
+      return status.replaceAll("_", " ");
+  }
 }

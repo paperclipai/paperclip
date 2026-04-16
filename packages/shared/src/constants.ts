@@ -13,6 +13,17 @@ export type BindMode = (typeof BIND_MODES)[number];
 export const AUTH_BASE_URL_MODES = ["auto", "explicit"] as const;
 export type AuthBaseUrlMode = (typeof AUTH_BASE_URL_MODES)[number];
 
+export const SUPPORTED_LOCALES = [
+  "en",
+  "zh-CN",
+  "ja-JP",
+  "es-ES",
+  "fr-FR",
+  "de-DE",
+] as const;
+export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
+export const DEFAULT_LOCALE: SupportedLocale = "en";
+
 export const AGENT_STATUSES = [
   "active",
   "paused",

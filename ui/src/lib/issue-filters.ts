@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import { issuePriorityDisplayName, issueStatusDisplayName } from "./utils";
 
 export type IssueFilterState = {
   statuses: string[];
@@ -26,17 +27,21 @@ export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", 
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
-];
+  { id: "all", statuses: [] as string[] },
+  { id: "active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { id: "backlog", statuses: ["backlog"] },
+  { id: "done", statuses: ["done", "cancelled"] },
+] as const;
+
+export type IssueQuickFilterPresetId = typeof issueQuickFilterPresets[number]["id"];
 
 export function issueFilterLabel(value: string): string {
+  if (issueStatusOrder.includes(value)) return issueStatusDisplayName(value);
+  if (issuePriorityOrder.includes(value)) return issuePriorityDisplayName(value);
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
+export function issueFilterArraysEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sortedA = [...a].sort();
   const sortedB = [...b].sort();

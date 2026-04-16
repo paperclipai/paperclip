@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCal
 import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useLocale } from "../context/LocaleContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
@@ -198,9 +199,13 @@ interface IssuesListProps {
 function IssueSearchInput({
   value,
   onDebouncedChange,
+  placeholder,
+  ariaLabel,
 }: {
   value: string;
   onDebouncedChange?: (search: string) => void;
+  placeholder: string;
+  ariaLabel: string;
 }) {
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
@@ -248,9 +253,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={placeholder}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={ariaLabel}
         data-page-search-target="true"
       />
     </div>
@@ -278,6 +283,7 @@ export function IssuesList({
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const { t, tx } = useLocale();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -450,7 +456,7 @@ export function IssuesList({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("common.board") : t("issueList.me"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -571,7 +577,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? t("issueList.noWorkspace") : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -586,7 +592,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? t("issueList.noParent") : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -599,13 +605,13 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? t("issueList.unassigned")
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? tx("User"))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents, agentName, currentUserId, workspaceNameMap, issueTitleMap]);
+  }, [agentName, currentUserId, filtered, issueTitleMap, t, tx, viewState.groupBy, workspaceNameMap]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -646,8 +652,12 @@ export function IssuesList({
     return defaults;
   }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel
+    ? t("issueList.createIssueNamed", { label: createIssueLabel })
+    : t("issueList.createIssue");
+  const createButtonLabel = createIssueLabel
+    ? t("issueList.newIssueNamed", { label: createIssueLabel })
+    : t("issueList.newIssue");
   const openCreateIssueDialog = useCallback((groupKey?: string) => {
     openNewIssue(newIssueDefaults(groupKey));
   }, [newIssueDefaults, openNewIssue]);
@@ -689,6 +699,8 @@ export function IssuesList({
           </Button>
           <IssueSearchInput
             value={issueSearch}
+            placeholder={t("issueList.searchIssues")}
+            ariaLabel={t("issueList.searchIssues")}
             onDebouncedChange={(nextSearch) => {
               setIssueSearch(nextSearch);
               onSearchChange?.(nextSearch);
@@ -702,14 +714,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("issueList.listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("issueList.boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -722,7 +734,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("inbox.disableNesting") : t("inbox.enableNesting")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -733,7 +745,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={t("issueList.chooseColumns")}
             iconOnly
           />
 
@@ -755,18 +767,18 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issueList.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["status", t("common.status")],
+                    ["priority", t("common.priority")],
+                    ["title", t("common.title")],
+                    ["created", t("common.created")],
+                    ["updated", t("common.updated")],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -798,19 +810,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issueList.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
-                    ["none", "None"],
+                    ["status", t("common.status")],
+                    ["priority", t("common.priority")],
+                    ["assignee", tx("Assignee")],
+                    ["workspace", tx("Workspace")],
+                    ["parent", t("issueList.parentIssue")],
+                    ["none", t("common.none")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -840,7 +852,7 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={t("issueList.empty")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -938,7 +950,10 @@ export function IssuesList({
                         issueLinkState={issueLinkState}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">
-                            ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                            {t("issueList.subTaskCount", {
+                              count: totalDescendants,
+                              suffix: totalDescendants !== 1 ? "s" : "",
+                            })}
                           </span>
                         ) : undefined}
                         mobileLeading={
@@ -1017,14 +1032,14 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User"}
+                                          {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? tx("User")}
                                         </span>
                                       ) : (
                                         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {tx("Assignee")}
                                         </span>
                                       )}
                                     </button>
@@ -1037,7 +1052,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={t("issueProperties.searchAssignees")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1054,7 +1069,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
+                                        {t("issueProperties.noAssignee")}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -1069,7 +1084,7 @@ export function IssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("issueList.me")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])

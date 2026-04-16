@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,

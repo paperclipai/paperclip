@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
-import { httpLogger, errorHandler } from "./middleware/index.js";
+import { httpLogger, errorHandler, localeMiddleware } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -26,6 +26,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
+import { i18nRoutes } from "./routes/i18n.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -33,6 +34,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { userPreferencesRoutes } from "./routes/user-preferences.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -155,6 +157,7 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  app.use(localeMiddleware(db));
   app.get("/api/auth/get-session", (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(401).json({ error: "Unauthorized" });
@@ -169,6 +172,7 @@ export async function createApp(
         id: req.actor.userId,
         email: null,
         name: req.actor.source === "local_implicit" ? "Local Board" : null,
+        source: req.actor.source ?? null,
       },
     });
   });
@@ -180,6 +184,7 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  api.use(i18nRoutes(db));
   api.use(
     "/health",
     healthRoutes(db, {
@@ -209,6 +214,7 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(userPreferencesRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);

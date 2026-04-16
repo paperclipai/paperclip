@@ -137,10 +137,40 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const localStorageEntries = new Map<string, string>();
+
+function ensureLocalStorageMock() {
+  if (
+    typeof globalThis.localStorage?.getItem === "function"
+    && typeof globalThis.localStorage?.setItem === "function"
+    && typeof globalThis.localStorage?.removeItem === "function"
+    && typeof globalThis.localStorage?.clear === "function"
+  ) {
+    return;
+  }
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => localStorageEntries.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageEntries.set(key, value);
+      },
+      removeItem: (key: string) => {
+        localStorageEntries.delete(key);
+      },
+      clear: () => {
+        localStorageEntries.clear();
+      },
+    },
+  });
+}
+
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    ensureLocalStorageMock();
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();

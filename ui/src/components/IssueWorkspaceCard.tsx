@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,9 @@ import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace", labelKey: "issueWorkspace.projectDefault" },
+  { value: "isolated_workspace", labelKey: "issueWorkspace.newIsolatedWorkspace" },
+  { value: "reuse_existing", labelKey: "issueWorkspace.reuseExistingWorkspace" },
 ] as const;
 
 function issueModeForExistingWorkspace(mode: string | null | undefined) {
@@ -65,6 +66,7 @@ function BreakablePath({ text }: { text: string }) {
 }
 
 function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
+  const { t } = useLocale();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleCopy = useCallback(async () => {
@@ -86,7 +88,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? t("issueWorkspace.copied") : t("common.copy")}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -94,29 +96,30 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
   );
 }
 
-function workspaceModeLabel(mode: string | null | undefined) {
+function workspaceModeLabel(mode: string | null | undefined, t: ReturnType<typeof useLocale>["t"]) {
   switch (mode) {
-    case "isolated_workspace": return "Isolated workspace";
-    case "operator_branch": return "Operator branch";
-    case "cloud_sandbox": return "Cloud sandbox";
-    case "adapter_managed": return "Adapter managed";
-    default: return "Workspace";
+    case "isolated_workspace": return t("issueWorkspace.modeIsolatedWorkspace");
+    case "operator_branch": return t("issueWorkspace.modeOperatorBranch");
+    case "cloud_sandbox": return t("issueWorkspace.modeCloudSandbox");
+    case "adapter_managed": return t("issueWorkspace.modeAdapterManaged");
+    default: return t("issueWorkspace.modeWorkspace");
   }
 }
 
 function configuredWorkspaceLabel(
   selection: string | null | undefined,
   reusableWorkspace: ExecutionWorkspace | null,
+  t: ReturnType<typeof useLocale>["t"],
 ) {
   switch (selection) {
     case "isolated_workspace":
-      return "New isolated workspace";
+      return t("issueWorkspace.newIsolatedWorkspace");
     case "reuse_existing":
       return reusableWorkspace?.mode === "isolated_workspace"
-        ? "Existing isolated workspace"
-        : "Reuse existing workspace";
+        ? t("issueWorkspace.existingIsolatedWorkspace")
+        : t("issueWorkspace.reuseExistingWorkspace");
     default:
-      return "Project default";
+      return t("issueWorkspace.projectDefault");
   }
 }
 
@@ -141,20 +144,6 @@ function workspaceDetailLink(input: {
     });
   }
   return input.workspace ? `/execution-workspaces/${input.workspace.id}` : null;
-}
-
-function statusBadge(status: string) {
-  const colors: Record<string, string> = {
-    active: "bg-green-500/15 text-green-700 dark:text-green-400",
-    idle: "bg-muted text-muted-foreground",
-    in_review: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
-    archived: "bg-muted text-muted-foreground",
-  };
-  return (
-    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
-      {status.replace(/_/g, " ")}
-    </span>
-  );
 }
 
 function IssueWorkspaceCardSkeleton() {
@@ -211,6 +200,7 @@ export function IssueWorkspaceCard({
   livePreview = false,
   onDraftChange,
 }: IssueWorkspaceCardProps) {
+  const { t } = useLocale();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
@@ -350,9 +340,9 @@ export function IssueWorkspaceCard({
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">
           <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
           {activeNonDefaultWorkspace && workspace
-            ? workspaceModeLabel(workspace.mode)
-            : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace)}
-          {workspace ? statusBadge(workspace.status) : statusBadge("idle")}
+            ? workspaceModeLabel(workspace.mode, t)
+            : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace, t)}
+          {workspace ? localizedStatusBadge(workspace.status, t) : localizedStatusBadge("idle", t)}
         </div>
         <div className="flex items-center gap-1">
           {!livePreview && editing ? (
@@ -363,7 +353,7 @@ export function IssueWorkspaceCard({
                 className="h-6 px-2 text-xs text-muted-foreground"
                 onClick={handleCancel}
               >
-                <X className="h-3 w-3 mr-1" />Cancel
+                <X className="h-3 w-3 mr-1" />{t("common.cancel")}
               </Button>
               <Button
                 size="sm"
@@ -371,7 +361,7 @@ export function IssueWorkspaceCard({
                 onClick={handleSave}
                 disabled={!canSaveWorkspaceConfig}
               >
-                Save
+                {t("common.save")}
               </Button>
             </>
           ) : !livePreview ? (
@@ -381,7 +371,7 @@ export function IssueWorkspaceCard({
               className="h-6 px-2 text-xs text-muted-foreground"
               onClick={() => setEditing(true)}
             >
-              <Pencil className="h-3 w-3 mr-1" />Edit
+              <Pencil className="h-3 w-3 mr-1" />{t("common.edit")}
             </Button>
           ) : null}
         </div>
@@ -404,22 +394,22 @@ export function IssueWorkspaceCard({
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
+              <span className="text-[11px]">{t("projectProperties.repo")}:</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}
           {!workspace && (
             <div className="text-muted-foreground">
               {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this issue runs."
+                ? t("issueWorkspace.freshWorkspaceHint")
                 : currentSelection === "reuse_existing"
-                  ? "This issue will reuse an existing workspace when it runs."
-                  : "This issue will use the project default workspace configuration when it runs."}
+                  ? t("issueWorkspace.reuseWorkspaceHint")
+                  : t("issueWorkspace.projectDefaultHint")}
             </div>
           )}
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
             <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Reusing:{" "}
+              {t("issueWorkspace.reusing")}{" "}
               {selectedReusableWorkspaceLink ? (
                 <Link
                   to={selectedReusableWorkspaceLink}
@@ -438,7 +428,7 @@ export function IssueWorkspaceCard({
                 to={currentWorkspaceLink}
                 className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
               >
-                View workspace details →
+                {t("issueWorkspace.viewWorkspaceDetails")}
               </Link>
             </div>
           )}
@@ -464,8 +454,8 @@ export function IssueWorkspaceCard({
             {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
-                  : option.label}
+                  ? t("issueWorkspace.existingIsolatedWorkspace")
+                  : t(option.labelKey)}
               </option>
             ))}
           </select>
@@ -478,10 +468,10 @@ export function IssueWorkspaceCard({
                 setDraftExecutionWorkspaceId(e.target.value);
               }}
             >
-              <option value="">Choose an existing workspace</option>
+              <option value="">{t("issueWorkspace.chooseExistingWorkspace")}</option>
               {deduplicatedReusableWorkspaces.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name} · {w.status} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
+                  {w.name} · {translateStatus(w.status, t)} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
                 </option>
               ))}
             </select>
@@ -491,7 +481,7 @@ export function IssueWorkspaceCard({
           {workspace && (
             <div className="text-[11px] text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
               <div style={{ overflowWrap: "anywhere" }}>
-                Current:{" "}
+                {t("issueWorkspace.current")}{" "}
                 {currentWorkspaceLink ? (
                   <Link
                     to={currentWorkspaceLink}
@@ -503,12 +493,41 @@ export function IssueWorkspaceCard({
                   <BreakablePath text={workspace.name} />
                 )}
                 {" · "}
-                {workspace.status}
+                {translateStatus(workspace.status, t)}
               </div>
             </div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function translateStatus(status: string, t: ReturnType<typeof useLocale>["t"]) {
+  switch (status) {
+    case "active":
+      return t("status.active");
+    case "idle":
+      return t("status.idle");
+    case "in_review":
+      return t("status.inReview");
+    case "archived":
+      return t("status.archived");
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+function localizedStatusBadge(status: string, t: ReturnType<typeof useLocale>["t"]) {
+  const colors: Record<string, string> = {
+    active: "bg-green-500/15 text-green-700 dark:text-green-400",
+    idle: "bg-muted text-muted-foreground",
+    in_review: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+    archived: "bg-muted text-muted-foreground",
+  };
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
+      {translateStatus(status, t)}
+    </span>
   );
 }

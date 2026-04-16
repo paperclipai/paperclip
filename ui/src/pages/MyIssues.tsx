@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusIcon } from "../components/StatusIcon";
 
@@ -13,12 +14,13 @@ import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
 
 export function MyIssues() {
+  const { t, tx } = useLocale();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("myIssues.pageTitle") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
@@ -27,7 +29,7 @@ export function MyIssues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={ListTodo} message="Select a company to view your issues." />;
+    return <EmptyState icon={ListTodo} message={t("myIssues.selectCompany")} />;
   }
 
   if (isLoading) {
@@ -41,10 +43,10 @@ export function MyIssues() {
 
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p className="text-sm text-destructive">{tx(error.message)}</p>}
 
       {myIssues.length === 0 && (
-        <EmptyState icon={ListTodo} message="No issues assigned to you." />
+        <EmptyState icon={ListTodo} message={t("myIssues.empty")} />
       )}
 
       {myIssues.length > 0 && (

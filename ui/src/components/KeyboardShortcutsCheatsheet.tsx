@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useLocale } from "../context/LocaleContext";
 
 interface ShortcutEntry {
   keys: string[];
@@ -9,39 +10,6 @@ interface ShortcutSection {
   title: string;
   shortcuts: ShortcutEntry[];
 }
-
-const sections: ShortcutSection[] = [
-  {
-    title: "Inbox",
-    shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["Enter"], label: "Open selected item" },
-      { keys: ["a"], label: "Archive item" },
-      { keys: ["y"], label: "Archive item" },
-      { keys: ["r"], label: "Mark as read" },
-      { keys: ["U"], label: "Mark as unread" },
-    ],
-  },
-  {
-    title: "Issue detail",
-    shortcuts: [
-      { keys: ["y"], label: "Quick-archive back to inbox" },
-      { keys: ["g", "i"], label: "Go to inbox" },
-      { keys: ["g", "c"], label: "Focus comment composer" },
-    ],
-  },
-  {
-    title: "Global",
-    shortcuts: [
-      { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New issue" },
-      { keys: ["["], label: "Toggle sidebar" },
-      { keys: ["]"], label: "Toggle panel" },
-      { keys: ["?"], label: "Show keyboard shortcuts" },
-    ],
-  },
-];
 
 function KeyCap({ children }: { children: string }) {
   return (
@@ -58,11 +26,45 @@ export function KeyboardShortcutsCheatsheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useLocale();
+  const sections: ShortcutSection[] = [
+    {
+      title: t("keyboardShortcuts.sectionInbox"),
+      shortcuts: [
+        { keys: ["j"], label: t("keyboardShortcuts.moveDown") },
+        { keys: ["k"], label: t("keyboardShortcuts.moveUp") },
+        { keys: ["Enter"], label: t("keyboardShortcuts.openSelectedItem") },
+        { keys: ["a"], label: t("keyboardShortcuts.archiveItem") },
+        { keys: ["y"], label: t("keyboardShortcuts.archiveItem") },
+        { keys: ["r"], label: t("keyboardShortcuts.markRead") },
+        { keys: ["U"], label: t("keyboardShortcuts.markUnread") },
+      ],
+    },
+    {
+      title: t("keyboardShortcuts.sectionIssueDetail"),
+      shortcuts: [
+        { keys: ["y"], label: t("keyboardShortcuts.quickArchiveBackToInbox") },
+        { keys: ["g", "i"], label: t("keyboardShortcuts.goToInbox") },
+        { keys: ["g", "c"], label: t("keyboardShortcuts.focusCommentComposer") },
+      ],
+    },
+    {
+      title: t("keyboardShortcuts.sectionGlobal"),
+      shortcuts: [
+        { keys: ["/"], label: t("keyboardShortcuts.searchCurrentPage") },
+        { keys: ["c"], label: t("keyboardShortcuts.newIssue") },
+        { keys: ["["], label: t("keyboardShortcuts.toggleSidebar") },
+        { keys: ["]"], label: t("keyboardShortcuts.togglePanel") },
+        { keys: ["?"], label: t("keyboardShortcuts.showKeyboardShortcuts") },
+      ],
+    },
+  ];
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("keyboardShortcuts.title")}</DialogTitle>
         </DialogHeader>
         <div className="divide-y divide-border border-t border-border">
           {sections.map((section) => (
@@ -80,7 +82,7 @@ export function KeyboardShortcutsCheatsheet({
                     <div className="flex items-center gap-1">
                       {shortcut.keys.map((key, i) => (
                         <span key={key} className="flex items-center gap-1">
-                          {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
+                          {i > 0 && <span className="text-xs text-muted-foreground">{t("keyboardShortcuts.then")}</span>}
                           <KeyCap>{key}</KeyCap>
                         </span>
                       ))}
@@ -93,7 +95,7 @@ export function KeyboardShortcutsCheatsheet({
         </div>
         <div className="border-t border-border px-5 py-3">
           <p className="text-xs text-muted-foreground">
-            Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+            {t("keyboardShortcuts.footer", { escapeKey: "Esc" })}
           </p>
         </div>
       </DialogContent>

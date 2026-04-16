@@ -4,12 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLocale } from "../context/LocaleContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "../lib/utils";
+import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 function OrgTree({
   nodes,
@@ -38,6 +40,7 @@ function OrgTreeNode({
   depth: number;
   hrefFn: (id: string) => string;
 }) {
+  const { tx } = useLocale();
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.reports.length > 0;
 
@@ -79,7 +82,7 @@ function OrgTreeNode({
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>
-        <span className="text-xs text-muted-foreground">{node.role}</span>
+        <span className="text-xs text-muted-foreground">{tx(roleLabel(node.role))}</span>
         <StatusBadge status={node.status} />
       </Link>
       {hasChildren && expanded && (
@@ -90,12 +93,13 @@ function OrgTreeNode({
 }
 
 export function Org() {
+  const { t, tx } = useLocale();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("companySettings.orgChartLink") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -104,7 +108,7 @@ export function Org() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
+    return <EmptyState icon={GitBranch} message={t("org.selectCompany")} />;
   }
 
   if (isLoading) {
@@ -113,12 +117,12 @@ export function Org() {
 
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p className="text-sm text-destructive">{tx(error.message)}</p>}
 
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message="No agents in the organization. Create agents to build your org chart."
+          message={t("org.empty")}
         />
       )}
 
@@ -129,4 +133,10 @@ export function Org() {
       )}
     </div>
   );
+}
+
+const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
+
+function roleLabel(role: string): string {
+  return roleLabels[role] ?? role;
 }

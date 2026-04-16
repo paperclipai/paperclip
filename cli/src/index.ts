@@ -24,14 +24,15 @@ import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
+import { cliT, localizeCliMessage } from "./i18n.js";
 
 const program = new Command();
-const DATA_DIR_OPTION_HELP =
-  "Paperclip data directory root (isolates state from ~/.paperclip)";
+const { t } = cliT();
+const DATA_DIR_OPTION_HELP = t("cli.dataDirOption");
 
 program
   .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .description(t("cli.programDescription"))
   .version(cliVersion);
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
@@ -47,94 +48,94 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
 
 program
   .command("onboard")
-  .description("Interactive first-run setup wizard")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.onboardDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("--bind <mode>", "Quickstart reachability preset (loopback, lan, tailnet)")
-  .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
-  .option("--run", "Start Paperclip immediately after saving config", false)
+  .option("--bind <mode>", t("cli.bindMode"))
+  .option("-y, --yes", t("cli.acceptQuickstartDefaults"), false)
+  .option("--run", t("cli.startAfterSavingConfig"), false)
   .action(onboard);
 
 program
   .command("doctor")
-  .description("Run diagnostic checks on your Paperclip setup")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.doctorDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("--repair", "Attempt to repair issues automatically")
+  .option("--repair", t("cli.repairIssues"))
   .alias("--fix")
-  .option("-y, --yes", "Skip repair confirmation prompts")
+  .option("-y, --yes", t("cli.skipRepairConfirmationPrompts"))
   .action(async (opts) => {
     await doctor(opts);
   });
 
 program
   .command("env")
-  .description("Print environment variables for deployment")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.envDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(envCommand);
 
 program
   .command("configure")
-  .description("Update configuration sections")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.configureDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("-s, --section <section>", "Section to configure (llm, database, logging, server, storage, secrets)")
+  .option("-s, --section <section>", t("cli.sectionToConfigure"))
   .action(configure);
 
 program
   .command("db:backup")
-  .description("Create a one-off database backup using current config")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.dbBackupDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("--dir <path>", "Backup output directory (overrides config)")
-  .option("--retention-days <days>", "Retention window used for pruning", (value) => Number(value))
-  .option("--filename-prefix <prefix>", "Backup filename prefix", "paperclip")
-  .option("--json", "Print backup metadata as JSON")
+  .option("--dir <path>", t("cli.backupOutputDir"))
+  .option("--retention-days <days>", t("cli.retentionDays"), (value) => Number(value))
+  .option("--filename-prefix <prefix>", t("cli.backupFilenamePrefix"), "paperclip")
+  .option("--json", t("cli.printJson"))
   .action(async (opts) => {
     await dbBackupCommand(opts);
   });
 
 program
   .command("allowed-hostname")
-  .description("Allow a hostname for authenticated/private mode access")
-  .argument("<host>", "Hostname to allow (for example dotta-macbook-pro)")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.allowedHostnameDescription"))
+  .argument("<host>", t("cli.hostnameToAllow"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(addAllowedHostname);
 
 program
   .command("run")
-  .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.runDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("-i, --instance <id>", "Local instance id (default: default)")
-  .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
-  .option("--repair", "Attempt automatic repairs during doctor", true)
-  .option("--no-repair", "Disable automatic repairs during doctor")
+  .option("-i, --instance <id>", t("cli.localInstanceId"))
+  .option("--bind <mode>", t("cli.bindMode"))
+  .option("--repair", t("cli.repairIssues"), true)
+  .option("--no-repair", t("cli.disableAutomaticRepairs"))
   .action(runCommand);
 
-const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
+const heartbeat = program.command("heartbeat").description(t("cli.heartbeatDescription"));
 
 heartbeat
   .command("run")
-  .description("Run one agent heartbeat and stream live logs")
-  .requiredOption("-a, --agent-id <agentId>", "Agent ID to invoke")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.heartbeatRunDescription"))
+  .requiredOption("-a, --agent-id <agentId>", t("cli.agentIdToInvoke"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("--context <path>", "Path to CLI context file")
-  .option("--profile <name>", "CLI context profile name")
-  .option("--api-base <url>", "Base URL for the Paperclip server API")
-  .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+  .option("--context <path>", t("cli.pathToContextFile"))
+  .option("--profile <name>", t("cli.contextProfileName"))
+  .option("--api-base <url>", t("cli.apiBaseUrl"))
+  .option("--api-key <token>", t("cli.apiKeyBearer"))
   .option(
     "--source <source>",
-    "Invocation source (timer | assignment | on_demand | automation)",
+    t("cli.invocationSource"),
     "on_demand",
   )
-  .option("--trigger <trigger>", "Trigger detail (manual | ping | callback | system)", "manual")
-  .option("--timeout-ms <ms>", "Max time to wait before giving up", "0")
-  .option("--json", "Output raw JSON where applicable")
-  .option("--debug", "Show raw adapter stdout/stderr JSON chunks")
+  .option("--trigger <trigger>", t("cli.triggerDetail"), "manual")
+  .option("--timeout-ms <ms>", t("cli.timeoutMs"), "0")
+  .option("--json", t("cli.outputRawJson"))
+  .option("--debug", t("cli.showRawAdapterJson"))
   .action(heartbeatRun);
 
 registerContextCommands(program);
@@ -149,16 +150,16 @@ registerFeedbackCommands(program);
 registerWorktreeCommands(program);
 registerPluginCommands(program);
 
-const auth = program.command("auth").description("Authentication and bootstrap utilities");
+const auth = program.command("auth").description(t("cli.authDescription"));
 
 auth
   .command("bootstrap-ceo")
-  .description("Create a one-time bootstrap invite URL for first instance admin")
-  .option("-c, --config <path>", "Path to config file")
+  .description(t("cli.bootstrapCeoDescription"))
+  .option("-c, --config <path>", t("cli.pathToConfig"))
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("--force", "Create new invite even if admin already exists", false)
-  .option("--expires-hours <hours>", "Invite expiration window in hours", (value) => Number(value))
-  .option("--base-url <url>", "Public base URL used to print invite link")
+  .option("--force", t("cli.forceCreateInvite"), false)
+  .option("--expires-hours <hours>", t("cli.inviteExpirationHours"), (value) => Number(value))
+  .option("--base-url <url>", t("cli.publicBaseUrl"))
   .action(bootstrapCeoInvite);
 
 registerClientAuthCommands(auth);
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
     await program.parseAsync();
   } catch (err) {
     failed = true;
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(err instanceof Error ? localizeCliMessage(err.message) : String(err));
   } finally {
     await flushTelemetry();
   }

@@ -12,6 +12,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useLocale } from "../context/LocaleContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -66,6 +67,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useLocale();
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -74,21 +76,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projectDetail.descriptionPlaceholder")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("common.status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projectProperties.targetDate")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -106,6 +108,7 @@ function ColorPicker({
   currentColor: string;
   onSelect: (color: string) => void;
 }) {
+  const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -126,7 +129,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={t("projectDetail.changeProjectColor")}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -144,7 +147,7 @@ function ColorPicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                aria-label={t("projectDetail.selectColor", { color })}
               />
             ))}
           </div>
@@ -226,6 +229,7 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
+  const { t } = useLocale();
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -255,11 +259,18 @@ function ProjectWorkspacesContent({
   });
 
   if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("projectDetail.noWorkspaceActivity")}</p>;
   }
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
   const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
+  const executionWorkspaceStatusLabels: Record<string, string> = {
+    active: t("projectDetail.executionWorkspaceStatus.active"),
+    idle: t("projectDetail.executionWorkspaceStatus.idle"),
+    in_review: t("projectDetail.executionWorkspaceStatus.inReview"),
+    archived: t("projectDetail.executionWorkspaceStatus.archived"),
+    cleanup_failed: t("projectDetail.executionWorkspaceStatus.cleanupFailed"),
+  };
 
   return (
     <>
@@ -280,7 +291,7 @@ function ProjectWorkspacesContent({
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
+              {t("projectDetail.cleanupAttentionNeeded")}
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
               {cleanupFailedSummaries.map((summary) => (
@@ -322,6 +333,7 @@ function ProjectWorkspacesContent({
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { t } = useLocale();
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -445,17 +457,17 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? t("projectDetail.projectFallback");
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: t("projectDetail.archivedToast", { name }), tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: t("projectDetail.unarchivedToast", { name }), tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? t("projectDetail.failedToArchive") : t("projectDetail.failedToUnarchive"),
         tone: "error",
       });
     },
@@ -463,7 +475,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error(t("projectDetail.noCompanySelected"));
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -478,10 +490,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: t("projectDetail.projectsBreadcrumb"), href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? t("projectDetail.projectFallback") },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [setBreadcrumbs, project, routeProjectRef, t]);
 
   useEffect(() => {
     if (!project) return;
@@ -575,7 +587,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? t("projectDetail.projectFallback"),
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -592,7 +604,7 @@ export function ProjectDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef, t]);
 
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
@@ -692,7 +704,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {t("projectDetail.pausedByBudgetHardStop")}
             </div>
           ) : null}
         </div>
@@ -732,11 +744,11 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: t("projectDetail.issuesTab") },
+            { value: "overview", label: t("projectDetail.overviewTab") },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("projectDetail.workspacesTab") }] : []),
+            { value: "configuration", label: t("projectDetail.configurationTab") },
+            { value: "budget", label: t("projectDetail.budgetTab") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -776,7 +788,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("projectDetail.loadingWorkspaces")}</p>
         )
       ) : null}
 

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
+import { useLocale } from "../context/LocaleContext";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 
@@ -44,13 +45,15 @@ export function InlineEditor({
   onSave,
   as: Tag = "span",
   className,
-  placeholder = "Click to edit...",
+  placeholder,
   multiline = false,
   nullable = false,
   imageUploadHandler,
   onDropFile,
   mentions,
 }: InlineEditorProps) {
+  const { t } = useLocale();
+  const resolvedPlaceholder = placeholder ?? t("common.clickToEdit");
   const [editing, setEditing] = useState(false);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -233,7 +236,7 @@ export function InlineEditor({
           ref={markdownRef}
           value={draft}
           onChange={setDraft}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           bordered={false}
           className="bg-transparent"
           contentClassName={cn("paperclip-edit-in-place-content", className)}
@@ -253,12 +256,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("common.autosaving")
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("common.saved")
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("common.couldNotSave")
+                  : t("common.idle")}
           </span>
         </div>
       </div>
@@ -303,7 +306,7 @@ export function InlineEditor({
       )}
       onClick={() => setEditing(true)}
     >
-      {value || placeholder}
+      {value || resolvedPlaceholder}
     </DisplayTag>
   );
 }

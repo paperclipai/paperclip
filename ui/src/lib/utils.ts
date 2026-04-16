@@ -1,7 +1,22 @@
+import {
+  createTranslator,
+  formatDateForLocale,
+  formatDateTimeForLocale,
+  formatRelativeTimeForLocale,
+  formatShortDateForLocale,
+} from "@paperclipai/shared/i18n";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
-import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import type {
+  BillingType,
+  BudgetScopeType,
+  BudgetWindowKind,
+  FinanceDirection,
+  FinanceEventKind,
+  PauseReason,
+} from "@paperclipai/shared";
+import { getCurrentLocale } from "./locale-store";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -12,48 +27,29 @@ export function formatCents(cents: number): string {
 }
 
 export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  return formatDateForLocale(getCurrentLocale(), date);
 }
 
 export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatDateTimeForLocale(getCurrentLocale(), date);
 }
 
 export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
+  return formatShortDateForLocale(getCurrentLocale(), date);
 }
 
 export function relativeTime(date: Date | string): string {
-  const now = Date.now();
-  const then = new Date(date).getTime();
-  const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
-  return formatDate(date);
+  return formatRelativeTimeForLocale(getCurrentLocale(), date);
 }
 
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+function t() {
+  return createTranslator(getCurrentLocale()).t;
 }
 
 /** Map a raw provider slug to a display-friendly name. */
@@ -72,24 +68,26 @@ export function providerDisplayName(provider: string): string {
 }
 
 export function billingTypeDisplayName(billingType: BillingType): string {
+  const translate = t();
   const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
+    metered_api: translate("finance.billingType.meteredApi"),
+    subscription_included: translate("finance.billingType.subscriptionIncluded"),
+    subscription_overage: translate("finance.billingType.subscriptionOverage"),
+    credits: translate("finance.billingType.credits"),
+    fixed: translate("finance.billingType.fixed"),
+    unknown: translate("finance.billingType.unknown"),
   };
   return map[billingType];
 }
 
 export function quotaSourceDisplayName(source: string): string {
+  const translate = t();
   const map: Record<string, string> = {
-    "anthropic-oauth": "Anthropic OAuth",
-    "claude-cli": "Claude CLI",
-    "bedrock": "AWS Bedrock",
-    "codex-rpc": "Codex app server",
-    "codex-wham": "ChatGPT WHAM",
+    "anthropic-oauth": translate("finance.quotaSource.anthropicOauth"),
+    "claude-cli": translate("finance.quotaSource.claudeCli"),
+    "bedrock": translate("finance.quotaSource.awsBedrock"),
+    "codex-rpc": translate("finance.quotaSource.codexAppServer"),
+    "codex-wham": translate("finance.quotaSource.chatgptWham"),
   };
   return map[source] ?? source;
 }
@@ -127,27 +125,102 @@ export function visibleRunCostUsd(
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
+  const translate = t();
   const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
+    inference_charge: translate("finance.eventKind.inferenceCharge"),
+    platform_fee: translate("finance.eventKind.platformFee"),
+    credit_purchase: translate("finance.eventKind.creditPurchase"),
+    credit_refund: translate("finance.eventKind.creditRefund"),
+    credit_expiry: translate("finance.eventKind.creditExpiry"),
+    byok_fee: translate("finance.eventKind.byokFee"),
+    gateway_overhead: translate("finance.eventKind.gatewayOverhead"),
+    log_storage_charge: translate("finance.eventKind.logStorageCharge"),
+    logpush_charge: translate("finance.eventKind.logpushCharge"),
+    provisioned_capacity_charge: translate("finance.eventKind.provisionedCapacityCharge"),
+    training_charge: translate("finance.eventKind.trainingCharge"),
+    custom_model_import_charge: translate("finance.eventKind.customModelImportCharge"),
+    custom_model_storage_charge: translate("finance.eventKind.customModelStorageCharge"),
+    manual_adjustment: translate("finance.eventKind.manualAdjustment"),
   };
   return map[eventKind];
 }
 
 export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
+  const translate = t();
+  return direction === "credit" ? translate("finance.direction.credit") : translate("finance.direction.debit");
+}
+
+export function budgetScopeDisplayName(scopeType: BudgetScopeType): string {
+  const translate = t();
+  const map: Record<BudgetScopeType, string> = {
+    company: translate("budget.scope.company"),
+    agent: translate("budget.scope.agent"),
+    project: translate("budget.scope.project"),
+  };
+  return map[scopeType];
+}
+
+export function budgetWindowDisplayName(windowKind: BudgetWindowKind): string {
+  const translate = t();
+  return windowKind === "lifetime"
+    ? translate("budget.window.lifetime")
+    : translate("budget.window.calendarMonthUtc");
+}
+
+export function pauseReasonDisplayName(reason: PauseReason): string {
+  const translate = t();
+  const map: Record<PauseReason, string> = {
+    manual: translate("budget.pauseReason.manual"),
+    budget: translate("budget.pauseReason.budget"),
+    system: translate("budget.pauseReason.system"),
+  };
+  return map[reason];
+}
+
+export function issueStatusDisplayName(status: string): string {
+  const translate = t();
+  const map: Record<string, string> = {
+    backlog: translate("issue.statusBacklog"),
+    todo: translate("issue.statusTodo"),
+    in_progress: translate("issue.statusInProgress"),
+    in_review: translate("issue.statusInReview"),
+    blocked: translate("issue.statusBlocked"),
+    done: translate("issue.statusDone"),
+    cancelled: translate("issue.statusCancelled"),
+  };
+  return map[status] ?? status;
+}
+
+export function issuePriorityDisplayName(priority: string): string {
+  const translate = t();
+  const map: Record<string, string> = {
+    critical: translate("issue.priorityCritical"),
+    high: translate("issue.priorityHigh"),
+    medium: translate("issue.priorityMedium"),
+    low: translate("issue.priorityLow"),
+  };
+  return map[priority] ?? priority;
+}
+
+export function runtimeServiceStatusDisplayName(status: string): string {
+  const translate = t();
+  const map: Record<string, string> = {
+    starting: translate("projectProperties.runtimeServiceStatus.starting"),
+    running: translate("projectProperties.runtimeServiceStatus.running"),
+    stopped: translate("projectProperties.runtimeServiceStatus.stopped"),
+    failed: translate("projectProperties.runtimeServiceStatus.failed"),
+  };
+  return map[status] ?? status;
+}
+
+export function runtimeServiceLifecycleDisplayName(lifecycle: string): string {
+  const translate = t();
+  const map: Record<string, string> = {
+    shared: translate("projectProperties.runtimeServiceLifecycle.shared"),
+    isolated: translate("projectProperties.runtimeServiceLifecycle.isolated"),
+    ephemeral: translate("projectProperties.runtimeServiceLifecycle.ephemeral"),
+  };
+  return map[lifecycle] ?? lifecycle;
 }
 
 /** Build an issue URL using the human-readable identifier when available. */

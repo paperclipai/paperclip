@@ -1,3 +1,6 @@
+import { createTranslator } from "../../../packages/shared/src/i18n.js";
+import { getCurrentLocale } from "./locale-store";
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -63,10 +66,11 @@ export function parseAssigneeValue(value: string): AssigneeSelection {
 }
 
 export function currentUserAssigneeOption(currentUserId: string | null | undefined): AssigneeOption[] {
+  const { t } = createTranslator(getCurrentLocale());
   if (!currentUserId) return [];
   return [{
     id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
-    label: "Me",
+    label: t("common.me"),
     searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
   }];
 }
@@ -75,8 +79,9 @@ export function formatAssigneeUserLabel(
   userId: string | null | undefined,
   currentUserId: string | null | undefined,
 ): string | null {
+  const { t } = createTranslator(getCurrentLocale());
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return "You";
-  if (userId === "local-board") return "Board";
+  if (currentUserId && userId === currentUserId) return t("common.you");
+  if (userId === "local-board") return t("common.board");
   return userId.slice(0, 5);
 }

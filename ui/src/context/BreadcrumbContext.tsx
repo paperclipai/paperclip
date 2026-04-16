@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { translateText } from "@paperclipai/shared/i18n";
+import { getCurrentLocale } from "@/lib/locale-store";
 
 export interface Breadcrumb {
   label: string;
@@ -41,7 +43,7 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
     if (breadcrumbs.length === 0) {
       document.title = "Paperclip";
     } else {
-      const parts = [...breadcrumbs].reverse().map((b) => b.label);
+      const parts = [...breadcrumbs].reverse().map((b) => translateText(getCurrentLocale(), b.label));
       document.title = `${parts.join(" · ")} · Paperclip`;
     }
   }, [breadcrumbs]);

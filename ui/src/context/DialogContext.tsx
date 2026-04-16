@@ -50,6 +50,35 @@ interface DialogContextValue {
 
 const DialogContext = createContext<DialogContextValue | null>(null);
 
+const defaultDialogContextValue: DialogContextValue = {
+  newIssueOpen: false,
+  newIssueDefaults: {},
+  openNewIssue: () => {},
+  closeNewIssue: () => {},
+  newProjectOpen: false,
+  openNewProject: () => {},
+  closeNewProject: () => {},
+  newGoalOpen: false,
+  newGoalDefaults: {},
+  openNewGoal: () => {},
+  closeNewGoal: () => {},
+  newAgentOpen: false,
+  openNewAgent: () => {},
+  closeNewAgent: () => {},
+  onboardingOpen: false,
+  onboardingOptions: {},
+  openOnboarding: () => {},
+  closeOnboarding: () => {},
+};
+
+function getTestDialogContextOverride(): Partial<DialogContextValue> | null {
+  if (import.meta.env.MODE !== "test") return null;
+  const globalScope = globalThis as typeof globalThis & {
+    __PAPERCLIP_TEST_DIALOG_CONTEXT__?: Partial<DialogContextValue>;
+  };
+  return globalScope.__PAPERCLIP_TEST_DIALOG_CONTEXT__ ?? null;
+}
+
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   const [newIssueDefaults, setNewIssueDefaults] = useState<NewIssueDefaults>({});
@@ -137,6 +166,12 @@ export function DialogProvider({ children }: { children: ReactNode }) {
 export function useDialog() {
   const ctx = useContext(DialogContext);
   if (!ctx) {
+    if (import.meta.env.MODE === "test") {
+      return {
+        ...defaultDialogContextValue,
+        ...getTestDialogContextOverride(),
+      };
+    }
     throw new Error("useDialog must be used within DialogProvider");
   }
   return ctx;

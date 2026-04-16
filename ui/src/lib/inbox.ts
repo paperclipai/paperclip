@@ -779,11 +779,17 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
   join_request: "Join requests",
 };
 
+type InboxGroupLabelOptions = InboxWorkspaceGroupingOptions & {
+  kindLabels?: Partial<Record<InboxWorkItem["kind"], string>>;
+};
+
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
-  options: InboxWorkspaceGroupingOptions = {},
+  options: InboxGroupLabelOptions = {},
 ): InboxWorkItemGroup[] {
+  const kindLabel = (kind: InboxWorkItem["kind"]) => options.kindLabels?.[kind] ?? inboxWorkItemKindLabels[kind];
+
   if (groupBy === "none") {
     return [{ key: "__all", label: null, items }];
   }
@@ -793,7 +799,7 @@ export function groupInboxWorkItems(
     for (const item of items) {
       const resolvedGroup = item.kind === "issue"
         ? resolveIssueWorkspaceGroup(item.issue, options)
-        : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
+        : { key: `kind:${item.kind}`, label: kindLabel(item.kind) };
       const existing = groups.get(resolvedGroup.key);
       if (existing) {
         existing.items.push(item);
@@ -839,7 +845,7 @@ export function groupInboxWorkItems(
     if (groupItems.length === 0) continue;
     orderedGroups.push({
         key: kind,
-        label: inboxWorkItemKindLabels[kind],
+        label: kindLabel(kind),
         items: groupItems,
     });
   }
@@ -912,13 +918,21 @@ export function buildGroupedInboxSections(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
   workspaceGrouping: InboxWorkspaceGroupingOptions,
-  options?: { keyPrefix?: string; searchSection?: InboxSearchSection; nestingEnabled?: boolean },
+  options?: {
+    keyPrefix?: string;
+    searchSection?: InboxSearchSection;
+    nestingEnabled?: boolean;
+    kindLabels?: Partial<Record<InboxWorkItem["kind"], string>>;
+  },
 ): InboxGroupedSection[] {
   const keyPrefix = options?.keyPrefix ?? "";
   const searchSection = options?.searchSection ?? "none";
   const nestingEnabled = options?.nestingEnabled ?? false;
 
-  return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
+  return groupInboxWorkItems(items, groupBy, {
+    ...workspaceGrouping,
+    kindLabels: options?.kindLabels,
+  }).map((group) => {
     const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
       ? buildInboxNesting(group.items)
       : { displayItems: group.items, childrenByIssueId: new Map<string, Issue[]>() };
