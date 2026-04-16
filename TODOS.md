@@ -14,14 +14,15 @@ Test failures in `server/src/__tests__/workspace-runtime.test.ts`:
 
 **Root cause:** Tests assume `paperclipai` is NOT globally installed. When it is (e.g. via `npx -y paperclipai`), `paperclipai_command_available()` in `provision-worktree.sh` returns `true` and the real CLI is invoked. Different tests expect different behaviors: some expect fallback, some expect hard failure. The conflict is irresolvable without PATH isolation in the tests. Fix: each test that calls provision-worktree.sh should control PATH to include only the intended fake/real CLI (similar to how `fails instead of writing unseeded fallback` uses a fake pnpm bin dir).
 
-**Priority:** P0
+## Completed
+
 **Title:** Fix worktree-config port assignment tests
 
 Test failures in `server/src/__tests__/worktree-config.test.ts`:
 - `avoids sibling worktree ports when repairing legacy configs`
 - `rebalances duplicate ports for already isolated worktree configs`
 
-**Root cause:** `maybeRepairLegacyWorktreeConfigAndEnvFiles` returns port 3100 instead of 3102 (expected to skip sibling's 3101). Port allocation likely not reading sibling configs correctly. Noticed on branch `feature/f6-deploy-self-hosted` — pre-existing failure.
+**Root cause:** Tests were not clearing `PAPERCLIP_CONFIG` and `PAPERCLIP_INSTANCE_ID` from `process.env` before calling `maybeRepairLegacyWorktreeConfigAndEnvFiles()`. Since `PAPERCLIP_CONFIG` is set in the dev environment, `resolvePaperclipConfigPath()` returned the real system config path instead of the test's temp config. The sibling port scan then operated on the wrong home directory, finding no siblings.
 
-## Completed
+**Fix:** Added `delete process.env.PAPERCLIP_HOME/INSTANCE_ID/CONFIG/CONTEXT` in both failing tests (same pattern as the first test in the suite). Fixed in `server/src/__tests__/worktree-config.test.ts`.
 
