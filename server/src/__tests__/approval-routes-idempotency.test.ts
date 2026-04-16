@@ -252,6 +252,53 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 
+  it("wakes the requesting agent after reject is applied", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-5b",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-9",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-5b",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-9",
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-5b/reject")
+      .send({ decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueApprovalService.listIssuesForApproval).toHaveBeenCalledWith("approval-5b");
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-9",
+      expect.objectContaining({
+        reason: "approval_rejected",
+        payload: expect.objectContaining({
+          approvalId: "approval-5b",
+          approvalStatus: "rejected",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          source: "approval.rejected",
+          wakeReason: "approval_rejected",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+        }),
+      }),
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on request revision", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-6",
@@ -277,6 +324,50 @@ describe("approval routes idempotent retries", () => {
       "approval-6",
       "user-1",
       "Need changes",
+    );
+  });
+
+  it("wakes the requesting agent after request revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-6b",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-7",
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-6b",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-7",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-6b/request-revision")
+      .send({ decisionNote: "Need changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueApprovalService.listIssuesForApproval).toHaveBeenCalledWith("approval-6b");
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-7",
+      expect.objectContaining({
+        reason: "approval_revision_requested",
+        payload: expect.objectContaining({
+          approvalId: "approval-6b",
+          approvalStatus: "revision_requested",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          source: "approval.revision_requested",
+          wakeReason: "approval_revision_requested",
+          issueId: "issue-1",
+          issueIds: ["issue-1"],
+        }),
+      }),
     );
   });
 

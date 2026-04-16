@@ -43,6 +43,89 @@ export function approvalRoutes(db: Db) {
     return approval;
   }
 
+  async function queueRequesterWakeup(
+    req: Request,
+    approval: Awaited<ReturnType<typeof svc.getById>> extends infer T ? NonNullable<T> : never,
+    opts: {
+      sourceAction: "approval.approved" | "approval.rejected" | "approval.revision_requested";
+      wakeReason: "approval_approved" | "approval_rejected" | "approval_revision_requested";
+      linkedIssueIds?: string[];
+    },
+  ) {
+    if (!approval.requestedByAgentId) {
+      return;
+    }
+
+    const linkedIssueIds =
+      opts.linkedIssueIds
+      ?? (await issueApprovalsSvc.listIssuesForApproval(approval.id)).map((issue) => issue.id);
+    const primaryIssueId = linkedIssueIds[0] ?? null;
+
+    try {
+      const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: opts.wakeReason,
+        payload: {
+          approvalId: approval.id,
+          approvalStatus: approval.status,
+          issueId: primaryIssueId,
+          issueIds: linkedIssueIds,
+        },
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
+        contextSnapshot: {
+          source: opts.sourceAction,
+          approvalId: approval.id,
+          approvalStatus: approval.status,
+          issueId: primaryIssueId,
+          issueIds: linkedIssueIds,
+          taskId: primaryIssueId,
+          wakeReason: opts.wakeReason,
+        },
+      });
+
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.requester_wakeup_queued",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          requesterAgentId: approval.requestedByAgentId,
+          wakeRunId: wakeRun?.id ?? null,
+          wakeReason: opts.wakeReason,
+          linkedIssueIds,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          approvalId: approval.id,
+          requestedByAgentId: approval.requestedByAgentId,
+          wakeReason: opts.wakeReason,
+        },
+        "failed to queue requester wakeup after approval update",
+      );
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.requester_wakeup_failed",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          requesterAgentId: approval.requestedByAgentId,
+          wakeReason: opts.wakeReason,
+          linkedIssueIds,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -156,68 +239,11 @@ export function approvalRoutes(db: Db) {
         },
       });
 
-      if (approval.requestedByAgentId) {
-        try {
-          const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "approval_approved",
-            payload: {
-              approvalId: approval.id,
-              approvalStatus: approval.status,
-              issueId: primaryIssueId,
-              issueIds: linkedIssueIds,
-            },
-            requestedByActorType: "user",
-            requestedByActorId: req.actor.userId ?? "board",
-            contextSnapshot: {
-              source: "approval.approved",
-              approvalId: approval.id,
-              approvalStatus: approval.status,
-              issueId: primaryIssueId,
-              issueIds: linkedIssueIds,
-              taskId: primaryIssueId,
-              wakeReason: "approval_approved",
-            },
-          });
-
-          await logActivity(db, {
-            companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_queued",
-            entityType: "approval",
-            entityId: approval.id,
-            details: {
-              requesterAgentId: approval.requestedByAgentId,
-              wakeRunId: wakeRun?.id ?? null,
-              linkedIssueIds,
-            },
-          });
-        } catch (err) {
-          logger.warn(
-            {
-              err,
-              approvalId: approval.id,
-              requestedByAgentId: approval.requestedByAgentId,
-            },
-            "failed to queue requester wakeup after approval",
-          );
-          await logActivity(db, {
-            companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_failed",
-            entityType: "approval",
-            entityId: approval.id,
-            details: {
-              requesterAgentId: approval.requestedByAgentId,
-              linkedIssueIds,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          });
-        }
-      }
+      await queueRequesterWakeup(req, approval, {
+        sourceAction: "approval.approved",
+        wakeReason: "approval_approved",
+        linkedIssueIds,
+      });
     }
 
     res.json(redactApprovalPayload(approval));
@@ -242,6 +268,11 @@ export function approvalRoutes(db: Db) {
         entityType: "approval",
         entityId: approval.id,
         details: { type: approval.type },
+      });
+
+      await queueRequesterWakeup(req, approval, {
+        sourceAction: "approval.rejected",
+        wakeReason: "approval_rejected",
       });
     }
 
@@ -269,6 +300,11 @@ export function approvalRoutes(db: Db) {
         entityType: "approval",
         entityId: approval.id,
         details: { type: approval.type },
+      });
+
+      await queueRequesterWakeup(req, approval, {
+        sourceAction: "approval.revision_requested",
+        wakeReason: "approval_revision_requested",
       });
 
       res.json(redactApprovalPayload(approval));
