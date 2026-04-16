@@ -126,7 +126,7 @@ type TranscriptBlock =
       }>;
     };
 
-type Translate = ReturnType<typeof useLocale>["t"];
+type Translate = ReturnType<typeof useLocaleOrFallback>["t"];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
