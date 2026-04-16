@@ -3,6 +3,7 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  HEARTBEAT_MODES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -31,6 +32,29 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
+export const heartbeatRuntimeConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  intervalSec: z.number().optional(),
+  maxConcurrentRuns: z.number().optional(),
+  wakeOnDemand: z.boolean().optional(),
+  mode: z.enum(HEARTBEAT_MODES).optional().default("reactive"),
+}).optional();
+
+export type HeartbeatRuntimeConfig = z.infer<typeof heartbeatRuntimeConfigSchema>;
+
+const runtimeConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  if (value.heartbeat !== undefined && typeof value.heartbeat === "object" && value.heartbeat !== null) {
+    const parsed = heartbeatRuntimeConfigSchema.safeParse(value.heartbeat);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "runtimeConfig.heartbeat is invalid",
+        path: ["heartbeat"],
+      });
+    }
+  }
+});
+
 const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
   if (envValue === undefined) return;
@@ -54,7 +78,7 @@ export const createAgentSchema = z.object({
   desiredSkills: z.array(z.string().min(1)).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
-  runtimeConfig: z.record(z.unknown()).optional().default({}),
+  runtimeConfig: runtimeConfigSchema.optional().default({}),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),

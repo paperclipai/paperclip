@@ -27,6 +27,8 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeQuotaWarning,
+  detectClaudeQuotaExhausted,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -523,7 +525,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
-    const errorMeta =
+    const errorMeta: Record<string, unknown> | undefined =
       loginMeta.loginUrl != null
         ? {
             loginUrl: loginMeta.loginUrl,
@@ -543,13 +545,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const quotaExhausted = detectClaudeQuotaExhausted({ stdout: proc.stdout, stderr: proc.stderr });
+      const resolvedErrorCode = loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : quotaExhausted.exhausted
+          ? "quota_exhausted"
+          : null;
+      const resolvedErrorMeta = quotaExhausted.exhausted
+        ? { ...errorMeta, quotaResetTime: quotaExhausted.meta.resetTime, quotaResetTimezone: quotaExhausted.meta.resetTimezone }
+        : errorMeta;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
-        errorMeta,
+        errorCode: resolvedErrorCode,
+        errorMeta: resolvedErrorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
@@ -584,6 +595,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
 
+    // Quota classification: quota_exhausted (hard failure) takes precedence over quota_warning (soft).
+    const quotaExhausted = detectClaudeQuotaExhausted({ stdout: proc.stdout, stderr: proc.stderr });
+    const quotaWarning = detectClaudeQuotaWarning(parsedStream.rateLimits);
+    let resolvedErrorCode: string | null = loginMeta.requiresLogin ? "claude_auth_required" : null;
+    let resolvedErrorMeta = errorMeta;
+    if (!resolvedErrorCode) {
+      if (quotaExhausted.exhausted) {
+        resolvedErrorCode = "quota_exhausted";
+        resolvedErrorMeta = {
+          ...errorMeta,
+          quotaResetTime: quotaExhausted.meta.resetTime,
+          quotaResetTimezone: quotaExhausted.meta.resetTimezone,
+        };
+      } else if (quotaWarning.warning) {
+        resolvedErrorCode = "quota_warning";
+        resolvedErrorMeta = {
+          ...errorMeta,
+          sevenDayPercent: quotaWarning.sevenDayPercent,
+        };
+      }
+    }
+
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -592,8 +625,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
-      errorMeta,
+      errorCode: resolvedErrorCode,
+      errorMeta: resolvedErrorMeta,
       usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

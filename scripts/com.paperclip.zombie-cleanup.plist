@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.paperclip.zombie-cleanup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/michaeldavidson/Developer/paperclip/scripts/kill-zombie-claude.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/michaeldavidson/Library/Logs/claude-zombie-cleanup-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/michaeldavidson/Library/Logs/claude-zombie-cleanup-stderr.log</string>
+</dict>
+</plist>

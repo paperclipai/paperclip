@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { issueExecutionPolicySchema } from "./issue.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -106,6 +107,7 @@ const projectFields = {
   color: z.string().optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  defaultExecutionPolicy: issueExecutionPolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 

@@ -33,6 +33,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 
@@ -1532,6 +1533,17 @@ export function issueService(db: Db) {
         }
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+        }
+        // Inherit default execution policy from project when not explicitly set
+        if (issueData.executionPolicy == null && issueData.projectId) {
+          const projRow = await tx
+            .select({ defaultExecutionPolicy: projects.defaultExecutionPolicy })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (projRow?.defaultExecutionPolicy) {
+            issueData.executionPolicy = normalizeIssueExecutionPolicy(projRow.defaultExecutionPolicy) as Record<string, unknown> | null;
+          }
         }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.

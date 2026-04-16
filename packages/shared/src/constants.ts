@@ -318,6 +318,9 @@ export const HEARTBEAT_INVOCATION_SOURCES = [
 ] as const;
 export type HeartbeatInvocationSource = (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
 
+export const HEARTBEAT_MODES = ["reactive", "proactive"] as const;
+export type HeartbeatMode = (typeof HEARTBEAT_MODES)[number];
+
 export const WAKEUP_TRIGGER_DETAILS = ["manual", "ping", "callback", "system"] as const;
 export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
@@ -340,6 +343,7 @@ export const HEARTBEAT_RUN_STATUSES = [
   "failed",
   "cancelled",
   "timed_out",
+  "skipped",
 ] as const;
 export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
 

@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   companySkills as companySkillsTable,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -2590,11 +2591,15 @@ export function heartbeatService(db: Db) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const rawMode = typeof heartbeat.mode === "string" ? heartbeat.mode : null;
+    const mode: "reactive" | "proactive" = rawMode === "proactive" ? "proactive" : "reactive";
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      mode,
     };
   }
 
@@ -2839,6 +2844,13 @@ export function heartbeatService(db: Db) {
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
+
+      // Best-effort cleanup: kill the OS process if it's still alive.
+      // Fire-and-forget so the reaper loop isn't blocked by the grace period.
+      if (tracksLocalChild && (run.processPid || run.processGroupId)) {
+        void terminateHeartbeatRunProcess({ pid: run.processPid, processGroupId: run.processGroupId });
+      }
+
       reaped.push(run.id);
     }
 
@@ -4099,6 +4111,19 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Post-classification: quota-aware agent pausing
+      const quotaClassification = adapterResult.errorCode;
+      if (
+        agent.adapterType === "claude_local" &&
+        (quotaClassification === "quota_warning" || quotaClassification === "quota_exhausted")
+      ) {
+        try {
+          await handleQuotaPause(agent.companyId, quotaClassification, adapterResult.errorMeta);
+        } catch (quotaErr) {
+          logger.warn({ err: quotaErr, runId, companyId: agent.companyId }, "quota pause handler failed");
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4201,6 +4226,18 @@ export function heartbeatService(db: Db) {
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+
+          // Safety-net: if the adapter's child process is still alive after a
+          // terminal state transition, kill it so it doesn't become a zombie.
+          // Re-read the run to get the latest processPid (set by onSpawn callback).
+          const finalRun = await getRun(run.id).catch(() => null);
+          if (finalRun?.processPid || finalRun?.processGroupId) {
+            const finalAgent = await getAgent(run.agentId).catch(() => null);
+            if (finalAgent && isTrackedLocalChildProcessAdapter(finalAgent.adapterType)) {
+              void terminateHeartbeatRunProcess({ pid: finalRun.processPid, processGroupId: finalRun.processGroupId });
+            }
+          }
+
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -4528,6 +4565,23 @@ export function heartbeatService(db: Db) {
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Skip timer heartbeats for reactive agents with empty inbox
+    if (source === "timer" && policy.mode === "reactive") {
+      const assignedIssues = await issuesSvc.list(agent.companyId, {
+        assigneeAgentId: agent.id,
+        status: "todo,in_progress",
+        limit: 1,
+      });
+      if (assignedIssues.length === 0) {
+        await writeSkippedRequest("heartbeat.empty_inbox");
+        logger.info(
+          { agentId: agent.id, agentName: agent.name },
+          "Skipping timer heartbeat: empty inbox (reactive mode)",
+        );
+        return null;
+      }
     }
 
     if (issueId) {
@@ -5128,6 +5182,100 @@ export function heartbeatService(db: Db) {
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Quota-aware agent pausing
+  // ---------------------------------------------------------------------------
+
+  const SLACK_QUOTA_CHANNEL = "D0AJUUME0QN";
+
+  async function sendSlackQuotaDm(text: string) {
+    const token = process.env.SLACK_BOT_TOKEN;
+    if (!token) {
+      logger.warn("SLACK_BOT_TOKEN not set; skipping quota Slack DM");
+      return;
+    }
+    try {
+      const resp = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channel: SLACK_QUOTA_CHANNEL, text }),
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status }, "Slack quota DM request failed");
+      }
+    } catch (err) {
+      logger.warn({ err }, "Failed to send Slack quota DM");
+    }
+  }
+
+  async function handleQuotaPause(
+    companyId: string,
+    classification: "quota_warning" | "quota_exhausted",
+    meta: Record<string, unknown> | undefined,
+  ) {
+    // Fetch company name for the Slack message
+    const company = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    const companyName = company?.name ?? companyId;
+
+    // List all agents in this company with adapter type claude_local that are not already paused/terminated
+    const companyAgents = await db
+      .select({ id: agents.id, status: agents.status, adapterType: agents.adapterType })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const toPause = companyAgents.filter(
+      (a) =>
+        a.adapterType === "claude_local" &&
+        a.status !== "paused" &&
+        a.status !== "terminated" &&
+        a.status !== "pending_approval",
+    );
+
+    for (const a of toPause) {
+      await db
+        .update(agents)
+        .set({
+          status: "paused",
+          pauseReason: "system",
+          pausedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, a.id));
+    }
+
+    const count = toPause.length;
+
+    if (classification === "quota_warning") {
+      const pct = typeof meta?.sevenDayPercent === "number" ? meta.sevenDayPercent : "90+";
+      await sendSlackQuotaDm(
+        `⚠️ Weekly quota at ${pct}% for ${companyName}. Paused ${count} claude_local agents.`,
+      );
+    } else {
+      const resetTime = typeof meta?.quotaResetTime === "string" ? meta.quotaResetTime : null;
+      const resetTz = typeof meta?.quotaResetTimezone === "string" ? meta.quotaResetTimezone : null;
+      const resetLabel = resetTime
+        ? resetTz
+          ? `${resetTime} (${resetTz})`
+          : resetTime
+        : "unknown";
+      await sendSlackQuotaDm(
+        `🛑 Quota exhausted for ${companyName}. Resets ${resetLabel}. Paused ${count} claude_local agents.`,
+      );
+    }
+
+    logger.info(
+      { companyId, classification, pausedCount: count },
+      "quota-aware agent pause completed",
+    );
   }
 
   return {

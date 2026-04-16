@@ -4,6 +4,34 @@ import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
+export interface ClaudeRateLimitWindow {
+  used_percentage?: number | null;
+}
+
+export interface ClaudeRateLimits {
+  five_hour?: ClaudeRateLimitWindow | null;
+  seven_day?: ClaudeRateLimitWindow | null;
+}
+
+function parseRateLimits(raw: unknown): ClaudeRateLimits | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const result: ClaudeRateLimits = {};
+  let hasWindow = false;
+  for (const key of ["five_hour", "seven_day"] as const) {
+    const window = obj[key];
+    if (typeof window === "object" && window !== null && !Array.isArray(window)) {
+      const w = window as Record<string, unknown>;
+      const pct = typeof w.used_percentage === "number" && Number.isFinite(w.used_percentage)
+        ? w.used_percentage
+        : null;
+      result[key] = { used_percentage: pct };
+      hasWindow = true;
+    }
+  }
+  return hasWindow ? result : null;
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
@@ -50,6 +78,7 @@ export function parseClaudeStreamJson(stdout: string) {
       model,
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
+      rateLimits: null as ClaudeRateLimits | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
@@ -64,12 +93,14 @@ export function parseClaudeStreamJson(stdout: string) {
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
   const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
+  const rateLimits = parseRateLimits(finalResult.rate_limits);
 
   return {
     sessionId,
     model,
     costUsd,
     usage,
+    rateLimits,
     summary,
     resultJson: finalResult,
   };
@@ -165,6 +196,57 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
 
   const resultText = asString(parsed.result, "").trim();
   return /max(?:imum)?\s+turns?/i.test(resultText);
+}
+
+// ---------------------------------------------------------------------------
+// Quota classification helpers
+// ---------------------------------------------------------------------------
+
+/** Quota-related error codes that can be set on AdapterExecutionResult.errorCode */
+export type ClaudeQuotaClassification = "quota_warning" | "quota_exhausted";
+
+const QUOTA_EXHAUSTED_RE = /You[''\u2019]ve hit your limit/i;
+const QUOTA_RESET_RE = /resets\s+(\d{1,2}(?:am|pm))\s*\(([^)]+)\)/i;
+
+export interface ClaudeQuotaExhaustedMeta {
+  resetTime: string | null;
+  resetTimezone: string | null;
+}
+
+/**
+ * Detect weekly quota warning from rate_limits in the stream-json result event.
+ * Returns true when seven_day.used_percentage >= 90.
+ * Does NOT check five_hour — that window must never trigger pausing.
+ */
+export function detectClaudeQuotaWarning(rateLimits: ClaudeRateLimits | null): {
+  warning: boolean;
+  sevenDayPercent: number | null;
+} {
+  if (!rateLimits?.seven_day) return { warning: false, sevenDayPercent: null };
+  const pct = rateLimits.seven_day.used_percentage ?? null;
+  return { warning: pct !== null && pct >= 90, sevenDayPercent: pct };
+}
+
+/**
+ * Detect hard quota exhaustion from stdout/stderr containing "You've hit your limit".
+ * Extracts the reset time if present (e.g. "resets 12am (Australia/Brisbane)").
+ */
+export function detectClaudeQuotaExhausted(input: {
+  stdout: string;
+  stderr: string;
+}): { exhausted: boolean; meta: ClaudeQuotaExhaustedMeta } {
+  const combined = `${input.stdout}\n${input.stderr}`;
+  const exhausted = QUOTA_EXHAUSTED_RE.test(combined);
+  let resetTime: string | null = null;
+  let resetTimezone: string | null = null;
+  if (exhausted) {
+    const match = combined.match(QUOTA_RESET_RE);
+    if (match) {
+      resetTime = match[1] ?? null;
+      resetTimezone = match[2] ?? null;
+    }
+  }
+  return { exhausted, meta: { resetTime, resetTimezone } };
 }
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {

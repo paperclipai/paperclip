@@ -1,5 +1,6 @@
 import type { PauseReason, ProjectStatus } from "../constants.js";
 import type { AgentEnvConfig } from "./secrets.js";
+import type { IssueExecutionPolicy } from "./issue.js";
 import type {
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
@@ -70,6 +71,7 @@ export interface Project {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  defaultExecutionPolicy: IssueExecutionPolicy | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

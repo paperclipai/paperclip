@@ -14,6 +14,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -113,6 +114,9 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
+    if (projectData.defaultExecutionPolicy !== undefined) {
+      projectData.defaultExecutionPolicy = normalizeIssueExecutionPolicy(projectData.defaultExecutionPolicy) as Record<string, unknown> | null;
+    }
     const project = await svc.create(companyId, projectData);
     let createdWorkspaceId: string | null = null;
     if (workspace) {
@@ -169,6 +173,9 @@ export function projectRoutes(db: Db) {
         strictMode: strictSecretsMode,
         fieldPath: "env",
       });
+    }
+    if (body.defaultExecutionPolicy !== undefined) {
+      body.defaultExecutionPolicy = normalizeIssueExecutionPolicy(body.defaultExecutionPolicy) as Record<string, unknown> | null;
     }
     const project = await svc.update(id, body);
     if (!project) {

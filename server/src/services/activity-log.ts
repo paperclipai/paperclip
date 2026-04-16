@@ -12,6 +12,28 @@ import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 
+/**
+ * Routine executions (heartbeats) generate issue lifecycle events on every cycle.
+ * Suppress plugin notifications for successful routine events to prevent noise:
+ * - issue.created from routine_execution: always suppressed (routine created the issue)
+ * - issue.updated from routine_execution with status done or in_progress: suppressed (normal lifecycle)
+ * - issue.updated from routine_execution with status cancelled/blocked/error: NOT suppressed (problem signal)
+ * Activity log DB writes and SSE/WebSocket events are unaffected.
+ */
+function shouldSuppressRoutinePluginEvent(input: LogActivityInput): boolean {
+  const details = input.details as Record<string, unknown> | null | undefined;
+  if (!details || details.originKind !== "routine_execution") return false;
+
+  if (input.action === "issue.created") return true;
+
+  if (input.action === "issue.updated") {
+    const newStatus = details.status as string | undefined;
+    if (newStatus === "done" || newStatus === "in_progress") return true;
+  }
+
+  return false;
+}
+
 let _pluginEventBus: PluginEventBus | null = null;
 
 /** Wire the plugin event bus so domain events are forwarded to plugins. */
@@ -69,7 +91,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     },
   });
 
-  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action)) {
+  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action) && !shouldSuppressRoutinePluginEvent(input)) {
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: input.action as PluginEventType,
