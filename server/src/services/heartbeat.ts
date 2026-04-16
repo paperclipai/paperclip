@@ -551,6 +551,7 @@ interface WakeupOptions {
 type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   outputTokens: number;
 };
 
@@ -705,8 +706,56 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+// Anthropic list pricing per million tokens (USD). Used to compute equivalent
+// cost for subscription runs where the CLI does not report total_cost_usd.
+// Cache reads are 10% of input price; cache writes are 125% of input price.
+const ANTHROPIC_MODEL_PRICING: Record<string, { inputPerMtok: number; outputPerMtok: number }> = {
+  "claude-opus-4": { inputPerMtok: 15, outputPerMtok: 75 },
+  "claude-opus-4-5": { inputPerMtok: 15, outputPerMtok: 75 },
+  "claude-sonnet-4-5": { inputPerMtok: 3, outputPerMtok: 15 },
+  "claude-sonnet-4-6": { inputPerMtok: 3, outputPerMtok: 15 },
+  "claude-haiku-4-5": { inputPerMtok: 1, outputPerMtok: 5 },
+  "claude-haiku-4-5-20251001": { inputPerMtok: 1, outputPerMtok: 5 },
+};
+
+function resolveModelPricing(model: string): { inputPerMtok: number; outputPerMtok: number } {
+  const normalized = model.toLowerCase().trim();
+  if (ANTHROPIC_MODEL_PRICING[normalized]) return ANTHROPIC_MODEL_PRICING[normalized]!;
+  // Prefix match for versioned model IDs (e.g. "claude-opus-4-5-20251001")
+  for (const [key, pricing] of Object.entries(ANTHROPIC_MODEL_PRICING)) {
+    if (normalized.startsWith(key)) return pricing;
+  }
+  // Unknown model: fall back to Opus rates (most conservative / avoids under-counting)
+  logger.warn({ model }, "Unknown model in pricing table; falling back to Opus rates");
+  return { inputPerMtok: 15, outputPerMtok: 75 };
+}
+
+function computeEquivalentCostCents(usage: UsageTotals, model: string): number {
+  const pricing = resolveModelPricing(model);
+  const cacheReadMultiplier = 0.1;
+  const cacheWriteMultiplier = 1.25;
+  const cents =
+    (usage.inputTokens / 1_000_000) * pricing.inputPerMtok * 100 +
+    (usage.cachedInputTokens / 1_000_000) * pricing.inputPerMtok * cacheReadMultiplier * 100 +
+    (usage.cacheCreationInputTokens / 1_000_000) * pricing.inputPerMtok * cacheWriteMultiplier * 100 +
+    (usage.outputTokens / 1_000_000) * pricing.outputPerMtok * 100;
+  return Math.max(0, Math.round(cents));
+}
+
+function normalizeBilledCostCents(
+  costUsd: number | null | undefined,
+  billingType: BillingType,
+  usage?: UsageTotals | null,
+  model?: string | null,
+): number {
+  if (billingType === "subscription_included") {
+    // Claude CLI subscription plans don't expose total_cost_usd. Compute the
+    // equivalent API cost from token counts so spentMonthlyCents stays accurate.
+    if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0 || usage.cachedInputTokens > 0 || usage.cacheCreationInputTokens > 0)) {
+      return computeEquivalentCostCents(usage, model ?? "unknown");
+    }
+    return 0;
+  }
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
@@ -792,6 +841,7 @@ function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTota
   return {
     inputTokens: Math.max(0, Math.floor(asNumber(usage.inputTokens, 0))),
     cachedInputTokens: Math.max(0, Math.floor(asNumber(usage.cachedInputTokens, 0))),
+    cacheCreationInputTokens: Math.max(0, Math.floor(asNumber(usage.cacheCreationInputTokens, 0))),
     outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
   };
 }
@@ -808,18 +858,23 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     0,
     Math.floor(asNumber(parsed.rawCachedInputTokens, asNumber(parsed.cachedInputTokens, 0))),
   );
+  const cacheCreationInputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCacheCreationInputTokens, asNumber(parsed.cacheCreationInputTokens, 0))),
+  );
   const outputTokens = Math.max(
     0,
     Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
   );
 
-  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
+  if (inputTokens <= 0 && cachedInputTokens <= 0 && cacheCreationInputTokens <= 0 && outputTokens <= 0) {
     return null;
   }
 
   return {
     inputTokens,
     cachedInputTokens,
+    cacheCreationInputTokens,
     outputTokens,
   };
 }
@@ -834,6 +889,9 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
   const cachedInputTokens = current.cachedInputTokens >= previous.cachedInputTokens
     ? current.cachedInputTokens - previous.cachedInputTokens
     : current.cachedInputTokens;
+  const cacheCreationInputTokens = current.cacheCreationInputTokens >= previous.cacheCreationInputTokens
+    ? current.cacheCreationInputTokens - previous.cacheCreationInputTokens
+    : current.cacheCreationInputTokens;
   const outputTokens = current.outputTokens >= previous.outputTokens
     ? current.outputTokens - previous.outputTokens
     : current.outputTokens;
@@ -841,6 +899,7 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
   return {
     inputTokens: Math.max(0, inputTokens),
     cachedInputTokens: Math.max(0, cachedInputTokens),
+    cacheCreationInputTokens: Math.max(0, cacheCreationInputTokens),
     outputTokens: Math.max(0, outputTokens),
   };
 }
@@ -3134,9 +3193,10 @@ export function heartbeatService(db: Db) {
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
+    const cacheCreationInputTokens = usage?.cacheCreationInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
-    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType, usage, result.model);
+    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0 || cacheCreationInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
@@ -3170,6 +3230,7 @@ export function heartbeatService(db: Db) {
         model: result.model ?? "unknown",
         inputTokens,
         cachedInputTokens,
+        cacheCreationInputTokens,
         outputTokens,
         costCents: additionalCostCents,
         occurredAt: new Date(),
@@ -3984,6 +4045,7 @@ export function heartbeatService(db: Db) {
               ...(rawUsage ? {
                 rawInputTokens: rawUsage.inputTokens,
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
+                rawCacheCreationInputTokens: rawUsage.cacheCreationInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
               } : {}),
               ...(sessionUsageResolution.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),

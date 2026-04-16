@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  billingReconciliationService,
   feedbackService,
   heartbeatService,
   instanceSettingsService,
@@ -640,8 +641,35 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Daily billing reconciliation — runs at 03:05 UTC each day.
+    // Compares Paperclip cost_events vs Anthropic Admin API usage report.
+    // Requires ANTHROPIC_ADMIN_API_KEY; safe no-op if the key is absent.
+    const billingRecon = billingReconciliationService(db);
+    let billingReconInFlight = false;
+    let lastBillingReconDate: string | null = null;
+
+    setInterval(async () => {
+      const now = new Date();
+      if (now.getUTCHours() !== 3 || now.getUTCMinutes() < 5 || now.getUTCMinutes() >= 10) return;
+      const todayStr = now.toISOString().slice(0, 10);
+      if (lastBillingReconDate === todayStr) return;
+      if (billingReconInFlight) return;
+      billingReconInFlight = true;
+      lastBillingReconDate = todayStr;
+      try {
+        const allCompanies = await db.select({ id: companies.id }).from(companies);
+        for (const company of allCompanies) {
+          await billingRecon.runDailyReconciliation(company.id);
+        }
+      } catch (err) {
+        logger.error({ err }, "Daily billing reconciliation failed");
+      } finally {
+        billingReconInFlight = false;
+      }
+    }, 5 * 60 * 1000); // check every 5 minutes
   }
-  
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);
