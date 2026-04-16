@@ -423,6 +423,10 @@ export {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   type PatchInstanceExperimentalSettings,
+  instanceBackupSettingsSchema,
+  patchInstanceBackupSettingsSchema,
+  type InstanceBackupSettings,
+  type PatchInstanceBackupSettings,
 } from "./validators/index.js";
 
 export {

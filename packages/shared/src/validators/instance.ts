@@ -39,7 +39,18 @@ export const instanceExperimentalSettingsSchema = z.object({
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
 
+export const instanceBackupSettingsSchema = z.object({
+  enabled: z.boolean(),
+  intervalMinutes: z.number().int().min(1).max(10080),
+  retentionDays: z.number().int().min(1).max(3650),
+  dir: z.string().min(1),
+}).strict();
+
+export const patchInstanceBackupSettingsSchema = instanceBackupSettingsSchema.partial();
+
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSettingsSchema>;
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
+export type InstanceBackupSettings = z.infer<typeof instanceBackupSettingsSchema>;
+export type PatchInstanceBackupSettings = z.infer<typeof patchInstanceBackupSettingsSchema>;
