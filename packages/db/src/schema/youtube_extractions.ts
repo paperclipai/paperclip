@@ -21,6 +21,7 @@ export const youtubeExtractions = pgTable(
     transcriptSource: text("transcript_source"), // 'manual_subs' | 'auto_subs' | 'none'
     report: text("report"),
     status: text("status").notNull().default("processing"), // 'processing' | 'completed' | 'failed'
+    vaultStatus: text("vault_status").notNull().default("pending"), // 'pending' | 'saved' | 'skipped'
     errorMessage: text("error_message"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

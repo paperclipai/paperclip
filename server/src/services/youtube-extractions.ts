@@ -115,6 +115,7 @@ export function youtubeExtractionService(db: Db) {
       transcriptSource?: string;
       report?: string;
       status?: string;
+      vaultStatus?: string;
       errorMessage?: string;
       metadata?: Record<string, unknown>;
     },

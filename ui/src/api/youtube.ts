@@ -18,6 +18,7 @@ export interface YoutubeExtraction {
   transcriptSource: string | null;
   report: string | null;
   status: string; // 'processing' | 'completed' | 'failed'
+  vaultStatus: string; // 'pending' | 'saved' | 'skipped'
   errorMessage: string | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
@@ -40,4 +41,10 @@ export const youtubeApi = {
     api.post<YoutubeExtraction>(`/companies/${companyId}/youtube-extractions`, data),
 
   delete: (id: string) => api.delete<void>(`/youtube-extractions/${id}`),
+
+  saveToVault: (id: string) =>
+    api.post<YoutubeExtraction>(`/youtube-extractions/${id}/save-to-vault`, {}),
+
+  skipVault: (id: string) =>
+    api.post<YoutubeExtraction>(`/youtube-extractions/${id}/skip-vault`, {}),
 };
