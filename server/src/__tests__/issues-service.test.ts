@@ -1351,6 +1351,7 @@ describeEmbeddedPostgres("issueService stale queued execution lock adoption", ()
       status: "in_progress",
       assigneeAgentId: agentId,
       checkoutRunId: null,
+      executionRunId: null,
       adoptedFromRunId: null,
     });
 
