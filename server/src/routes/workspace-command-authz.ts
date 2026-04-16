@@ -37,6 +37,12 @@ function collectExecutionWorkspaceConfigCommandPaths(raw: unknown, prefix: strin
   if (hasOwn(raw, "cleanupCommand")) {
     paths.push(prefixPath(prefix, "cleanupCommand"));
   }
+  // workspaceRuntime carries jobs/commands/services arrays that execute on the host.
+  // Treat the entire key as a blocked path so agents cannot inject arbitrary commands
+  // that are later triggered via the /run endpoint.
+  if (hasOwn(raw, "workspaceRuntime")) {
+    paths.push(prefixPath(prefix, "workspaceRuntime"));
+  }
   return paths;
 }
 
