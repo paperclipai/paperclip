@@ -30,8 +30,11 @@ services:
     command: redis-server --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     environment:
       REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+      # Use REDISCLI_AUTH so the healthcheck never puts the password on the command line
+      # (avoids exposure via `docker inspect` / /proc/<pid>/cmdline).
+      REDISCLI_AUTH: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 30
