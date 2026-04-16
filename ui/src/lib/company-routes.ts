@@ -19,6 +19,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "voice",
   "youtube",
   "api-runner",
+  "digest-player",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

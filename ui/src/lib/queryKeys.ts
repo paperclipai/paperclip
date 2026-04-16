@@ -154,6 +154,10 @@ export const queryKeys = {
     events: (companyId: string, start: string, end: string) =>
       ["calendar", companyId, start, end] as const,
   },
+  digests: {
+    list: (companyId: string) => ["digests", companyId] as const,
+    content: (companyId: string, filename: string) => ["digests", companyId, "content", filename] as const,
+  },
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,
