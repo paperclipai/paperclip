@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runChildProcess } from "./server-utils.js";
 
@@ -18,6 +21,24 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return !isPidAlive(pid);
+}
+
+async function withPatchedPlatform<T>(
+  platform: NodeJS.Platform,
+  run: () => Promise<T>,
+): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: platform,
+  });
+  try {
+    return await run();
+  } finally {
+    if (original) {
+      Object.defineProperty(process, "platform", original);
+    }
+  }
 }
 
 describe("runChildProcess", () => {
@@ -84,5 +105,75 @@ describe("runChildProcess", () => {
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+  });
+
+  it("bypasses cmd.exe for thin node wrapper .cmd files on Windows", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-adapter-utils-"));
+    const scriptPath = path.join(tempDir, "bridge.js");
+    const wrapperPath = path.join(tempDir, "bridge.cmd");
+    const args = ["literal()", "pipe|value", "ampersand&value"];
+
+    try {
+      await writeFile(
+        scriptPath,
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+        "utf8",
+      );
+      await writeFile(
+        wrapperPath,
+        `@echo off\r\nnode "${scriptPath}" %*\r\n`,
+        "utf8",
+      );
+
+      const result = await withPatchedPlatform("win32", () =>
+        runChildProcess(randomUUID(), wrapperPath, args, {
+          cwd: tempDir,
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async () => {},
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("does not treat complex .cmd files as thin node wrappers", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-adapter-utils-"));
+    const scriptPath = path.join(tempDir, "bridge.js");
+    const wrapperPath = path.join(tempDir, "bridge.cmd");
+
+    try {
+      await writeFile(
+        scriptPath,
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+        "utf8",
+      );
+      await writeFile(
+        wrapperPath,
+        `@echo off\r\nif "%1"=="ci" (\r\n  node "${scriptPath}" %*\r\n) else (\r\n  node "${scriptPath}" %*\r\n)\r\n`,
+        "utf8",
+      );
+
+      await expect(
+        withPatchedPlatform("win32", () =>
+          runChildProcess(randomUUID(), wrapperPath, ["ci"], {
+            cwd: tempDir,
+            env: {},
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async () => {},
+            onSpawn: async () => {},
+          }),
+        ),
+      ).rejects.toThrow(/Failed to start command/);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 });
