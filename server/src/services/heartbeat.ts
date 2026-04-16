@@ -2825,45 +2825,99 @@ export function heartbeatService(db: Db) {
     };
 
     for (const issue of candidates) {
-      const agentId = issue.assigneeAgentId;
-      if (!agentId) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const agent = await getAgent(agentId);
-      if (!agent || agent.companyId !== issue.companyId) {
-        result.skipped += 1;
-        continue;
-      }
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-        result.skipped += 1;
-        continue;
-      }
-
-      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
-      const latestContext = parseObject(latestRun?.contextSnapshot);
-      const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-
-      if (issue.status === "todo") {
-        if (!latestRun || latestRun.status === "succeeded") {
+      try {
+        const agentId = issue.assigneeAgentId;
+        if (!agentId) {
           result.skipped += 1;
           continue;
         }
 
-        if (latestRetryReason === "assignment_recovery") {
+        const agent = await getAgent(agentId);
+        if (!agent || agent.companyId !== issue.companyId) {
+          result.skipped += 1;
+          continue;
+        }
+        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+        const latestContext = parseObject(latestRun?.contextSnapshot);
+        const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+
+        if (issue.status === "todo") {
+          if (!latestRun || latestRun.status === "succeeded") {
+            result.skipped += 1;
+            continue;
+          }
+
+          if (latestRetryReason === "assignment_recovery") {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "todo",
+              latestRun,
+              comment:
+                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+                "but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_assignment_recovery",
+            retryReason: "assignment_recovery",
+            source: "issue.assignment_recovery",
+            retryOfRunId: latestRun.id,
+          });
+          if (queued) {
+            result.dispatchRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            // enqueueWakeup returned null — agent policy skipped the wake (e.g. wakeOnDemand:false,
+            // budget blocked was caught above). Escalate immediately so the issue doesn't loop
+            // silently forever: no run will ever set latestRetryReason and the normal
+            // escalation path will never fire.
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "todo",
+              latestRun,
+              comment:
+                "Paperclip could not queue a recovery dispatch for this assigned `todo` issue " +
+                "(agent policy prevented re-waking). Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+          }
+          continue;
+        }
+
+        if (latestRetryReason === "issue_continuation_needed") {
           const updated = await escalateStrandedAssignedIssue({
             issue,
-            previousStatus: "todo",
+            previousStatus: "in_progress",
             latestRun,
             comment:
-              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-              "but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+              "execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is " +
+              "visible for intervention.",
           });
           if (updated) {
             result.escalated += 1;
@@ -2877,51 +2931,35 @@ export function heartbeatService(db: Db) {
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
-          reason: "issue_assignment_recovery",
-          retryReason: "assignment_recovery",
-          source: "issue.assignment_recovery",
-          retryOfRunId: latestRun.id,
+          reason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+          retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
         });
         if (queued) {
-          result.dispatchRequeued += 1;
+          result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
-          result.skipped += 1;
+          // Same as the todo case: agent policy prevented the wake, escalate immediately.
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            comment:
+              "Paperclip could not queue a continuation recovery for this assigned `in_progress` issue " +
+              "(agent policy prevented re-waking). Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
         }
-        continue;
-      }
-
-      if (latestRetryReason === "issue_continuation_needed") {
-        const updated = await escalateStrandedAssignedIssue({
-          issue,
-          previousStatus: "in_progress",
-          latestRun,
-          comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            "execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is " +
-            "visible for intervention.",
-        });
-        if (updated) {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
-        }
-        continue;
-      }
-
-      const queued = await enqueueStrandedIssueRecovery({
-        issueId: issue.id,
-        agentId,
-        reason: "issue_continuation_needed",
-        retryReason: "issue_continuation_needed",
-        source: "issue.continuation_recovery",
-        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
-      });
-      if (queued) {
-        result.continuationRequeued += 1;
-        result.issueIds.push(issue.id);
-      } else {
+      } catch (err) {
+        // Isolate per-issue failures so one issue (e.g. budget-blocked agent throwing conflict())
+        // does not abort reconciliation for all remaining issues in the batch.
+        logger.error({ err, issueId: issue.id }, "reconcileStrandedAssignedIssues: skipping issue due to error");
         result.skipped += 1;
       }
     }

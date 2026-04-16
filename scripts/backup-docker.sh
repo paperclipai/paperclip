@@ -41,7 +41,8 @@ if [[ "$(docker inspect --format='{{.State.Running}}' "$DB_CONTAINER" 2>/dev/nul
 fi
 
 echo "→ Realizando backup do banco..."
-TMP_BACKUP=$(mktemp "${BACKUP_DIR}/.backup_tmp_XXXXXXXX.sql.gz")
+# Create temp file in the same directory as OUTPUT_FILE so mv is always same-device.
+TMP_BACKUP=$(mktemp "$(dirname "$OUTPUT_FILE")/.backup_tmp_XXXXXXXX.sql.gz")
 trap 'rm -f "$TMP_BACKUP"' EXIT INT TERM
 
 docker exec "$DB_CONTAINER" \
