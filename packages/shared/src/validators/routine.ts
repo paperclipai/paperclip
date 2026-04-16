@@ -3,6 +3,7 @@ import {
   ISSUE_PRIORITIES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_EXECUTION_MODES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_SIGNING_MODES,
   ROUTINE_VARIABLE_TYPES,
@@ -59,6 +60,9 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
+  executionMode: z.enum(ROUTINE_EXECUTION_MODES).optional().default("agent"),
+  scriptBody: z.string().optional().nullable(),
+  scriptTimeoutSec: z.number().int().min(1).max(3600).optional().default(60),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;

@@ -38,6 +38,7 @@ import {
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
+import { ScriptEditor } from "../components/ScriptEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 
+const executionModes = ["agent", "script_nodejs", "script_python"] as const;
+type ExecutionMode = (typeof executionModes)[number];
+const executionModeLabels: Record<ExecutionMode, string> = {
+  agent: "Agent",
+  script_nodejs: "Node.js Script",
+  script_python: "Python Script",
+};
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
@@ -130,12 +138,16 @@ function buildRoutineMutationPayload(input: {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  executionMode: string;
+  scriptBody: string;
+  scriptTimeoutSec: number;
 }) {
   return {
     ...input,
     description: input.description.trim() || null,
     projectId: input.projectId || null,
     assigneeAgentId: input.assigneeAgentId || null,
+    scriptBody: input.executionMode !== "agent" ? input.scriptBody || null : null,
   };
 }
 
@@ -292,6 +304,9 @@ export function RoutineDetail() {
     concurrencyPolicy: string;
     catchUpPolicy: string;
     variables: RoutineVariable[];
+    executionMode: string;
+    scriptBody: string;
+    scriptTimeoutSec: number;
   }>({
     title: "",
     description: "",
@@ -301,6 +316,9 @@ export function RoutineDetail() {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    executionMode: "agent",
+    scriptBody: "",
+    scriptTimeoutSec: 60,
   });
   const activeTab = useMemo(() => getRoutineTabFromSearch(location.search), [location.search]);
 
@@ -362,6 +380,9 @@ export function RoutineDetail() {
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
             variables: routine.variables,
+            executionMode: routine.executionMode ?? "agent",
+            scriptBody: routine.scriptBody ?? "",
+            scriptTimeoutSec: routine.scriptTimeoutSec ?? 60,
           }
         : null,
     [routine],
@@ -376,7 +397,10 @@ export function RoutineDetail() {
       editDraft.priority !== routineDefaults.priority ||
       editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy ||
       editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy ||
-      JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)
+      JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables) ||
+      editDraft.executionMode !== routineDefaults.executionMode ||
+      editDraft.scriptBody !== routineDefaults.scriptBody ||
+      editDraft.scriptTimeoutSec !== routineDefaults.scriptTimeoutSec
     );
   }, [editDraft, routineDefaults]);
 
@@ -666,12 +690,14 @@ export function RoutineDetail() {
     );
   }
 
+  const isScriptMode = editDraft.executionMode === "script_nodejs" || editDraft.executionMode === "script_python";
   const automationEnabled = routine.status === "active";
   const selectedProject = routine.projectId ? (projects?.find((project) => project.id === routine.projectId) ?? null) : null;
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
+  const isAgentMissingForAgent = !isScriptMode && !routine.assigneeAgentId;
   const automationLabel = routine.status === "archived"
     ? "Archived"
-    : !routine.assigneeAgentId
+    : isAgentMissingForAgent
       ? "Draft"
       : automationEnabled
         ? "Active"
@@ -727,7 +753,7 @@ export function RoutineDetail() {
             size="lg"
             checked={automationEnabled}
             onCheckedChange={() => {
-              if (!automationEnabled && !routine.assigneeAgentId) {
+              if (!automationEnabled && isAgentMissingForAgent) {
                 pushToast({
                   title: "Default agent required",
                   body: "Set a default agent before enabling routine automation.",
@@ -772,14 +798,35 @@ export function RoutineDetail() {
         </div>
       )}
 
-      {!routine.assigneeAgentId ? (
+      {isAgentMissingForAgent ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
           Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
         </div>
       ) : null}
 
-      {/* Assignment row */}
-      <div className="overflow-x-auto overscroll-x-contain">
+      {/* Execution mode selector */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Execution mode</p>
+        <div className="inline-flex rounded-md border border-input bg-background p-0.5 gap-0.5">
+          {executionModes.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setEditDraft((current) => ({ ...current, executionMode: mode }))}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                editDraft.executionMode === mode
+                  ? "bg-foreground text-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {executionModeLabels[mode]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Assignment row — agent mode only */}
+      {!isScriptMode && <div className="overflow-x-auto overscroll-x-contain">
         <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
           <span>For</span>
           <InlineEntitySelector
@@ -865,29 +912,64 @@ export function RoutineDetail() {
             }}
           />
         </div>
-      </div>
+      </div>}
 
-      {/* Instructions */}
-      <MarkdownEditor
-        ref={descriptionEditorRef}
-        value={editDraft.description}
-        onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-        placeholder="Add instructions..."
-        bordered={false}
-        contentClassName="min-h-[120px] text-[15px] leading-7"
-        onSubmit={() => {
-          if (!saveRoutine.isPending && editDraft.title.trim()) {
-            saveRoutine.mutate();
-          }
-        }}
-      />
-      <RoutineVariablesHint />
-      <RoutineVariablesEditor
-        title={editDraft.title}
-        description={editDraft.description}
-        value={editDraft.variables}
-        onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
-      />
+      {/* Agent mode: instructions + variables */}
+      {!isScriptMode && (
+        <>
+          <MarkdownEditor
+            ref={descriptionEditorRef}
+            value={editDraft.description}
+            onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
+            placeholder="Add instructions..."
+            bordered={false}
+            contentClassName="min-h-[120px] text-[15px] leading-7"
+            onSubmit={() => {
+              if (!saveRoutine.isPending && editDraft.title.trim()) {
+                saveRoutine.mutate();
+              }
+            }}
+          />
+          <RoutineVariablesHint />
+          <RoutineVariablesEditor
+            title={editDraft.title}
+            description={editDraft.description}
+            value={editDraft.variables}
+            onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
+          />
+        </>
+      )}
+
+      {/* Script mode: code editor */}
+      {isScriptMode && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Script</p>
+            {editDraft.variables.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Available:{" "}
+                {editDraft.variables.map((v) => (
+                  <code key={v.name} className="text-xs font-mono bg-muted px-1 rounded mr-1">
+                    ROUTINE_VAR_{v.name.toUpperCase()}
+                  </code>
+                ))}
+                <code className="text-xs font-mono bg-muted px-1 rounded">ROUTINE_VAR_DATE</code>
+              </p>
+            )}
+          </div>
+          <ScriptEditor
+            value={editDraft.scriptBody}
+            onChange={(scriptBody) => setEditDraft((current) => ({ ...current, scriptBody }))}
+            language={editDraft.executionMode === "script_python" ? "python" : "javascript"}
+          />
+          <RoutineVariablesEditor
+            title={editDraft.title}
+            description=""
+            value={editDraft.variables}
+            onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
+          />
+        </div>
+      )}
 
       {/* Advanced delivery settings */}
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -931,6 +1013,22 @@ export function RoutineDetail() {
               </Select>
               <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[editDraft.catchUpPolicy]}</p>
             </div>
+            {isScriptMode && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Timeout (seconds)</p>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={editDraft.scriptTimeoutSec}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.min(3600, Number(e.target.value) || 60));
+                    setEditDraft((current) => ({ ...current, scriptTimeoutSec: v }));
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">Script is killed after this many seconds (1–3600).</p>
+              </div>
+            )}
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -1059,22 +1157,37 @@ export function RoutineDetail() {
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
-                <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="shrink-0">{run.source}</Badge>
-                    <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
-                      {run.status.replaceAll("_", " ")}
-                    </Badge>
-                    {run.trigger && (
-                      <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
-                    )}
-                    {run.linkedIssue && (
-                      <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
-                        {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
-                      </Link>
-                    )}
+                <div key={run.id} className="px-3 py-2 text-sm space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Badge variant="outline" className="shrink-0">{run.source}</Badge>
+                      <Badge variant={run.status === "failed" ? "destructive" : run.status === "completed" ? "default" : "secondary"} className="shrink-0">
+                        {run.status.replaceAll("_", " ")}
+                      </Badge>
+                      {run.scriptExitCode != null && (
+                        <Badge variant={run.scriptExitCode === 0 ? "default" : "destructive"} className="shrink-0 font-mono text-xs">
+                          exit {run.scriptExitCode}
+                        </Badge>
+                      )}
+                      {run.trigger && (
+                        <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
+                      )}
+                      {run.linkedIssue && (
+                        <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
+                          {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
+                        </Link>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
                   </div>
-                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
+                  {run.scriptOutput && (
+                    <pre className="text-xs font-mono bg-muted rounded p-2 overflow-x-auto max-h-32 whitespace-pre-wrap break-all text-muted-foreground">
+                      {run.scriptOutput}
+                    </pre>
+                  )}
+                  {run.failureReason && !run.scriptOutput && (
+                    <p className="text-xs text-destructive">{run.failureReason}</p>
+                  )}
                 </div>
               ))}
             </div>

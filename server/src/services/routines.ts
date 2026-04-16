@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -42,6 +45,7 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { runChildProcess } from "../adapters/utils.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -235,14 +239,16 @@ function statusRequiresDefaultAgent(status: string) {
   return status === "active";
 }
 
-function normalizeDraftRoutineStatus(status: string, assigneeAgentId: string | null | undefined) {
+function normalizeDraftRoutineStatus(status: string, assigneeAgentId: string | null | undefined, executionMode = "agent") {
+  if (executionMode !== "agent") return status;
   if (statusRequiresDefaultAgent(status) && !assigneeAgentId) {
     return "paused";
   }
   return status;
 }
 
-function assertRoutineCanEnable(status: string, assigneeAgentId: string | null | undefined) {
+function assertRoutineCanEnable(status: string, assigneeAgentId: string | null | undefined, executionMode = "agent") {
+  if (executionMode !== "agent") return;
   if (statusRequiresDefaultAgent(status) && !assigneeAgentId) {
     throw unprocessable("Default agent required");
   }
@@ -413,6 +419,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: routineRuns.linkedIssueId,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
         failureReason: routineRuns.failureReason,
+        scriptOutput: routineRuns.scriptOutput,
+        scriptExitCode: routineRuns.scriptExitCode,
         completedAt: routineRuns.completedAt,
         createdAt: routineRuns.createdAt,
         updatedAt: routineRuns.updatedAt,
@@ -445,6 +453,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        scriptOutput: row.scriptOutput,
+        scriptExitCode: row.scriptExitCode,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -640,6 +650,22 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function findLiveScriptRun(routineId: string, companyId: string, executor: Db = db) {
+    return executor
+      .select()
+      .from(routineRuns)
+      .where(
+        and(
+          eq(routineRuns.companyId, companyId),
+          eq(routineRuns.routineId, routineId),
+          eq(routineRuns.status, "running"),
+        ),
+      )
+      .orderBy(desc(routineRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -696,9 +722,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
   }) {
+    const isScriptMode = input.routine.executionMode === "script_nodejs" || input.routine.executionMode === "script_python";
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
-    if (!assigneeAgentId) {
+    if (!isScriptMode && !assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
     const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
@@ -750,6 +777,55 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
         : undefined;
 
+      if (isScriptMode) {
+        // Script mode: check concurrency using running script runs, then mark as running
+        try {
+          const liveRun = await findLiveScriptRun(input.routine.id, input.routine.companyId, txDb);
+          if (liveRun && input.routine.concurrencyPolicy !== "always_enqueue") {
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            const updated = await finalizeRun(createdRun.id, {
+              status,
+              coalescedIntoRunId: liveRun.id,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
+          const updated = await finalizeRun(createdRun.id, { status: "running" }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: "running",
+            issueId: null,
+            nextRunAt,
+          }, txDb);
+          return updated ?? createdRun;
+        } catch (error) {
+          const failureReason = error instanceof Error ? error.message : String(error);
+          const failed = await finalizeRun(createdRun.id, {
+            status: "failed",
+            failureReason,
+            completedAt: new Date(),
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: "failed",
+            nextRunAt,
+          }, txDb);
+          return failed ?? createdRun;
+        }
+      }
+
+      // Agent mode: existing issue creation path
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
@@ -781,7 +857,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             description,
             status: "todo",
             priority: input.routine.priority,
-            assigneeAgentId,
+            assigneeAgentId: assigneeAgentId!,
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
@@ -865,6 +941,16 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       }
     });
 
+    // Execute script outside transaction so the DB lock is not held during execution
+    let finalRun = run;
+    if (isScriptMode && run.status === "running") {
+      finalRun = await executeRoutineScript({
+        run,
+        routine: input.routine,
+        allVariables,
+      });
+    }
+
     if (input.source === "schedule" || input.source === "webhook") {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
       try {
@@ -874,28 +960,98 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           actorId,
           action: "routine.run_triggered",
           entityType: "routine_run",
-          entityId: run.id,
+          entityId: finalRun.id,
           details: {
             routineId: input.routine.id,
             triggerId: input.trigger?.id ?? null,
-            source: run.source,
-            status: run.status,
+            source: finalRun.source,
+            status: finalRun.status,
           },
         });
       } catch (err) {
-        logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log automated routine run");
+        logger.warn({ err, routineId: input.routine.id, runId: finalRun.id }, "failed to log automated routine run");
       }
     }
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackRoutineRun(telemetryClient, {
-        source: run.source,
-        status: run.status,
+        source: finalRun.source,
+        status: finalRun.status,
       });
     }
 
-    return run;
+    return finalRun;
+  }
+
+  const SCRIPT_OUTPUT_MAX_BYTES = 100 * 1024; // 100 KB
+
+  async function executeRoutineScript(input: {
+    run: typeof routineRuns.$inferSelect;
+    routine: typeof routines.$inferSelect;
+    allVariables: Record<string, string | number | boolean>;
+  }) {
+    const { run, routine, allVariables } = input;
+    const scriptBody = routine.scriptBody ?? "";
+    const isNodeJs = routine.executionMode === "script_nodejs";
+    const ext = isNodeJs ? ".js" : ".py";
+    const command = isNodeJs ? "node" : "python3";
+    const tmpFile = path.join(os.tmpdir(), `routine-${run.id}${ext}`);
+
+    // Build env: pass all resolved variables as ROUTINE_VAR_<NAME>
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(allVariables)) {
+      env[`ROUTINE_VAR_${key.toUpperCase()}`] = String(value);
+    }
+
+    let output = "";
+    try {
+      await fs.writeFile(tmpFile, scriptBody, "utf8");
+      const result = await runChildProcess(run.id, command, [tmpFile], {
+        cwd: os.tmpdir(),
+        env,
+        timeoutSec: routine.scriptTimeoutSec,
+        graceSec: 5,
+        onLog: async (_stream, chunk) => {
+          output += chunk;
+          if (output.length > SCRIPT_OUTPUT_MAX_BYTES) {
+            output = output.slice(0, SCRIPT_OUTPUT_MAX_BYTES);
+          }
+        },
+      });
+
+      // Merge any remaining output from result (onLog may have already captured it)
+      if (!output && result.stdout) output = result.stdout.slice(0, SCRIPT_OUTPUT_MAX_BYTES);
+      if (result.stderr) {
+        const combined = output + (output ? "\n" : "") + result.stderr;
+        output = combined.slice(0, SCRIPT_OUTPUT_MAX_BYTES);
+      }
+
+      const exitCode = result.exitCode ?? 1;
+      const succeeded = exitCode === 0 && !result.timedOut;
+      const finalRun = await finalizeRun(run.id, {
+        status: succeeded ? "completed" : "failed",
+        scriptOutput: output || null,
+        scriptExitCode: exitCode,
+        failureReason: result.timedOut
+          ? `Script timed out after ${routine.scriptTimeoutSec}s`
+          : succeeded ? null : `Script exited with code ${exitCode}`,
+        completedAt: new Date(),
+      });
+      return finalRun ?? run;
+    } catch (error) {
+      const failureReason = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: error, runId: run.id, routineId: routine.id }, "routine script execution failed");
+      const finalRun = await finalizeRun(run.id, {
+        status: "failed",
+        scriptOutput: output || null,
+        failureReason,
+        completedAt: new Date(),
+      });
+      return finalRun ?? run;
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
+    }
   }
 
   return {
@@ -956,6 +1112,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             linkedIssueId: routineRuns.linkedIssueId,
             coalescedIntoRunId: routineRuns.coalescedIntoRunId,
             failureReason: routineRuns.failureReason,
+            scriptOutput: routineRuns.scriptOutput,
+            scriptExitCode: routineRuns.scriptExitCode,
             completedAt: routineRuns.completedAt,
             createdAt: routineRuns.createdAt,
             updatedAt: routineRuns.updatedAt,
@@ -987,6 +1145,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
               linkedIssueId: run.linkedIssueId,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
+              scriptOutput: run.scriptOutput,
+              scriptExitCode: run.scriptExitCode,
               completedAt: run.completedAt,
               createdAt: run.createdAt,
               updatedAt: run.updatedAt,
@@ -1033,7 +1193,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
-      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
+      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId, input.executionMode);
       const [created] = await db
         .insert(routines)
         .values({
@@ -1049,6 +1209,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
           variables,
+          executionMode: input.executionMode,
+          scriptBody: input.scriptBody ?? null,
+          scriptTimeoutSec: input.scriptTimeoutSec,
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
           updatedByAgentId: actor.agentId ?? null,
@@ -1063,15 +1226,16 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
+      const nextExecutionMode = patch.executionMode ?? existing.executionMode;
       const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
       const requestedStatus = patch.status ?? existing.status;
       if (patch.status === "active") {
-        assertRoutineCanEnable(patch.status, nextAssigneeAgentId);
+        assertRoutineCanEnable(patch.status, nextAssigneeAgentId, nextExecutionMode);
       }
-      const nextStatus = patch.assigneeAgentId === undefined
+      const nextStatus = (patch.assigneeAgentId === undefined && patch.executionMode === undefined)
         ? requestedStatus
-        : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId);
+        : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId, nextExecutionMode);
       const nextVariables = syncRoutineVariablesWithTemplate(
         [nextTitle, nextDescription],
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
@@ -1110,6 +1274,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
           variables: nextVariables,
+          executionMode: nextExecutionMode,
+          scriptBody: patch.scriptBody === undefined ? existing.scriptBody : patch.scriptBody ?? null,
+          scriptTimeoutSec: patch.scriptTimeoutSec ?? existing.scriptTimeoutSec,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
           updatedAt: new Date(),
@@ -1399,6 +1566,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           linkedIssueId: routineRuns.linkedIssueId,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
           failureReason: routineRuns.failureReason,
+          scriptOutput: routineRuns.scriptOutput,
+          scriptExitCode: routineRuns.scriptExitCode,
           completedAt: routineRuns.completedAt,
           createdAt: routineRuns.createdAt,
           updatedAt: routineRuns.updatedAt,
@@ -1430,6 +1599,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        scriptOutput: row.scriptOutput,
+        scriptExitCode: row.scriptExitCode,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,

@@ -115,6 +115,14 @@ function formatRoutineRunStatus(value: string | null | undefined) {
   return value.replaceAll("_", " ");
 }
 
+const executionModes = ["agent", "script_nodejs", "script_python"] as const;
+type ExecutionMode = (typeof executionModes)[number];
+const executionModeLabels: Record<ExecutionMode, string> = {
+  agent: "Agent",
+  script_nodejs: "Node.js Script",
+  script_python: "Python Script",
+};
+
 function buildRoutineMutationPayload(input: {
   title: string;
   description: string;
@@ -124,12 +132,16 @@ function buildRoutineMutationPayload(input: {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  executionMode: string;
+  scriptBody: string;
+  scriptTimeoutSec: number;
 }) {
   return {
     ...input,
     description: input.description.trim() || null,
     projectId: input.projectId || null,
     assigneeAgentId: input.assigneeAgentId || null,
+    scriptBody: input.executionMode !== "agent" ? input.scriptBody || null : null,
   };
 }
 
@@ -313,6 +325,9 @@ export function Routines() {
     concurrencyPolicy: string;
     catchUpPolicy: string;
     variables: RoutineVariable[];
+    executionMode: string;
+    scriptBody: string;
+    scriptTimeoutSec: number;
   }>({
     title: "",
     description: "",
@@ -322,6 +337,9 @@ export function Routines() {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    executionMode: "agent",
+    scriptBody: "",
+    scriptTimeoutSec: 60,
   });
   const routineViewStateKey = selectedCompanyId
     ? `paperclip:routines-view:${selectedCompanyId}`
@@ -380,6 +398,9 @@ export function Routines() {
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [],
+        executionMode: "agent",
+        scriptBody: "",
+        scriptTimeoutSec: 60,
       });
       setComposerOpen(false);
       setAdvancedOpen(false);
@@ -708,7 +729,27 @@ export function Routines() {
               />
             </div>
 
+            {/* Execution mode */}
             <div className="px-5 pb-3">
+              <div className="inline-flex rounded-md border border-input bg-background p-0.5 gap-0.5">
+                {executionModes.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setDraft((current) => ({ ...current, executionMode: mode }))}
+                    className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                      draft.executionMode === mode
+                        ? "bg-foreground text-background shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {executionModeLabels[mode as ExecutionMode]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {draft.executionMode === "agent" && <div className="px-5 pb-3">
               <div className="overflow-x-auto overscroll-x-contain">
                 <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
                   <span>For</span>
@@ -796,7 +837,7 @@ export function Routines() {
                   />
                 </div>
               </div>
-            </div>
+            </div>}
 
             <div className="border-t border-border/60 px-5 py-4">
               <MarkdownEditor
@@ -876,7 +917,9 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
+              {draft.executionMode === "agent"
+                ? "After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent."
+                : "After creation, Paperclip takes you straight to trigger setup. Add a cron or webhook trigger to start running the script automatically."}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button

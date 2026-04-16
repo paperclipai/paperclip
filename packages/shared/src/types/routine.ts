@@ -50,6 +50,9 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  executionMode: string;
+  scriptBody: string | null;
+  scriptTimeoutSec: number;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;
@@ -98,6 +101,8 @@ export interface RoutineRun {
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;
+  scriptOutput: string | null;
+  scriptExitCode: number | null;
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
