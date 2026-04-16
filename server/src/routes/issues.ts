@@ -394,6 +394,25 @@ export function issueRoutes(
     throw unauthorized();
   }
 
+  function canCreateIssuesLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+    if (agent.role === "ceo") return true;
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    const permissions = agent.permissions as Record<string, unknown>;
+    return Boolean(permissions.canCreateIssues || permissions.canCreateAgents);
+  }
+
+  async function assertCanCreateIssues(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      if (actorAgent && actorAgent.companyId === companyId && canCreateIssuesLegacy(actorAgent)) return;
+      throw forbidden("Missing permission: issues:create");
+    }
+    throw unauthorized();
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -1329,6 +1348,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertCanCreateIssues(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);

@@ -45,6 +45,7 @@ import { logActivity } from "./activity-log.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
+const TERMINAL_HEARTBEAT_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const WEEKDAY_INDEX: Record<string, number> = {
@@ -58,6 +59,24 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 type Actor = { agentId?: string | null; userId?: string | null };
+
+function isOpenRoutineExecutionConflict(error: unknown) {
+  const constraint =
+    !!error && typeof error === "object" && "constraint" in error
+      ? (error as { constraint?: string }).constraint
+      : undefined;
+  const constraintName =
+    !!error && typeof error === "object" && "constraint_name" in error
+      ? (error as { constraint_name?: string }).constraint_name
+      : undefined;
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: string }).code === "23505" &&
+    (constraint === "issues_open_routine_execution_uq" || constraintName === "issues_open_routine_execution_uq")
+  );
+}
 
 function assertTimeZone(timeZone: string) {
   try {
@@ -615,7 +634,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const contextualIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -638,6 +657,72 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (contextualIssue) return contextualIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function clearStaleExecutionLockForRoutineIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const candidate = await executor
+      .select({
+        id: issues.id,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!candidate?.executionRunId) return false;
+
+    const run = await executor
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, candidate.executionRunId), eq(heartbeatRuns.companyId, routine.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (run && LIVE_HEARTBEAT_RUN_STATUSES.includes(run.status)) {
+      return false;
+    }
+    if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.includes(run.status)) {
+      return false;
+    }
+
+    await executor
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, candidate.id), eq(issues.executionRunId, candidate.executionRunId)));
+
+    return true;
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -790,47 +875,80 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+          const isOpenExecutionConflict = isOpenRoutineExecutionConflict(error);
           if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
 
           const existingIssue = await findLiveExecutionIssue(input.routine, txDb);
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          if (existingIssue) {
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            const updated = await finalizeRun(createdRun.id, {
+              status,
+              linkedIssueId: existingIssue.id,
+              coalescedIntoRunId: existingIssue.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              issueId: existingIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
+
+          const repairedStaleLock = await clearStaleExecutionLockForRoutineIssue(input.routine, db);
+          if (!repairedStaleLock) throw error;
+
+          createdIssue = await issueSvc.create(input.routine.companyId, {
+            projectId,
+            goalId: input.routine.goalId,
+            parentId: input.routine.parentIssueId,
+            title,
+            description,
+            status: "todo",
+            priority: input.routine.priority,
+            assigneeAgentId,
+            originKind: "routine_execution",
+            originId: input.routine.id,
+            originRunId: createdRun.id,
+            executionWorkspaceId: input.executionWorkspaceId ?? null,
+            executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+            executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+          });
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
-        });
+        try {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.dispatch",
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            rethrowOnError: true,
+          });
+        } catch (error) {
+          const isOpenExecutionConflict = isOpenRoutineExecutionConflict(error);
+          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+            throw error;
+          }
+          const repairedStaleLock = await clearStaleExecutionLockForRoutineIssue(input.routine, db);
+          if (!repairedStaleLock) throw error;
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.dispatch",
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            rethrowOnError: true,
+          });
+        }
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
