@@ -2,6 +2,7 @@
 # setup.sh — Instalador interativo da Toca da IA
 # Uso: ./setup.sh
 set -euo pipefail
+umask 077  # ensure temp files (e.g. .env.tmp.$$) are not world-readable
 
 BOLD="\033[1m"
 GREEN="\033[0;32m"

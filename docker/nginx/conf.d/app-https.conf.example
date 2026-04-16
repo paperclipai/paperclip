@@ -35,6 +35,9 @@ server {
   ssl_session_cache   shared:SSL:10m;
   ssl_session_timeout 10m;
 
+  # HSTS: apply to all responses from this server block (including /health)
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
   # Health check endpoint (no auth required)
   location /health {
     proxy_pass http://app:3100/health;
@@ -52,7 +55,6 @@ server {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto https;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
   }
