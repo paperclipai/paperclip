@@ -95,6 +95,51 @@ describe("server adapter registry", () => {
     ]);
   });
 
+  it("exposes capability flags from registered adapters", () => {
+    const adapterWithCaps: ServerAdapterModule = {
+      type: "external_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_test",
+        status: "pass" as const,
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: true,
+      supportsInstructionsBundle: true,
+      instructionsPathKey: "customPathKey",
+      requiresMaterializedRuntimeSkills: true,
+    };
+
+    registerServerAdapter(adapterWithCaps);
+
+    const resolved = findActiveServerAdapter("external_test");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.supportsInstructionsBundle).toBe(true);
+    expect(resolved!.instructionsPathKey).toBe("customPathKey");
+    expect(resolved!.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(resolved!.supportsLocalAgentJwt).toBe(true);
+  });
+
+  it("returns undefined for capability flags on adapters that do not set them", () => {
+    registerServerAdapter(externalAdapter);
+
+    const resolved = findActiveServerAdapter("external_test");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.supportsInstructionsBundle).toBeUndefined();
+    expect(resolved!.instructionsPathKey).toBeUndefined();
+    expect(resolved!.requiresMaterializedRuntimeSkills).toBeUndefined();
+  });
+
+  it("built-in claude_local adapter declares capability flags", () => {
+    const adapter = findActiveServerAdapter("claude_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.supportsInstructionsBundle).toBe(true);
+    expect(adapter!.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter!.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(adapter!.supportsLocalAgentJwt).toBe(true);
+  });
+
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
     const builtIn = findServerAdapter("claude_local");
     expect(builtIn).not.toBeNull();

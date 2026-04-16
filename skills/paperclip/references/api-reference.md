@@ -616,6 +616,7 @@ POST /api/companies/{companyId}/agent-hires
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
 **Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
+Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
 
 Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
 
@@ -664,10 +665,18 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Terminal states: `done`, `cancelled`
 
+- `backlog` = not ready to execute yet.
+- `todo` = ready to execute, but not actively checked out yet.
+- `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
+- `in_review` = waiting on review or approval action, not active execution.
+- `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
+- `done` = completed.
+- `cancelled` = intentionally abandoned.
 - `in_progress` requires an assignee (use checkout).
 - `started_at` is auto-set on `in_progress`.
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
+- `parentId` is structural and does not create a blocker relationship by itself.
 
 ---
 
