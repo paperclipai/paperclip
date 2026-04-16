@@ -43,6 +43,8 @@ fi
 echo "→ Realizando backup do banco..."
 # Create temp file in the same directory as OUTPUT_FILE so mv is always same-device.
 TMP_BACKUP=$(mktemp "$(dirname "$OUTPUT_FILE")/.backup_tmp_XXXXXXXX.sql.gz")
+# Restrict permissions immediately — mktemp's umask is not reliable on macOS.
+chmod 600 "$TMP_BACKUP"
 trap 'rm -f "$TMP_BACKUP"' EXIT INT TERM
 
 docker exec "$DB_CONTAINER" \
@@ -74,7 +76,6 @@ if ! gzip -t "$TMP_BACKUP" 2>/dev/null; then
   exit 1
 fi
 
-chmod 600 "$TMP_BACKUP"
 mv "$TMP_BACKUP" "$OUTPUT_FILE"
 trap - EXIT INT TERM
 

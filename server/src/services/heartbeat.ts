@@ -2777,8 +2777,26 @@ export function heartbeatService(db: Db) {
     latestRun: typeof heartbeatRuns.$inferSelect | null;
     comment: string;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+    // Idempotency guard: lock the row inside a transaction and re-check
+    // status before escalating. Two concurrent reconcile ticks can both
+    // observe the same issue in todo/in_progress; only the first one to
+    // acquire the lock should proceed — the second will see status===blocked
+    // and bail out, preventing duplicate escalation comments.
+    const updated = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where id = ${input.issue.id} for update`,
+      );
+      const current = await tx
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current || current.status === "blocked" || current.status === "done" || current.status === "cancelled") {
+        return null;
+      }
+
+      return issuesSvc.update(input.issue.id, { status: "blocked" }, tx);
     });
     if (!updated) return null;
 
