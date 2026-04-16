@@ -409,6 +409,11 @@ Detailed ownership, execution, blocker, and crash-recovery semantics are documen
 - Session-based auth for human operator
 - Board has full read/write across all companies in deployment
 - Every board mutation writes to `activity_log`
+- Board API keys (`pcp_board_...`) allow headless access with same permissions as the creating user
+- Feature is gated by `instance_settings.general.boardApiKeysEnabled` (disabled by default). When off, new keys cannot be created and existing keys fail authentication.
+- Keys are created/revoked via UI (Instance Settings > API Keys) or REST endpoints
+- Keys authenticated via bearer token cannot create other keys (privilege laundering prevention)
+- See `doc/BOARD-API-KEYS.md` for full details
 
 ## 9.2 Agent Auth
 
@@ -543,7 +548,16 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
-## 10.9 Error Semantics
+## 10.9 Board API Keys
+
+- `GET /board-api-keys` — list caller's active keys (session auth only)
+- `POST /board-api-keys` — create key, returns plaintext token once (session auth only)
+- `DELETE /board-api-keys/:id` — revoke key (session auth only)
+
+All three endpoints reject requests authenticated via board API key bearer tokens.
+See `doc/BOARD-API-KEYS.md` for request/response details.
+
+## 10.10 Error Semantics
 
 - `400` validation error
 - `401` unauthenticated

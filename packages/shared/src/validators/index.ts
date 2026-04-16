@@ -295,6 +295,7 @@ export {
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
+  createBoardApiKeySchema,
   type CreateCompanyInvite,
   type CreateOpenClawInvitePrompt,
   type AcceptInvite,
@@ -313,6 +314,7 @@ export {
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
   type UpdateUserCompanyAccess,
+  type CreateBoardApiKey,
 } from "./access.js";
 
 export {

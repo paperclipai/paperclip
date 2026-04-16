@@ -137,6 +137,7 @@ If anything cannot be run, explicitly report what was not run and why.
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
+- Board API keys (`board_api_keys`) allow headless board access, tied to a user account (see `doc/BOARD-API-KEYS.md`)
 - Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
 - Agent keys must not access other companies
 

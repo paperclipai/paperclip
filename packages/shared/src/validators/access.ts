@@ -197,3 +197,10 @@ export const updateCurrentUserProfileSchema = z.object({
 });
 
 export type UpdateCurrentUserProfile = z.infer<typeof updateCurrentUserProfileSchema>;
+
+export const createBoardApiKeySchema = z.object({
+  name: z.string().min(1).max(120),
+  expiresInDays: z.number().int().positive().max(3650).optional().nullable(),
+});
+
+export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
