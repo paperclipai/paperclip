@@ -142,13 +142,13 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
+      const args = ["--output-format", "stream-json", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
       if (sandbox) {
         args.push("--sandbox");
       } else {
-        args.push("--sandbox=none");
+        args.push("--no-sandbox");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
 
@@ -192,6 +192,7 @@ export async function testEnvironment(
           code: "gemini_hello_probe_timed_out",
           level: "warn",
           message: "Gemini hello probe timed out.",
+          ...(detail ? { detail } : {}),
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {

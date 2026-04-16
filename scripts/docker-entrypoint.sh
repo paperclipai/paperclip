@@ -26,4 +26,9 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Create Gemini config directory with proper permissions (needs to survive volume mounts)
+mkdir -p /paperclip/.gemini
+chown node:node /paperclip/.gemini
+chmod 755 /paperclip/.gemini
+
 exec gosu node "$@"
