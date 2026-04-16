@@ -35,6 +35,14 @@ export function DigestPlayerPage() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const wordsRef = useRef<string[]>([]);
+  // Refs for stale-closure-safe access inside onend handler
+  const autoAdvanceRef = useRef(autoAdvance);
+  const topicsRef = useRef<string[]>([]);
+  const groupedRef = useRef<Record<string, DigestEntry[]>>({});
+  const selectedRef = useRef<DigestEntry | null>(null);
+  const startPlaybackRef = useRef<() => void>(() => {});
+  const shouldAutoGenerateRef = useRef(false);
+  const autoPlayPendingRef = useRef(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Digest Player" }]);
@@ -59,6 +67,12 @@ export function DigestPlayerPage() {
 
   const grouped = digestsData?.digests ?? {};
   const topics = Object.keys(grouped).sort();
+
+  // Keep refs current so closures always see fresh values
+  autoAdvanceRef.current = autoAdvance;
+  topicsRef.current = topics;
+  groupedRef.current = grouped;
+  selectedRef.current = selected;
 
   // Auto-select today's most recent on first load
   useEffect(() => {
@@ -108,7 +122,33 @@ export function DigestPlayerPage() {
         setHighlightedWord(wordIndex);
       }
     };
-    utt.onend = () => { setPlayState("idle"); setHighlightedWord(-1); };
+    utt.onend = () => {
+      setPlayState("idle");
+      setHighlightedWord(-1);
+      if (autoAdvanceRef.current) {
+        const cur = selectedRef.current;
+        const currentTopics = topicsRef.current;
+        const currentGrouped = groupedRef.current;
+        if (!cur) return;
+        const topicIdx = currentTopics.indexOf(cur.topic);
+        const entries = currentGrouped[cur.topic] ?? [];
+        const entryIdx = entries.findIndex((e) => e.filename === cur.filename);
+        let next: DigestEntry | null = null;
+        if (entryIdx < entries.length - 1) {
+          next = entries[entryIdx + 1] ?? null;
+        } else if (topicIdx < currentTopics.length - 1) {
+          const nextTopic = currentTopics[topicIdx + 1];
+          next = (nextTopic && currentGrouped[nextTopic]?.[0]) ?? null;
+        }
+        if (next) {
+          setSelected(next);
+          setScript("");
+          setHighlightedWord(-1);
+          shouldAutoGenerateRef.current = true;
+          autoPlayPendingRef.current = true;
+        }
+      }
+    };
     utteranceRef.current = utt;
     speechSynthesis.speak(utt);
     setPlayState("playing");
@@ -123,6 +163,25 @@ export function DigestPlayerPage() {
     speechSynthesis.resume();
     setPlayState("playing");
   }, []);
+
+  // Keep startPlaybackRef current so the auto-play effect always calls the latest version
+  useEffect(() => { startPlaybackRef.current = startPlayback; }, [startPlayback]);
+
+  // After auto-advance selects a new entry, auto-generate its script once content loads
+  useEffect(() => {
+    if (shouldAutoGenerateRef.current && contentData) {
+      shouldAutoGenerateRef.current = false;
+      scriptMutation.mutate(contentData.content);
+    }
+  }, [contentData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After auto-generate produces a script, start playback
+  useEffect(() => {
+    if (autoPlayPendingRef.current && script) {
+      autoPlayPendingRef.current = false;
+      startPlaybackRef.current();
+    }
+  }, [script]);
 
   const words = wordsRef.current;
 
