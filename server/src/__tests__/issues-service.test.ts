@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1213,6 +1214,172 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+});
+
+describeEmbeddedPostgres("issueService stale queued execution lock adoption", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-stale-queued-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedInProgressIssueWithStaleQueuedExecutionRun() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
+    const staleTimestamp = new Date(Date.now() - 16 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "queued",
+        contextSnapshot: { issueId },
+        createdAt: staleTimestamp,
+        updatedAt: staleTimestamp,
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId },
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale queued execution run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "engineer",
+      executionLockedAt: staleTimestamp,
+      createdByAgentId: agentId,
+    });
+
+    return { actorRunId, agentId, issueId, staleRunId };
+  }
+
+  it("coalesces stale queued execution locks during checkout", async () => {
+    const { actorRunId, agentId, issueId, staleRunId } = await seedInProgressIssueWithStaleQueuedExecutionRun();
+
+    const adopted = await svc.checkout(issueId, agentId, ["in_progress"], actorRunId);
+
+    expect(adopted.checkoutRunId).toBe(actorRunId);
+    expect(adopted.executionRunId).toBe(actorRunId);
+
+    const staleRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, staleRunId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(staleRun).toEqual(
+      expect.objectContaining({
+        status: "cancelled",
+        errorCode: "stale_queued_lock",
+      }),
+    );
+    expect(staleRun?.finishedAt).toBeInstanceOf(Date);
+  });
+
+  it("lets the assignee assert ownership after clearing a stale queued execution lock", async () => {
+    const { actorRunId, agentId, issueId, staleRunId } = await seedInProgressIssueWithStaleQueuedExecutionRun();
+
+    const ownership = await svc.assertCheckoutOwner(issueId, agentId, actorRunId);
+
+    expect(ownership).toEqual({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      adoptedFromRunId: null,
+    });
+
+    const issueRow = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueRow).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const staleRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, staleRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(staleRun).toEqual({
+      status: "cancelled",
+      errorCode: "stale_queued_lock",
     });
   });
 });
