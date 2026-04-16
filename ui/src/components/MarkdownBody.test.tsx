@@ -136,9 +136,10 @@ describe("MarkdownBody", () => {
   it("sanitizes unsafe javascript markdown links", () => {
     const html = renderMarkdown("[click me](javascript:alert(document.cookie))");
 
-    expect(html).toContain('<a href="" target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain('<a href=""');
     expect(html).toContain(">click me</a>");
     expect(html).not.toContain("javascript:");
+    expect(html).not.toContain('target="_blank"');
   });
 
   it("uses soft-break styling by default", () => {
@@ -213,6 +214,13 @@ describe("MarkdownBody", () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 
+  it("keeps relative markdown links in the current tab", () => {
+    const html = renderMarkdown("[Guide](/help/guide)");
+
+    expect(html).toContain('href="/help/guide"');
+    expect(html).not.toContain('target="_blank"');
+  });
+
   it("keeps mention chips as internal navigation links", () => {
     const html = renderMarkdown(`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")})`);
 
@@ -244,6 +252,7 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('href="/issues/PAP-1271"');
     expect(html).toContain("Depends on PAP-1271");
     expect(html).toContain('href="PAP-1271"');
+    expect(html).not.toContain('target="_blank"');
   });
 
   it("applies wrap-friendly styles to long inline content", () => {

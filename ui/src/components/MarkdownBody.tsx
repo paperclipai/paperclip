@@ -99,6 +99,10 @@ function safeMarkdownUrlTransform(url: string): string {
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
 }
 
+function isExternalMarkdownHref(href: string | undefined): boolean {
+  return /^https?:\/\//i.test(href ?? "");
+}
+
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
@@ -241,11 +245,13 @@ export function MarkdownBody({
           </a>
         );
       }
+      const externalAttrs = isExternalMarkdownHref(href)
+        ? { target: "_blank", rel: "noopener noreferrer" as const }
+        : {};
       return (
         <a
           href={href}
-          target="_blank"
-          rel="noopener noreferrer"
+          {...externalAttrs}
           style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
         >
           {linkChildren}
