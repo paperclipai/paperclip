@@ -182,6 +182,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     .then((rows) => rows[0] ?? null);
   if (!issue) return [];
 
+  // Limit to 500 most-recent comments to bound memory usage per run dispatch.
   const comments = await input.db
     .select({ body: issueComments.body })
     .from(issueComments)
@@ -190,7 +191,9 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.issueId, input.issueId),
         eq(issueComments.companyId, input.companyId),
       ),
-    );
+    )
+    .orderBy(issueComments.createdAt)
+    .limit(500);
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
     issue.title,
     issue.description ?? "",
@@ -2805,6 +2808,8 @@ export function heartbeatService(db: Db) {
   }
 
   async function reconcileStrandedAssignedIssues() {
+    // Limit per-tick to avoid OOM/timeout on large installs during recovery.
+    // Remaining candidates will be handled on subsequent reconcile ticks.
     const candidates = await db
       .select()
       .from(issues)
@@ -2814,7 +2819,8 @@ export function heartbeatService(db: Db) {
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
         ),
-      );
+      )
+      .limit(100);
 
     const result = {
       dispatchRequeued: 0,
@@ -4247,19 +4253,22 @@ export function heartbeatService(db: Db) {
           })
           .where(eq(issues.id, issue.id));
 
+        // Log inside the transaction so the audit entry is atomically
+        // committed with the issue reopen — prevents a silent audit gap
+        // if the process crashes between the transaction commit and the
+        // post-transaction logActivity call.
+        if (reopenedActivity) {
+          await logActivity(tx as unknown as typeof db, reopenedActivity);
+        }
+
         return {
           run: newRun,
-          reopenedActivity,
         };
       }
     });
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
