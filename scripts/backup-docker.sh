@@ -47,8 +47,10 @@ trap 'rm -f "$TMP_BACKUP"' EXIT INT TERM
 docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \
   | gzip > "$TMP_BACKUP"
-PGDUMP_EXIT=${PIPESTATUS[0]}
-GZIP_EXIT=${PIPESTATUS[1]}
+# Capture both exit codes before any subsequent command resets PIPESTATUS
+_PIPE_STATUS=("${PIPESTATUS[@]}")
+PGDUMP_EXIT=${_PIPE_STATUS[0]}
+GZIP_EXIT=${_PIPE_STATUS[1]}
 
 if [[ $PGDUMP_EXIT -ne 0 ]]; then
   echo "Erro: pg_dump falhou (exit $PGDUMP_EXIT)." >&2
