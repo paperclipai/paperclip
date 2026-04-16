@@ -81,8 +81,8 @@ If you change schema/API behavior, update all impacted layers:
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep plan docs dated and centralized.
-New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
+5. Keep repo plan docs dated and centralized.
+When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
 ## 6. Database Change Workflow
 
@@ -107,6 +107,21 @@ Notes:
 - `pnpm db:generate` compiles `packages/db` first
 
 ## 7. Verification Before Hand-off
+
+Default local/agent test path:
+
+```sh
+pnpm test
+```
+
+This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+
+```sh
+pnpm test:e2e
+pnpm test:release-smoke
+```
+
+Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
 
 Run this full check before claiming done:
 

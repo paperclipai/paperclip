@@ -1,0 +1,53 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ${OLLAMA_DATA_DIR}:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        USER_UID: ${USER_UID}
+        USER_GID: ${USER_GID}
+    container_name: paperclip
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "${PAPERCLIP_PORT}:3100"
+    volumes:
+      - ${PAPERCLIP_DATA_DIR}:/paperclip
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3100
+      NODE_ENV: production
+      HOME: /paperclip
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_AUTH_SECRET: ${PAPERCLIP_AUTH_SECRET}
+      PAPERCLIP_ALLOWED_HOST: ${PAPERCLIP_ALLOWED_HOST}
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL}
+      OPENCODE_ALLOW_ALL_MODELS: "true"
+      PAPERCLIP_TELEMETRY_DISABLED: "true"
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "true"
+      USER_UID: ${USER_UID}
+      USER_GID: ${USER_GID}
+      OLLAMA_HOST: ${OLLAMA_HOST}
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME}/.local/bin
+

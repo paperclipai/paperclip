@@ -47,7 +47,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "hermes-paperclip-adapter": "^0.2.0",
+    "hermes-paperclip-adapter": "^0.3.0",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.12.0",

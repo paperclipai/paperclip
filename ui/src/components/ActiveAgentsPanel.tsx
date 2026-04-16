@@ -30,8 +30,8 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const allRuns = liveRuns ?? [];
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
+    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
+    queryFn: () => issuesApi.list(companyId, { kind: "task", includeRoutineExecutions: true }),
     enabled: allRuns.length > 0,
   });
   const issueById = useMemo(() => {

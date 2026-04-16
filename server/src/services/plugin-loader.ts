@@ -1812,7 +1812,9 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass pluginId (DB UUID) so the tool registry can route execution to
+        // the worker manager, which is keyed by UUID rather than package key.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(

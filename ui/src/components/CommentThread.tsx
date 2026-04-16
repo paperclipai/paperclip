@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -142,6 +142,11 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
+  return isClosed && assigneeValue.startsWith("agent:");
+}
+
 function humanizeValue(value: string | null): string {
   if (!value) return "None";
   return value.replace(/_/g, " ");
@@ -218,21 +223,71 @@ function runStatusClass(status: string) {
   }
 }
 
+async function copyTextWithFallback(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyMarkdownButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
+
   return (
     <button
       type="button"
-      className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      className={cn(
+        "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+        status === "copied"
+          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+          : status === "failed"
+            ? "bg-destructive/10 text-destructive"
+            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+      title={label}
+      aria-label="Copy comment as markdown"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        });
+        void copyTextWithFallback(text)
+          .then(() => setStatus("copied"))
+          .catch(() => setStatus("failed"));
+
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+        }
+        timeoutRef.current = setTimeout(() => {
+          setStatus("idle");
+          timeoutRef.current = null;
+        }, 1500);
       }}
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {status === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      <span className="sm:hidden">{label}</span>
+      <span className="sr-only" aria-live="polite">
+        {label}
+      </span>
     </button>
   );
 }
@@ -332,7 +387,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm" onFilePathClick={onFilePathClick} onDirPathClick={onDirPathClick}>{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" softBreaks onFilePathClick={onFilePathClick} onDirPathClick={onDirPathClick}>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -604,7 +659,7 @@ const TimelineList = memo(function TimelineList({
   );
 });
 
-export const CommentThread = memo(function CommentThread({
+export function CommentThread({
   comments,
   queuedComments = [],
   linkedApprovals = [],
@@ -620,6 +675,7 @@ export const CommentThread = memo(function CommentThread({
   pendingApprovalAction = null,
   onVote,
   onAdd,
+  issueStatus,
   agentMap,
   currentUserId,
   imageUploadHandler,
@@ -643,9 +699,16 @@ export const CommentThread = memo(function CommentThread({
   onDirPathClick,
   composerDisabledReason = null,
 }: CommentThreadProps) {
+  const [body, setBody] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
+  const editorRef = useRef<MarkdownEditorRef>(null);
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
   const hasScrolledRef = useRef(false);
 
@@ -711,6 +774,29 @@ export const CommentThread = memo(function CommentThread({
       }));
   }, [agentMap, providedMentions]);
 
+  useEffect(() => {
+    if (!draftKey) return;
+    setBody(loadDraft(draftKey));
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => {
+      saveDraft(draftKey, body);
+    }, DRAFT_DEBOUNCE_MS);
+  }, [body, draftKey]);
+
+  useEffect(() => {
+    return () => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [effectiveSuggestedAssigneeValue]);
+
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
@@ -729,25 +815,75 @@ export const CommentThread = memo(function CommentThread({
     }
   }, [location.hash, comments, queuedComments]);
 
-  const handleFeedbackVote = useCallback(
-    async (
-      commentId: string,
-      vote: FeedbackVoteValue,
-      options?: { allowSharing?: boolean; reason?: string },
-    ) => {
-      if (!onVote) return;
-      setVotingTargetId(commentId);
-      try {
-        await onVote(commentId, vote, options);
-      } finally {
-        setVotingTargetId(null);
-      }
-    },
-    [onVote],
-  );
+  async function handleSubmit() {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
+    const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
+    const submittedBody = trimmed;
 
-  const timelineSection = useMemo(
-    () => (
+    setSubmitting(true);
+    setBody("");
+    try {
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
+      if (draftKey) clearDraft(draftKey);
+      setReassignTarget(effectiveSuggestedAssigneeValue);
+    } catch {
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      // Parent mutation handlers surface the failure and the draft is restored for retry.
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
+    const file = evt.target.files?.[0];
+    if (!file) return;
+    setAttaching(true);
+    try {
+      if (imageUploadHandler) {
+        const url = await imageUploadHandler(file);
+        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const markdown = `![${safeName}](${url})`;
+        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+      } else if (onAttachImage) {
+        await onAttachImage(file);
+      }
+    } finally {
+      setAttaching(false);
+      if (attachInputRef.current) attachInputRef.current.value = "";
+    }
+  }
+
+  async function handleFeedbackVote(
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) {
+    if (!onVote) return;
+    setVotingTargetId(commentId);
+    try {
+      await onVote(commentId, vote, options);
+    } finally {
+      setVotingTargetId(null);
+    }
+  }
+
+  const canSubmit = !submitting && !!body.trim();
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
+
       <TimelineList
         timeline={timeline}
         agentMap={agentMap}
@@ -767,21 +903,6 @@ export const CommentThread = memo(function CommentThread({
         onFilePathClick={onFilePathClick}
         onDirPathClick={onDirPathClick}
       />
-    ),
-    [
-      timeline, agentMap, currentUserId, companyId, projectId,
-      onApproveApproval, onRejectApproval, pendingApprovalAction,
-      feedbackVoteByTargetId, feedbackDataSharingPreference,
-      onVote, handleFeedbackVote, votingTargetId, highlightCommentId,
-      feedbackTermsUrl,
-    ],
-  );
-
-  return (
-    <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
-
-      {timelineSection}
 
       {liveRunSlot}
 

@@ -39,6 +39,8 @@ export const queryKeys = {
     labels: (companyId: string) => ["issues", companyId, "labels"] as const,
     listByProject: (companyId: string, projectId: string) =>
       ["issues", companyId, "project", projectId] as const,
+    listByParent: (companyId: string, parentId: string) =>
+      ["issues", companyId, "parent", parentId] as const,
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
@@ -63,6 +65,8 @@ export const queryKeys = {
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
       ["execution-workspaces", companyId, filters ?? {}] as const,
+    summaryList: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
+      ["execution-workspaces", companyId, "summary", filters ?? {}] as const,
     detail: (id: string) => ["execution-workspaces", "detail", id] as const,
     closeReadiness: (id: string) => ["execution-workspaces", "close-readiness", id] as const,
     workspaceOperations: (id: string) => ["execution-workspaces", "workspace-operations", id] as const,
@@ -100,6 +104,11 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  sidebarPreferences: {
+    companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
+    projectOrder: (companyId: string, userId: string) =>
+      ["sidebar-preferences", "project-order", companyId, userId] as const,
+  },
   instance: {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
@@ -112,6 +121,7 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
+  inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
