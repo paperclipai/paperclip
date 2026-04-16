@@ -54,6 +54,8 @@ async function fetchAnthropicOrgUsageForDay(
 
   do {
     const params = new URLSearchParams({ starting_at: dateStr, ending_at: endStr });
+    // TODO: Anthropic Admin API pagination param unverified — `page` may need to be `next_page`.
+    // Will surface as zero-data (not a crash) if wrong; verify against docs before relying on multi-page results.
     if (nextPage) params.set("page", nextPage);
 
     const resp = await fetch(`${ANTHROPIC_USAGE_API}?${params.toString()}`, {
