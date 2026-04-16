@@ -171,6 +171,23 @@ export {
 } from "./work-product.js";
 
 export {
+  rt2TaskModeSchema,
+  rt2ParticipantStateSchema,
+  rt2ParticipantEndReasonSchema,
+  rt2DeliverableKindSchema,
+  rt2DeliverableStateSchema,
+  rt2DeliverableInputSchema,
+  createRt2TaskSchema,
+  createRt2TodoSchema,
+  updateRt2TaskCapacitySchema,
+  endRt2ParticipantSchema,
+  type CreateRt2Task,
+  type CreateRt2Todo,
+  type UpdateRt2TaskCapacity,
+  type EndRt2Participant,
+} from "./rt2-task.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

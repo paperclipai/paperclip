@@ -68,6 +68,11 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockRt2TasksApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  createTodo: vi.fn(),
+}));
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
 }));
@@ -106,6 +111,10 @@ vi.mock("../api/assets", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/rt2-tasks", () => ({
+  rt2TasksApi: mockRt2TasksApi,
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({
@@ -222,6 +231,15 @@ async function flush() {
   });
 }
 
+function setFormValue(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = element instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  setter?.call(element, value);
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -268,6 +286,10 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockRt2TasksApi.create.mockReset();
+    mockRt2TasksApi.createTodo.mockReset();
+    mockRt2TasksApi.create.mockResolvedValue({ issueId: "issue-rt2-1" });
+    mockRt2TasksApi.createTodo.mockResolvedValue({ id: "todo-1" });
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
       companyId: "company-1",
@@ -494,6 +516,58 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).toContain("will no longer use the parent issue workspace");
     expect(container.textContent).toContain("Parent workspace");
+
+    act(() => root.unmount());
+  });
+
+  it("submits RT2 task payloads with capacity and deliverables", async () => {
+    dialogState.newIssueDefaults = {
+      projectId: "project-1",
+      rt2Mode: "task",
+      rt2TaskMode: "collab",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+
+    await act(async () => {
+      setFormValue(titleInput!, "Launch event collab task");
+    });
+    await flush();
+
+    const capacityInput = container.querySelector('input[aria-label="Capacity"]') as HTMLInputElement | null;
+    const deliverableInput = container.querySelector('input[aria-label="Deliverable title"]') as HTMLInputElement | null;
+    expect(capacityInput).not.toBeNull();
+    expect(deliverableInput).not.toBeNull();
+
+    await act(async () => {
+      setFormValue(capacityInput!, "2");
+      setFormValue(deliverableInput!, "Event brief");
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockRt2TasksApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId: "project-1",
+        taskMode: "collab",
+        capacity: 2,
+        deliverables: [{ title: "Event brief", type: "document" }],
+      }),
+    );
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

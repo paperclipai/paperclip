@@ -100,6 +100,19 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  Rt2TaskMode,
+  Rt2ParticipantState,
+  Rt2ParticipantEndReason,
+  Rt2DeliverableKind,
+  Rt2DeliverableState,
+  Rt2DeliverableInput,
+  Rt2TaskParticipant,
+  Rt2TodoSummary,
+  Rt2DeliverableSummary,
+  Rt2TaskSummary,
+  Rt2TaskDetail,
+} from "./rt2-task.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

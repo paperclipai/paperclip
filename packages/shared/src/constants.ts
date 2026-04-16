@@ -353,6 +353,10 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "rt2.task.updated",
+  "rt2.participant.updated",
+  "rt2.todo.updated",
+  "rt2.deliverable.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 

@@ -2,7 +2,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEve
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { rt2TasksApi } from "../api/rt2-tasks";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -60,6 +62,7 @@ import { IssueChatThread, type IssueChatComposerHandle } from "../components/Iss
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { IssueProperties } from "../components/IssueProperties";
+import { Rt2TaskPanel } from "../components/Rt2TaskPanel";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
@@ -893,6 +896,21 @@ export function IssueDetail() {
     }),
     enabled: !!issueId,
   });
+  const { data: rt2TaskDetail = null } = useQuery({
+    queryKey: issue?.id ? queryKeys.rt2Tasks.detail(issue.id) : ["rt2-tasks", "detail", "pending"],
+    queryFn: async () => {
+      try {
+        return await rt2TasksApi.get(issue!.id);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    enabled: !!issue?.id,
+    retry: false,
+  });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
@@ -1154,6 +1172,14 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
+  const invalidateRt2TaskState = useCallback((taskIssueId: string, projectId: string | null | undefined) => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.detail(taskIssueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(taskIssueId) });
+    if (resolvedCompanyId && projectId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.listByProject(resolvedCompanyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(resolvedCompanyId, projectId) });
+    }
+  }, [queryClient, resolvedCompanyId]);
 
   const applyOptimisticIssueCacheUpdate = useCallback((refs: Iterable<string>, data: Record<string, unknown>) => {
     queryClient.setQueriesData<Issue>(
@@ -1267,6 +1293,41 @@ export function IssueDetail() {
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue]);
+  const joinRt2Task = useMutation({
+    mutationFn: (taskIssueId: string) => rt2TasksApi.join(taskIssueId),
+    onSuccess: (_participant, taskIssueId) => {
+      invalidateRt2TaskState(taskIssueId, rt2TaskDetail?.projectId ?? issue?.projectId ?? null);
+    },
+  });
+  const updateRt2Capacity = useMutation({
+    mutationFn: ({ taskIssueId, data }: { taskIssueId: string; data: { capacity: number; endedUserIds: string[] } }) =>
+      rt2TasksApi.updateCapacity(taskIssueId, data),
+    onSuccess: (_result, variables) => {
+      invalidateRt2TaskState(variables.taskIssueId, rt2TaskDetail?.projectId ?? issue?.projectId ?? null);
+    },
+  });
+  const endRt2Participant = useMutation({
+    mutationFn: ({
+      taskIssueId,
+      userId,
+      reason,
+    }: {
+      taskIssueId: string;
+      userId: string;
+      reason: "manager_removed" | "self_left" | "capacity_reduced";
+    }) => rt2TasksApi.endParticipant(taskIssueId, userId, reason),
+    onSuccess: (_result, variables) => {
+      invalidateRt2TaskState(variables.taskIssueId, rt2TaskDetail?.projectId ?? issue?.projectId ?? null);
+    },
+  });
+  const startRt2Todo = useMutation({
+    mutationFn: (todoIssueId: string) => rt2TasksApi.startTodo(todoIssueId),
+    onSuccess: () => {
+      if (issue?.id) {
+        invalidateRt2TaskState(issue.id, rt2TaskDetail?.projectId ?? issue.projectId ?? null);
+      }
+    },
+  });
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
@@ -2388,6 +2449,37 @@ export function IssueDetail() {
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
+
+      {rt2TaskDetail ? (
+        <Rt2TaskPanel
+          detail={rt2TaskDetail}
+          onJoin={() => joinRt2Task.mutate(issue.id)}
+          onChangeCapacity={(nextCapacity, endedUserIds) => {
+            updateRt2Capacity.mutate({
+              taskIssueId: issue.id,
+              data: {
+                capacity: nextCapacity,
+                endedUserIds,
+              },
+            });
+          }}
+          onEndParticipant={(userId, reason) => {
+            endRt2Participant.mutate({
+              taskIssueId: issue.id,
+              userId,
+              reason,
+            });
+          }}
+          onCreateTodo={() => {
+            openNewIssue({
+              rt2Mode: "todo",
+              rt2TaskIssueId: issue.id,
+              projectId: issue.projectId ?? undefined,
+            });
+          }}
+          onStartTodo={(todoIssueId) => startRt2Todo.mutate(todoIssueId)}
+        />
+      ) : null}
 
       {showRichSubIssuesSection ? (
         <div className="space-y-3">

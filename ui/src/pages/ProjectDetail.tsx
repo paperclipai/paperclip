@@ -7,11 +7,13 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
+import { rt2TasksApi } from "../api/rt2-tasks";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -21,12 +23,12 @@ import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
+import { Rt2TaskList } from "../components/Rt2TaskList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef } from "../lib/utils";
-import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -34,7 +36,7 @@ import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "tasks" | "list" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -47,6 +49,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const projectsIdx = segments.indexOf("projects");
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
+  if (tab === "tasks") return "tasks";
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
@@ -211,6 +214,40 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projectId={projectId}
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
+  );
+}
+
+function ProjectRt2TasksList({ projectId, companyId }: { projectId: string; companyId: string }) {
+  const { openNewIssue } = useDialog();
+
+  const { data: tasks = [], isLoading, error } = useQuery({
+    queryKey: queryKeys.rt2Tasks.listByProject(companyId, projectId),
+    queryFn: () => rt2TasksApi.listByProject(companyId, projectId),
+    enabled: !!companyId,
+  });
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading tasks...</p>;
+  }
+
+  if (error) {
+    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
+  }
+
+  return (
+    <Rt2TaskList
+      companyId={companyId}
+      projectId={projectId}
+      tasks={tasks}
+      onCreateTask={() =>
+        openNewIssue({
+          projectId,
+          rt2Mode: "task",
+          rt2TaskMode: "solo",
+          capacity: 1,
+        })
+      }
     />
   );
 }
@@ -494,6 +531,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
+    if (activeTab === "tasks") {
+      navigate(`/projects/${canonicalProjectRef}/tasks`, { replace: true });
+      return;
+    }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
       return;
@@ -629,6 +670,9 @@ export function ProjectDetail() {
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
     }
+    if (cachedTab === "tasks") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/tasks`} replace />;
+    }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
@@ -662,6 +706,8 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "tasks") {
+      navigate(`/projects/${canonicalProjectRef}/tasks`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
@@ -732,6 +778,7 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
+            { value: "tasks", label: "Tasks" },
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
@@ -757,6 +804,10 @@ export function ProjectDetail() {
             return asset.contentPath;
           }}
         />
+      )}
+
+      {activeTab === "tasks" && project?.id && resolvedCompanyId && (
+        <ProjectRt2TasksList projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (

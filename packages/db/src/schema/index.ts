@@ -27,6 +27,8 @@ export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
+export { rt2V33TaskProfiles } from "./rt2_v33_task_profiles.js";
+export { rt2V33TaskParticipants } from "./rt2_v33_task_participants.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";

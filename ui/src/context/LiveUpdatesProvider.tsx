@@ -757,6 +757,27 @@ function handleLiveEvent(
     return;
   }
 
+  if (
+    event.type === "rt2.task.updated" ||
+    event.type === "rt2.participant.updated" ||
+    event.type === "rt2.todo.updated" ||
+    event.type === "rt2.deliverable.updated"
+  ) {
+    const projectId = readString(payload.projectId);
+    const taskIssueId = readString(payload.taskIssueId);
+
+    if (projectId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.rt2Tasks.listByProject(expectedCompanyId, projectId),
+      });
+    }
+    if (taskIssueId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.rt2Tasks.detail(taskIssueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(taskIssueId) });
+    }
+    return;
+  }
+
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
@@ -853,6 +874,7 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  handleLiveEvent,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
   invalidateVisibleIssueRunQueries,

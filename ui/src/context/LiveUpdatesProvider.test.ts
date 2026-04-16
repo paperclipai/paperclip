@@ -15,6 +15,45 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("invalidates RT2 task queries when an RT2 live event arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    expect((queryKeys as any).rt2Tasks).toBeDefined();
+
+    (__liveUpdatesTestUtils as any).handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/PAP/projects/project-1/tasks",
+      {
+        id: 99,
+        companyId: "company-1",
+        type: "rt2.task.updated",
+        createdAt: new Date().toISOString(),
+        payload: {
+          projectId: "project-1",
+          taskIssueId: "issue-1",
+          mutation: "created",
+        },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: (queryKeys as any).rt2Tasks.listByProject("company-1", "project-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: (queryKeys as any).rt2Tasks.detail("issue-1"),
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
