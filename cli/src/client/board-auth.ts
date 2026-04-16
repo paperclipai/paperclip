@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
-import { createTranslator, resolveLocale } from "../../../packages/shared/src/i18n.js";
 import { buildCliCommandLabel } from "./command-label.js";
 import { resolveDefaultCliAuthPath } from "../config/home.js";
 import { cliT, getCliLocale, localizeCliMessage } from "../i18n.js";
@@ -60,13 +59,6 @@ function toStringOrNull(value: unknown): string | null {
 
 function normalizeApiBase(apiBase: string): string {
   return apiBase.trim().replace(/\/+$/, "");
-}
-
-function resolveCliTranslator() {
-  const locale = resolveLocale(
-    process.env.PAPERCLIP_LOCALE ?? process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG,
-  );
-  return createTranslator(locale);
 }
 
 export function resolveBoardAuthStorePath(overridePath?: string): string {
@@ -215,7 +207,6 @@ export async function loginBoardCli(params: {
   const apiBase = normalizeApiBase(params.apiBase);
   const createUrl = `${apiBase}/api/cli-auth/challenges`;
   const command = params.command?.trim() || buildCliCommandLabel();
-  const { t } = resolveCliTranslator();
 
   const challenge = await requestJson<CreateChallengeResponse>(createUrl, {
     method: "POST",
