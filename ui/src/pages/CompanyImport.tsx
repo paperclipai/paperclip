@@ -200,7 +200,7 @@ function ImportPreviewPane({
   renamedTo: string | null;
 }) {
   const { t } = useLocale();
-  const actionLabels = {
+  const actionLabels: Record<string, string> = {
     create: t("companyImport.actionCreate"),
     update: t("companyImport.actionUpdate"),
     overwrite: t("companyImport.actionOverwrite"),

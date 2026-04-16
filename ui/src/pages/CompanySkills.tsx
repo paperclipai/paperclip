@@ -627,7 +627,7 @@ function SkillPane({
                 {editMode ? t("companySkills.stopEditing") : t("companySkills.editSkill")}
               </button>
             ) : (
-              <div className="text-sm text-muted-foreground">{tx(detail.editableReason)}</div>
+              <div className="text-sm text-muted-foreground">{detail.editableReason ? tx(detail.editableReason) : t("common.none")}</div>
             )}
           </div>
         </div>

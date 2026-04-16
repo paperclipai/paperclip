@@ -216,13 +216,13 @@ function approvalSearchLabel(t: Translate, approval: Approval): string {
   return subject ? `${label}: ${subject}` : label;
 }
 
-function inboxGroupLabel(t: Translate, groupKey: string, fallback: string | null): string | null {
+function inboxGroupLabel(t: Translate, groupKey: string, fallback: string | null): string {
   const normalizedKey = groupKey.replace(/^archived-search:/, "");
   if (normalizedKey === "issue") return t("inbox.groupIssues");
   if (normalizedKey === "approval") return t("inbox.groupApprovals");
   if (normalizedKey === "failed_run") return t("inbox.groupFailedRuns");
   if (normalizedKey === "join_request") return t("inbox.groupJoinRequests");
-  return fallback;
+  return fallback ?? normalizedKey;
 }
 
 export function FailedRunInboxRow({

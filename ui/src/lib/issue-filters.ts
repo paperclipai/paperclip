@@ -41,7 +41,7 @@ export function issueFilterLabel(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
+export function issueFilterArraysEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sortedA = [...a].sort();
   const sortedB = [...b].sort();

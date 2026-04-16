@@ -24,7 +24,7 @@ function workspaceStatusLabel(
   if (status === "in_review") return t("projectDetail.executionWorkspaceStatus.inReview");
   if (status === "archived") return t("projectDetail.executionWorkspaceStatus.archived");
   if (status === "cleanup_failed") return t("projectDetail.executionWorkspaceStatus.cleanupFailed");
-  return status.replace(/_/g, " ");
+  return String(status).replace(/_/g, " ");
 }
 
 function truncatePath(path: string) {

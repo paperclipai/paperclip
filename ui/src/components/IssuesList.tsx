@@ -852,6 +852,7 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
+          message={t("issueList.empty")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
