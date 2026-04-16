@@ -33,19 +33,21 @@ OUTPUT_FILE="${OUTPUT_FILE:-$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz}"
 # Use python3 for portable path canonicalization (macOS realpath lacks --canonicalize-missing).
 _canonical() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
 SAFE_PREFIX="$(_canonical "$BACKUP_DIR")"
-mkdir -p "$(dirname "$OUTPUT_FILE")"
+# Validate BEFORE creating any directories to prevent TOCTOU path traversal.
 RESOLVED="$(_canonical "$OUTPUT_FILE")"
 if [[ "$RESOLVED" != "$SAFE_PREFIX"/* && "$RESOLVED" != "$SAFE_PREFIX" ]]; then
   echo "Erro: --output deve ser dentro de $SAFE_PREFIX" >&2; exit 1
 fi
+mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Prevent concurrent backup runs from racing on temp files / the final output path.
-LOCK_FILE="$BACKUP_DIR/.backup.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  echo "Erro: outro backup já está em execução (lockfile: $LOCK_FILE). Aguarde e tente novamente." >&2
+# Use mkdir-based locking (POSIX) — flock(1) requires util-linux and is not available on macOS.
+LOCK_DIR="$BACKUP_DIR/.backup.lock.d"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "Erro: outro backup já está em execução (lockdir: $LOCK_DIR). Aguarde e tente novamente." >&2
   exit 1
 fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # Discover running db container
 DB_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q db 2>/dev/null | head -1)
@@ -63,7 +65,7 @@ echo "→ Realizando backup do banco..."
 TMP_BACKUP=$(mktemp "$(dirname "$OUTPUT_FILE")/.backup_tmp_XXXXXXXX.sql.gz")
 # Restrict permissions immediately — mktemp's umask is not reliable on macOS.
 chmod 600 "$TMP_BACKUP"
-trap 'rm -f "$TMP_BACKUP"' EXIT INT TERM
+trap 'rm -f "$TMP_BACKUP"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 docker exec "$DB_CONTAINER" \
   pg_dump -U paperclip -d paperclip --no-owner --no-acl \

@@ -1204,8 +1204,17 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     return realized;
   }
   if (await directoryExists(cwd)) {
+    const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+    const worktreeValidation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: cwd,
+      expectedBranchName: realized.branchName,
+    }).catch(() => null);
+    if (!worktreeValidation?.valid) {
+      const reason = worktreeValidation && !worktreeValidation.valid ? ` (${worktreeValidation.reason})` : "";
+      throw new Error(`Execution workspace path "${cwd}" exists but is not a valid registered git worktree${reason}.`);
+    }
     if (provisionCommand) {
-      const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
       await provisionExecutionWorktree({
         strategy: {
           type: "git_worktree",
@@ -1706,8 +1715,9 @@ function looksLikeWorkspaceDevServerCommand(command: string) {
 export function resolveWorkspaceRuntimeReadinessTimeoutSec(service: Record<string, unknown>) {
   const readiness = parseObject(service.readiness);
   const explicitTimeoutSec = asNumber(readiness.timeoutSec, 0);
+  const MAX_READINESS_TIMEOUT_SEC = 600;
   if (explicitTimeoutSec > 0) {
-    return Math.max(1, explicitTimeoutSec);
+    return Math.min(MAX_READINESS_TIMEOUT_SEC, Math.max(1, explicitTimeoutSec));
   }
   return looksLikeWorkspaceDevServerCommand(asString(service.command, "")) ? 90 : 30;
 }
