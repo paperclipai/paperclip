@@ -285,7 +285,7 @@ If you are asked to create or manage routines you MUST read:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
-- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`
+- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: AgenticDiego <noreply@carvallo.io>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: AgenticDiego <noreply@carvallo.io>`
 
 ## Comment Style (Required)
 
