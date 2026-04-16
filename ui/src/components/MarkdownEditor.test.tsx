@@ -265,7 +265,11 @@ describe("MarkdownEditor", () => {
       });
 
       await flush();
-      const observerCountAfterInitialRender = MockMutationObserver.instances.length;
+      const editable = container.querySelector('[contenteditable="true"]');
+      expect(editable).not.toBeNull();
+      const mentionObserverCountAfterInitialRender = MockMutationObserver.instances.filter(
+        (observer) => observer.observe.mock.calls.some(([target]) => target === editable),
+      ).length;
 
       await act(async () => {
         root.render(
@@ -279,9 +283,14 @@ describe("MarkdownEditor", () => {
 
       await flush();
 
-      // In the mock environment no mutation callbacks fire, so rerendering with
-      // a new value should not allocate any additional observer instances.
-      expect(MockMutationObserver.instances).toHaveLength(observerCountAfterInitialRender);
+      // A separate rich-editor health observer is expected to recreate when the
+      // controlled value changes. This assertion only covers the mention
+      // decoration observer that attaches to the editable element itself.
+      expect(
+        MockMutationObserver.instances.filter(
+          (observer) => observer.observe.mock.calls.some(([target]) => target === editable),
+        ),
+      ).toHaveLength(mentionObserverCountAfterInitialRender);
     } finally {
       await act(async () => {
         root.unmount();
