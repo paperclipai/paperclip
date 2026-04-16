@@ -4,6 +4,7 @@ import {
   agentRuntimeState,
   agentWakeupRequests,
   agents,
+  companySkills,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -94,6 +95,7 @@ describeEmbeddedPostgres("heartbeat plugin events", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
