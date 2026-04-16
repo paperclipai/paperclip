@@ -2,7 +2,7 @@
  * 2captcha client with a hard monthly spend cap.
  *
  * Per BUY-2272 exit criteria: captcha hard-cap enforcement is unit-tested.
- * Week 1 lands the cap logic; Day 4 wires the actual 2captcha HTTP calls.
+ * Cap logic (Day 1) + 2captcha HTTP (Day 4) are both live here.
  */
 
 export interface CaptchaSpendStore {
@@ -22,6 +22,11 @@ export interface CaptchaClientOptions {
 
 export const DEFAULT_MONTHLY_CAP_USD = 20;
 
+/** How long to wait between polls for the solved token (ms). */
+const POLL_INTERVAL_MS = 5_000;
+/** How many polls before giving up. 24 × 5s = 2 min total. */
+const MAX_POLLS = 24;
+
 export class CaptchaCapExceededError extends Error {
   readonly code = "CAPTCHA_CAP_EXCEEDED";
   constructor(
@@ -34,12 +39,21 @@ export class CaptchaCapExceededError extends Error {
   }
 }
 
+export class CaptchaProviderError extends Error {
+  readonly code = "CAPTCHA_PROVIDER_ERROR";
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 export interface CaptchaSolveRequest {
   siteKey: string;
   pageUrl: string;
   kind: "recaptcha_v2" | "recaptcha_v3" | "hcaptcha" | "turnstile";
   /** Caller-estimated cost in USD. Used for the cap check before spending. */
   estimatedCostUsd?: number;
+  /** Minimum score for recaptcha_v3 (0.0–1.0). Defaults to 0.3. */
+  minScore?: number;
 }
 
 export interface CaptchaSolveResult {
@@ -53,6 +67,8 @@ const PER_SOLVE_COST_USD: Record<CaptchaSolveRequest["kind"], number> = {
   hcaptcha: 0.003,
   turnstile: 0.0015,
 };
+
+const TWOCAPTCHA_BASE = "https://2captcha.com";
 
 export class CaptchaClient {
   private readonly apiKey: string;
@@ -68,8 +84,9 @@ export class CaptchaClient {
   }
 
   /**
-   * Enforce cap first, then attempt to solve. Throws `CaptchaCapExceededError`
-   * if this call would put us at-or-above the cap.
+   * Enforce cap first, then solve via 2captcha. Throws `CaptchaCapExceededError`
+   * if this call would put us at-or-above the cap, `CaptchaProviderError` on
+   * provider failure.
    */
   async solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult> {
     const estimated =
@@ -80,18 +97,101 @@ export class CaptchaClient {
       throw new CaptchaCapExceededError(currentSpend, this.monthlyCapUsd);
     }
 
-    // Day 4 will wire 2captcha HTTP. Skeleton returns a placeholder result and
-    // records the spend so the cap logic is testable end-to-end today.
     const token = await this.submitToProvider(request);
+    // Record spend only after a successful solve — provider errors don't cost.
     await this.spendStore.addSpendUsd(estimated);
     return { token, costUsd: estimated };
   }
 
-  private async submitToProvider(_request: CaptchaSolveRequest): Promise<string> {
-    // TODO(Day 4): POST https://2captcha.com/in.php, poll /res.php.
-    // Using `this.apiKey` + `this.fetchImpl`. Throws on provider error.
-    void this.apiKey;
-    void this.fetchImpl;
-    throw new Error("captcha submitToProvider not implemented — Day 4");
+  private async submitToProvider(request: CaptchaSolveRequest): Promise<string> {
+    const taskId = await this.createTask(request);
+    return this.pollForResult(taskId);
   }
+
+  /**
+   * POST /in.php — submit the captcha task and return the task ID.
+   */
+  private async createTask(request: CaptchaSolveRequest): Promise<string> {
+    const params = new URLSearchParams({
+      key: this.apiKey,
+      pageurl: request.pageUrl,
+      googlekey: request.siteKey,
+      json: "1",
+    });
+
+    switch (request.kind) {
+      case "recaptcha_v2":
+        params.set("method", "userrecaptcha");
+        break;
+      case "recaptcha_v3":
+        params.set("method", "userrecaptcha");
+        params.set("version", "v3");
+        params.set("min_score", String(request.minScore ?? 0.3));
+        break;
+      case "hcaptcha":
+        params.set("method", "hcaptcha");
+        break;
+      case "turnstile":
+        params.set("method", "turnstile");
+        break;
+    }
+
+    const resp = await this.fetchImpl(`${TWOCAPTCHA_BASE}/in.php`, {
+      method: "POST",
+      body: params,
+    });
+
+    if (!resp.ok) {
+      throw new CaptchaProviderError(`2captcha /in.php HTTP ${resp.status}`);
+    }
+
+    const body = (await resp.json()) as { status: number; request: string };
+    if (body.status !== 1) {
+      throw new CaptchaProviderError(`2captcha /in.php error: ${body.request}`);
+    }
+
+    return body.request; // task ID
+  }
+
+  /**
+   * Poll /res.php until the token is ready or MAX_POLLS is reached.
+   */
+  private async pollForResult(taskId: string): Promise<string> {
+    const params = new URLSearchParams({
+      key: this.apiKey,
+      action: "get",
+      id: taskId,
+      json: "1",
+    });
+    const url = `${TWOCAPTCHA_BASE}/res.php?${params.toString()}`;
+
+    for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+      // 2captcha recommends waiting at least 5s before first poll
+      await sleep(POLL_INTERVAL_MS);
+
+      const resp = await this.fetchImpl(url);
+      if (!resp.ok) {
+        throw new CaptchaProviderError(`2captcha /res.php HTTP ${resp.status}`);
+      }
+
+      const body = (await resp.json()) as { status: number; request: string };
+
+      if (body.status === 1) {
+        return body.request; // solved token
+      }
+
+      if (body.request !== "CAPCHA_NOT_READY") {
+        throw new CaptchaProviderError(`2captcha /res.php error: ${body.request}`);
+      }
+      // CAPCHA_NOT_READY → keep polling
+    }
+
+    throw new CaptchaProviderError(
+      `2captcha solve timed out after ${MAX_POLLS * POLL_INTERVAL_MS / 1000}s`,
+    );
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

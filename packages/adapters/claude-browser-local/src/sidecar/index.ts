@@ -19,6 +19,8 @@ import { execGoto } from "./tools/goto.js";
 import { execClick } from "./tools/click.js";
 import { execType } from "./tools/type.js";
 import { execSaveArtifact } from "./tools/save-artifact.js";
+import { execReadInbox } from "./tools/read-inbox.js";
+import { CaptchaClient, CaptchaSpendStore } from "../server/tools/captcha.js";
 import { execWaitFor } from "./tools/wait-for.js";
 import { execScreenshot } from "./tools/screenshot.js";
 import { resolveSecretToken } from "../server/tools/secrets.js";
@@ -53,6 +55,41 @@ function resolveSecrets(value: string): string {
     return resolved;
   });
 }
+
+// --- Captcha spend store (file-based, per-month) -----------------------------
+
+import fs from "node:fs/promises";
+import path from "node:path";
+
+const SPEND_FILE = process.env["SURFER_CAPTCHA_SPEND_FILE"] ?? "/var/lib/surfer/captcha-spend.json";
+
+function currentMonthKey(): string {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+const fileSpendStore: CaptchaSpendStore = {
+  async getMonthlySpendUsd() {
+    try {
+      const raw = await fs.readFile(SPEND_FILE, "utf8");
+      const data = JSON.parse(raw) as Record<string, number>;
+      return data[currentMonthKey()] ?? 0;
+    } catch {
+      return 0;
+    }
+  },
+  async addSpendUsd(delta: number) {
+    await fs.mkdir(path.dirname(SPEND_FILE), { recursive: true });
+    let data: Record<string, number> = {};
+    try {
+      const raw = await fs.readFile(SPEND_FILE, "utf8");
+      data = JSON.parse(raw) as Record<string, number>;
+    } catch { /* start fresh */ }
+    const key = currentMonthKey();
+    data[key] = (data[key] ?? 0) + delta;
+    await fs.writeFile(SPEND_FILE, JSON.stringify(data), "utf8");
+  },
+};
 
 // --- Dispatcher --------------------------------------------------------------
 
@@ -150,24 +187,47 @@ async function dispatch(
     }
 
     case "read_inbox":
-      // IMAP client lands Day 4; stub for now.
-      return {
-        ok: false, tool: "read_inbox",
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        errorMessage: "read_inbox not implemented in Day 2 build — lands Day 4",
-        errorCode: "NOT_IMPLEMENTED",
-      };
+      return execReadInbox(call);
 
-    case "solve_captcha":
-      // 2captcha client lands Day 4.
-      return {
-        ok: false, tool: "solve_captcha",
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        errorMessage: "solve_captcha not implemented in Day 2 build — lands Day 4",
-        errorCode: "NOT_IMPLEMENTED",
-      };
+    case "solve_captcha": {
+      const captchaApiKey = process.env["SURFER_CAPTCHA_API_KEY"] ?? "";
+      if (!captchaApiKey) {
+        return {
+          ok: false, tool: "solve_captcha",
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          errorMessage: "SURFER_CAPTCHA_API_KEY not set — provision the 2captcha key",
+          errorCode: "CAPTCHA_NOT_CONFIGURED",
+        };
+      }
+      const startedAt = new Date().toISOString();
+      try {
+        const client = new CaptchaClient({
+          apiKey: captchaApiKey,
+          spendStore: fileSpendStore,
+          monthlyCapUsd: Number(process.env["SURFER_CAPTCHA_MONTHLY_CAP_USD"] ?? 20),
+        });
+        const result = await client.solve({
+          siteKey: call.siteKey,
+          pageUrl: call.pageUrl,
+          kind: call.kind,
+        });
+        return {
+          ok: true, tool: "solve_captcha",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          data: { token: result.token, costUsd: result.costUsd },
+        };
+      } catch (err: unknown) {
+        return {
+          ok: false, tool: "solve_captcha",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          errorMessage: err instanceof Error ? err.message : String(err),
+          errorCode: err instanceof Error && "code" in err ? String((err as { code: string }).code) : "SOLVE_CAPTCHA_FAILED",
+        };
+      }
+    }
 
     case "save_artifact": {
       // For screenshot saves, re-take the screenshot so we pass the buffer.
