@@ -33,4 +33,12 @@ describe("detectAvailablePort", () => {
 
     expect(detectPortMock).toHaveBeenCalledWith(3100);
   });
+
+  it("falls back to default detect-port probing when host is undefined", async () => {
+    detectPortMock.mockResolvedValue(3102);
+
+    await expect(detectAvailablePort(3100)).resolves.toBe(3102);
+
+    expect(detectPortMock).toHaveBeenCalledWith(3100);
+  });
 });
