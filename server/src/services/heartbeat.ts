@@ -41,6 +41,7 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { memoryHooksService } from "./memory-hooks.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -3851,6 +3852,85 @@ export function heartbeatService(db: Db) {
         });
       };
 
+      // ── Memory hooks (shared across pre-run hydration and post-run capture)
+      const memHooks = memoryHooksService(db);
+
+      // ── Memory: pre-run hydration ──────────────────────────────────
+      try {
+        const hydrateResult = await memHooks.hydrateRunContext({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          projectId: issueContext?.projectId ?? undefined,
+          issueId: issueId ?? undefined,
+          runId: run.id,
+          taskSummary: issueContext?.title ?? readNonEmptyString(context.taskKey) ?? undefined,
+        });
+        if (hydrateResult.bindingsQueried > 0) {
+          context.paperclipMemoryContext = {
+            snippets: hydrateResult.snippets.map((s) => ({
+              text: s.text,
+              provider: s.handle.providerKey,
+              score: s.score,
+            })),
+            profileSummary: hydrateResult.profileSummary,
+            bindingsQueried: hydrateResult.bindingsQueried,
+          };
+
+          // Render memory snippets into markdown and inject into the prompt
+          // via paperclipSessionHandoffMarkdown (read by all adapters)
+          if (hydrateResult.snippets.length > 0 || hydrateResult.profileSummary) {
+            const memoryLines: string[] = [];
+            memoryLines.push("<memory-context>");
+            memoryLines.push("The following context was retrieved from the agent's memory system. Use it to inform your work but do not mention it unless relevant.");
+            memoryLines.push("");
+            if (hydrateResult.profileSummary) {
+              memoryLines.push("## Profile");
+              memoryLines.push(hydrateResult.profileSummary);
+              memoryLines.push("");
+            }
+            if (hydrateResult.snippets.length > 0) {
+              memoryLines.push("## Relevant Context");
+              for (const snippet of hydrateResult.snippets) {
+                memoryLines.push(`- ${snippet.text}`);
+              }
+              memoryLines.push("");
+            }
+            memoryLines.push("</memory-context>");
+            const memoryMarkdown = memoryLines.join("\n");
+            const existingHandoff = typeof context.paperclipSessionHandoffMarkdown === "string"
+              ? context.paperclipSessionHandoffMarkdown
+              : "";
+            context.paperclipSessionHandoffMarkdown = existingHandoff
+              ? `${existingHandoff}\n\n${memoryMarkdown}`
+              : memoryMarkdown;
+          }
+
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              bindingsQueried: hydrateResult.bindingsQueried,
+              snippetCount: hydrateResult.snippets.length,
+            },
+            "memory context hydrated for run",
+          );
+          await onLog(
+            "stdout",
+            `[paperclip:memory] pre-run hydration: ${hydrateResult.snippets.length} snippet(s) from ${hydrateResult.bindingsQueried} binding(s) injected into context\n`,
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, companyId: agent.companyId, agentId: agent.id, runId: run.id },
+          "memory hydration failed — continuing without memory context",
+        );
+        await onLog(
+          "stderr",
+          `[paperclip:memory] pre-run hydration failed: ${err instanceof Error ? err.message : String(err)} — continuing without memory context\n`,
+        );
+      }
+
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
@@ -4098,6 +4178,46 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // ── Memory: post-run capture ──────────────────────────────────
+      try {
+        const captureResult = await memHooks.captureRunResult({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          projectId: issueContext?.projectId ?? undefined,
+          issueId: issueId ?? undefined,
+          runId: run.id,
+          outcome,
+          taskSummary: issueContext?.title ?? readNonEmptyString(context.taskKey) ?? undefined,
+          resultJson: (adapterResult.resultJson as Record<string, unknown> | null) ?? null,
+          agentName: agent.name,
+        });
+        if (captureResult.bindingsCaptured > 0) {
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              outcome,
+              bindingsCaptured: captureResult.bindingsCaptured,
+            },
+            "run result captured to memory",
+          );
+          await onLog(
+            "stdout",
+            `[paperclip:memory] post-run capture: outcome="${outcome}" written to ${captureResult.bindingsCaptured} binding(s)\n`,
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, companyId: agent.companyId, agentId: agent.id, runId: run.id },
+          "memory capture failed — run completed but memory not updated",
+        );
+        await onLog(
+          "stderr",
+          `[paperclip:memory] post-run capture failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

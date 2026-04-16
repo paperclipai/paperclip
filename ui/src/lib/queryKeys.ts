@@ -107,6 +107,13 @@ export const queryKeys = {
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
+  memory: {
+    bindings: (companyId: string) => ["memory", "bindings", companyId] as const,
+    bindingDetail: (bindingId: string) => ["memory", "bindings", "detail", bindingId] as const,
+    targets: (bindingId: string) => ["memory", "targets", bindingId] as const,
+    operations: (companyId: string, filters?: Record<string, string | number | undefined>) =>
+      ["memory", "operations", companyId, filters ?? {}] as const,
+  },
   health: ["health"] as const,
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,

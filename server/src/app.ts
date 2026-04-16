@@ -32,6 +32,10 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { memoryBindingRoutes } from "./routes/memory-bindings.js";
+import { memoryOperationRoutes } from "./routes/memory-operations.js";
+import { registerMemoryAdapter } from "./services/memory-operations.js";
+import { createParaMemoryAdapter } from "./services/memory-adapters/index.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -209,6 +213,12 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(memoryBindingRoutes(db));
+  api.use(memoryOperationRoutes(db));
+
+  // Register built-in memory adapters
+  registerMemoryAdapter(createParaMemoryAdapter({ basePath: process.cwd() }));
+
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
