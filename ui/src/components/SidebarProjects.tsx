@@ -15,6 +15,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
@@ -37,6 +38,7 @@ function SortableProjectItem({
   companyId,
   companyPrefix,
   isMobile,
+  collapsed,
   project,
   projectSidebarSlots,
   setSidebarOpen,
@@ -45,6 +47,7 @@ function SortableProjectItem({
   companyId: string | null;
   companyPrefix: string | null;
   isMobile: boolean;
+  collapsed: boolean;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
@@ -73,31 +76,54 @@ function SortableProjectItem({
       {...listeners}
     >
       <div className="flex flex-col gap-0.5">
-        <NavLink
-          to={`/projects/${routeRef}/issues`}
-          state={SIDEBAR_SCROLL_RESET_STATE}
-          onClick={(e) => {
-            if (isDragging) {
-              e.preventDefault();
-              return;
-            }
-            if (isMobile) setSidebarOpen(false);
-          }}
-          className={cn(
-            "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-            activeProjectRef === routeRef || activeProjectRef === project.id
-              ? "bg-accent text-foreground"
-              : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-          )}
-        >
-          <span
-            className="shrink-0 h-3.5 w-3.5 rounded-sm"
-            style={{ backgroundColor: project.color ?? "#6366f1" }}
-          />
-          <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
-        </NavLink>
-        {projectSidebarSlots.length > 0 && (
+        {collapsed ? (
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <NavLink
+                to={`/projects/${routeRef}/issues`}
+                state={SIDEBAR_SCROLL_RESET_STATE}
+                onClick={(e) => {
+                  if (isDragging) { e.preventDefault(); return; }
+                }}
+                className={cn(
+                  "flex items-center justify-center px-0 py-1.5 text-[13px] font-medium transition-colors",
+                  activeProjectRef === routeRef || activeProjectRef === project.id
+                    ? "bg-accent text-foreground"
+                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+                )}
+              >
+                <span
+                  className="shrink-0 h-3.5 w-3.5 rounded-sm"
+                  style={{ backgroundColor: project.color ?? "#6366f1" }}
+                />
+              </NavLink>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>{project.name}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <NavLink
+            to={`/projects/${routeRef}/issues`}
+            state={SIDEBAR_SCROLL_RESET_STATE}
+            onClick={(e) => {
+              if (isDragging) { e.preventDefault(); return; }
+              if (isMobile) setSidebarOpen(false);
+            }}
+            className={cn(
+              "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+              activeProjectRef === routeRef || activeProjectRef === project.id
+                ? "bg-accent text-foreground"
+                : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            )}
+          >
+            <span
+              className="shrink-0 h-3.5 w-3.5 rounded-sm"
+              style={{ backgroundColor: project.color ?? "#6366f1" }}
+            />
+            <span className="flex-1 truncate">{project.name}</span>
+            {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          </NavLink>
+        )}
+        {!collapsed && projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
             {projectSidebarSlots.map((slot) => (
               <PluginSlotMount
@@ -125,7 +151,7 @@ export function SidebarProjects() {
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, setSidebarOpen, collapsed } = useSidebar();
   const location = useLocation();
 
   const { data: projects } = useQuery({
@@ -180,6 +206,44 @@ export function SidebarProjects() {
     [orderedProjects, persistOrder],
   );
 
+  const projectItems = (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={orderedProjects.map((project) => project.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="flex flex-col gap-0.5 mt-0.5">
+          {orderedProjects.map((project: Project) => (
+            <SortableProjectItem
+              key={project.id}
+              activeProjectRef={activeProjectRef}
+              companyId={selectedCompanyId}
+              companyPrefix={selectedCompany?.issuePrefix ?? null}
+              isMobile={isMobile}
+              collapsed={collapsed}
+              project={project}
+              projectSidebarSlots={projectSidebarSlots}
+              setSidebarOpen={setSidebarOpen}
+            />
+          ))}
+        </div>
+      </SortableContext>
+    </DndContext>
+  );
+
+  if (collapsed) {
+    return (
+      <div>
+        <div className="my-1 mx-2 h-px bg-border" />
+        {projectItems}
+      </div>
+    );
+  }
+
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
@@ -207,34 +271,7 @@ export function SidebarProjects() {
           </button>
         </div>
       </div>
-
-      <CollapsibleContent>
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext
-            items={orderedProjects.map((project) => project.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <div className="flex flex-col gap-0.5 mt-0.5">
-              {orderedProjects.map((project: Project) => (
-                <SortableProjectItem
-                  key={project.id}
-                  activeProjectRef={activeProjectRef}
-                  companyId={selectedCompanyId}
-                  companyPrefix={selectedCompany?.issuePrefix ?? null}
-                  isMobile={isMobile}
-                  project={project}
-                  projectSidebarSlots={projectSidebarSlots}
-                  setSidebarOpen={setSidebarOpen}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
-      </CollapsibleContent>
+      <CollapsibleContent>{projectItems}</CollapsibleContent>
     </Collapsible>
   );
 }
