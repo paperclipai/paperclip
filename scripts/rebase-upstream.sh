@@ -13,7 +13,7 @@
 #   3. Rebases local master onto upstream/master
 #   4. Rebases each feature branch + each active security branch onto master
 #   5. Merges rebased branches back into master
-#   6. Rebuilds private-release from master
+#   6. Rebuilds steel-paperclip from master
 #   7. Returns to master when done
 #
 # Modes:
@@ -406,20 +406,20 @@ if [[ ${#SUCCEEDED[@]} -gt 0 ]] && [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   done
 fi
 
-# 9. Build private-release branch (copy of master for distribution)
+# 9. Build steel-paperclip branch (copy of master for distribution)
 if [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   info ""
-  info "=== Building private-release branch ==="
-  git branch -D private-release 2>/dev/null || true
-  git checkout -b private-release
-  info "private-release branch rebuilt from master"
+  info "=== Building steel-paperclip branch ==="
+  git branch -D steel-paperclip 2>/dev/null || true
+  git checkout -b steel-paperclip
+  info "steel-paperclip branch rebuilt from master"
   git checkout master
 fi
 
 # 10. Optionally push all branches
 if ! $DRY_RUN; then
   info ""
-  read -p "Push all rebased branches + private-release to origin? (y/N) " -n 1 -r
+  read -p "Push all rebased branches + steel-paperclip to origin? (y/N) " -n 1 -r
   echo
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     info "Pushing master..."
@@ -430,8 +430,8 @@ if ! $DRY_RUN; then
       git push origin "$branch" --force-with-lease
     done
 
-    info "Pushing private-release..."
-    git push origin private-release --force-with-lease
+    info "Pushing steel-paperclip..."
+    git push origin steel-paperclip --force-with-lease
 
     info "All branches pushed."
   fi
@@ -439,4 +439,4 @@ fi
 
 info "Done."
 info ""
-info "Private clone: git clone https://github.com/harperaa/paperclip.git -b private-release"
+info "Private clone: git clone https://github.com/harperaa/paperclip.git -b steel-paperclip"
