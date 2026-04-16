@@ -68,12 +68,12 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
   info "Segredos gerados automaticamente."
 
   echo ""
-  echo "Chaves de API de IA (ao menos uma é necessária para os agentes funcionarem):"
+  echo "Chaves de API de IA (opcional — pressione Enter para usar conta Claude MAX/subscription):"
   read -rsp "  ANTHROPIC_API_KEY (Enter para pular): " ANTHROPIC_KEY; echo
   read -rsp "  OPENAI_API_KEY    (Enter para pular): " OPENAI_KEY; echo
 
   if [[ -z "$ANTHROPIC_KEY" && -z "$OPENAI_KEY" ]]; then
-    warn "Nenhuma chave de IA informada. Agentes não funcionarão sem ao menos uma."
+    info "Sem chave de API — agentes usarão modo subscription (Claude MAX). Faça login quando solicitado."
   fi
 
   # Strip any embedded newlines/carriage-returns from user-supplied values before
@@ -96,8 +96,9 @@ fi
 # ─── Subir serviços ──────────────────────────────────────────────────────────
 
 heading "Iniciando serviços..."
-docker compose -f docker/docker-compose.prod.yml --env-file .env build
-docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+# Build locally — never pull the app image from a registry (avoids auth errors on private GHCR)
+APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env build
+APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --pull never
 
 # ─── Aguardar app ficar saudável ─────────────────────────────────────────────
 
