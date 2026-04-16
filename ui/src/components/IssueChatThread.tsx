@@ -1824,15 +1824,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           </div>
         ) : null}
 
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={reopen}
-            onChange={(event) => setReopen(event.target.checked)}
-            className="rounded border-border"
-          />
-          {t("issueChat.reopen")}
-        </label>
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
             value={reassignTarget}

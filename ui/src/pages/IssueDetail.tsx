@@ -417,6 +417,7 @@ function InboxMobileToolbar({
   onHide,
 }: InboxMobileToolbarProps) {
   const navigate = useNavigate();
+  const { t } = useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
